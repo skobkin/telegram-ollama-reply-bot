@@ -7,9 +7,6 @@ steps:
     image: 'golang:alpine'
     commands:
       - go build -x .
-    when:
-      event:
-        - push
 
   - name: publish-docker
     image: plugins/docker
@@ -26,3 +23,7 @@ steps:
     when:
       event:
         - tag
+
+trigger:
+  event:
+    - push
