@@ -7,9 +7,24 @@ steps:
     image: 'golang:alpine'
     commands:
       - go build -x .
+    when:
+      event:
+        - push
 
-trigger:
-  event:
-    include:
-      - pull_request
-      - push
+  - name: publish-docker
+    image: plugins/docker
+    settings:
+      username:
+        from_secret: DOCKER_LOGIN
+      password:
+        from_secret: DOCKER_TOKEN
+      repo:
+        from_secret: DOCKER_REPO
+      tags:
+        - ${DRONE_TAG}
+        - latest
+    when:
+      branch:
+        - main
+      event:
+        - tag
