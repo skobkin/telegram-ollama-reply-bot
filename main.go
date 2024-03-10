@@ -1,20 +1,14 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
-
-	openai "github.com/sashabaranov/go-openai"
+	"telegram-ollama-reply-bot/bot"
+	"telegram-ollama-reply-bot/extractor"
+	"telegram-ollama-reply-bot/llm"
 
 	tg "github.com/mymmrac/telego"
-	tu "github.com/mymmrac/telego/telegoutil"
-)
-
-const (
-	ModelMistral           = "mistral"
-	ModelMistralUncensored = "dolphin-mistral"
 )
 
 func main() {
@@ -23,68 +17,20 @@ func main() {
 
 	telegramToken := os.Getenv("TELEGRAM_TOKEN")
 
-	config := openai.DefaultConfig(ollamaToken)
-	config.BaseURL = ollamaBaseUrl
+	llmc := llm.NewConnector(ollamaBaseUrl, ollamaToken)
+	ext := extractor.NewExtractor()
 
-	client := openai.NewClientWithConfig(config)
-
-	bot, err := tg.NewBot(telegramToken, tg.WithDefaultLogger(false, true))
+	telegramApi, err := tg.NewBot(telegramToken, tg.WithDefaultLogger(false, true))
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
 
-	// Get updates channel
-	updates, _ := bot.UpdatesViaLongPolling(nil)
+	botService := bot.NewBot(telegramApi, llmc, ext)
 
-	// Stop reviving updates from update channel
-	defer bot.StopLongPolling()
-
-	// Loop through all updates when they came
-	for update := range updates {
-		// Check if update contains a message
-		if update.Message != nil {
-			slog.Info("Update with message received", update.Message.Chat, update.Message.From, update.Message.Text)
-
-			chatID := tu.ID(update.Message.Chat.ID)
-
-			req := openai.ChatCompletionRequest{
-				Model: ModelMistralUncensored,
-				Messages: []openai.ChatCompletionMessage{
-					{
-						Role:    openai.ChatMessageRoleSystem,
-						Content: "You're a bot in the Telegram chat. You are replying to questions directed to you.",
-					},
-				},
-			}
-
-			req.Messages = append(req.Messages, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleUser,
-				Content: update.Message.Text,
-			})
-			resp, err := client.CreateChatCompletion(context.Background(), req)
-			if err != nil {
-				slog.Error("ChatCompletion error", err)
-
-				continue
-			}
-
-			slog.Info("Got completion. Going to send.", resp.Choices[0])
-
-			message := tu.Message(
-				chatID,
-				resp.Choices[0].Message.Content,
-			)
-			message = message.WithReplyParameters(&tg.ReplyParameters{MessageID: update.Message.MessageID})
-			message = message.WithParseMode("Markdown")
-
-			_, err = bot.SendMessage(message)
-
-			if err != nil {
-				slog.Error("Can't send reply message", err)
-			}
-
-			//req.Messages = append(req.Messages, resp.Choices[0].Message)
-		}
+	err = botService.Run()
+	if err != nil {
+		slog.Error("Running bot finished with an error", err)
+		os.Exit(1)
 	}
 }
