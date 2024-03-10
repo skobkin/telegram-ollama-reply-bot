@@ -23,7 +23,3 @@ steps:
     when:
       event:
         - tag
-
-trigger:
-  event:
-    - push
