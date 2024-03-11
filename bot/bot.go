@@ -74,6 +74,7 @@ func (b *Bot) Run() error {
 	bh.Handle(b.startHandler, th.CommandEqual("start"))
 	bh.Handle(b.heyHandler, th.CommandEqual("hey"))
 	bh.Handle(b.summarizeHandler, th.CommandEqual("summarize"))
+	bh.Handle(b.statsHandler, th.CommandEqual("stats"))
 	bh.Handle(b.helpHandler, th.CommandEqual("help"))
 
 	bh.Start()
