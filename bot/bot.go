@@ -10,6 +10,7 @@ import (
 	"strings"
 	"telegram-ollama-reply-bot/extractor"
 	"telegram-ollama-reply-bot/llm"
+	"telegram-ollama-reply-bot/stats"
 )
 
 var (
@@ -18,12 +19,11 @@ var (
 	ErrHandlerInit    = errors.New("cannot initialize handler")
 )
 
-const contextUserKey = "user"
-
 type Bot struct {
 	api       *telego.Bot
 	llm       *llm.LlmConnector
 	extractor *extractor.Extractor
+	stats     *stats.Stats
 }
 
 func NewBot(api *telego.Bot, llm *llm.LlmConnector, extractor *extractor.Extractor) *Bot {
@@ -31,6 +31,7 @@ func NewBot(api *telego.Bot, llm *llm.LlmConnector, extractor *extractor.Extract
 		api:       api,
 		llm:       llm,
 		extractor: extractor,
+		stats:     stats.NewStats(),
 	}
 }
 
@@ -66,6 +67,10 @@ func (b *Bot) Run() error {
 	defer bh.Stop()
 	defer b.api.StopLongPolling()
 
+	// Middlewares
+	bh.Use(b.chatTypeStatsCounter)
+
+	// Handlers
 	bh.Handle(b.startHandler, th.CommandEqual("start"))
 	bh.Handle(b.heyHandler, th.CommandEqual("hey"))
 	bh.Handle(b.summarizeHandler, th.CommandEqual("summarize"))
@@ -78,6 +83,8 @@ func (b *Bot) Run() error {
 
 func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
 	slog.Info("/hey")
+
+	b.stats.HeyRequest()
 
 	chatID := tu.ID(update.Message.Chat.ID)
 
@@ -111,6 +118,8 @@ func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
 
 func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 	slog.Info("/summarize", update.Message.Text)
+
+	b.stats.SummarizeRequest()
 
 	chatID := tu.ID(update.Message.Chat.ID)
 
@@ -203,6 +212,25 @@ func (b *Bot) startHandler(bot *telego.Bot, update telego.Update) {
 		"Hey!\r\n"+
 			"Check out /help to learn how to use this bot.",
 	)))
+	if err != nil {
+		slog.Error("Cannot send a message", err)
+	}
+}
+
+func (b *Bot) statsHandler(bot *telego.Bot, update telego.Update) {
+	slog.Info("/stats")
+
+	chatID := tu.ID(update.Message.Chat.ID)
+
+	b.sendTyping(chatID)
+
+	_, err := bot.SendMessage(b.reply(update.Message, tu.Message(
+		chatID,
+		"Current bot stats:\r\n"+
+			"```json\r\n"+
+			b.stats.String()+"\r\n"+
+			"```",
+	)).WithParseMode("Markdown"))
 	if err != nil {
 		slog.Error("Cannot send a message", err)
 	}
