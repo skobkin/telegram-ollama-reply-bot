@@ -17,7 +17,6 @@ func (b *Bot) chatTypeStatsCounter(bot *telego.Bot, update telego.Update, next t
 		b.stats.GroupRequest()
 	case telego.ChatTypePrivate:
 		b.stats.PrivateRequest()
-		b.stats.PrivateRequest()
 	}
 
 	next(bot, update)
