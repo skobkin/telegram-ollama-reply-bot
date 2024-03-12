@@ -38,28 +38,23 @@ func NewBot(api *telego.Bot, llm *llm.LlmConnector, extractor *extractor.Extract
 func (b *Bot) Run() error {
 	botUser, err := b.api.GetMe()
 	if err != nil {
-		slog.Error("Cannot retrieve api user", err)
+		slog.Error("Cannot retrieve api user", "error", err)
 
 		return ErrGetMe
 	}
 
-	slog.Info("Running api as", map[string]any{
-		"id":       botUser.ID,
-		"username": botUser.Username,
-		"name":     botUser.FirstName,
-		"is_bot":   botUser.IsBot,
-	})
+	slog.Info("Running api as", "id", botUser.ID, "username", botUser.Username, "name", botUser.FirstName, "is_bot", botUser.IsBot)
 
 	updates, err := b.api.UpdatesViaLongPolling(nil)
 	if err != nil {
-		slog.Error("Cannot get update channel", err)
+		slog.Error("Cannot get update channel", "error", err)
 
 		return ErrUpdatesChannel
 	}
 
 	bh, err := th.NewBotHandler(b.api, updates)
 	if err != nil {
-		slog.Error("Cannot initialize bot handler", err)
+		slog.Error("Cannot initialize bot handler", "error", err)
 
 		return ErrHandlerInit
 	}
@@ -83,7 +78,7 @@ func (b *Bot) Run() error {
 }
 
 func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
-	slog.Info("/hey")
+	slog.Info("/hey", "message-text", update.Message.Text)
 
 	b.stats.HeyRequest()
 
@@ -111,7 +106,7 @@ func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
 		return
 	}
 
-	slog.Debug("Got completion. Going to send.", llmReply)
+	slog.Debug("Got completion. Going to send.", "llm-reply", llmReply)
 
 	message := tu.Message(
 		chatID,
@@ -119,16 +114,15 @@ func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
 	).WithParseMode("Markdown")
 
 	_, err = bot.SendMessage(b.reply(update.Message, message))
-
 	if err != nil {
-		slog.Error("Can't send reply message", err)
+		slog.Error("Can't send reply message", "error", err)
 
 		b.trySendReplyError(update.Message)
 	}
 }
 
 func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
-	slog.Info("/summarize", update.Message.Text)
+	slog.Info("/summarize", "message-text", update.Message.Text)
 
 	b.stats.SummarizeRequest()
 
@@ -151,7 +145,7 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 
 	_, err := url.ParseRequestURI(args[1])
 	if err != nil {
-		slog.Error("Provided URL is not valid", args[1])
+		slog.Error("Provided URL is not valid", "url", args[1])
 
 		_, _ = b.api.SendMessage(b.reply(update.Message, tu.Message(
 			chatID,
@@ -163,7 +157,7 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 
 	article, err := b.extractor.GetArticleFromUrl(args[1])
 	if err != nil {
-		slog.Error("Cannot retrieve an article using extractor", err)
+		slog.Error("Cannot retrieve an article using extractor", "error", err)
 	}
 
 	llmReply, err := b.llm.Summarize(article.Text, llm.ModelMistralUncensored)
@@ -178,7 +172,7 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 		return
 	}
 
-	slog.Debug("Got completion. Going to send.", llmReply)
+	slog.Debug("Got completion. Going to send.", "llm-reply", llmReply)
 
 	message := tu.Message(
 		chatID,
@@ -188,7 +182,7 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 	_, err = bot.SendMessage(b.reply(update.Message, message))
 
 	if err != nil {
-		slog.Error("Can't send reply message", err)
+		slog.Error("Can't send reply message", "error", err)
 
 		b.trySendReplyError(update.Message)
 	}
@@ -209,7 +203,7 @@ func (b *Bot) helpHandler(bot *telego.Bot, update telego.Update) {
 			"/help - Show this help",
 	)))
 	if err != nil {
-		slog.Error("Cannot send a message", err)
+		slog.Error("Cannot send a message", "error", err)
 
 		b.trySendReplyError(update.Message)
 	}
@@ -228,7 +222,7 @@ func (b *Bot) startHandler(bot *telego.Bot, update telego.Update) {
 			"Check out /help to learn how to use this bot.",
 	)))
 	if err != nil {
-		slog.Error("Cannot send a message", err)
+		slog.Error("Cannot send a message", "error", err)
 
 		b.trySendReplyError(update.Message)
 	}
@@ -249,7 +243,7 @@ func (b *Bot) statsHandler(bot *telego.Bot, update telego.Update) {
 			"```",
 	)).WithParseMode("Markdown"))
 	if err != nil {
-		slog.Error("Cannot send a message", err)
+		slog.Error("Cannot send a message", "error", err)
 
 		b.trySendReplyError(update.Message)
 	}
@@ -261,6 +255,8 @@ func (b *Bot) createLlmRequestContext(update telego.Update) llm.RequestContext {
 	rc := llm.RequestContext{}
 
 	if message == nil {
+		slog.Debug("request context creation problem: no message provided. returning empty context.", "request-context", rc)
+
 		return rc
 	}
 
@@ -281,6 +277,8 @@ func (b *Bot) createLlmRequestContext(update telego.Update) llm.RequestContext {
 		Type:        chat.Type,
 	}
 
+	slog.Debug("request context created", "request-context", rc)
+
 	return rc
 }
 
@@ -295,7 +293,7 @@ func (b *Bot) sendTyping(chatId telego.ChatID) {
 
 	err := b.api.SendChatAction(tu.ChatAction(chatId, "typing"))
 	if err != nil {
-		slog.Error("Cannot set chat action", err)
+		slog.Error("Cannot set chat action", "error", err)
 	}
 }
 

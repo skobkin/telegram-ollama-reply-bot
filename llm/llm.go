@@ -50,15 +50,15 @@ func (l *LlmConnector) HandleSingleRequest(text string, model string, requestCon
 
 	resp, err := l.client.CreateChatCompletion(context.Background(), req)
 	if err != nil {
-		slog.Error("LLM back-end request failed", err)
+		slog.Error("llm: LLM back-end request failed", "error", err)
 
 		return "", ErrLlmBackendRequestFailed
 	}
 
-	slog.Debug("Received LLM back-end response", resp)
+	slog.Debug("llm: Received LLM back-end response", "response", resp)
 
 	if len(resp.Choices) < 1 {
-		slog.Error("LLM back-end reply has no choices")
+		slog.Error("llm: LLM back-end reply has no choices")
 
 		return "", ErrNoChoices
 	}
@@ -86,15 +86,15 @@ func (l *LlmConnector) Summarize(text string, model string) (string, error) {
 
 	resp, err := l.client.CreateChatCompletion(context.Background(), req)
 	if err != nil {
-		slog.Error("LLM back-end request failed", err)
+		slog.Error("llm: LLM back-end request failed", "error", err)
 
 		return "", ErrLlmBackendRequestFailed
 	}
 
-	slog.Debug("Received LLM back-end response", resp)
+	slog.Debug("llm: Received LLM back-end response", resp)
 
 	if len(resp.Choices) < 1 {
-		slog.Error("LLM back-end reply has no choices")
+		slog.Error("llm: LLM back-end reply has no choices")
 
 		return "", ErrNoChoices
 	}

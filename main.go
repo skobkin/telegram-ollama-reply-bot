@@ -30,7 +30,7 @@ func main() {
 
 	err = botService.Run()
 	if err != nil {
-		slog.Error("Running bot finished with an error", err)
+		slog.Error("Running bot finished with an error", "error", err)
 		os.Exit(1)
 	}
 }
