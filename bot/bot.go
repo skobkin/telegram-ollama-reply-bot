@@ -24,6 +24,8 @@ type Bot struct {
 	llm       *llm.LlmConnector
 	extractor *extractor.Extractor
 	stats     *stats.Stats
+
+	markdownV1Replacer *strings.Replacer
 }
 
 func NewBot(api *telego.Bot, llm *llm.LlmConnector, extractor *extractor.Extractor) *Bot {
@@ -32,6 +34,14 @@ func NewBot(api *telego.Bot, llm *llm.LlmConnector, extractor *extractor.Extract
 		llm:       llm,
 		extractor: extractor,
 		stats:     stats.NewStats(),
+
+		markdownV1Replacer: strings.NewReplacer(
+			// https://core.telegram.org/bots/api#markdown-style
+			"_", "\\_",
+			//"*", "\\*",
+			//"`", "\\`",
+			//"[", "\\[",
+		),
 	}
 }
 
@@ -110,7 +120,7 @@ func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
 
 	message := tu.Message(
 		chatID,
-		llmReply,
+		b.escapeMarkdownV1Symbols(llmReply),
 	).WithParseMode("Markdown")
 
 	_, err = bot.SendMessage(b.reply(update.Message, message))
@@ -176,7 +186,7 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 
 	message := tu.Message(
 		chatID,
-		llmReply,
+		b.escapeMarkdownV1Symbols(llmReply),
 	).WithParseMode("Markdown")
 
 	_, err = bot.SendMessage(b.reply(update.Message, message))
@@ -280,6 +290,10 @@ func (b *Bot) createLlmRequestContext(update telego.Update) llm.RequestContext {
 	slog.Debug("request context created", "request-context", rc)
 
 	return rc
+}
+
+func (b *Bot) escapeMarkdownV1Symbols(input string) string {
+	return b.markdownV1Replacer.Replace(input)
 }
 
 func (b *Bot) reply(originalMessage *telego.Message, newMessage *telego.SendMessageParams) *telego.SendMessageParams {
