@@ -20,7 +20,7 @@ func main() {
 	llmc := llm.NewConnector(ollamaBaseUrl, ollamaToken)
 	ext := extractor.NewExtractor()
 
-	telegramApi, err := tg.NewBot(telegramToken, tg.WithDefaultLogger(false, true))
+	telegramApi, err := tg.NewBot(telegramToken, tg.WithLogger(bot.NewLogger("telego: ")))
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -30,7 +30,7 @@ func main() {
 
 	err = botService.Run()
 	if err != nil {
-		slog.Error("Running bot finished with an error", err)
+		slog.Error("Running bot finished with an error", "error", err)
 		os.Exit(1)
 	}
 }

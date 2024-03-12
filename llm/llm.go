@@ -50,15 +50,15 @@ func (l *LlmConnector) HandleSingleRequest(text string, model string, requestCon
 
 	resp, err := l.client.CreateChatCompletion(context.Background(), req)
 	if err != nil {
-		slog.Error("LLM back-end request failed", err)
+		slog.Error("llm: LLM back-end request failed", "error", err)
 
 		return "", ErrLlmBackendRequestFailed
 	}
 
-	slog.Debug("Received LLM back-end response", resp)
+	slog.Debug("llm: Received LLM back-end response", "response", resp)
 
 	if len(resp.Choices) < 1 {
-		slog.Error("LLM back-end reply has no choices")
+		slog.Error("llm: LLM back-end reply has no choices")
 
 		return "", ErrNoChoices
 	}
@@ -72,8 +72,9 @@ func (l *LlmConnector) Summarize(text string, model string) (string, error) {
 		Messages: []openai.ChatCompletionMessage{
 			{
 				Role: openai.ChatMessageRoleSystem,
-				Content: "You are a short digest editor. Summarize the text you received " +
-					"as a list of bullet points with most important facts from the text. " +
+				Content: "You're a text shortener. Give a very brief summary of the main facts " +
+					"point by point.  Format them as a list of bullet points. " +
+					"Avoid any commentaries and value judgement on the matter. " +
 					"If possible, use the same language as the original text.",
 			},
 		},
@@ -86,15 +87,15 @@ func (l *LlmConnector) Summarize(text string, model string) (string, error) {
 
 	resp, err := l.client.CreateChatCompletion(context.Background(), req)
 	if err != nil {
-		slog.Error("LLM back-end request failed", err)
+		slog.Error("llm: LLM back-end request failed", "error", err)
 
 		return "", ErrLlmBackendRequestFailed
 	}
 
-	slog.Debug("Received LLM back-end response", resp)
+	slog.Debug("llm: Received LLM back-end response", resp)
 
 	if len(resp.Choices) < 1 {
-		slog.Error("LLM back-end reply has no choices")
+		slog.Error("llm: LLM back-end reply has no choices")
 
 		return "", ErrNoChoices
 	}

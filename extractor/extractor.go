@@ -3,6 +3,7 @@ package extractor
 import (
 	"errors"
 	"github.com/advancedlogic/GoOse"
+	"log/slog"
 )
 
 var (
@@ -28,11 +29,17 @@ type Article struct {
 }
 
 func (e *Extractor) GetArticleFromUrl(url string) (Article, error) {
+	slog.Info("extractor: requested extraction from URL ", "url", url)
+
 	article, err := e.goose.ExtractFromURL(url)
 
 	if err != nil {
+		slog.Error("extractor: failed extracting from URL", "url", url)
+
 		return Article{}, ErrExtractFailed
 	}
+
+	slog.Debug("extractor: article extracted", "article", article)
 
 	return Article{
 		Title: article.Title,
