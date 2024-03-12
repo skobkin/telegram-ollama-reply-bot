@@ -72,8 +72,9 @@ func (l *LlmConnector) Summarize(text string, model string) (string, error) {
 		Messages: []openai.ChatCompletionMessage{
 			{
 				Role: openai.ChatMessageRoleSystem,
-				Content: "You are a short digest editor. Summarize the text you received " +
-					"as a list of bullet points with most important facts from the text. " +
+				Content: "You're a text shortener. Give a very brief summary of the main facts " +
+					"point by point.  Format them as a list of bullet points. " +
+					"Avoid any commentaries and value judgement on the matter. " +
 					"If possible, use the same language as the original text.",
 			},
 		},
