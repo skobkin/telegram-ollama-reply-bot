@@ -87,11 +87,19 @@ func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
 
 	b.stats.HeyRequest()
 
+	parts := strings.SplitN(update.Message.Text, " ", 2)
+	userMessage := "Hey!"
+	if len(parts) == 2 {
+		userMessage = parts[1]
+	}
+
 	chatID := tu.ID(update.Message.Chat.ID)
 
 	b.sendTyping(chatID)
 
-	llmReply, err := b.llm.HandleSingleRequest(update.Message.Text, llm.ModelMistralUncensored)
+	requestContext := b.createLlmRequestContext(update)
+
+	llmReply, err := b.llm.HandleSingleRequest(userMessage, llm.ModelMistralUncensored, requestContext)
 	if err != nil {
 		slog.Error("Cannot get reply from LLM connector")
 
@@ -245,6 +253,35 @@ func (b *Bot) statsHandler(bot *telego.Bot, update telego.Update) {
 
 		b.trySendReplyError(update.Message)
 	}
+}
+
+func (b *Bot) createLlmRequestContext(update telego.Update) llm.RequestContext {
+	message := update.Message
+
+	rc := llm.RequestContext{}
+
+	if message == nil {
+		return rc
+	}
+
+	user := message.From
+	if user != nil {
+		rc.User = llm.UserContext{
+			Username:  user.Username,
+			FirstName: user.FirstName,
+			LastName:  user.LastName,
+			IsPremium: user.IsPremium,
+		}
+	}
+
+	chat := message.Chat
+	rc.Chat = llm.ChatContext{
+		Title:       chat.Title,
+		Description: chat.Description,
+		Type:        chat.Type,
+	}
+
+	return rc
 }
 
 func (b *Bot) reply(originalMessage *telego.Message, newMessage *telego.SendMessageParams) *telego.SendMessageParams {
