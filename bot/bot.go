@@ -114,6 +114,8 @@ func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
 
 	if err != nil {
 		slog.Error("Can't send reply message", err)
+
+		b.trySendReplyError(update.Message)
 	}
 }
 
@@ -179,6 +181,8 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 
 	if err != nil {
 		slog.Error("Can't send reply message", err)
+
+		b.trySendReplyError(update.Message)
 	}
 }
 
@@ -198,6 +202,8 @@ func (b *Bot) helpHandler(bot *telego.Bot, update telego.Update) {
 	)))
 	if err != nil {
 		slog.Error("Cannot send a message", err)
+
+		b.trySendReplyError(update.Message)
 	}
 }
 
@@ -215,6 +221,8 @@ func (b *Bot) startHandler(bot *telego.Bot, update telego.Update) {
 	)))
 	if err != nil {
 		slog.Error("Cannot send a message", err)
+
+		b.trySendReplyError(update.Message)
 	}
 }
 
@@ -234,6 +242,8 @@ func (b *Bot) statsHandler(bot *telego.Bot, update telego.Update) {
 	)).WithParseMode("Markdown"))
 	if err != nil {
 		slog.Error("Cannot send a message", err)
+
+		b.trySendReplyError(update.Message)
 	}
 }
 
@@ -250,4 +260,15 @@ func (b *Bot) sendTyping(chatId telego.ChatID) {
 	if err != nil {
 		slog.Error("Cannot set chat action", err)
 	}
+}
+
+func (b *Bot) trySendReplyError(message *telego.Message) {
+	if message == nil {
+		return
+	}
+
+	_, _ = b.api.SendMessage(b.reply(message, tu.Message(
+		tu.ID(message.Chat.ID),
+		"Error occurred while trying to send reply.",
+	)))
 }
