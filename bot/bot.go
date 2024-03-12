@@ -74,16 +74,107 @@ func (b *Bot) Run() error {
 	// Middlewares
 	bh.Use(b.chatTypeStatsCounter)
 
-	// Handlers
+	// Command handlers
 	bh.Handle(b.startHandler, th.CommandEqual("start"))
 	bh.Handle(b.heyHandler, th.CommandEqual("hey"))
 	bh.Handle(b.summarizeHandler, th.CommandEqual("summarize"))
 	bh.Handle(b.statsHandler, th.CommandEqual("stats"))
 	bh.Handle(b.helpHandler, th.CommandEqual("help"))
 
+	// Inline query handlers
+	bh.Handle(b.inlineHandler, th.AnyInlineQuery())
+
 	bh.Start()
 
 	return nil
+}
+
+func (b *Bot) inlineHandler(bot *telego.Bot, update telego.Update) {
+	iq := update.InlineQuery
+	slog.Info("inline query received", "query", iq.Query)
+
+	slog.Debug("query", "query", iq)
+
+	if len(iq.Query) < 3 {
+		return
+	}
+
+	b.stats.InlineQuery()
+
+	queryParts := strings.SplitN(iq.Query, " ", 2)
+
+	if len(queryParts) < 1 {
+		slog.Debug("Empty query. Skipping.")
+
+		return
+	}
+
+	var response *telego.AnswerInlineQueryParams
+
+	switch isValidAndAllowedUrl(queryParts[0]) {
+	case true:
+		slog.Info("Inline /summarize request", "url", queryParts[0])
+
+		b.stats.SummarizeRequest()
+
+		article, err := b.extractor.GetArticleFromUrl(queryParts[0])
+		if err != nil {
+			slog.Error("Cannot retrieve an article using extractor", "error", err)
+		}
+
+		llmReply, err := b.llm.Summarize(article.Text, llm.ModelMistralUncensored)
+		if err != nil {
+			slog.Error("Cannot get reply from LLM connector")
+
+			b.trySendInlineQueryError(iq, "LLM request error. Try again later.")
+
+			return
+		}
+
+		slog.Debug("Got completion. Going to send.", "llm-completion", llmReply)
+
+		response = tu.InlineQuery(
+			iq.ID,
+			tu.ResultArticle(
+				"reply_"+iq.ID,
+				"Summary for "+queryParts[0],
+				tu.TextMessage(b.escapeMarkdownV1Symbols(llmReply)).WithParseMode("Markdown"),
+			),
+		)
+	case false:
+		b.stats.HeyRequest()
+
+		slog.Info("Inline /hey request", "text", iq.Query)
+
+		requestContext := createLlmRequestContextFromUpdate(update)
+
+		llmReply, err := b.llm.HandleSingleRequest(iq.Query, llm.ModelMistralUncensored, requestContext)
+		if err != nil {
+			slog.Error("Cannot get reply from LLM connector")
+
+			b.trySendInlineQueryError(iq, "LLM request error. Try again later.")
+
+			return
+		}
+
+		slog.Debug("Got completion. Going to send.", "llm-completion", llmReply)
+
+		response = tu.InlineQuery(
+			iq.ID,
+			tu.ResultArticle(
+				"reply_"+iq.ID,
+				"LLM reply to\""+iq.Query+"\"",
+				tu.TextMessage(b.escapeMarkdownV1Symbols(llmReply)).WithParseMode("Markdown"),
+			),
+		)
+	}
+
+	err := bot.AnswerInlineQuery(response)
+	if err != nil {
+		slog.Error("Can't answer to inline query", "error", err)
+
+		b.trySendInlineQueryError(iq, "Couldn't send intended reply, sorry")
+	}
 }
 
 func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
@@ -101,7 +192,7 @@ func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
 
 	b.sendTyping(chatID)
 
-	requestContext := b.createLlmRequestContext(update)
+	requestContext := createLlmRequestContextFromUpdate(update)
 
 	llmReply, err := b.llm.HandleSingleRequest(userMessage, llm.ModelMistralUncensored, requestContext)
 	if err != nil {
@@ -115,7 +206,7 @@ func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
 		return
 	}
 
-	slog.Debug("Got completion. Going to send.", "llm-reply", llmReply)
+	slog.Debug("Got completion. Going to send.", "llm-completion", llmReply)
 
 	message := tu.Message(
 		chatID,
@@ -139,7 +230,7 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 
 	b.sendTyping(chatID)
 
-	args := strings.Split(update.Message.Text, " ")
+	args := strings.SplitN(update.Message.Text, " ", 2)
 
 	if len(args) < 2 {
 		_, _ = bot.SendMessage(tu.Message(
@@ -180,7 +271,7 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 		return
 	}
 
-	slog.Debug("Got completion. Going to send.", "llm-reply", llmReply)
+	slog.Debug("Got completion. Going to send.", "llm-completion", llmReply)
 
 	message := tu.Message(
 		chatID,

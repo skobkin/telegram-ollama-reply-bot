@@ -6,7 +6,7 @@ import (
 	"telegram-ollama-reply-bot/llm"
 )
 
-func (b *Bot) createLlmRequestContext(update telego.Update) llm.RequestContext {
+func createLlmRequestContextFromUpdate(update telego.Update) llm.RequestContext {
 	message := update.Message
 	iq := update.InlineQuery
 
