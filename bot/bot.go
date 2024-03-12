@@ -6,7 +6,6 @@ import (
 	th "github.com/mymmrac/telego/telegohandler"
 	tu "github.com/mymmrac/telego/telegoutil"
 	"log/slog"
-	"net/url"
 	"strings"
 	"telegram-ollama-reply-bot/extractor"
 	"telegram-ollama-reply-bot/llm"
@@ -153,9 +152,8 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 		return
 	}
 
-	_, err := url.ParseRequestURI(args[1])
-	if err != nil {
-		slog.Error("Provided URL is not valid", "url", args[1])
+	if !isValidAndAllowedUrl(args[1]) {
+		slog.Error("Provided text is not a valid URL", "text", args[1])
 
 		_, _ = b.api.SendMessage(b.reply(update.Message, tu.Message(
 			chatID,
@@ -294,30 +292,4 @@ func (b *Bot) createLlmRequestContext(update telego.Update) llm.RequestContext {
 
 func (b *Bot) escapeMarkdownV1Symbols(input string) string {
 	return b.markdownV1Replacer.Replace(input)
-}
-
-func (b *Bot) reply(originalMessage *telego.Message, newMessage *telego.SendMessageParams) *telego.SendMessageParams {
-	return newMessage.WithReplyParameters(&telego.ReplyParameters{
-		MessageID: originalMessage.MessageID,
-	})
-}
-
-func (b *Bot) sendTyping(chatId telego.ChatID) {
-	slog.Debug("Setting 'typing' chat action")
-
-	err := b.api.SendChatAction(tu.ChatAction(chatId, "typing"))
-	if err != nil {
-		slog.Error("Cannot set chat action", "error", err)
-	}
-}
-
-func (b *Bot) trySendReplyError(message *telego.Message) {
-	if message == nil {
-		return
-	}
-
-	_, _ = b.api.SendMessage(b.reply(message, tu.Message(
-		tu.ID(message.Chat.ID),
-		"Error occurred while trying to send reply.",
-	)))
 }
