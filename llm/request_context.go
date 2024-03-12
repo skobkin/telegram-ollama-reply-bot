@@ -19,17 +19,22 @@ type ChatContext struct {
 }
 
 func (c RequestContext) Prompt() string {
-	prompt := "The chat you're in is called \"" + c.Chat.Title + "\". " +
-		"The type of chat is \"" + c.Chat.Type + "\". " +
-		"The chat description is \"" + c.Chat.Description + "\". "
+	prompt := "The type of chat you're in is \"" + c.Chat.Type + "\". "
+
+	if c.Chat.Title != "" {
+		prompt += "Chat is called \"" + c.Chat.Title + "\". "
+	}
+	if c.Chat.Description != "" {
+		prompt += "Chat description is \"" + c.Chat.Description + "\". "
+	}
+
 	if c.User.Username != "" {
-		prompt += "The user who wrote you has username \"@" + c.Chat.Description + "\". "
+		prompt += "The user who wrote you has username \"@" + c.User.Username + "\". "
 	}
 	prompt += "Their first name is \"" + c.User.FirstName + "\". "
 	if c.User.LastName != "" {
 		prompt += "Their last name is \"" + c.User.LastName + "\". "
 	}
-
 	if c.User.IsPremium {
 		prompt += "They have Telegram Premium subscription. "
 	}
