@@ -87,11 +87,19 @@ func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
 
 	b.stats.HeyRequest()
 
+	parts := strings.SplitN(update.Message.Text, " ", 2)
+	userMessage := "Hey!"
+	if len(parts) == 2 {
+		userMessage = parts[1]
+	}
+
 	chatID := tu.ID(update.Message.Chat.ID)
 
 	b.sendTyping(chatID)
 
-	llmReply, err := b.llm.HandleSingleRequest(update.Message.Text, llm.ModelMistralUncensored)
+	requestContext := b.createLlmRequestContext(update)
+
+	llmReply, err := b.llm.HandleSingleRequest(userMessage, llm.ModelMistralUncensored, requestContext)
 	if err != nil {
 		slog.Error("Cannot get reply from LLM connector")
 
@@ -114,6 +122,8 @@ func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
 
 	if err != nil {
 		slog.Error("Can't send reply message", err)
+
+		b.trySendReplyError(update.Message)
 	}
 }
 
@@ -179,6 +189,8 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 
 	if err != nil {
 		slog.Error("Can't send reply message", err)
+
+		b.trySendReplyError(update.Message)
 	}
 }
 
@@ -198,6 +210,8 @@ func (b *Bot) helpHandler(bot *telego.Bot, update telego.Update) {
 	)))
 	if err != nil {
 		slog.Error("Cannot send a message", err)
+
+		b.trySendReplyError(update.Message)
 	}
 }
 
@@ -215,6 +229,8 @@ func (b *Bot) startHandler(bot *telego.Bot, update telego.Update) {
 	)))
 	if err != nil {
 		slog.Error("Cannot send a message", err)
+
+		b.trySendReplyError(update.Message)
 	}
 }
 
@@ -234,7 +250,38 @@ func (b *Bot) statsHandler(bot *telego.Bot, update telego.Update) {
 	)).WithParseMode("Markdown"))
 	if err != nil {
 		slog.Error("Cannot send a message", err)
+
+		b.trySendReplyError(update.Message)
 	}
+}
+
+func (b *Bot) createLlmRequestContext(update telego.Update) llm.RequestContext {
+	message := update.Message
+
+	rc := llm.RequestContext{}
+
+	if message == nil {
+		return rc
+	}
+
+	user := message.From
+	if user != nil {
+		rc.User = llm.UserContext{
+			Username:  user.Username,
+			FirstName: user.FirstName,
+			LastName:  user.LastName,
+			IsPremium: user.IsPremium,
+		}
+	}
+
+	chat := message.Chat
+	rc.Chat = llm.ChatContext{
+		Title:       chat.Title,
+		Description: chat.Description,
+		Type:        chat.Type,
+	}
+
+	return rc
 }
 
 func (b *Bot) reply(originalMessage *telego.Message, newMessage *telego.SendMessageParams) *telego.SendMessageParams {
@@ -244,10 +291,21 @@ func (b *Bot) reply(originalMessage *telego.Message, newMessage *telego.SendMess
 }
 
 func (b *Bot) sendTyping(chatId telego.ChatID) {
-	slog.Info("Setting 'typing' chat action")
+	slog.Debug("Setting 'typing' chat action")
 
 	err := b.api.SendChatAction(tu.ChatAction(chatId, "typing"))
 	if err != nil {
 		slog.Error("Cannot set chat action", err)
 	}
+}
+
+func (b *Bot) trySendReplyError(message *telego.Message) {
+	if message == nil {
+		return
+	}
+
+	_, _ = b.api.SendMessage(b.reply(message, tu.Message(
+		tu.ID(message.Chat.ID),
+		"Error occurred while trying to send reply.",
+	)))
 }

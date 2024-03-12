@@ -29,13 +29,16 @@ func NewConnector(baseUrl string, token string) *LlmConnector {
 	}
 }
 
-func (l *LlmConnector) HandleSingleRequest(text string, model string) (string, error) {
+func (l *LlmConnector) HandleSingleRequest(text string, model string, requestContext RequestContext) (string, error) {
 	req := openai.ChatCompletionRequest{
 		Model: model,
 		Messages: []openai.ChatCompletionMessage{
 			{
-				Role:    openai.ChatMessageRoleSystem,
-				Content: "You're a bot in the Telegram chat. You are replying to questions directed to you.",
+				Role: openai.ChatMessageRoleSystem,
+				Content: "You're a bot in the Telegram chat. " +
+					"You're using a free model called \"" + model + "\". " +
+					"You see only messages addressed to you using commands due to privacy settings. " +
+					requestContext.Prompt(),
 			},
 		},
 	}
