@@ -1,8 +1,10 @@
 package llm
 
 type RequestContext struct {
-	User UserContext
-	Chat ChatContext
+	Empty  bool
+	Inline bool
+	User   UserContext
+	Chat   ChatContext
 }
 
 type UserContext struct {
@@ -19,13 +21,22 @@ type ChatContext struct {
 }
 
 func (c RequestContext) Prompt() string {
-	prompt := "The type of chat you're in is \"" + c.Chat.Type + "\". "
-
-	if c.Chat.Title != "" {
-		prompt += "Chat is called \"" + c.Chat.Title + "\". "
+	if c.Empty {
+		return ""
 	}
-	if c.Chat.Description != "" {
-		prompt += "Chat description is \"" + c.Chat.Description + "\". "
+
+	prompt := ""
+	if !c.Inline {
+		prompt += "The type of chat you're in is \"" + c.Chat.Type + "\". "
+
+		if c.Chat.Title != "" {
+			prompt += "Chat is called \"" + c.Chat.Title + "\". "
+		}
+		if c.Chat.Description != "" {
+			prompt += "Chat description is \"" + c.Chat.Description + "\". "
+		}
+	} else {
+		prompt += "You're responding to inline query, so you're not in the chat right now. "
 	}
 
 	prompt += "According to their profile, first name of the user who wrote you is \"" + c.User.FirstName + "\". "

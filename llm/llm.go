@@ -30,15 +30,20 @@ func NewConnector(baseUrl string, token string) *LlmConnector {
 }
 
 func (l *LlmConnector) HandleSingleRequest(text string, model string, requestContext RequestContext) (string, error) {
+	systemPrompt := "You're a bot in the Telegram chat. " +
+		"You're using a free model called \"" + model + "\". " +
+		"You see only messages addressed to you using commands due to privacy settings."
+
+	if !requestContext.Empty {
+		systemPrompt += " " + requestContext.Prompt()
+	}
+
 	req := openai.ChatCompletionRequest{
 		Model: model,
 		Messages: []openai.ChatCompletionMessage{
 			{
-				Role: openai.ChatMessageRoleSystem,
-				Content: "You're a bot in the Telegram chat. " +
-					"You're using a free model called \"" + model + "\". " +
-					"You see only messages addressed to you using commands due to privacy settings. " +
-					requestContext.Prompt(),
+				Role:    openai.ChatMessageRoleSystem,
+				Content: systemPrompt,
 			},
 		},
 	}
