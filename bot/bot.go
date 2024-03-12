@@ -254,7 +254,7 @@ func (b *Bot) reply(originalMessage *telego.Message, newMessage *telego.SendMess
 }
 
 func (b *Bot) sendTyping(chatId telego.ChatID) {
-	slog.Info("Setting 'typing' chat action")
+	slog.Debug("Setting 'typing' chat action")
 
 	err := b.api.SendChatAction(tu.ChatAction(chatId, "typing"))
 	if err != nil {
