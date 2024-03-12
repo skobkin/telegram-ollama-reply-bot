@@ -9,7 +9,7 @@
 ```shell
 docker run \
   -e OLLAMA_TOKEN=123 \
-  -e OLLAMA_BASE_URL=http://ollama.tld:11434 \
+  -e OLLAMA_BASE_URL=http://ollama.localhost:11434/v1 \
   -e TELEGRAM_TOKEN=12345 \
   skobkin/telegram-llm-bot
 ```
