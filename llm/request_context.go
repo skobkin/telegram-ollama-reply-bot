@@ -28,10 +28,10 @@ func (c RequestContext) Prompt() string {
 		prompt += "Chat description is \"" + c.Chat.Description + "\". "
 	}
 
+	prompt += "According to their profile, first name of the user who wrote you is \"" + c.User.FirstName + "\". "
 	if c.User.Username != "" {
-		prompt += "The user who wrote you has username \"@" + c.User.Username + "\". "
+		prompt += "Their username is @" + c.User.Username + ". "
 	}
-	prompt += "Their first name is \"" + c.User.FirstName + "\". "
 	if c.User.LastName != "" {
 		prompt += "Their last name is \"" + c.User.LastName + "\". "
 	}
