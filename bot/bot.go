@@ -257,39 +257,6 @@ func (b *Bot) statsHandler(bot *telego.Bot, update telego.Update) {
 	}
 }
 
-func (b *Bot) createLlmRequestContext(update telego.Update) llm.RequestContext {
-	message := update.Message
-
-	rc := llm.RequestContext{}
-
-	if message == nil {
-		slog.Debug("request context creation problem: no message provided. returning empty context.", "request-context", rc)
-
-		return rc
-	}
-
-	user := message.From
-	if user != nil {
-		rc.User = llm.UserContext{
-			Username:  user.Username,
-			FirstName: user.FirstName,
-			LastName:  user.LastName,
-			IsPremium: user.IsPremium,
-		}
-	}
-
-	chat := message.Chat
-	rc.Chat = llm.ChatContext{
-		Title:       chat.Title,
-		Description: chat.Description,
-		Type:        chat.Type,
-	}
-
-	slog.Debug("request context created", "request-context", rc)
-
-	return rc
-}
-
 func (b *Bot) escapeMarkdownV1Symbols(input string) string {
 	return b.markdownV1Replacer.Replace(input)
 }
