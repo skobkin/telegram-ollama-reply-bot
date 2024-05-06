@@ -259,7 +259,7 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 		slog.Error("Cannot retrieve an article using extractor", "error", err)
 	}
 
-	llmReply, err := b.llm.Summarize(article.Text, llm.ModelLlama3Uncensored)
+	llmReply, err := b.llm.Summarize(article.Text, llm.ModelMistralUncensored)
 	if err != nil {
 		slog.Error("Cannot get reply from LLM connector")
 
