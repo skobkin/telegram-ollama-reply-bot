@@ -11,7 +11,8 @@ var (
 	ErrLlmBackendRequestFailed = errors.New("llm back-end request failed")
 	ErrNoChoices               = errors.New("no choices in LLM response")
 
-	ModelMistralUncensored = "dolphin-mistral"
+	ModelMistralUncensored = "dolphin-mistral:7b-v2.8-q4_K_M"
+	ModelLlama3Uncensored = "dolphin-llama3:8b-v2.9-q4_K_M"
 )
 
 type LlmConnector struct {

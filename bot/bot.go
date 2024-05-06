@@ -122,7 +122,7 @@ func (b *Bot) inlineHandler(bot *telego.Bot, update telego.Update) {
 			slog.Error("Cannot retrieve an article using extractor", "error", err)
 		}
 
-		llmReply, err := b.llm.Summarize(article.Text, llm.ModelMistralUncensored)
+		llmReply, err := b.llm.Summarize(article.Text, llm.ModelLlama3Uncensored )
 		if err != nil {
 			slog.Error("Cannot get reply from LLM connector")
 
@@ -148,7 +148,7 @@ func (b *Bot) inlineHandler(bot *telego.Bot, update telego.Update) {
 
 		requestContext := createLlmRequestContextFromUpdate(update)
 
-		llmReply, err := b.llm.HandleSingleRequest(iq.Query, llm.ModelMistralUncensored, requestContext)
+		llmReply, err := b.llm.HandleSingleRequest(iq.Query, llm.ModelLlama3Uncensored, requestContext)
 		if err != nil {
 			slog.Error("Cannot get reply from LLM connector")
 
@@ -194,7 +194,7 @@ func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
 
 	requestContext := createLlmRequestContextFromUpdate(update)
 
-	llmReply, err := b.llm.HandleSingleRequest(userMessage, llm.ModelMistralUncensored, requestContext)
+	llmReply, err := b.llm.HandleSingleRequest(userMessage, llm.ModelLlama3Uncensored, requestContext)
 	if err != nil {
 		slog.Error("Cannot get reply from LLM connector")
 
@@ -259,7 +259,7 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 		slog.Error("Cannot retrieve an article using extractor", "error", err)
 	}
 
-	llmReply, err := b.llm.Summarize(article.Text, llm.ModelMistralUncensored)
+	llmReply, err := b.llm.Summarize(article.Text, llm.ModelLlama3Uncensored)
 	if err != nil {
 		slog.Error("Cannot get reply from LLM connector")
 
