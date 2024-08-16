@@ -23,16 +23,23 @@ type Bot struct {
 	llm       *llm.LlmConnector
 	extractor *extractor.Extractor
 	stats     *stats.Stats
+	models    ModelSelection
 
 	markdownV1Replacer *strings.Replacer
 }
 
-func NewBot(api *telego.Bot, llm *llm.LlmConnector, extractor *extractor.Extractor) *Bot {
+func NewBot(
+	api *telego.Bot,
+	llm *llm.LlmConnector,
+	extractor *extractor.Extractor,
+	models ModelSelection,
+) *Bot {
 	return &Bot{
 		api:       api,
 		llm:       llm,
 		extractor: extractor,
 		stats:     stats.NewStats(),
+		models:    models,
 
 		markdownV1Replacer: strings.NewReplacer(
 			// https://core.telegram.org/bots/api#markdown-style
@@ -122,7 +129,7 @@ func (b *Bot) inlineHandler(bot *telego.Bot, update telego.Update) {
 			slog.Error("Cannot retrieve an article using extractor", "error", err)
 		}
 
-		llmReply, err := b.llm.Summarize(article.Text, llm.ModelLlama3Uncensored )
+		llmReply, err := b.llm.Summarize(article.Text, b.models.TextRequestModel)
 		if err != nil {
 			slog.Error("Cannot get reply from LLM connector")
 
@@ -148,7 +155,7 @@ func (b *Bot) inlineHandler(bot *telego.Bot, update telego.Update) {
 
 		requestContext := createLlmRequestContextFromUpdate(update)
 
-		llmReply, err := b.llm.HandleSingleRequest(iq.Query, llm.ModelLlama3Uncensored, requestContext)
+		llmReply, err := b.llm.HandleSingleRequest(iq.Query, b.models.TextRequestModel, requestContext)
 		if err != nil {
 			slog.Error("Cannot get reply from LLM connector")
 
@@ -194,7 +201,7 @@ func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
 
 	requestContext := createLlmRequestContextFromUpdate(update)
 
-	llmReply, err := b.llm.HandleSingleRequest(userMessage, llm.ModelLlama3Uncensored, requestContext)
+	llmReply, err := b.llm.HandleSingleRequest(userMessage, b.models.TextRequestModel, requestContext)
 	if err != nil {
 		slog.Error("Cannot get reply from LLM connector")
 
@@ -259,7 +266,7 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 		slog.Error("Cannot retrieve an article using extractor", "error", err)
 	}
 
-	llmReply, err := b.llm.Summarize(article.Text, llm.ModelMistralUncensored)
+	llmReply, err := b.llm.Summarize(article.Text, b.models.SummarizeModel)
 	if err != nil {
 		slog.Error("Cannot get reply from LLM connector")
 

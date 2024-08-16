@@ -8,8 +8,10 @@
 
 ```shell
 docker run \
-  -e OLLAMA_TOKEN=123 \
-  -e OLLAMA_BASE_URL=http://ollama.localhost:11434/v1 \
+  -e OPENAI_API_TOKEN=123 \
+  -e OPENAI_API_BASE_URL=http://ollama.localhost:11434/v1 \
   -e TELEGRAM_TOKEN=12345 \
+  -e MODEL_TEXT_REQUEST=llama3.1:8b-instruct-q6_K
+  -e MODEL_TEXT_REQUEST=mistral-nemo:12b-instruct-2407-q4_K_M
   skobkin/telegram-llm-bot
 ```

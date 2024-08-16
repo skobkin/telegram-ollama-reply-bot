@@ -12,12 +12,31 @@ import (
 )
 
 func main() {
-	ollamaToken := os.Getenv("OLLAMA_TOKEN")
-	ollamaBaseUrl := os.Getenv("OLLAMA_BASE_URL")
+	apiToken := os.Getenv("OPENAI_API_TOKEN")
+	apiBaseUrl := os.Getenv("OPENAI_API_BASE_URL")
+
+	models := bot.ModelSelection{
+		TextRequestModel: os.Getenv("MODEL_TEXT_REQUEST"),
+		SummarizeModel:   os.Getenv("MODEL_SUMMARIZE_REQUEST"),
+	}
+
+	slog.Info("Selected", "models", models)
 
 	telegramToken := os.Getenv("TELEGRAM_TOKEN")
 
-	llmc := llm.NewConnector(ollamaBaseUrl, ollamaToken)
+	llmc := llm.NewConnector(apiBaseUrl, apiToken)
+
+	slog.Info("Checking models availability")
+
+	for _, model := range []string{models.TextRequestModel, models.SummarizeModel} {
+		if !llmc.HasModel(model) {
+			slog.Error("Model not unavailable", "model", model)
+			os.Exit(1)
+		}
+	}
+
+	slog.Info("All needed models are available")
+
 	ext := extractor.NewExtractor()
 
 	telegramApi, err := tg.NewBot(telegramToken, tg.WithLogger(bot.NewLogger("telego: ")))
@@ -26,7 +45,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	botService := bot.NewBot(telegramApi, llmc, ext)
+	botService := bot.NewBot(telegramApi, llmc, ext, models)
 
 	err = botService.Run()
 	if err != nil {

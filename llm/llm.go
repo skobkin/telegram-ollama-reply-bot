@@ -10,9 +10,6 @@ import (
 var (
 	ErrLlmBackendRequestFailed = errors.New("llm back-end request failed")
 	ErrNoChoices               = errors.New("no choices in LLM response")
-
-	ModelMistralUncensored = "dolphin-mistral:7b-v2.8-q4_K_M"
-	ModelLlama3Uncensored = "dolphin-llama3:8b-v2.9-q4_K_M"
 )
 
 type LlmConnector struct {
@@ -31,12 +28,12 @@ func NewConnector(baseUrl string, token string) *LlmConnector {
 }
 
 func (l *LlmConnector) HandleSingleRequest(text string, model string, requestContext RequestContext) (string, error) {
-	systemPrompt := "You're a bot in the Telegram chat. " +
-		"You're using a free model called \"" + model + "\". " +
-		"You see only messages addressed to you using commands due to privacy settings."
+	systemPrompt := "You're a bot in the Telegram chat.\n" +
+		"You're using a free model called \"" + model + "\".\n" +
+		"Currently you're not able to access chat history, so each message will be replied from a clean slate."
 
 	if !requestContext.Empty {
-		systemPrompt += " " + requestContext.Prompt()
+		systemPrompt += "\n" + requestContext.Prompt()
 	}
 
 	req := openai.ChatCompletionRequest{
@@ -79,9 +76,10 @@ func (l *LlmConnector) Summarize(text string, model string) (string, error) {
 			{
 				Role: openai.ChatMessageRoleSystem,
 				Content: "You're a text shortener. Give a very brief summary of the main facts " +
-					"point by point.  Format them as a list of bullet points. " +
+					"point by point.  Format them as a list of bullet points each starting with \"-\". " +
 					"Avoid any commentaries and value judgement on the matter. " +
-					"If possible, use the same language as the original text.",
+					"If possible, respond in the same language as the original text." +
+					"Do not use any non-ASCII characters.",
 			},
 		},
 	}
@@ -107,4 +105,38 @@ func (l *LlmConnector) Summarize(text string, model string) (string, error) {
 	}
 
 	return resp.Choices[0].Message.Content, nil
+}
+
+func (l *LlmConnector) GetModels() []string {
+	var result []string
+
+	models, err := l.client.ListModels(context.Background())
+	if err != nil {
+		slog.Error("llm: Model list request failed", "error", err)
+
+		return result
+	}
+
+	slog.Info("Model list retrieved", "models", models)
+
+	for _, model := range models.Models {
+		result = append(result, model.ID)
+	}
+
+	return result
+}
+
+func (l *LlmConnector) HasModel(id string) bool {
+	model, err := l.client.GetModel(context.Background(), id)
+	if err != nil {
+		slog.Error("llm: Model request failed", "error", err)
+	}
+
+	slog.Debug("llm: Returned model", "model", model)
+
+	if model.ID != "" {
+		return true
+	}
+
+	return false
 }

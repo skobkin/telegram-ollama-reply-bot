@@ -39,15 +39,16 @@ func (c RequestContext) Prompt() string {
 		prompt += "You're responding to inline query, so you're not in the chat right now. "
 	}
 
-	prompt += "According to their profile, first name of the user who wrote you is \"" + c.User.FirstName + "\". "
+	prompt += "User profile:" +
+		"First name: \"" + c.User.FirstName + "\"\n"
 	if c.User.Username != "" {
-		prompt += "Their username is @" + c.User.Username + ". "
+		prompt += "Username: @" + c.User.Username + ".\n"
 	}
 	if c.User.LastName != "" {
-		prompt += "Their last name is \"" + c.User.LastName + "\". "
+		prompt += "Last name: \"" + c.User.LastName + "\"\n"
 	}
 	if c.User.IsPremium {
-		prompt += "They have Telegram Premium subscription. "
+		prompt += "Telegram Premium subscription: active."
 	}
 
 	return prompt

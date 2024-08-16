@@ -44,11 +44,13 @@ func createLlmRequestContextFromUpdate(update telego.Update) llm.RequestContext 
 	}
 
 	if !rc.Inline {
+		// TODO: implement retrieval of chat description
 		chat := message.Chat
 		rc.Chat = llm.ChatContext{
-			Title:       chat.Title,
-			Description: chat.Description,
-			Type:        chat.Type,
+			Title: chat.Title,
+			// TODO: fill when ChatFullInfo retrieved
+			//Description: chat.Description,
+			Type: chat.Type,
 		}
 	}
 
