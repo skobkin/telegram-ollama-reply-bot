@@ -7,6 +7,12 @@ import (
 
 const HistoryLength = 50
 
+type Message struct {
+	Name string
+	Text string
+	IsMe bool
+}
+
 type MessageRingBuffer struct {
 	messages []Message
 	capacity int
@@ -31,11 +37,6 @@ func (b *MessageRingBuffer) GetAll() []Message {
 	return b.messages
 }
 
-type Message struct {
-	Name string
-	Text string
-}
-
 func (b *Bot) saveChatMessageToHistory(message *telego.Message) {
 	chatId := message.Chat.ID
 
@@ -55,6 +56,7 @@ func (b *Bot) saveChatMessageToHistory(message *telego.Message) {
 	b.history[chatId].Push(Message{
 		Name: message.From.FirstName,
 		Text: message.Text,
+		IsMe: false,
 	})
 }
 
@@ -77,6 +79,7 @@ func (b *Bot) saveBotReplyToHistory(message *telego.Message, reply string) {
 	b.history[chatId].Push(Message{
 		Name: b.profile.Username,
 		Text: reply,
+		IsMe: true,
 	})
 }
 

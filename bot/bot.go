@@ -99,11 +99,11 @@ func (b *Bot) Run() error {
 	bh.Use(b.chatTypeStatsCounter)
 
 	// Command handlers
-	bh.Handle(b.textMessageHandler, th.AnyMessageWithText())
 	bh.Handle(b.startHandler, th.CommandEqual("start"))
 	bh.Handle(b.summarizeHandler, th.Or(th.CommandEqual("summarize"), th.CommandEqual("s")))
 	bh.Handle(b.statsHandler, th.CommandEqual("stats"))
 	bh.Handle(b.helpHandler, th.CommandEqual("help"))
+	bh.Handle(b.textMessageHandler, th.AnyMessageWithText())
 
 	bh.Start()
 
