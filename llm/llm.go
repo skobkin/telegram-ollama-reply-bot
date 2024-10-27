@@ -37,7 +37,7 @@ func (l *LlmConnector) HandleChatMessage(text string, model string, requestConte
 	historyLength := len(requestContext.Chat.History)
 
 	if historyLength > 0 {
-		systemPrompt += "\nYou have an access to last " + strconv.Itoa(historyLength) + "messages in this chat."
+		systemPrompt += "\nYou have access to last " + strconv.Itoa(historyLength) + "messages in this chat."
 	}
 
 	req := openai.ChatCompletionRequest{
@@ -52,9 +52,20 @@ func (l *LlmConnector) HandleChatMessage(text string, model string, requestConte
 
 	if historyLength > 0 {
 		for _, msg := range requestContext.Chat.History {
+			var msgRole string
+			var msgText string
+
+			if msg.IsMe {
+				msgRole = openai.ChatMessageRoleAssistant
+				msgText = msg.Text
+			} else {
+				msgRole = openai.ChatMessageRoleSystem
+				msgText = "User " + msg.Name + " said:\n" + msg.Text
+			}
+
 			req.Messages = append(req.Messages, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleUser,
-				Content: msg.Name + ":\n\n" + quoteMessage(msg.Text),
+				Role:    msgRole,
+				Content: msgText,
 			})
 		}
 	}

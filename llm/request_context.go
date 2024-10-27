@@ -23,6 +23,7 @@ type ChatContext struct {
 type ChatMessage struct {
 	Name string
 	Text string
+	IsMe bool
 }
 
 func (c RequestContext) Prompt() string {
@@ -34,14 +35,20 @@ func (c RequestContext) Prompt() string {
 
 	prompt += "The type of chat you're in is \"" + c.Chat.Type + "\". "
 
+	if c.Chat.Type == "group" || c.Chat.Type == "supergroup" {
+		prompt += "Please consider that there are several users in this chat type who may discuss several unrelated " +
+			"topics. Try to respond only about the topic you were asked about and only to the user who asked you, " +
+			"but keep in mind another chat history. "
+	}
+
 	if c.Chat.Title != "" {
-		prompt += "Chat is called \"" + c.Chat.Title + "\". "
+		prompt += "\nChat is called \"" + c.Chat.Title + "\". "
 	}
 	if c.Chat.Description != "" {
 		prompt += "Chat description is \"" + c.Chat.Description + "\". "
 	}
 
-	prompt += "Profile of the user who mentioned you in the chat:" +
+	prompt += "\nProfile of the user who mentioned you in the chat:" +
 		"First name: \"" + c.User.FirstName + "\"\n"
 	if c.User.Username != "" {
 		prompt += "Username: @" + c.User.Username + ".\n"
@@ -49,9 +56,9 @@ func (c RequestContext) Prompt() string {
 	if c.User.LastName != "" {
 		prompt += "Last name: \"" + c.User.LastName + "\"\n"
 	}
-	if c.User.IsPremium {
-		prompt += "Telegram Premium subscription: active."
-	}
+	//if c.User.IsPremium {
+	//	prompt += "Telegram Premium subscription: active."
+	//}
 
 	return prompt
 }
