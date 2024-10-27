@@ -6,33 +6,20 @@ import (
 	"telegram-ollama-reply-bot/llm"
 )
 
-func createLlmRequestContextFromUpdate(update telego.Update) llm.RequestContext {
-	message := update.Message
-	iq := update.InlineQuery
-
+func (b *Bot) createLlmRequestContextFromMessage(message *telego.Message) llm.RequestContext {
 	rc := llm.RequestContext{
-		Empty:  true,
-		Inline: false,
+		Empty: true,
 	}
 
-	switch {
-	case message == nil && iq == nil:
+	if message == nil {
 		slog.Debug("request context creation problem: no message provided. returning empty context.", "request-context", rc)
 
 		return rc
-	case iq != nil:
-		rc.Inline = true
 	}
 
 	rc.Empty = false
 
-	var user *telego.User
-
-	if rc.Inline {
-		user = &iq.From
-	} else {
-		user = message.From
-	}
+	user := message.From
 
 	if user != nil {
 		rc.User = llm.UserContext{
@@ -43,18 +30,39 @@ func createLlmRequestContextFromUpdate(update telego.Update) llm.RequestContext 
 		}
 	}
 
-	if !rc.Inline {
-		// TODO: implement retrieval of chat description
-		chat := message.Chat
-		rc.Chat = llm.ChatContext{
-			Title: chat.Title,
-			// TODO: fill when ChatFullInfo retrieved
-			//Description: chat.Description,
-			Type: chat.Type,
-		}
+	// TODO: implement retrieval of chat description
+	chat := message.Chat
+
+	history := b.getChatHistory(chat.ID)
+
+	rc.Chat = llm.ChatContext{
+		Title: chat.Title,
+		// TODO: fill when ChatFullInfo retrieved
+		//Description: chat.Description,
+		Type:    chat.Type,
+		History: historyToLlmMessages(history),
 	}
 
 	slog.Debug("request context created", "request-context", rc)
 
 	return rc
+}
+
+func historyToLlmMessages(history []Message) []llm.ChatMessage {
+	length := len(history)
+
+	if length > 0 {
+		result := make([]llm.ChatMessage, 0, length)
+
+		for _, msg := range history {
+			result = append(result, llm.ChatMessage{
+				Name: msg.Name,
+				Text: msg.Text,
+			})
+		}
+
+		return result
+	}
+
+	return make([]llm.ChatMessage, 0)
 }
