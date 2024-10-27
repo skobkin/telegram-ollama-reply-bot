@@ -18,12 +18,20 @@ var (
 	ErrHandlerInit    = errors.New("cannot initialize handler")
 )
 
+type BotInfo struct {
+	Id       int64
+	Username string
+	Name     string
+}
+
 type Bot struct {
 	api       *telego.Bot
 	llm       *llm.LlmConnector
 	extractor *extractor.Extractor
 	stats     *stats.Stats
 	models    ModelSelection
+	history   map[int64]*MessageRingBuffer
+	profile   BotInfo
 
 	markdownV1Replacer *strings.Replacer
 }
@@ -40,6 +48,8 @@ func NewBot(
 		extractor: extractor,
 		stats:     stats.NewStats(),
 		models:    models,
+		history:   make(map[int64]*MessageRingBuffer),
+		profile:   BotInfo{0, "", ""},
 
 		markdownV1Replacer: strings.NewReplacer(
 			// https://core.telegram.org/bots/api#markdown-style
@@ -61,6 +71,12 @@ func (b *Bot) Run() error {
 
 	slog.Info("Running api as", "id", botUser.ID, "username", botUser.Username, "name", botUser.FirstName, "is_bot", botUser.IsBot)
 
+	b.profile = BotInfo{
+		Id:       botUser.ID,
+		Username: botUser.Username,
+		Name:     botUser.FirstName,
+	}
+
 	updates, err := b.api.UpdatesViaLongPolling(nil)
 	if err != nil {
 		slog.Error("Cannot get update channel", "error", err)
@@ -79,133 +95,60 @@ func (b *Bot) Run() error {
 	defer b.api.StopLongPolling()
 
 	// Middlewares
+	bh.Use(b.chatHistory)
 	bh.Use(b.chatTypeStatsCounter)
 
 	// Command handlers
+	bh.Handle(b.textMessageHandler, th.AnyMessageWithText())
 	bh.Handle(b.startHandler, th.CommandEqual("start"))
-	bh.Handle(b.heyHandler, th.CommandEqual("hey"))
-	bh.Handle(b.summarizeHandler, th.CommandEqual("summarize"))
+	bh.Handle(b.summarizeHandler, th.Or(th.CommandEqual("summarize"), th.CommandEqual("s")))
 	bh.Handle(b.statsHandler, th.CommandEqual("stats"))
 	bh.Handle(b.helpHandler, th.CommandEqual("help"))
-
-	// Inline query handlers
-	bh.Handle(b.inlineHandler, th.AnyInlineQuery())
 
 	bh.Start()
 
 	return nil
 }
 
-func (b *Bot) inlineHandler(bot *telego.Bot, update telego.Update) {
-	iq := update.InlineQuery
-	slog.Info("inline query received", "query", iq.Query)
+func (b *Bot) textMessageHandler(bot *telego.Bot, update telego.Update) {
+	slog.Debug("/any-message")
 
-	slog.Debug("query", "query", iq)
+	message := update.Message
 
-	if len(iq.Query) < 3 {
-		return
-	}
-
-	b.stats.InlineQuery()
-
-	queryParts := strings.SplitN(iq.Query, " ", 2)
-
-	if len(queryParts) < 1 {
-		slog.Debug("Empty query. Skipping.")
-
-		return
-	}
-
-	var response *telego.AnswerInlineQueryParams
-
-	switch isValidAndAllowedUrl(queryParts[0]) {
-	case true:
-		slog.Info("Inline /summarize request", "url", queryParts[0])
-
-		b.stats.SummarizeRequest()
-
-		article, err := b.extractor.GetArticleFromUrl(queryParts[0])
-		if err != nil {
-			slog.Error("Cannot retrieve an article using extractor", "error", err)
-		}
-
-		llmReply, err := b.llm.Summarize(article.Text, b.models.TextRequestModel)
-		if err != nil {
-			slog.Error("Cannot get reply from LLM connector")
-
-			b.trySendInlineQueryError(iq, "LLM request error. Try again later.")
-
-			return
-		}
-
-		slog.Debug("Got completion. Going to send.", "llm-completion", llmReply)
-
-		response = tu.InlineQuery(
-			iq.ID,
-			tu.ResultArticle(
-				"reply_"+iq.ID,
-				"Summary for "+queryParts[0],
-				tu.TextMessage(b.escapeMarkdownV1Symbols(llmReply)).WithParseMode("Markdown"),
-			),
-		)
-	case false:
-		b.stats.HeyRequest()
-
-		slog.Info("Inline /hey request", "text", iq.Query)
-
-		requestContext := createLlmRequestContextFromUpdate(update)
-
-		llmReply, err := b.llm.HandleSingleRequest(iq.Query, b.models.TextRequestModel, requestContext)
-		if err != nil {
-			slog.Error("Cannot get reply from LLM connector")
-
-			b.trySendInlineQueryError(iq, "LLM request error. Try again later.")
-
-			return
-		}
-
-		slog.Debug("Got completion. Going to send.", "llm-completion", llmReply)
-
-		response = tu.InlineQuery(
-			iq.ID,
-			tu.ResultArticle(
-				"reply_"+iq.ID,
-				"LLM reply to\""+iq.Query+"\"",
-				tu.TextMessage(b.escapeMarkdownV1Symbols(llmReply)).WithParseMode("Markdown"),
-			),
-		)
-	}
-
-	err := bot.AnswerInlineQuery(response)
-	if err != nil {
-		slog.Error("Can't answer to inline query", "error", err)
-
-		b.trySendInlineQueryError(iq, "Couldn't send intended reply, sorry")
+	switch {
+	// Mentions
+	case b.isMentionOfMe(update):
+		slog.Info("/any-message", "type", "mention")
+		b.processMention(message)
+	// Replies
+	case b.isReplyToMe(update):
+		slog.Info("/any-message", "type", "reply")
+		b.processMention(message)
+	// Private chat
+	case b.isPrivateWithMe(update):
+		slog.Info("/any-message", "type", "private")
+		b.processMention(message)
+	default:
+		slog.Debug("/any-message", "info", "Message is not mention, reply or private chat. Skipping.")
 	}
 }
 
-func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
-	slog.Info("/hey", "message-text", update.Message.Text)
+func (b *Bot) processMention(message *telego.Message) {
+	b.stats.Mention()
 
-	b.stats.HeyRequest()
+	slog.Info("/mention", "chat", message.Chat.ID)
 
-	parts := strings.SplitN(update.Message.Text, " ", 2)
-	userMessage := "Hey!"
-	if len(parts) == 2 {
-		userMessage = parts[1]
-	}
-
-	chatID := tu.ID(update.Message.Chat.ID)
+	chatID := tu.ID(message.Chat.ID)
 
 	b.sendTyping(chatID)
 
-	requestContext := createLlmRequestContextFromUpdate(update)
+	requestContext := b.createLlmRequestContextFromMessage(message)
 
-	llmReply, err := b.llm.HandleSingleRequest(userMessage, b.models.TextRequestModel, requestContext)
+	llmReply, err := b.llm.HandleChatMessage(message.Text, b.models.TextRequestModel, requestContext)
 	if err != nil {
 		slog.Error("Cannot get reply from LLM connector")
 
-		_, _ = b.api.SendMessage(b.reply(update.Message, tu.Message(
+		_, _ = b.api.SendMessage(b.reply(message, tu.Message(
 			chatID,
 			"LLM request error. Try again later.",
 		)))
@@ -215,17 +158,21 @@ func (b *Bot) heyHandler(bot *telego.Bot, update telego.Update) {
 
 	slog.Debug("Got completion. Going to send.", "llm-completion", llmReply)
 
-	message := tu.Message(
+	reply := tu.Message(
 		chatID,
 		b.escapeMarkdownV1Symbols(llmReply),
 	).WithParseMode("Markdown")
 
-	_, err = bot.SendMessage(b.reply(update.Message, message))
+	_, err = b.api.SendMessage(b.reply(message, reply))
 	if err != nil {
 		slog.Error("Can't send reply message", "error", err)
 
-		b.trySendReplyError(update.Message)
+		b.trySendReplyError(message)
+
+		return
 	}
+
+	b.saveBotReplyToHistory(message, llmReply)
 }
 
 func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
@@ -306,7 +253,9 @@ func (b *Bot) helpHandler(bot *telego.Bot, update telego.Update) {
 		"Instructions:\r\n"+
 			"/hey <text> - Ask something from LLM\r\n"+
 			"/summarize <link> - Summarize text from the provided link\r\n"+
-			"/help - Show this help",
+			"/s <link> - Shorter version\r\n"+
+			"/help - Show this help\r\n\r\n"+
+			"Mention bot or reply to it's message to communicate with it",
 	)))
 	if err != nil {
 		slog.Error("Cannot send a message", "error", err)

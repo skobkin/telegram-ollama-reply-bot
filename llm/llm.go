@@ -5,6 +5,8 @@ import (
 	"errors"
 	"github.com/sashabaranov/go-openai"
 	"log/slog"
+	"strconv"
+	"strings"
 )
 
 var (
@@ -27,13 +29,15 @@ func NewConnector(baseUrl string, token string) *LlmConnector {
 	}
 }
 
-func (l *LlmConnector) HandleSingleRequest(text string, model string, requestContext RequestContext) (string, error) {
+func (l *LlmConnector) HandleChatMessage(text string, model string, requestContext RequestContext) (string, error) {
 	systemPrompt := "You're a bot in the Telegram chat.\n" +
-		"You're using a free model called \"" + model + "\".\n" +
-		"Currently you're not able to access chat history, so each message will be replied from a clean slate."
+		"You're using a free model called \"" + model + "\".\n\n" +
+		requestContext.Prompt()
 
-	if !requestContext.Empty {
-		systemPrompt += "\n" + requestContext.Prompt()
+	historyLength := len(requestContext.Chat.History)
+
+	if historyLength > 0 {
+		systemPrompt += "\nYou have an access to last " + strconv.Itoa(historyLength) + "messages in this chat."
 	}
 
 	req := openai.ChatCompletionRequest{
@@ -44,6 +48,15 @@ func (l *LlmConnector) HandleSingleRequest(text string, model string, requestCon
 				Content: systemPrompt,
 			},
 		},
+	}
+
+	if historyLength > 0 {
+		for _, msg := range requestContext.Chat.History {
+			req.Messages = append(req.Messages, openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleUser,
+				Content: msg.Name + ":\n\n" + quoteMessage(msg.Text),
+			})
+		}
 	}
 
 	req.Messages = append(req.Messages, openai.ChatCompletionMessage{
@@ -139,4 +152,8 @@ func (l *LlmConnector) HasModel(id string) bool {
 	}
 
 	return false
+}
+
+func quoteMessage(text string) string {
+	return "> " + strings.ReplaceAll(text, "\n", "\n> ")
 }

@@ -15,7 +15,7 @@ type Stats struct {
 	PrivateRequests uint64
 	InlineQueries   uint64
 
-	HeyRequests       uint64
+	Mentions          uint64
 	SummarizeRequests uint64
 }
 
@@ -27,7 +27,7 @@ func NewStats() *Stats {
 		PrivateRequests: 0,
 		InlineQueries:   0,
 
-		HeyRequests:       0,
+		Mentions:          0,
 		SummarizeRequests: 0,
 	}
 }
@@ -40,7 +40,7 @@ func (s *Stats) MarshalJSON() ([]byte, error) {
 		PrivateRequests uint64 `json:"private_requests"`
 		InlineQueries   uint64 `json:"inline_queries"`
 
-		HeyRequests       uint64 `json:"hey_requests"`
+		Mentions          uint64 `json:"mentions"`
 		SummarizeRequests uint64 `json:"summarize_requests"`
 	}{
 		Uptime: time.Now().Sub(s.RunningSince).String(),
@@ -49,7 +49,7 @@ func (s *Stats) MarshalJSON() ([]byte, error) {
 		PrivateRequests: s.PrivateRequests,
 		InlineQueries:   s.InlineQueries,
 
-		HeyRequests:       s.HeyRequests,
+		Mentions:          s.Mentions,
 		SummarizeRequests: s.SummarizeRequests,
 	})
 }
@@ -81,10 +81,10 @@ func (s *Stats) PrivateRequest() {
 	s.PrivateRequests++
 }
 
-func (s *Stats) HeyRequest() {
+func (s *Stats) Mention() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.HeyRequests++
+	s.Mentions++
 }
 
 func (s *Stats) SummarizeRequest() {

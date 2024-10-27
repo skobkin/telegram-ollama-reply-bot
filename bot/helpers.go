@@ -39,19 +39,40 @@ func (b *Bot) trySendReplyError(message *telego.Message) {
 	)))
 }
 
-func (b *Bot) trySendInlineQueryError(iq *telego.InlineQuery, text string) {
-	if iq == nil {
-		return
+func (b *Bot) isMentionOfMe(update telego.Update) bool {
+	if update.Message == nil {
+		return false
 	}
 
-	_ = b.api.AnswerInlineQuery(tu.InlineQuery(
-		iq.ID,
-		tu.ResultArticle(
-			string("error_"+iq.ID),
-			"Error: "+text,
-			tu.TextMessage(text),
-		),
-	))
+	return strings.Contains(update.Message.Text, "@"+b.profile.Username)
+}
+
+func (b *Bot) isReplyToMe(update telego.Update) bool {
+	message := update.Message
+
+	if message == nil {
+		return false
+	}
+	if message.ReplyToMessage == nil {
+		return false
+	}
+	if message.ReplyToMessage.From == nil {
+		return false
+	}
+
+	replyToMessage := message.ReplyToMessage
+
+	return replyToMessage != nil && replyToMessage.From.ID == b.profile.Id
+}
+
+func (b *Bot) isPrivateWithMe(update telego.Update) bool {
+	message := update.Message
+
+	if message == nil {
+		return false
+	}
+
+	return message.Chat.Type == telego.ChatTypePrivate
 }
 
 func isValidAndAllowedUrl(text string) bool {
