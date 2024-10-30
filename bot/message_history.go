@@ -5,7 +5,7 @@ import (
 	"log/slog"
 )
 
-const HistoryLength = 50
+const HistoryLength = 150
 
 type Message struct {
 	Name string
