@@ -99,7 +99,7 @@ func chatMessageToOpenAiChatCompletionMessage(message ChatMessage) openai.ChatCo
 func chatMessageToText(message ChatMessage) string {
 	var msgText string
 
-	if message.ReplyTo == nil {
+	if message.ReplyTo != nil {
 		msgText += "In reply to:"
 		msgText += quoteText(presentUserMessageAsText(*message.ReplyTo)) + "\n\n"
 	}
