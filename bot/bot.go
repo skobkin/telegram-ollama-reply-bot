@@ -233,9 +233,11 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 
 	slog.Debug("Got completion. Going to send.", "llm-completion", llmReply)
 
+	replyMarkdown := b.escapeMarkdownV1Symbols(llmReply)
+
 	message := tu.Message(
 		chatID,
-		b.escapeMarkdownV1Symbols(llmReply),
+		replyMarkdown,
 	).WithParseMode("Markdown")
 
 	_, err = bot.SendMessage(b.reply(update.Message, message))
@@ -245,6 +247,8 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 
 		b.trySendReplyError(update.Message)
 	}
+
+	b.saveBotReplyToHistory(update.Message, replyMarkdown)
 }
 
 func (b *Bot) helpHandler(bot *telego.Bot, update telego.Update) {

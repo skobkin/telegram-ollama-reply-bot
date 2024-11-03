@@ -61,14 +61,14 @@ func (b *Bot) saveChatMessageToHistory(message *telego.Message) {
 	b.history[chatId].Push(msgData)
 }
 
-func (b *Bot) saveBotReplyToHistory(message *telego.Message, text string) {
-	chatId := message.Chat.ID
+func (b *Bot) saveBotReplyToHistory(replyTo *telego.Message, text string) {
+	chatId := replyTo.Chat.ID
 
 	slog.Info(
 		"history-reply-save",
 		"chat", chatId,
-		"to_id", message.From.ID,
-		"to_name", message.From.FirstName,
+		"to_id", replyTo.From.ID,
+		"to_name", replyTo.From.FirstName,
 		"text", text,
 	)
 
@@ -84,8 +84,8 @@ func (b *Bot) saveBotReplyToHistory(message *telego.Message, text string) {
 		IsMe:     true,
 	}
 
-	if message.ReplyToMessage != nil {
-		replyMessage := message.ReplyToMessage
+	if replyTo.ReplyToMessage != nil {
+		replyMessage := replyTo.ReplyToMessage
 
 		msgData.ReplyTo = &MessageData{
 			Name:     replyMessage.From.FirstName,
