@@ -56,7 +56,7 @@ func (b *Bot) saveChatMessageToHistory(message *telego.Message) {
 		b.history[chatId] = NewMessageHistory(HistoryLength)
 	}
 
-	msgData := tgUserMessageToMessageData(message)
+	msgData := tgUserMessageToMessageData(message, false)
 
 	b.history[chatId].Push(msgData)
 }
@@ -99,16 +99,17 @@ func (b *Bot) saveBotReplyToHistory(replyTo *telego.Message, text string) {
 	b.history[chatId].Push(msgData)
 }
 
-func tgUserMessageToMessageData(message *telego.Message) MessageData {
+func tgUserMessageToMessageData(message *telego.Message, isUserRequest bool) MessageData {
 	msgData := MessageData{
-		Name:     message.From.FirstName,
-		Username: message.From.Username,
-		Text:     message.Text,
-		IsMe:     false,
+		Name:          message.From.FirstName,
+		Username:      message.From.Username,
+		Text:          message.Text,
+		IsMe:          false,
+		IsUserRequest: isUserRequest,
 	}
 
 	if message.ReplyToMessage != nil {
-		replyData := tgUserMessageToMessageData(message.ReplyToMessage)
+		replyData := tgUserMessageToMessageData(message.ReplyToMessage, false)
 		msgData.ReplyTo = &replyData
 	}
 

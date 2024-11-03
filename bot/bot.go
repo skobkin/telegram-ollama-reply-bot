@@ -144,7 +144,7 @@ func (b *Bot) processMention(message *telego.Message) {
 
 	requestContext := b.createLlmRequestContextFromMessage(message)
 
-	userMessageData := tgUserMessageToMessageData(message)
+	userMessageData := tgUserMessageToMessageData(message, true)
 
 	llmReply, err := b.llm.HandleChatMessage(
 		messageDataToLlmMessage(userMessageData),
