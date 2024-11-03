@@ -30,7 +30,7 @@ type Bot struct {
 	extractor *extractor.Extractor
 	stats     *stats.Stats
 	models    ModelSelection
-	history   map[int64]*MessageRingBuffer
+	history   map[int64]*MessageHistory
 	profile   BotInfo
 
 	markdownV1Replacer *strings.Replacer
@@ -48,7 +48,7 @@ func NewBot(
 		extractor: extractor,
 		stats:     stats.NewStats(),
 		models:    models,
-		history:   make(map[int64]*MessageRingBuffer),
+		history:   make(map[int64]*MessageHistory),
 		profile:   BotInfo{0, "", ""},
 
 		markdownV1Replacer: strings.NewReplacer(
@@ -129,7 +129,7 @@ func (b *Bot) textMessageHandler(bot *telego.Bot, update telego.Update) {
 		slog.Info("/any-message", "type", "private")
 		b.processMention(message)
 	default:
-		slog.Debug("/any-message", "info", "Message is not mention, reply or private chat. Skipping.")
+		slog.Debug("/any-message", "info", "MessageData is not mention, reply or private chat. Skipping.")
 	}
 }
 
@@ -144,7 +144,13 @@ func (b *Bot) processMention(message *telego.Message) {
 
 	requestContext := b.createLlmRequestContextFromMessage(message)
 
-	llmReply, err := b.llm.HandleChatMessage(message.Text, b.models.TextRequestModel, requestContext)
+	userMessageData := tgUserMessageToMessageData(message)
+
+	llmReply, err := b.llm.HandleChatMessage(
+		messageDataToLlmMessage(userMessageData),
+		b.models.TextRequestModel,
+		requestContext,
+	)
 	if err != nil {
 		slog.Error("Cannot get reply from LLM connector")
 
@@ -227,9 +233,11 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 
 	slog.Debug("Got completion. Going to send.", "llm-completion", llmReply)
 
+	replyMarkdown := b.escapeMarkdownV1Symbols(llmReply)
+
 	message := tu.Message(
 		chatID,
-		b.escapeMarkdownV1Symbols(llmReply),
+		replyMarkdown,
 	).WithParseMode("Markdown")
 
 	_, err = bot.SendMessage(b.reply(update.Message, message))
@@ -239,6 +247,8 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 
 		b.trySendReplyError(update.Message)
 	}
+
+	b.saveBotReplyToHistory(update.Message, replyMarkdown)
 }
 
 func (b *Bot) helpHandler(bot *telego.Bot, update telego.Update) {

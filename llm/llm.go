@@ -6,7 +6,6 @@ import (
 	"github.com/sashabaranov/go-openai"
 	"log/slog"
 	"strconv"
-	"strings"
 )
 
 var (
@@ -29,7 +28,7 @@ func NewConnector(baseUrl string, token string) *LlmConnector {
 	}
 }
 
-func (l *LlmConnector) HandleChatMessage(text string, model string, requestContext RequestContext) (string, error) {
+func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, model string, requestContext RequestContext) (string, error) {
 	systemPrompt := "You're a bot in the Telegram chat.\n" +
 		"You're using a free model called \"" + model + "\".\n\n" +
 		requestContext.Prompt()
@@ -52,28 +51,11 @@ func (l *LlmConnector) HandleChatMessage(text string, model string, requestConte
 
 	if historyLength > 0 {
 		for _, msg := range requestContext.Chat.History {
-			var msgRole string
-			var msgText string
-
-			if msg.IsMe {
-				msgRole = openai.ChatMessageRoleAssistant
-				msgText = msg.Text
-			} else {
-				msgRole = openai.ChatMessageRoleSystem
-				msgText = "User " + msg.Name + " said:\n" + msg.Text
-			}
-
-			req.Messages = append(req.Messages, openai.ChatCompletionMessage{
-				Role:    msgRole,
-				Content: msgText,
-			})
+			req.Messages = append(req.Messages, chatMessageToOpenAiChatCompletionMessage(msg))
 		}
 	}
 
-	req.Messages = append(req.Messages, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleUser,
-		Content: text,
-	})
+	req.Messages = append(req.Messages, chatMessageToOpenAiChatCompletionMessage(userMessage))
 
 	resp, err := l.client.CreateChatCompletion(context.Background(), req)
 	if err != nil {
@@ -163,8 +145,4 @@ func (l *LlmConnector) HasModel(id string) bool {
 	}
 
 	return false
-}
-
-func quoteMessage(text string) string {
-	return "> " + strings.ReplaceAll(text, "\n", "\n> ")
 }

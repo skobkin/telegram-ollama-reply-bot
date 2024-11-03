@@ -7,25 +7,28 @@ import (
 
 const HistoryLength = 150
 
-type Message struct {
-	Name string
-	Text string
-	IsMe bool
+type MessageData struct {
+	Name          string
+	Username      string
+	Text          string
+	IsMe          bool
+	IsUserRequest bool
+	ReplyTo       *MessageData
 }
 
-type MessageRingBuffer struct {
-	messages []Message
+type MessageHistory struct {
+	messages []MessageData
 	capacity int
 }
 
-func NewMessageBuffer(capacity int) *MessageRingBuffer {
-	return &MessageRingBuffer{
-		messages: make([]Message, 0, capacity),
+func NewMessageHistory(capacity int) *MessageHistory {
+	return &MessageHistory{
+		messages: make([]MessageData, 0, capacity),
 		capacity: capacity,
 	}
 }
 
-func (b *MessageRingBuffer) Push(element Message) {
+func (b *MessageHistory) Push(element MessageData) {
 	if len(b.messages) >= b.capacity {
 		b.messages = b.messages[1:]
 	}
@@ -33,7 +36,7 @@ func (b *MessageRingBuffer) Push(element Message) {
 	b.messages = append(b.messages, element)
 }
 
-func (b *MessageRingBuffer) GetAll() []Message {
+func (b *MessageHistory) GetAll() []MessageData {
 	return b.messages
 }
 
@@ -50,43 +53,72 @@ func (b *Bot) saveChatMessageToHistory(message *telego.Message) {
 
 	_, ok := b.history[chatId]
 	if !ok {
-		b.history[chatId] = NewMessageBuffer(HistoryLength)
+		b.history[chatId] = NewMessageHistory(HistoryLength)
 	}
 
-	b.history[chatId].Push(Message{
-		Name: message.From.FirstName,
-		Text: message.Text,
-		IsMe: false,
-	})
+	msgData := tgUserMessageToMessageData(message)
+
+	b.history[chatId].Push(msgData)
 }
 
-func (b *Bot) saveBotReplyToHistory(message *telego.Message, reply string) {
-	chatId := message.Chat.ID
+func (b *Bot) saveBotReplyToHistory(replyTo *telego.Message, text string) {
+	chatId := replyTo.Chat.ID
 
 	slog.Info(
 		"history-reply-save",
 		"chat", chatId,
-		"to_id", message.From.ID,
-		"to_name", message.From.FirstName,
-		"text", reply,
+		"to_id", replyTo.From.ID,
+		"to_name", replyTo.From.FirstName,
+		"text", text,
 	)
 
 	_, ok := b.history[chatId]
 	if !ok {
-		b.history[chatId] = NewMessageBuffer(HistoryLength)
+		b.history[chatId] = NewMessageHistory(HistoryLength)
 	}
 
-	b.history[chatId].Push(Message{
-		Name: b.profile.Username,
-		Text: reply,
-		IsMe: true,
-	})
+	msgData := MessageData{
+		Name:     b.profile.Name,
+		Username: b.profile.Username,
+		Text:     text,
+		IsMe:     true,
+	}
+
+	if replyTo.ReplyToMessage != nil {
+		replyMessage := replyTo.ReplyToMessage
+
+		msgData.ReplyTo = &MessageData{
+			Name:     replyMessage.From.FirstName,
+			Username: replyMessage.From.Username,
+			Text:     replyMessage.Text,
+			IsMe:     false,
+			ReplyTo:  nil,
+		}
+	}
+
+	b.history[chatId].Push(msgData)
 }
 
-func (b *Bot) getChatHistory(chatId int64) []Message {
+func tgUserMessageToMessageData(message *telego.Message) MessageData {
+	msgData := MessageData{
+		Name:     message.From.FirstName,
+		Username: message.From.Username,
+		Text:     message.Text,
+		IsMe:     false,
+	}
+
+	if message.ReplyToMessage != nil {
+		replyData := tgUserMessageToMessageData(message.ReplyToMessage)
+		msgData.ReplyTo = &replyData
+	}
+
+	return msgData
+}
+
+func (b *Bot) getChatHistory(chatId int64) []MessageData {
 	_, ok := b.history[chatId]
 	if !ok {
-		return make([]Message, 0)
+		return make([]MessageData, 0)
 	}
 
 	return b.history[chatId].GetAll()
