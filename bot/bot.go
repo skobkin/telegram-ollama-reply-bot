@@ -30,7 +30,7 @@ type Bot struct {
 	extractor *extractor.Extractor
 	stats     *stats.Stats
 	models    ModelSelection
-	history   map[int64]*MessageRingBuffer
+	history   map[int64]*MessageHistory
 	profile   BotInfo
 
 	markdownV1Replacer *strings.Replacer
@@ -48,7 +48,7 @@ func NewBot(
 		extractor: extractor,
 		stats:     stats.NewStats(),
 		models:    models,
-		history:   make(map[int64]*MessageRingBuffer),
+		history:   make(map[int64]*MessageHistory),
 		profile:   BotInfo{0, "", ""},
 
 		markdownV1Replacer: strings.NewReplacer(

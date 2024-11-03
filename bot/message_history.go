@@ -16,19 +16,19 @@ type MessageData struct {
 	ReplyTo       *MessageData
 }
 
-type MessageRingBuffer struct {
+type MessageHistory struct {
 	messages []MessageData
 	capacity int
 }
 
-func NewMessageBuffer(capacity int) *MessageRingBuffer {
-	return &MessageRingBuffer{
+func NewMessageHistory(capacity int) *MessageHistory {
+	return &MessageHistory{
 		messages: make([]MessageData, 0, capacity),
 		capacity: capacity,
 	}
 }
 
-func (b *MessageRingBuffer) Push(element MessageData) {
+func (b *MessageHistory) Push(element MessageData) {
 	if len(b.messages) >= b.capacity {
 		b.messages = b.messages[1:]
 	}
@@ -36,7 +36,7 @@ func (b *MessageRingBuffer) Push(element MessageData) {
 	b.messages = append(b.messages, element)
 }
 
-func (b *MessageRingBuffer) GetAll() []MessageData {
+func (b *MessageHistory) GetAll() []MessageData {
 	return b.messages
 }
 
@@ -53,7 +53,7 @@ func (b *Bot) saveChatMessageToHistory(message *telego.Message) {
 
 	_, ok := b.history[chatId]
 	if !ok {
-		b.history[chatId] = NewMessageBuffer(HistoryLength)
+		b.history[chatId] = NewMessageHistory(HistoryLength)
 	}
 
 	msgData := tgUserMessageToMessageData(message)
@@ -74,7 +74,7 @@ func (b *Bot) saveBotReplyToHistory(message *telego.Message, text string) {
 
 	_, ok := b.history[chatId]
 	if !ok {
-		b.history[chatId] = NewMessageBuffer(HistoryLength)
+		b.history[chatId] = NewMessageHistory(HistoryLength)
 	}
 
 	msgData := MessageData{
