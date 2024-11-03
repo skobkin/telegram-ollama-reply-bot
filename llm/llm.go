@@ -36,7 +36,7 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, model string, 
 	historyLength := len(requestContext.Chat.History)
 
 	if historyLength > 0 {
-		systemPrompt += "\nYou have access to last " + strconv.Itoa(historyLength) + "messages in this chat."
+		systemPrompt += "\nYou have access to last " + strconv.Itoa(historyLength) + " messages in this chat."
 	}
 
 	req := openai.ChatCompletionRequest{
