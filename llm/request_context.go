@@ -1,5 +1,10 @@
 package llm
 
+import (
+	"github.com/sashabaranov/go-openai"
+	"strings"
+)
+
 type RequestContext struct {
 	Empty bool
 	User  UserContext
@@ -21,9 +26,12 @@ type ChatContext struct {
 }
 
 type ChatMessage struct {
-	Name string
-	Text string
-	IsMe bool
+	Name          string
+	Username      string
+	Text          string
+	IsMe          bool
+	IsUserRequest bool
+	ReplyTo       *ChatMessage
 }
 
 func (c RequestContext) Prompt() string {
@@ -61,4 +69,55 @@ func (c RequestContext) Prompt() string {
 	//}
 
 	return prompt
+}
+
+func chatMessageToOpenAiChatCompletionMessage(message ChatMessage) openai.ChatCompletionMessage {
+	var msgRole string
+	var msgText string
+
+	switch {
+	case message.IsMe:
+		msgRole = openai.ChatMessageRoleAssistant
+	case message.IsUserRequest:
+		msgRole = openai.ChatMessageRoleUser
+	default:
+		msgRole = openai.ChatMessageRoleSystem
+	}
+
+	if message.IsMe {
+		msgText = message.Text
+	} else {
+		msgText = chatMessageToText(message)
+	}
+
+	return openai.ChatCompletionMessage{
+		Role:    msgRole,
+		Content: msgText,
+	}
+}
+
+func chatMessageToText(message ChatMessage) string {
+	var msgText string
+
+	if message.ReplyTo == nil {
+		msgText += "In reply to:"
+		msgText += quoteText(presentUserMessageAsText(*message.ReplyTo)) + "\n\n"
+	}
+	msgText += presentUserMessageAsText(message)
+
+	return msgText
+}
+
+func presentUserMessageAsText(message ChatMessage) string {
+	result := message.Name
+	if message.Username != "" {
+		result += " (@" + message.Username + ")"
+	}
+	result += " wrote:\n" + message.Text
+
+	return result
+}
+
+func quoteText(text string) string {
+	return "> " + strings.ReplaceAll(text, "\n", "\n> ")
 }

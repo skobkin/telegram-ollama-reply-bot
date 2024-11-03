@@ -129,7 +129,7 @@ func (b *Bot) textMessageHandler(bot *telego.Bot, update telego.Update) {
 		slog.Info("/any-message", "type", "private")
 		b.processMention(message)
 	default:
-		slog.Debug("/any-message", "info", "Message is not mention, reply or private chat. Skipping.")
+		slog.Debug("/any-message", "info", "MessageData is not mention, reply or private chat. Skipping.")
 	}
 }
 
@@ -144,7 +144,13 @@ func (b *Bot) processMention(message *telego.Message) {
 
 	requestContext := b.createLlmRequestContextFromMessage(message)
 
-	llmReply, err := b.llm.HandleChatMessage(message.Text, b.models.TextRequestModel, requestContext)
+	userMessageData := tgUserMessageToMessageData(message)
+
+	llmReply, err := b.llm.HandleChatMessage(
+		messageDataToLlmMessage(userMessageData),
+		b.models.TextRequestModel,
+		requestContext,
+	)
 	if err != nil {
 		slog.Error("Cannot get reply from LLM connector")
 

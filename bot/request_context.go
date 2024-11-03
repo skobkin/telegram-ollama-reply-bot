@@ -48,21 +48,35 @@ func (b *Bot) createLlmRequestContextFromMessage(message *telego.Message) llm.Re
 	return rc
 }
 
-func historyToLlmMessages(history []Message) []llm.ChatMessage {
+func historyToLlmMessages(history []MessageData) []llm.ChatMessage {
 	length := len(history)
 
 	if length > 0 {
 		result := make([]llm.ChatMessage, 0, length)
 
 		for _, msg := range history {
-			result = append(result, llm.ChatMessage{
-				Name: msg.Name,
-				Text: msg.Text,
-			})
+			result = append(result, messageDataToLlmMessage(msg))
 		}
 
 		return result
 	}
 
 	return make([]llm.ChatMessage, 0)
+}
+
+func messageDataToLlmMessage(data MessageData) llm.ChatMessage {
+	llmMessage := llm.ChatMessage{
+		Name:          data.Name,
+		Username:      data.Username,
+		Text:          data.Text,
+		IsMe:          data.IsMe,
+		IsUserRequest: data.IsUserRequest,
+	}
+
+	if data.ReplyTo != nil {
+		replyMessage := messageDataToLlmMessage(*data.ReplyTo)
+		llmMessage.ReplyTo = &replyMessage
+	}
+
+	return llmMessage
 }
