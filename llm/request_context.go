@@ -56,7 +56,7 @@ func (c RequestContext) Prompt() string {
 		prompt += "Chat description is \"" + c.Chat.Description + "\". "
 	}
 
-	prompt += "\nProfile of the user who mentioned you in the chat:" +
+	prompt += "\nProfile of the user who mentioned you in the chat:\n" +
 		"First name: \"" + c.User.FirstName + "\"\n"
 	if c.User.Username != "" {
 		prompt += "Username: @" + c.User.Username + ".\n"
