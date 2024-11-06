@@ -7,7 +7,7 @@ toolchain go1.23.2
 require (
 	github.com/advancedlogic/GoOse v0.0.0-20231203033844-ae6b36caf275
 	github.com/mymmrac/telego v0.31.4
-	github.com/sashabaranov/go-openai v1.20.2
+	github.com/sashabaranov/go-openai v1.32.5
 )
 
 require (
