@@ -28,11 +28,10 @@ func main() {
 
 	slog.Info("Checking models availability")
 
-	for _, model := range []string{models.TextRequestModel, models.SummarizeModel} {
-		if !llmc.HasModel(model) {
-			slog.Error("Model not unavailable", "model", model)
-			os.Exit(1)
-		}
+	hasAll, searchResult := llmc.HasAllModels([]string{models.TextRequestModel, models.SummarizeModel})
+	if !hasAll {
+		slog.Error("Not all models are available", "result", searchResult)
+		os.Exit(1)
 	}
 
 	slog.Info("All needed models are available")

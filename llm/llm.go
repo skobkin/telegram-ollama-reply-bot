@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/sashabaranov/go-openai"
 	"log/slog"
+	"slices"
 	"strconv"
 )
 
@@ -113,36 +114,33 @@ func (l *LlmConnector) Summarize(text string, model string) (string, error) {
 	return resp.Choices[0].Message.Content, nil
 }
 
-func (l *LlmConnector) GetModels() []string {
-	var result []string
-
-	models, err := l.client.ListModels(context.Background())
+func (l *LlmConnector) HasAllModels(modelIds []string) (bool, map[string]bool) {
+	modelList, err := l.client.ListModels(context.Background())
 	if err != nil {
 		slog.Error("llm: Model list request failed", "error", err)
-
-		return result
 	}
 
-	slog.Info("Model list retrieved", "models", models)
+	slog.Info("llm: Returned model list", "models", modelList)
+	slog.Info("llm: Checking for requested models", "requested", modelIds)
 
-	for _, model := range models.Models {
-		result = append(result, model.ID)
+	requestedModelsCount := len(modelIds)
+	searchResult := make(map[string]bool, requestedModelsCount)
+
+	for _, modelId := range modelIds {
+		searchResult[modelId] = false
 	}
 
-	return result
-}
-
-func (l *LlmConnector) HasModel(id string) bool {
-	model, err := l.client.GetModel(context.Background(), id)
-	if err != nil {
-		slog.Error("llm: Model request failed", "error", err)
+	for _, model := range modelList.Models {
+		if slices.Contains(modelIds, model.ID) {
+			searchResult[model.ID] = true
+		}
 	}
 
-	slog.Debug("llm: Returned model", "model", model)
-
-	if model.ID != "" {
-		return true
+	for _, v := range searchResult {
+		if !v {
+			return false, searchResult
+		}
 	}
 
-	return false
+	return true, searchResult
 }
