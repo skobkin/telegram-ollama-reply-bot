@@ -1,10 +1,17 @@
-# telegram-ollama-reply-bot
+# Telegram Ollama Bot
 
 [![Build Status](https://ci.skobk.in/api/badges/skobkin/telegram-ollama-reply-bot/status.svg)](https://ci.skobk.in/skobkin/telegram-ollama-reply-bot)
 
-# Usage
+![Project Banner](/img/banner.jpeg)
 
-## Docker
+## Functionality
+
+- Context-dependent dialogue in chats
+- Summarization of articles by provided link
+
+## Usage
+
+### Docker
 
 ```shell
 docker run \
