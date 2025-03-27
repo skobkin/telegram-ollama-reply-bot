@@ -85,8 +85,8 @@ func (l *LlmConnector) Summarize(text string, model string) (string, error) {
 				Content: "You're a text shortener. Give a very brief summary of the main facts " +
 					"point by point.  Format them as a list of bullet points each starting with \"-\". " +
 					"Avoid any commentaries and value judgement on the matter. " +
-					"If possible, respond in the same language as the original text." +
-					"Do not use any non-ASCII characters.",
+					"Summary should be in the same language as the original text unless asked otherwise." +
+					"Avoid using any formatting in the text except simple \"-\" for each point.",
 			},
 		},
 	}
