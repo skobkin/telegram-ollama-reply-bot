@@ -2,6 +2,7 @@ package stats
 
 import (
 	"encoding/json"
+	"github.com/getsentry/sentry-go"
 	"sync"
 	"time"
 )
@@ -57,6 +58,8 @@ func (s *Stats) MarshalJSON() ([]byte, error) {
 func (s *Stats) String() string {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
+		sentry.CaptureException(err)
+
 		return "{\"error\": \"cannot serialize stats\"}"
 	}
 

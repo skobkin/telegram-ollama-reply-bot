@@ -119,6 +119,8 @@ func tgUserMessageToMessageData(message *telego.Message, isUserRequest bool) Mes
 func (b *Bot) getChatHistory(chatId int64) []MessageData {
 	_, ok := b.history[chatId]
 	if !ok {
+		slog.Debug("bot: Chat ID not found in history", "chat_id", chatId)
+
 		return make([]MessageData, 0)
 	}
 

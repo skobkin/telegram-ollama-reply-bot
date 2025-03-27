@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"github.com/getsentry/sentry-go"
 	"github.com/sashabaranov/go-openai"
 	"log/slog"
 	"slices"
@@ -61,6 +62,7 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, model string, 
 	resp, err := l.client.CreateChatCompletion(context.Background(), req)
 	if err != nil {
 		slog.Error("llm: LLM back-end request failed", "error", err)
+		sentry.CaptureException(err)
 
 		return "", ErrLlmBackendRequestFailed
 	}
@@ -69,6 +71,7 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, model string, 
 
 	if len(resp.Choices) < 1 {
 		slog.Error("llm: LLM back-end reply has no choices")
+		sentry.CaptureMessage("LLM back-end reply has no choices")
 
 		return "", ErrNoChoices
 	}
@@ -99,6 +102,7 @@ func (l *LlmConnector) Summarize(text string, model string) (string, error) {
 	resp, err := l.client.CreateChatCompletion(context.Background(), req)
 	if err != nil {
 		slog.Error("llm: LLM back-end request failed", "error", err)
+		sentry.CaptureException(err)
 
 		return "", ErrLlmBackendRequestFailed
 	}
@@ -107,6 +111,7 @@ func (l *LlmConnector) Summarize(text string, model string) (string, error) {
 
 	if len(resp.Choices) < 1 {
 		slog.Error("llm: LLM back-end reply has no choices")
+		sentry.CaptureMessage("LLM back-end reply has no choices")
 
 		return "", ErrNoChoices
 	}
@@ -118,6 +123,9 @@ func (l *LlmConnector) HasAllModels(modelIds []string) (bool, map[string]bool) {
 	modelList, err := l.client.ListModels(context.Background())
 	if err != nil {
 		slog.Error("llm: Model list request failed", "error", err)
+		sentry.CaptureException(err)
+
+		return false, map[string]bool{}
 	}
 
 	slog.Info("llm: Returned model list", "models", modelList)
