@@ -3,6 +3,7 @@ package extractor
 import (
 	"errors"
 	"github.com/advancedlogic/GoOse"
+	"github.com/getsentry/sentry-go"
 	"log/slog"
 )
 
@@ -35,6 +36,7 @@ func (e *Extractor) GetArticleFromUrl(url string) (Article, error) {
 
 	if err != nil {
 		slog.Error("extractor: failed extracting from URL", "url", url)
+		sentry.CaptureException(err)
 
 		return Article{}, ErrExtractFailed
 	}

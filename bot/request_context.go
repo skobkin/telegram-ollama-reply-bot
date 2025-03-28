@@ -12,7 +12,7 @@ func (b *Bot) createLlmRequestContextFromMessage(message *telego.Message) llm.Re
 	}
 
 	if message == nil {
-		slog.Debug("request context creation problem: no message provided. returning empty context.", "request-context", rc)
+		slog.Debug("bot: request context creation problem: no message provided. returning empty context.", "request-context", rc)
 
 		return rc
 	}
@@ -43,7 +43,7 @@ func (b *Bot) createLlmRequestContextFromMessage(message *telego.Message) llm.Re
 		History: historyToLlmMessages(history),
 	}
 
-	slog.Debug("request context created", "request-context", rc)
+	slog.Debug("bot: request context created", "request-context", rc)
 
 	return rc
 }

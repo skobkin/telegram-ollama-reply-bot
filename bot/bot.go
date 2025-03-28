@@ -2,10 +2,12 @@ package bot
 
 import (
 	"errors"
+	"github.com/getsentry/sentry-go"
 	"github.com/mymmrac/telego"
 	th "github.com/mymmrac/telego/telegohandler"
 	tu "github.com/mymmrac/telego/telegoutil"
 	"log/slog"
+	"strconv"
 	"strings"
 	"telegram-ollama-reply-bot/extractor"
 	"telegram-ollama-reply-bot/llm"
@@ -17,6 +19,8 @@ var (
 	ErrUpdatesChannel = errors.New("cannot get updates channel")
 	ErrHandlerInit    = errors.New("cannot initialize handler")
 )
+
+const TELEGRAM_CHAR_LIMIT = 4096
 
 type BotInfo struct {
 	Id       int64
@@ -34,6 +38,7 @@ type Bot struct {
 	profile   BotInfo
 
 	markdownV1Replacer *strings.Replacer
+	markdownV2Replacer *strings.Replacer
 }
 
 func NewBot(
@@ -64,12 +69,18 @@ func NewBot(
 func (b *Bot) Run() error {
 	botUser, err := b.api.GetMe()
 	if err != nil {
-		slog.Error("Cannot retrieve api user", "error", err)
+		slog.Error("bot: Cannot retrieve api user", "error", err)
+		sentry.CaptureException(err)
 
 		return ErrGetMe
 	}
 
-	slog.Info("Running api as", "id", botUser.ID, "username", botUser.Username, "name", botUser.FirstName, "is_bot", botUser.IsBot)
+	slog.Info("bot: Running api as", "id", botUser.ID, "username", botUser.Username, "name", botUser.FirstName, "is_bot", botUser.IsBot)
+	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+		Category: "telegram-api",
+		Message:  "Bot ID: " + strconv.FormatInt(botUser.ID, 10),
+		Level:    sentry.LevelInfo,
+	})
 
 	b.profile = BotInfo{
 		Id:       botUser.ID,
@@ -79,14 +90,16 @@ func (b *Bot) Run() error {
 
 	updates, err := b.api.UpdatesViaLongPolling(nil)
 	if err != nil {
-		slog.Error("Cannot get update channel", "error", err)
+		slog.Error("bot: Cannot get update channel", "error", err)
+		sentry.CaptureException(err)
 
 		return ErrUpdatesChannel
 	}
 
 	bh, err := th.NewBotHandler(b.api, updates)
 	if err != nil {
-		slog.Error("Cannot initialize bot handler", "error", err)
+		slog.Error("bot: Cannot initialize bot handler", "error", err)
+		sentry.CaptureException(err)
 
 		return ErrHandlerInit
 	}
@@ -111,32 +124,32 @@ func (b *Bot) Run() error {
 }
 
 func (b *Bot) textMessageHandler(bot *telego.Bot, update telego.Update) {
-	slog.Debug("/any-message")
+	slog.Debug("bot: /any-message")
 
 	message := update.Message
 
 	switch {
 	// Mentions
 	case b.isMentionOfMe(update):
-		slog.Info("/any-message", "type", "mention")
+		slog.Info("bot: /any-message", "type", "mention")
 		b.processMention(message)
 	// Replies
 	case b.isReplyToMe(update):
-		slog.Info("/any-message", "type", "reply")
+		slog.Info("bot: /any-message", "type", "reply")
 		b.processMention(message)
 	// Private chat
 	case b.isPrivateWithMe(update):
-		slog.Info("/any-message", "type", "private")
+		slog.Info("bot: /any-message", "type", "private")
 		b.processMention(message)
 	default:
-		slog.Debug("/any-message", "info", "MessageData is not mention, reply or private chat. Skipping.")
+		slog.Debug("bot: /any-message", "info", "MessageData is not mention, reply or private chat. Skipping.")
 	}
 }
 
 func (b *Bot) processMention(message *telego.Message) {
 	b.stats.Mention()
 
-	slog.Info("/mention", "chat", message.Chat.ID)
+	slog.Info("bot: /mention", "chat", message.Chat.ID)
 
 	chatID := tu.ID(message.Chat.ID)
 
@@ -152,7 +165,8 @@ func (b *Bot) processMention(message *telego.Message) {
 		requestContext,
 	)
 	if err != nil {
-		slog.Error("Cannot get reply from LLM connector")
+		slog.Error("bot: Cannot get reply from LLM connector")
+		sentry.CaptureException(err)
 
 		_, _ = b.api.SendMessage(b.reply(message, tu.Message(
 			chatID,
@@ -162,7 +176,7 @@ func (b *Bot) processMention(message *telego.Message) {
 		return
 	}
 
-	slog.Debug("Got completion. Going to send.", "llm-completion", llmReply)
+	slog.Debug("bot: Got completion. Going to send.", "llm-completion", llmReply)
 
 	reply := tu.Message(
 		chatID,
@@ -171,7 +185,8 @@ func (b *Bot) processMention(message *telego.Message) {
 
 	_, err = b.api.SendMessage(b.reply(message, reply))
 	if err != nil {
-		slog.Error("Can't send reply message", "error", err)
+		slog.Error("bot: Can't send reply message", "error", err)
+		sentry.CaptureException(err)
 
 		b.trySendReplyError(message)
 
@@ -182,7 +197,7 @@ func (b *Bot) processMention(message *telego.Message) {
 }
 
 func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
-	slog.Info("/summarize", "message-text", update.Message.Text)
+	slog.Info("bot: /summarize", "message-text", update.Message.Text)
 
 	b.stats.SummarizeRequest()
 
@@ -190,9 +205,10 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 
 	b.sendTyping(chatID)
 
-	args := strings.SplitN(update.Message.Text, " ", 2)
+	args := strings.SplitN(update.Message.Text, " ", 3)
+	argsCount := len(args)
 
-	if len(args) < 2 {
+	if argsCount < 2 {
 		_, _ = bot.SendMessage(tu.Message(
 			tu.ID(update.Message.Chat.ID),
 			"Usage: /summarize <link>\r\n\r\n"+
@@ -204,7 +220,7 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 	}
 
 	if !isValidAndAllowedUrl(args[1]) {
-		slog.Error("Provided text is not a valid URL", "text", args[1])
+		slog.Error("bot: Provided text is not a valid URL", "text", args[1])
 
 		_, _ = b.api.SendMessage(b.reply(update.Message, tu.Message(
 			chatID,
@@ -216,12 +232,20 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 
 	article, err := b.extractor.GetArticleFromUrl(args[1])
 	if err != nil {
-		slog.Error("Cannot retrieve an article using extractor", "error", err)
+		slog.Error("bot: Cannot retrieve an article using extractor", "error", err)
+		sentry.CaptureException(err)
 	}
 
-	llmReply, err := b.llm.Summarize(article.Text, b.models.SummarizeModel)
+	additionalInstructions := ""
+
+	if argsCount == 3 {
+		additionalInstructions = args[2]
+	}
+
+	llmReply, err := b.llm.Summarize(article.Text, b.models.SummarizeModel, additionalInstructions)
 	if err != nil {
-		slog.Error("Cannot get reply from LLM connector")
+		slog.Error("bot: Cannot get reply from LLM connector")
+		sentry.CaptureException(err)
 
 		_, _ = b.api.SendMessage(b.reply(update.Message, tu.Message(
 			chatID,
@@ -231,19 +255,23 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 		return
 	}
 
-	slog.Debug("Got completion. Going to send.", "llm-completion", llmReply)
+	slog.Debug("bot: Got completion. Going to send reply.", "llm-completion", llmReply)
 
-	replyMarkdown := b.escapeMarkdownV1Symbols(llmReply)
+	footer := "\n\n[src](" + article.Url + ")"
+
+	replyMarkdown := cropToMaxLengthMarkdownV2(b.escapeMarkdownV2Symbols(llmReply), TELEGRAM_CHAR_LIMIT-len(footer)) +
+		footer
 
 	message := tu.Message(
 		chatID,
 		replyMarkdown,
-	).WithParseMode("Markdown")
+	).WithParseMode("MarkdownV2")
 
 	_, err = bot.SendMessage(b.reply(update.Message, message))
 
 	if err != nil {
-		slog.Error("Can't send reply message", "error", err)
+		slog.Error("bot: Can't send reply message", "error", err)
+		sentry.CaptureException(err)
 
 		b.trySendReplyError(update.Message)
 	}
@@ -252,7 +280,7 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 }
 
 func (b *Bot) helpHandler(bot *telego.Bot, update telego.Update) {
-	slog.Info("/help")
+	slog.Info("bot: /help")
 
 	chatID := tu.ID(update.Message.Chat.ID)
 
@@ -268,14 +296,15 @@ func (b *Bot) helpHandler(bot *telego.Bot, update telego.Update) {
 			"Mention bot or reply to it's message to communicate with it",
 	)))
 	if err != nil {
-		slog.Error("Cannot send a message", "error", err)
+		slog.Error("bot: Cannot send a message", "error", err)
+		sentry.CaptureException(err)
 
 		b.trySendReplyError(update.Message)
 	}
 }
 
 func (b *Bot) startHandler(bot *telego.Bot, update telego.Update) {
-	slog.Info("/start")
+	slog.Info("bot: /start")
 
 	chatID := tu.ID(update.Message.Chat.ID)
 
@@ -287,14 +316,15 @@ func (b *Bot) startHandler(bot *telego.Bot, update telego.Update) {
 			"Check out /help to learn how to use this bot.",
 	)))
 	if err != nil {
-		slog.Error("Cannot send a message", "error", err)
+		slog.Error("bot: Cannot send a message", "error", err)
+		sentry.CaptureException(err)
 
 		b.trySendReplyError(update.Message)
 	}
 }
 
 func (b *Bot) statsHandler(bot *telego.Bot, update telego.Update) {
-	slog.Info("/stats")
+	slog.Info("bot: /stats")
 
 	chatID := tu.ID(update.Message.Chat.ID)
 
@@ -308,7 +338,8 @@ func (b *Bot) statsHandler(bot *telego.Bot, update telego.Update) {
 			"```",
 	)).WithParseMode("Markdown"))
 	if err != nil {
-		slog.Error("Cannot send a message", "error", err)
+		slog.Error("bot: Cannot send a message", "error", err)
+		sentry.CaptureException(err)
 
 		b.trySendReplyError(update.Message)
 	}
@@ -316,4 +347,18 @@ func (b *Bot) statsHandler(bot *telego.Bot, update telego.Update) {
 
 func (b *Bot) escapeMarkdownV1Symbols(input string) string {
 	return b.markdownV1Replacer.Replace(input)
+}
+
+func (b *Bot) escapeMarkdownV2Symbols(input string) string {
+	specialChars := "_*[]()~`>#+-=|{}.!"
+	var escaped strings.Builder
+
+	for _, char := range input {
+		if strings.ContainsRune(specialChars, char) {
+			escaped.WriteRune('\\')
+		}
+		escaped.WriteRune(char)
+	}
+
+	return escaped.String()
 }

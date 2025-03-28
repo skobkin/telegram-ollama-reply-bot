@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"github.com/getsentry/sentry-go"
 	"github.com/mymmrac/telego"
 	tu "github.com/mymmrac/telego/telegoutil"
 	"log/slog"
@@ -25,11 +26,14 @@ func (b *Bot) sendTyping(chatId telego.ChatID) {
 	err := b.api.SendChatAction(tu.ChatAction(chatId, "typing"))
 	if err != nil {
 		slog.Error("Cannot set chat action", "error", err)
+		sentry.CaptureException(err)
 	}
 }
 
 func (b *Bot) trySendReplyError(message *telego.Message) {
 	if message == nil {
+		sentry.CaptureMessage("Trying to send reply for an empty message")
+
 		return
 	}
 
@@ -79,6 +83,7 @@ func isValidAndAllowedUrl(text string) bool {
 	u, err := url.ParseRequestURI(text)
 	if err != nil {
 		slog.Debug("Provided text is not an URL", "text", text)
+		sentry.CaptureException(err)
 
 		return false
 	}
@@ -90,4 +95,17 @@ func isValidAndAllowedUrl(text string) bool {
 	}
 
 	return true
+}
+
+func cropToMaxLengthMarkdownV2(text string, max int) string {
+	if len(text) <= max {
+		return text
+	}
+
+	cropPoint := max - 3
+	for cropPoint > 0 && text[cropPoint] != ' ' {
+		cropPoint--
+	}
+
+	return text[:cropPoint] + "\\.\\.\\."
 }

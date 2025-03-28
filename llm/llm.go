@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"github.com/getsentry/sentry-go"
 	"github.com/sashabaranov/go-openai"
 	"log/slog"
 	"slices"
@@ -61,6 +62,7 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, model string, 
 	resp, err := l.client.CreateChatCompletion(context.Background(), req)
 	if err != nil {
 		slog.Error("llm: LLM back-end request failed", "error", err)
+		sentry.CaptureException(err)
 
 		return "", ErrLlmBackendRequestFailed
 	}
@@ -69,6 +71,7 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, model string, 
 
 	if len(resp.Choices) < 1 {
 		slog.Error("llm: LLM back-end reply has no choices")
+		sentry.CaptureMessage("LLM back-end reply has no choices")
 
 		return "", ErrNoChoices
 	}
@@ -76,17 +79,29 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, model string, 
 	return resp.Choices[0].Message.Content, nil
 }
 
-func (l *LlmConnector) Summarize(text string, model string) (string, error) {
+func (l *LlmConnector) Summarize(text string, model string, instructions string) (string, error) {
+	systemPrompt := "You're a text shortener. Give a VERY SHORT summary as a list of facts. " +
+		"Format it like this:\n" +
+		"```\n" +
+		"- Fact 1\n" +
+		"- Fact 2\n\n" +
+		"Your short conclusion." +
+		"```\n" +
+		"Avoid any commentaries and value judgement on the matter unless asked by the user. " +
+		"Write the summary **in Russian** unless other instructions provided." +
+		"Avoid using ANY formatting in the text except simple \"-\" for each fact even if asked to.\n\n" +
+		"Limit the summary to maximum of 2000 characters. Avoid exceeding it at any cost. Be as brief as possible."
+
+	if instructions != "" {
+		systemPrompt = systemPrompt + "\n\nAdditional instruction from user:\n\n>" + instructions
+	}
+
 	req := openai.ChatCompletionRequest{
 		Model: model,
 		Messages: []openai.ChatCompletionMessage{
 			{
-				Role: openai.ChatMessageRoleSystem,
-				Content: "You're a text shortener. Give a very brief summary of the main facts " +
-					"point by point.  Format them as a list of bullet points each starting with \"-\". " +
-					"Avoid any commentaries and value judgement on the matter. " +
-					"If possible, respond in the same language as the original text." +
-					"Do not use any non-ASCII characters.",
+				Role:    openai.ChatMessageRoleSystem,
+				Content: systemPrompt,
 			},
 		},
 	}
@@ -99,6 +114,7 @@ func (l *LlmConnector) Summarize(text string, model string) (string, error) {
 	resp, err := l.client.CreateChatCompletion(context.Background(), req)
 	if err != nil {
 		slog.Error("llm: LLM back-end request failed", "error", err)
+		sentry.CaptureException(err)
 
 		return "", ErrLlmBackendRequestFailed
 	}
@@ -107,6 +123,7 @@ func (l *LlmConnector) Summarize(text string, model string) (string, error) {
 
 	if len(resp.Choices) < 1 {
 		slog.Error("llm: LLM back-end reply has no choices")
+		sentry.CaptureMessage("LLM back-end reply has no choices")
 
 		return "", ErrNoChoices
 	}
@@ -118,6 +135,9 @@ func (l *LlmConnector) HasAllModels(modelIds []string) (bool, map[string]bool) {
 	modelList, err := l.client.ListModels(context.Background())
 	if err != nil {
 		slog.Error("llm: Model list request failed", "error", err)
+		sentry.CaptureException(err)
+
+		return false, map[string]bool{}
 	}
 
 	slog.Info("llm: Returned model list", "models", modelList)

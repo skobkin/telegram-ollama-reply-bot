@@ -45,8 +45,9 @@ func (c RequestContext) Prompt() string {
 
 	if c.Chat.Type == "group" || c.Chat.Type == "supergroup" {
 		prompt += "Please consider that there are several users in this chat type who may discuss several unrelated " +
-			"topics. Try to respond only about the topic you were asked about and only to the user who asked you, " +
-			"but keep in mind another chat history. "
+			"topics. Try to respond only about the topic you were asked about and only to the user who asked you. " +
+			"Avoid summarizing an entire chat history unless directly asked. " +
+			"Just answer to the person who sent you the message."
 	}
 
 	if c.Chat.Title != "" {
