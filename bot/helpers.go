@@ -96,3 +96,16 @@ func isValidAndAllowedUrl(text string) bool {
 
 	return true
 }
+
+func cropToMaxLengthMarkdownV2(text string, max int) string {
+	if len(text) <= max {
+		return text
+	}
+
+	cropPoint := max - 3
+	for cropPoint > 0 && text[cropPoint] != ' ' {
+		cropPoint--
+	}
+
+	return text[:cropPoint] + "\\.\\.\\."
+}

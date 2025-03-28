@@ -20,6 +20,8 @@ var (
 	ErrHandlerInit    = errors.New("cannot initialize handler")
 )
 
+const TELEGRAM_CHAR_LIMIT = 4096
+
 type BotInfo struct {
 	Id       int64
 	Username string
@@ -36,6 +38,7 @@ type Bot struct {
 	profile   BotInfo
 
 	markdownV1Replacer *strings.Replacer
+	markdownV2Replacer *strings.Replacer
 }
 
 func NewBot(
@@ -202,9 +205,10 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 
 	b.sendTyping(chatID)
 
-	args := strings.SplitN(update.Message.Text, " ", 2)
+	args := strings.SplitN(update.Message.Text, " ", 3)
+	argsCount := len(args)
 
-	if len(args) < 2 {
+	if argsCount < 2 {
 		_, _ = bot.SendMessage(tu.Message(
 			tu.ID(update.Message.Chat.ID),
 			"Usage: /summarize <link>\r\n\r\n"+
@@ -232,7 +236,13 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 		sentry.CaptureException(err)
 	}
 
-	llmReply, err := b.llm.Summarize(article.Text, b.models.SummarizeModel)
+	additionalInstructions := ""
+
+	if argsCount == 3 {
+		additionalInstructions = args[2]
+	}
+
+	llmReply, err := b.llm.Summarize(article.Text, b.models.SummarizeModel, additionalInstructions)
 	if err != nil {
 		slog.Error("bot: Cannot get reply from LLM connector")
 		sentry.CaptureException(err)
@@ -245,14 +255,17 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 		return
 	}
 
-	slog.Debug("bot: Got completion. Going to send.", "llm-completion", llmReply)
+	slog.Debug("bot: Got completion. Going to send reply.", "llm-completion", llmReply)
 
-	replyMarkdown := b.escapeMarkdownV1Symbols(llmReply)
+	footer := "\n\n[src](" + article.Url + ")"
+
+	replyMarkdown := cropToMaxLengthMarkdownV2(b.escapeMarkdownV2Symbols(llmReply), TELEGRAM_CHAR_LIMIT-len(footer)) +
+		footer
 
 	message := tu.Message(
 		chatID,
 		replyMarkdown,
-	).WithParseMode("Markdown")
+	).WithParseMode("MarkdownV2")
 
 	_, err = bot.SendMessage(b.reply(update.Message, message))
 
@@ -334,4 +347,18 @@ func (b *Bot) statsHandler(bot *telego.Bot, update telego.Update) {
 
 func (b *Bot) escapeMarkdownV1Symbols(input string) string {
 	return b.markdownV1Replacer.Replace(input)
+}
+
+func (b *Bot) escapeMarkdownV2Symbols(input string) string {
+	specialChars := "_*[]()~`>#+-=|{}.!"
+	var escaped strings.Builder
+
+	for _, char := range input {
+		if strings.ContainsRune(specialChars, char) {
+			escaped.WriteRune('\\')
+		}
+		escaped.WriteRune(char)
+	}
+
+	return escaped.String()
 }
