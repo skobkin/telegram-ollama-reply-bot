@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"telegram-ollama-reply-bot/bot"
+	"telegram-ollama-reply-bot/config"
 	"telegram-ollama-reply-bot/extractor"
 	"telegram-ollama-reply-bot/llm"
 	"time"
@@ -15,15 +16,13 @@ import (
 )
 
 func main() {
-	apiToken := os.Getenv("OPENAI_API_TOKEN")
-	apiBaseUrl := os.Getenv("OPENAI_API_BASE_URL")
-	sentryDsn := os.Getenv("SENTRY_DSN")
+	cfg := config.Load()
 
-	if sentryDsn != "" {
+	if cfg.Sentry.DSN != "" {
 		slog.Info("main: Initializing sentry with provided DSN")
 
 		if err := sentry.Init(sentry.ClientOptions{
-			Dsn:              sentryDsn,
+			Dsn:              cfg.Sentry.DSN,
 			AttachStacktrace: true,
 		}); err != nil {
 			slog.Error("main: Sentry initialization failed", "error", err)
@@ -34,20 +33,13 @@ func main() {
 
 	defer sentry.Flush(2 * time.Second)
 
-	models := bot.ModelSelection{
-		TextRequestModel: os.Getenv("MODEL_TEXT_REQUEST"),
-		SummarizeModel:   os.Getenv("MODEL_SUMMARIZE_REQUEST"),
-	}
+	slog.Info("main: Selected", "models", cfg.Bot.Models)
 
-	slog.Info("main: Selected", "models", models)
-
-	telegramToken := os.Getenv("TELEGRAM_TOKEN")
-
-	llmc := llm.NewConnector(apiBaseUrl, apiToken)
+	llmc := llm.NewConnector(cfg.LLM)
 
 	slog.Info("main: Checking models availability")
 
-	hasAll, searchResult := llmc.HasAllModels([]string{models.TextRequestModel, models.SummarizeModel})
+	hasAll, searchResult := llmc.HasAllModels(cfg.Bot.Models)
 	if !hasAll {
 		slog.Error("main: Not all models are available", "result", searchResult)
 		sentry.CaptureMessage("Not all models are available")
@@ -59,7 +51,7 @@ func main() {
 
 	ext := extractor.NewExtractor()
 
-	telegramApi, err := tg.NewBot(telegramToken, tg.WithLogger(bot.NewLogger("telego: ")))
+	telegramApi, err := tg.NewBot(cfg.Telegram.Token, tg.WithLogger(bot.NewLogger("telego: ")))
 	if err != nil {
 		fmt.Println(err)
 		sentry.CaptureMessage("Telegram API initialization failed")
@@ -67,7 +59,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	botService := bot.NewBot(telegramApi, llmc, ext, models)
+	botService := bot.NewBot(telegramApi, llmc, ext, cfg.Bot)
 
 	err = botService.Run()
 	if err != nil {

@@ -1,11 +1,10 @@
 package bot
 
 import (
-	"github.com/mymmrac/telego"
 	"log/slog"
-)
 
-const HistoryLength = 150
+	"github.com/mymmrac/telego"
+)
 
 type MessageData struct {
 	Name          string
@@ -53,7 +52,7 @@ func (b *Bot) saveChatMessageToHistory(message *telego.Message) {
 
 	_, ok := b.history[chatId]
 	if !ok {
-		b.history[chatId] = NewMessageHistory(HistoryLength)
+		b.history[chatId] = NewMessageHistory(b.cfg.HistoryLength)
 	}
 
 	msgData := tgUserMessageToMessageData(message, false)
@@ -74,7 +73,7 @@ func (b *Bot) saveBotReplyToHistory(replyTo *telego.Message, text string) {
 
 	_, ok := b.history[chatId]
 	if !ok {
-		b.history[chatId] = NewMessageHistory(HistoryLength)
+		b.history[chatId] = NewMessageHistory(b.cfg.HistoryLength)
 	}
 
 	msgData := MessageData{

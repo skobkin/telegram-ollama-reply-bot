@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"telegram-ollama-reply-bot/config"
 	"telegram-ollama-reply-bot/extractor"
 	"telegram-ollama-reply-bot/llm"
 	"telegram-ollama-reply-bot/stats"
@@ -34,9 +35,9 @@ type Bot struct {
 	llm       *llm.LlmConnector
 	extractor extractor.Extractor
 	stats     *stats.Stats
-	models    ModelSelection
 	history   map[int64]*MessageHistory
 	profile   BotInfo
+	cfg       config.BotConfig
 
 	markdownV1Replacer *strings.Replacer
 }
@@ -45,16 +46,16 @@ func NewBot(
 	api *telego.Bot,
 	llm *llm.LlmConnector,
 	extractor extractor.Extractor,
-	models ModelSelection,
+	cfg config.BotConfig,
 ) *Bot {
 	return &Bot{
 		api:       api,
 		llm:       llm,
 		extractor: extractor,
 		stats:     stats.NewStats(),
-		models:    models,
 		history:   make(map[int64]*MessageHistory),
 		profile:   BotInfo{0, "", ""},
+		cfg:       cfg,
 
 		markdownV1Replacer: strings.NewReplacer(
 			// https://core.telegram.org/bots/api#markdown-style
@@ -161,7 +162,7 @@ func (b *Bot) processMention(message *telego.Message) {
 
 	llmReply, err := b.llm.HandleChatMessage(
 		messageDataToLlmMessage(userMessageData),
-		b.models.TextRequestModel,
+		b.cfg.Models.TextRequestModel,
 		requestContext,
 	)
 	if err != nil {
@@ -261,7 +262,7 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 		return
 	}
 
-	llmReply, err := b.llm.Summarize(article.Text, b.models.SummarizeModel, additionalInstructions)
+	llmReply, err := b.llm.Summarize(article.Text, b.cfg.Models.SummarizeModel, additionalInstructions)
 	if err != nil {
 		slog.Error("bot: Cannot get reply from LLM connector")
 		sentry.CaptureException(err)

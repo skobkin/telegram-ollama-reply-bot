@@ -3,11 +3,13 @@ package llm
 import (
 	"context"
 	"errors"
-	"github.com/getsentry/sentry-go"
-	"github.com/sashabaranov/go-openai"
 	"log/slog"
 	"slices"
 	"strconv"
+	"telegram-ollama-reply-bot/config"
+
+	"github.com/getsentry/sentry-go"
+	"github.com/sashabaranov/go-openai"
 )
 
 var (
@@ -19,9 +21,9 @@ type LlmConnector struct {
 	client *openai.Client
 }
 
-func NewConnector(baseUrl string, token string) *LlmConnector {
-	config := openai.DefaultConfig(token)
-	config.BaseURL = baseUrl
+func NewConnector(cfg config.LLMConfig) *LlmConnector {
+	config := openai.DefaultConfig(cfg.APIToken)
+	config.BaseURL = cfg.APIBaseURL
 
 	client := openai.NewClientWithConfig(config)
 
@@ -131,7 +133,7 @@ func (l *LlmConnector) Summarize(text string, model string, instructions string)
 	return resp.Choices[0].Message.Content, nil
 }
 
-func (l *LlmConnector) HasAllModels(modelIds []string) (bool, map[string]bool) {
+func (l *LlmConnector) HasAllModels(models config.ModelSelection) (bool, map[string]bool) {
 	modelList, err := l.client.ListModels(context.Background())
 	if err != nil {
 		slog.Error("llm: Model list request failed", "error", err)
@@ -140,6 +142,7 @@ func (l *LlmConnector) HasAllModels(modelIds []string) (bool, map[string]bool) {
 		return false, map[string]bool{}
 	}
 
+	modelIds := []string{models.TextRequestModel, models.SummarizeModel}
 	slog.Info("llm: Returned model list", "models", modelList)
 	slog.Info("llm: Checking for requested models", "requested", modelIds)
 
