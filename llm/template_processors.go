@@ -10,8 +10,8 @@ import (
 type TemplateProcessor struct {
 	chatTemplate      *template.Template
 	summarizeTemplate *template.Template
-	defaultLanguage   string
-	defaultGender     string
+	language          string
+	gender            string
 	maxSummaryLength  int
 }
 
@@ -30,8 +30,8 @@ func NewTemplateProcessor(prompts config.PromptConfig) (*TemplateProcessor, erro
 	return &TemplateProcessor{
 		chatTemplate:      chatTmpl,
 		summarizeTemplate: summarizeTmpl,
-		defaultLanguage:   prompts.DefaultLanguage,
-		defaultGender:     prompts.DefaultGender,
+		language:          prompts.Language,
+		gender:            prompts.Gender,
 		maxSummaryLength:  prompts.MaxSummaryLength,
 	}, nil
 }
@@ -45,10 +45,10 @@ func (p *TemplateProcessor) ProcessChatTemplate(model, context string) (string, 
 		Context  string
 		Gender   string
 	}{
-		Language: p.defaultLanguage,
+		Language: p.language,
 		Model:    model,
 		Context:  context,
-		Gender:   p.defaultGender,
+		Gender:   p.gender,
 	})
 	if err != nil {
 		return "", err
@@ -63,7 +63,7 @@ func (p *TemplateProcessor) ProcessSummarizeTemplate() (string, error) {
 		Language  string
 		MaxLength int
 	}{
-		Language:  p.defaultLanguage,
+		Language:  p.language,
 		MaxLength: p.maxSummaryLength,
 	})
 	if err != nil {
