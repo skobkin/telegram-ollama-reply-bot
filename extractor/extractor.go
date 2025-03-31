@@ -51,7 +51,7 @@ func (e *MultiExtractor) GetArticleFromUrl(url string) (Article, error) {
 		sentry.CaptureException(err)
 	}
 
-	slog.Info("multi-extractor: primary extractor failed or returned empty text, trying fallback")
+	slog.Info("multi-extractor: trying fallback extractor")
 	article, err = e.fallback.GetArticleFromUrl(url)
 	if err == nil && article.Text != "" {
 		slog.Info("multi-extractor: successfully extracted using fallback extractor")
