@@ -35,7 +35,14 @@ func main() {
 
 	slog.Info("main: Selected", "models", cfg.Bot.Models)
 
-	llmc := llm.NewConnector(cfg.LLM)
+	templateProcessor, err := llm.NewTemplateProcessor(cfg.LLM.Prompts)
+	if err != nil {
+		slog.Error("main: Failed to initialize template processor", "error", err)
+		sentry.CaptureException(err)
+		os.Exit(1)
+	}
+
+	llmc := llm.NewConnector(cfg.LLM, templateProcessor)
 
 	slog.Info("main: Checking models availability")
 

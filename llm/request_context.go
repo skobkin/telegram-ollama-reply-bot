@@ -2,7 +2,6 @@ package llm
 
 import (
 	"github.com/sashabaranov/go-openai"
-	"strings"
 )
 
 type RequestContext struct {
@@ -101,8 +100,11 @@ func chatMessageToText(message ChatMessage) string {
 	var msgText string
 
 	if message.ReplyTo != nil {
-		msgText += "In reply to:"
-		msgText += quoteText(presentUserMessageAsText(*message.ReplyTo)) + "\n\n"
+		msgText += "In reply to message by " + message.ReplyTo.Name
+		if message.ReplyTo.Username != "" {
+			msgText += " (@" + message.ReplyTo.Username + ")"
+		}
+		msgText += ":\n"
 	}
 	msgText += presentUserMessageAsText(message)
 
@@ -117,8 +119,4 @@ func presentUserMessageAsText(message ChatMessage) string {
 	result += " wrote:\n" + message.Text
 
 	return result
-}
-
-func quoteText(text string) string {
-	return "> " + strings.ReplaceAll(text, "\n", "\n> ")
 }
