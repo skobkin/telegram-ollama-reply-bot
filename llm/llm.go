@@ -143,7 +143,8 @@ func (l *LlmConnector) HasAllModels(models config.ModelSelection) (bool, map[str
 	}
 
 	modelIds := []string{models.TextRequestModel, models.SummarizeModel}
-	slog.Info("llm: Returned model list", "models", modelList)
+	slog.Info("llm: Returned models count", "count", len(modelList.Models))
+	slog.Debug("llm: Returned model list", "models", modelList)
 	slog.Info("llm: Checking for requested models", "requested", modelIds)
 
 	requestedModelsCount := len(modelIds)
