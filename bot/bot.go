@@ -243,7 +243,7 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 
 		_, _ = bot.SendMessage(b.reply(update.Message, tu.Message(
 			chatID,
-			"Failed to extract article content. Please check if the URL is correct and try again.",
+			"Failed to extract article content. Please check if the URL is correct.",
 		)))
 
 		return
@@ -255,7 +255,7 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 
 		_, _ = bot.SendMessage(b.reply(update.Message, tu.Message(
 			chatID,
-			"Could not extract any text from the article. Please check if the URL is correct and try again.",
+			"No text extracted from the article. This resource is not supported at the moment.",
 		)))
 
 		return
