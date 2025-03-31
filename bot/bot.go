@@ -2,16 +2,17 @@ package bot
 
 import (
 	"errors"
-	"github.com/getsentry/sentry-go"
-	"github.com/mymmrac/telego"
-	th "github.com/mymmrac/telego/telegohandler"
-	tu "github.com/mymmrac/telego/telegoutil"
 	"log/slog"
 	"strconv"
 	"strings"
 	"telegram-ollama-reply-bot/extractor"
 	"telegram-ollama-reply-bot/llm"
 	"telegram-ollama-reply-bot/stats"
+
+	"github.com/getsentry/sentry-go"
+	"github.com/mymmrac/telego"
+	th "github.com/mymmrac/telego/telegohandler"
+	tu "github.com/mymmrac/telego/telegoutil"
 )
 
 var (
@@ -38,7 +39,6 @@ type Bot struct {
 	profile   BotInfo
 
 	markdownV1Replacer *strings.Replacer
-	markdownV2Replacer *strings.Replacer
 }
 
 func NewBot(
@@ -219,10 +219,16 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 		return
 	}
 
-	if !isValidAndAllowedUrl(args[1]) {
-		slog.Error("bot: Provided text is not a valid URL", "text", args[1])
+	url := args[1]
+	additionalInstructions := ""
+	if argsCount == 3 {
+		additionalInstructions = args[2]
+	}
 
-		_, _ = b.api.SendMessage(b.reply(update.Message, tu.Message(
+	if !isValidAndAllowedUrl(url) {
+		slog.Error("bot: Provided text is not a valid URL", "text", url)
+
+		_, _ = bot.SendMessage(b.reply(update.Message, tu.Message(
 			chatID,
 			"URL is not valid.",
 		)))
@@ -230,16 +236,29 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 		return
 	}
 
-	article, err := b.extractor.GetArticleFromUrl(args[1])
+	article, err := b.extractor.GetArticleFromUrl(url)
 	if err != nil {
 		slog.Error("bot: Cannot retrieve an article using extractor", "error", err)
 		sentry.CaptureException(err)
+
+		_, _ = bot.SendMessage(b.reply(update.Message, tu.Message(
+			chatID,
+			"Failed to extract article content. Please check if the URL is correct and try again.",
+		)))
+
+		return
 	}
 
-	additionalInstructions := ""
+	if article.Text == "" {
+		slog.Error("bot: Article text is empty", "url", url)
+		sentry.CaptureMessage("Article text is empty")
 
-	if argsCount == 3 {
-		additionalInstructions = args[2]
+		_, _ = bot.SendMessage(b.reply(update.Message, tu.Message(
+			chatID,
+			"Could not extract any text from the article. Please check if the URL is correct and try again.",
+		)))
+
+		return
 	}
 
 	llmReply, err := b.llm.Summarize(article.Text, b.models.SummarizeModel, additionalInstructions)
