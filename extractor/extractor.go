@@ -46,20 +46,25 @@ func (e *MultiExtractor) GetArticleFromUrl(url string) (Article, error) {
 		slog.Info("multi-extractor: successfully extracted using primary extractor")
 
 		return article, nil
+	} else if err != nil {
+		slog.Error("multi-extractor: primary extractor failed", "url", url, "error", err)
+		sentry.CaptureException(err)
 	}
 
 	slog.Info("multi-extractor: primary extractor failed or returned empty text, trying fallback")
 	article, err = e.fallback.GetArticleFromUrl(url)
-	if err != nil {
-		slog.Error("multi-extractor: both extractors failed", "url", url)
-		sentry.CaptureException(err)
+	if err == nil && article.Text != "" {
+		slog.Info("multi-extractor: successfully extracted using fallback extractor")
 
-		return Article{}, ErrExtractFailed
+		return article, nil
+	} else if err != nil {
+		slog.Error("multi-extractor: fallback extractor failed", "url", url, "error", err)
+		sentry.CaptureException(err)
 	}
 
-	slog.Info("multi-extractor: successfully extracted using fallback extractor")
+	slog.Error("multi-extractor: both extractors failed", "url", url)
 
-	return article, nil
+	return Article{}, ErrExtractFailed
 }
 
 func NewExtractor() Extractor {
