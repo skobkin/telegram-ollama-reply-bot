@@ -24,7 +24,8 @@ type LLMConfig struct {
 type PromptConfig struct {
 	ChatSystemPrompt string
 	SummarizePrompt  string
-	DefaultLanguage  string
+	Language         string
+	Gender           string
 	MaxSummaryLength int
 }
 
@@ -68,7 +69,8 @@ func Load() *Config {
 
 	defaultChatPrompt := "You're a bot in the Telegram chat.\n" +
 		"You're using a model called \"{{.Model}}\".\n" +
-		"You should reply in the following language: {{.Language}} (unless specifically asked by the user).\n\n" +
+		"You should reply in the following language: {{.Language}}.\n" +
+		"You should use {{.Gender}} gender when speaking about yourself and neutral gender when speaking about others.\n\n" +
 		"{{.Context}}"
 
 	defaultSummarizePrompt := "You're a text shortener. Give a VERY SHORT summary as a list of facts. \n" +
@@ -89,9 +91,10 @@ func Load() *Config {
 			APIBaseURL: os.Getenv("OPENAI_API_BASE_URL"),
 			APIToken:   os.Getenv("OPENAI_API_TOKEN"),
 			Prompts: PromptConfig{
-				ChatSystemPrompt: getEnvOrDefault("CHAT_SYSTEM_PROMPT", defaultChatPrompt),
-				SummarizePrompt:  getEnvOrDefault("SUMMARIZE_PROMPT", defaultSummarizePrompt),
-				DefaultLanguage:  getEnvOrDefault("DEFAULT_LANGUAGE", "Russian"),
+				ChatSystemPrompt: getEnvOrDefault("PROMPT_CHAT", defaultChatPrompt),
+				SummarizePrompt:  getEnvOrDefault("PROMPT_SUMMARIZE", defaultSummarizePrompt),
+				Language:         getEnvOrDefault("RESPONSE_LANGUAGE", "Russian"),
+				Gender:           getEnvOrDefault("RESPONSE_GENDER", "neutral"),
 				MaxSummaryLength: maxSummaryLength,
 			},
 		},
