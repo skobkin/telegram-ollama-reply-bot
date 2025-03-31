@@ -22,10 +22,11 @@ The bot can be configured using the following environment variables:
 | `MODEL_SUMMARIZE_REQUEST` | Model name for summarization requests              | Yes      | -      |
 | `BOT_HISTORY_LENGTH`      | Number of messages to keep in conversation history | No       | 150    |
 | `SENTRY_DSN`              | Sentry DSN for error tracking                      | No       | empty  |
-| `DEFAULT_LANGUAGE`        | Default language for bot responses                  | No       | Russian |
+| `RESPONSE_LANGUAGE`       | Language for bot responses                          | No       | Russian |
+| `RESPONSE_GENDER`         | Gender for bot responses                            | No       | neutral |
 | `MAX_SUMMARY_LENGTH`      | Maximum length of generated summaries              | No       | 2000   |
-| `CHAT_SYSTEM_PROMPT`      | System prompt for chat interactions                 | No       | See [config.go](config/config.go) |
-| `SUMMARIZE_PROMPT`        | System prompt for summarization                    | No       | See [config.go](config/config.go) |
+| `PROMPT_CHAT`             | System prompt for chat interactions                 | No       | See [config.go](config/config.go) |
+| `PROMPT_SUMMARIZE`        | System prompt for summarization                    | No       | See [config.go](config/config.go) |
 
 ## Usage
 

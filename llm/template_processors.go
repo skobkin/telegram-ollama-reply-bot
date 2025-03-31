@@ -11,6 +11,7 @@ type TemplateProcessor struct {
 	chatTemplate      *template.Template
 	summarizeTemplate *template.Template
 	defaultLanguage   string
+	defaultGender     string
 	maxSummaryLength  int
 }
 
@@ -30,6 +31,7 @@ func NewTemplateProcessor(prompts config.PromptConfig) (*TemplateProcessor, erro
 		chatTemplate:      chatTmpl,
 		summarizeTemplate: summarizeTmpl,
 		defaultLanguage:   prompts.DefaultLanguage,
+		defaultGender:     prompts.DefaultGender,
 		maxSummaryLength:  prompts.MaxSummaryLength,
 	}, nil
 }
@@ -41,10 +43,12 @@ func (p *TemplateProcessor) ProcessChatTemplate(model, context string) (string, 
 		Language string
 		Model    string
 		Context  string
+		Gender   string
 	}{
 		Language: p.defaultLanguage,
 		Model:    model,
 		Context:  context,
+		Gender:   p.defaultGender,
 	})
 	if err != nil {
 		return "", err
