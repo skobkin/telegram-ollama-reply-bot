@@ -2,26 +2,19 @@ package extractor
 
 import (
 	"errors"
-	"github.com/advancedlogic/GoOse"
-	"github.com/getsentry/sentry-go"
 	"log/slog"
+	"time"
+
+	"github.com/getsentry/sentry-go"
+)
+
+const (
+	ExtractionTimeout = 10 * time.Second
 )
 
 var (
 	ErrExtractFailed = errors.New("extraction failed")
 )
-
-type Extractor struct {
-	goose *goose.Goose
-}
-
-func NewExtractor() *Extractor {
-	gooseExtractor := goose.New()
-
-	return &Extractor{
-		goose: &gooseExtractor,
-	}
-}
 
 type Article struct {
 	Title string
@@ -29,23 +22,46 @@ type Article struct {
 	Url   string
 }
 
-func (e *Extractor) GetArticleFromUrl(url string) (Article, error) {
-	slog.Info("extractor: requested extraction from URL ", "url", url)
+type Extractor interface {
+	GetArticleFromUrl(url string) (Article, error)
+}
 
-	article, err := e.goose.ExtractFromURL(url)
+type MultiExtractor struct {
+	primary  Extractor
+	fallback Extractor
+}
 
+func NewMultiExtractor() *MultiExtractor {
+	return &MultiExtractor{
+		primary:  NewReadabilityExtractor(),
+		fallback: NewGoOseExtractor(),
+	}
+}
+
+func (e *MultiExtractor) GetArticleFromUrl(url string) (Article, error) {
+	slog.Info("multi-extractor: requested extraction from URL ", "url", url)
+
+	article, err := e.primary.GetArticleFromUrl(url)
+	if err == nil && article.Text != "" {
+		slog.Info("multi-extractor: successfully extracted using primary extractor")
+
+		return article, nil
+	}
+
+	slog.Info("multi-extractor: primary extractor failed or returned empty text, trying fallback")
+	article, err = e.fallback.GetArticleFromUrl(url)
 	if err != nil {
-		slog.Error("extractor: failed extracting from URL", "url", url)
+		slog.Error("multi-extractor: both extractors failed", "url", url)
 		sentry.CaptureException(err)
 
 		return Article{}, ErrExtractFailed
 	}
 
-	slog.Debug("extractor: article extracted", "article", article)
+	slog.Info("multi-extractor: successfully extracted using fallback extractor")
 
-	return Article{
-		Title: article.Title,
-		Text:  article.CleanedText,
-		Url:   article.FinalURL,
-	}, nil
+	return article, nil
+}
+
+func NewExtractor() Extractor {
+	return NewMultiExtractor()
 }

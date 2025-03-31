@@ -32,7 +32,7 @@ type BotInfo struct {
 type Bot struct {
 	api       *telego.Bot
 	llm       *llm.LlmConnector
-	extractor *extractor.Extractor
+	extractor extractor.Extractor
 	stats     *stats.Stats
 	models    ModelSelection
 	history   map[int64]*MessageHistory
@@ -44,7 +44,7 @@ type Bot struct {
 func NewBot(
 	api *telego.Bot,
 	llm *llm.LlmConnector,
-	extractor *extractor.Extractor,
+	extractor extractor.Extractor,
 	models ModelSelection,
 ) *Bot {
 	return &Bot{
