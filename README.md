@@ -31,6 +31,24 @@ The bot can be configured using the following environment variables:
 
 ## Usage
 
+The bot supports the following commands:
+
+| Command     | Description                                    | Example |
+|-------------|------------------------------------------------|---------|
+| `/start`    | Start the bot and get a welcome message        | `/start` |
+| `/help`     | Show help message with available commands      | `/help` |
+| `/hey`      | Ask something from the LLM                     | `/hey what is the capital of France?` |
+| `/summarize`, `/s` | Summarize text from the provided link   | `/summarize https://ex.co/article`, `/s https://ex.co/article concentrate on tech stuff` |
+| `/stats`    | Show bot statistics (admin only)               | `/stats` |
+| `/reset`    | Reset current chat history (admin only)        | `/reset` |
+
+You can also interact with the bot by:
+- Mentioning it in a message
+- Replying to its messages
+- Sending direct messages in private chat (if enabled)
+
+## Running
+
 ### Docker
 
 ```shell
