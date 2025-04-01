@@ -117,6 +117,7 @@ func (b *Bot) Run() error {
 	bh.Handle(b.summarizeHandler, th.Or(th.CommandEqual("summarize"), th.CommandEqual("s")))
 	bh.Handle(b.statsHandler, th.CommandEqual("stats"))
 	bh.Handle(b.helpHandler, th.CommandEqual("help"))
+	bh.Handle(b.resetHandler, th.CommandEqual("reset"))
 	bh.Handle(b.textMessageHandler, th.AnyMessageWithText())
 
 	bh.Start()
@@ -350,7 +351,7 @@ func (b *Bot) statsHandler(bot *telego.Bot, update telego.Update) {
 		slog.Info("bot: /stats request from non-admin user, denying")
 		_, _ = bot.SendMessage(b.reply(update.Message, tu.Message(
 			tu.ID(update.Message.Chat.ID),
-			"Access denied. This command is available only to administrators.",
+			"This command is available only to administrators.",
 		)))
 		return
 	}
@@ -366,6 +367,37 @@ func (b *Bot) statsHandler(bot *telego.Bot, update telego.Update) {
 			b.stats.String()+"\r\n"+
 			"```",
 	)).WithParseMode("Markdown"))
+	if err != nil {
+		slog.Error("bot: Cannot send a message", "error", err)
+		sentry.CaptureException(err)
+
+		b.trySendReplyError(update.Message)
+	}
+}
+
+func (b *Bot) resetHandler(bot *telego.Bot, update telego.Update) {
+	slog.Info("bot: /reset")
+
+	if !b.isFromAdmin(update.Message) {
+		slog.Info("bot: /reset request from non-admin user, denying")
+		_, _ = bot.SendMessage(b.reply(update.Message, tu.Message(
+			tu.ID(update.Message.Chat.ID),
+			"This command is available only to administrators.",
+		)))
+		return
+	}
+
+	chatID := update.Message.Chat.ID
+
+	b.sendTyping(tu.ID(chatID))
+
+	b.ResetChatHistory(chatID)
+	b.stats.ChatHistoryReset()
+
+	_, err := bot.SendMessage(b.reply(update.Message, tu.Message(
+		tu.ID(chatID),
+		"Okay, let's start fresh.",
+	)))
 	if err != nil {
 		slog.Error("bot: Cannot send a message", "error", err)
 		sentry.CaptureException(err)

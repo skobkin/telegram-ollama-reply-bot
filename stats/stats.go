@@ -2,9 +2,10 @@ package stats
 
 import (
 	"encoding/json"
-	"github.com/getsentry/sentry-go"
 	"sync"
 	"time"
+
+	"github.com/getsentry/sentry-go"
 )
 
 type Stats struct {
@@ -18,6 +19,7 @@ type Stats struct {
 
 	Mentions          uint64
 	SummarizeRequests uint64
+	ChatHistoryResets uint64
 }
 
 func NewStats() *Stats {
@@ -30,6 +32,7 @@ func NewStats() *Stats {
 
 		Mentions:          0,
 		SummarizeRequests: 0,
+		ChatHistoryResets: 0,
 	}
 }
 
@@ -43,6 +46,7 @@ func (s *Stats) MarshalJSON() ([]byte, error) {
 
 		Mentions          uint64 `json:"mentions"`
 		SummarizeRequests uint64 `json:"summarize_requests"`
+		ChatHistoryResets uint64 `json:"chat_history_resets"`
 	}{
 		Uptime: time.Now().Sub(s.RunningSince).String(),
 
@@ -52,6 +56,7 @@ func (s *Stats) MarshalJSON() ([]byte, error) {
 
 		Mentions:          s.Mentions,
 		SummarizeRequests: s.SummarizeRequests,
+		ChatHistoryResets: s.ChatHistoryResets,
 	})
 }
 
@@ -94,4 +99,10 @@ func (s *Stats) SummarizeRequest() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.SummarizeRequests++
+}
+
+func (s *Stats) ChatHistoryReset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ChatHistoryResets++
 }

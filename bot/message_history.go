@@ -125,3 +125,14 @@ func (b *Bot) getChatHistory(chatId int64) []MessageData {
 
 	return b.history[chatId].GetAll()
 }
+
+func (b *Bot) ResetChatHistory(chatId int64) {
+	_, ok := b.history[chatId]
+	if !ok {
+		slog.Debug("bot: Chat ID not found in history", "chat_id", chatId)
+		return
+	}
+
+	slog.Info("bot: Resetting chat history", "chat_id", chatId)
+	b.history[chatId] = NewMessageHistory(b.cfg.HistoryLength)
+}
