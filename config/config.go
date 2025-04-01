@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config represents the root configuration structure
@@ -43,6 +44,7 @@ type TelegramConfig struct {
 type BotConfig struct {
 	HistoryLength int
 	Models        ModelSelection
+	AdminIDs      []int64
 }
 
 // ModelSelection contains configuration for LLM models
@@ -64,6 +66,18 @@ func Load() *Config {
 	if lengthStr := os.Getenv("MAX_SUMMARY_LENGTH"); lengthStr != "" {
 		if length, err := strconv.Atoi(lengthStr); err == nil {
 			maxSummaryLength = length
+		}
+	}
+
+	// Parse admin IDs from environment variable
+	var adminIDs []int64
+	if adminIDsStr := os.Getenv("BOT_ADMIN_IDS"); adminIDsStr != "" {
+		// Split by comma and parse each ID
+		for _, idStr := range strings.Split(adminIDsStr, ",") {
+			idStr = strings.TrimSpace(idStr)
+			if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
+				adminIDs = append(adminIDs, id)
+			}
 		}
 	}
 
@@ -110,6 +124,7 @@ func Load() *Config {
 				TextRequestModel: os.Getenv("MODEL_TEXT_REQUEST"),
 				SummarizeModel:   os.Getenv("MODEL_SUMMARIZE_REQUEST"),
 			},
+			AdminIDs: adminIDs,
 		},
 	}
 }

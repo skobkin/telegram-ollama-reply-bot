@@ -346,6 +346,15 @@ func (b *Bot) startHandler(bot *telego.Bot, update telego.Update) {
 func (b *Bot) statsHandler(bot *telego.Bot, update telego.Update) {
 	slog.Info("bot: /stats")
 
+	if !b.isFromAdmin(update.Message) {
+		slog.Info("bot: /stats request from non-admin user, denying")
+		_, _ = bot.SendMessage(b.reply(update.Message, tu.Message(
+			tu.ID(update.Message.Chat.ID),
+			"Access denied. This command is available only to administrators.",
+		)))
+		return
+	}
+
 	chatID := tu.ID(update.Message.Chat.ID)
 
 	b.sendTyping(chatID)

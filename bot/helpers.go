@@ -1,13 +1,14 @@
 package bot
 
 import (
-	"github.com/getsentry/sentry-go"
-	"github.com/mymmrac/telego"
-	tu "github.com/mymmrac/telego/telegoutil"
 	"log/slog"
 	"net/url"
 	"slices"
 	"strings"
+
+	"github.com/getsentry/sentry-go"
+	"github.com/mymmrac/telego"
+	tu "github.com/mymmrac/telego/telegoutil"
 )
 
 var (
@@ -108,4 +109,12 @@ func cropToMaxLengthMarkdownV2(text string, max int) string {
 	}
 
 	return text[:cropPoint] + "\\.\\.\\."
+}
+
+func (b *Bot) isFromAdmin(message *telego.Message) bool {
+	if message == nil || message.From == nil {
+		return false
+	}
+
+	return slices.Contains(b.cfg.AdminIDs, message.From.ID)
 }

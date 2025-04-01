@@ -27,6 +27,7 @@ The bot can be configured using the following environment variables:
 | `MAX_SUMMARY_LENGTH`      | Maximum length of generated summaries              | No       | 2000   |
 | `PROMPT_CHAT`             | System prompt for chat interactions                 | No       | See [config.go](config/config.go) |
 | `PROMPT_SUMMARIZE`        | System prompt for summarization                    | No       | See [config.go](config/config.go) |
+| `BOT_ADMIN_IDS`           | Comma-separated list of admin user IDs             | No       | empty  |
 
 ## Usage
 
@@ -41,5 +42,6 @@ docker run \
   -e MODEL_SUMMARIZE_REQUEST=gemma3:12b \
   -e BOT_HISTORY_LENGTH=150 \
   -e SENTRY_DSN=https://your-sentry-dsn \
+  -e BOT_ADMIN_IDS=123456789,987654321 \
   skobkin/telegram-llm-bot
 ```
