@@ -405,21 +405,3 @@ func (b *Bot) resetHandler(bot *telego.Bot, update telego.Update) {
 		b.trySendReplyError(update.Message)
 	}
 }
-
-func (b *Bot) escapeMarkdownV1Symbols(input string) string {
-	return b.markdownV1Replacer.Replace(input)
-}
-
-func (b *Bot) escapeMarkdownV2Symbols(input string) string {
-	specialChars := "_*[]()~`>#+-=|{}.!"
-	var escaped strings.Builder
-
-	for _, char := range input {
-		if strings.ContainsRune(specialChars, char) {
-			escaped.WriteRune('\\')
-		}
-		escaped.WriteRune(char)
-	}
-
-	return escaped.String()
-}

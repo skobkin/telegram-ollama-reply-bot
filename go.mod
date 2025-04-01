@@ -9,7 +9,7 @@ require (
 	github.com/getsentry/sentry-go v0.31.1
 	github.com/go-shiori/go-readability v0.0.0-20250217085726-9f5bf5ca7612
 	github.com/mymmrac/telego v0.31.4
-	github.com/sashabaranov/go-openai v1.32.5
+	github.com/sashabaranov/go-openai v1.38.1
 )
 
 require (
