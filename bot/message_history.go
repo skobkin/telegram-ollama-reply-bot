@@ -39,7 +39,7 @@ func (b *MessageHistory) GetAll() []MessageData {
 	return b.messages
 }
 
-func (b *Bot) saveChatMessageToHistory(message *telego.Message) {
+func (b *Bot) saveChatMessageToHistory(message telego.Message) {
 	chatId := message.Chat.ID
 
 	slog.Info(
@@ -60,7 +60,7 @@ func (b *Bot) saveChatMessageToHistory(message *telego.Message) {
 	b.history[chatId].Push(msgData)
 }
 
-func (b *Bot) saveBotReplyToHistory(replyTo *telego.Message, text string) {
+func (b *Bot) saveBotReplyToHistory(replyTo telego.Message, text string) {
 	chatId := replyTo.Chat.ID
 
 	slog.Info(
@@ -98,7 +98,7 @@ func (b *Bot) saveBotReplyToHistory(replyTo *telego.Message, text string) {
 	b.history[chatId].Push(msgData)
 }
 
-func tgUserMessageToMessageData(message *telego.Message, isUserRequest bool) MessageData {
+func tgUserMessageToMessageData(message telego.Message, isUserRequest bool) MessageData {
 	msgData := MessageData{
 		Name:          message.From.FirstName,
 		Username:      message.From.Username,
@@ -108,7 +108,7 @@ func tgUserMessageToMessageData(message *telego.Message, isUserRequest bool) Mes
 	}
 
 	if message.ReplyToMessage != nil {
-		replyData := tgUserMessageToMessageData(message.ReplyToMessage, false)
+		replyData := tgUserMessageToMessageData(*message.ReplyToMessage, false)
 		msgData.ReplyTo = &replyData
 	}
 

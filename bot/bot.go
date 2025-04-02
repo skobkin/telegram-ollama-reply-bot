@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"strconv"
@@ -20,11 +21,12 @@ var (
 	ErrGetMe          = errors.New("cannot retrieve api user")
 	ErrUpdatesChannel = errors.New("cannot get updates channel")
 	ErrHandlerInit    = errors.New("cannot initialize handler")
+	ErrHandlerStart   = errors.New("cannot start bot handler")
 )
 
 const TELEGRAM_CHAR_LIMIT = 4096
 
-type BotInfo struct {
+type Info struct {
 	Id       int64
 	Username string
 	Name     string
@@ -36,8 +38,9 @@ type Bot struct {
 	extractor extractor.Extractor
 	stats     *stats.Stats
 	history   map[int64]*MessageHistory
-	profile   BotInfo
+	profile   Info
 	cfg       config.BotConfig
+	ctx       context.Context
 
 	markdownV1Replacer *strings.Replacer
 }
@@ -47,6 +50,7 @@ func NewBot(
 	llm *llm.LlmConnector,
 	extractor extractor.Extractor,
 	cfg config.BotConfig,
+	ctx context.Context,
 ) *Bot {
 	return &Bot{
 		api:       api,
@@ -54,8 +58,9 @@ func NewBot(
 		extractor: extractor,
 		stats:     stats.NewStats(),
 		history:   make(map[int64]*MessageHistory),
-		profile:   BotInfo{0, "", ""},
+		profile:   Info{0, "", ""},
 		cfg:       cfg,
+		ctx:       ctx,
 
 		markdownV1Replacer: strings.NewReplacer(
 			// https://core.telegram.org/bots/api#markdown-style
@@ -68,7 +73,7 @@ func NewBot(
 }
 
 func (b *Bot) Run() error {
-	botUser, err := b.api.GetMe()
+	botUser, err := b.api.GetMe(b.ctx)
 	if err != nil {
 		slog.Error("bot: Cannot retrieve api user", "error", err)
 		sentry.CaptureException(err)
@@ -76,20 +81,24 @@ func (b *Bot) Run() error {
 		return ErrGetMe
 	}
 
-	slog.Info("bot: Running api as", "id", botUser.ID, "username", botUser.Username, "name", botUser.FirstName, "is_bot", botUser.IsBot)
+	slog.Info("bot: Running api as",
+		"id", botUser.ID,
+		"username", botUser.Username,
+		"name", botUser.FirstName,
+		"is_bot", botUser.IsBot)
 	sentry.AddBreadcrumb(&sentry.Breadcrumb{
 		Category: "telegram-api",
 		Message:  "Bot ID: " + strconv.FormatInt(botUser.ID, 10),
 		Level:    sentry.LevelInfo,
 	})
 
-	b.profile = BotInfo{
+	b.profile = Info{
 		Id:       botUser.ID,
 		Username: botUser.Username,
 		Name:     botUser.FirstName,
 	}
 
-	updates, err := b.api.UpdatesViaLongPolling(nil)
+	updates, err := b.api.UpdatesViaLongPolling(b.ctx, nil)
 	if err != nil {
 		slog.Error("bot: Cannot get update channel", "error", err)
 		sentry.CaptureException(err)
@@ -105,50 +114,57 @@ func (b *Bot) Run() error {
 		return ErrHandlerInit
 	}
 
-	defer bh.Stop()
-	defer b.api.StopLongPolling()
+	defer func() {
+		slog.Info("bot: Stopping bot handler")
+		err := bh.Stop()
+		if err != nil {
+			slog.Error("bot: Cannot stop bot handler", "error", err)
+			sentry.CaptureException(err)
+		}
+	}()
 
 	// Middlewares
 	bh.Use(b.chatHistory)
 	bh.Use(b.chatTypeStatsCounter)
 
 	// Command handlers
-	bh.Handle(b.startHandler, th.CommandEqual("start"))
-	bh.Handle(b.summarizeHandler, th.Or(th.CommandEqual("summarize"), th.CommandEqual("s")))
-	bh.Handle(b.statsHandler, th.CommandEqual("stats"))
-	bh.Handle(b.helpHandler, th.CommandEqual("help"))
-	bh.Handle(b.resetHandler, th.CommandEqual("reset"))
-	bh.Handle(b.textMessageHandler, th.AnyMessageWithText())
+	slog.Debug("bot: Registering message handlers")
+	bh.HandleMessage(b.startHandler, th.CommandEqual("start"))
+	bh.HandleMessage(b.summarizeHandler, th.Or(th.CommandEqual("summarize"), th.CommandEqual("s")))
+	bh.HandleMessage(b.statsHandler, th.CommandEqual("stats"))
+	bh.HandleMessage(b.helpHandler, th.CommandEqual("help"))
+	bh.HandleMessage(b.resetHandler, th.CommandEqual("reset"))
+	bh.HandleMessage(b.textMessageHandler, th.AnyMessageWithText())
+	slog.Debug("bot: Message handlers registered")
 
-	bh.Start()
+	slog.Info("bot: Starting bot handler")
+	if err := bh.Start(); err != nil {
+		slog.Error("bot: Cannot start bot handler", "error", err)
+		sentry.CaptureException(err)
+
+		return ErrHandlerStart
+	}
 
 	return nil
 }
 
-func (b *Bot) textMessageHandler(bot *telego.Bot, update telego.Update) {
-	slog.Debug("bot: /any-message")
-
-	message := update.Message
-
-	switch {
-	// Mentions
-	case b.isMentionOfMe(update):
-		slog.Info("bot: /any-message", "type", "mention")
+func (b *Bot) textMessageHandler(ctx *th.Context, message telego.Message) error {
+	if b.isMentionOfMe(message) || b.isReplyToMe(message) || b.isPrivateWithMe(message) {
+		messageType := "private"
+		if b.isMentionOfMe(message) {
+			messageType = "mention"
+		} else if b.isReplyToMe(message) {
+			messageType = "reply"
+		}
+		slog.Info("bot: Processing message", "type", messageType)
 		b.processMention(message)
-	// Replies
-	case b.isReplyToMe(update):
-		slog.Info("bot: /any-message", "type", "reply")
-		b.processMention(message)
-	// Private chat
-	case b.isPrivateWithMe(update):
-		slog.Info("bot: /any-message", "type", "private")
-		b.processMention(message)
-	default:
-		slog.Debug("bot: /any-message", "info", "MessageData is not mention, reply or private chat. Skipping.")
+	} else {
+		slog.Debug("bot: Skipping message - not a mention, reply, or private chat")
 	}
+	return nil
 }
 
-func (b *Bot) processMention(message *telego.Message) {
+func (b *Bot) processMention(message telego.Message) {
 	b.stats.Mention()
 
 	slog.Info("bot: /mention", "chat", message.Chat.ID)
@@ -170,7 +186,7 @@ func (b *Bot) processMention(message *telego.Message) {
 		slog.Error("bot: Cannot get reply from LLM connector")
 		sentry.CaptureException(err)
 
-		_, _ = b.api.SendMessage(b.reply(message, tu.Message(
+		_, _ = b.api.SendMessage(b.ctx, b.reply(message, tu.Message(
 			chatID,
 			"LLM request error. Try again later.",
 		)))
@@ -185,7 +201,7 @@ func (b *Bot) processMention(message *telego.Message) {
 		b.escapeMarkdownV1Symbols(llmReply),
 	).WithParseMode("Markdown")
 
-	_, err = b.api.SendMessage(b.reply(message, reply))
+	_, err = b.api.SendMessage(b.ctx, b.reply(message, reply))
 	if err != nil {
 		slog.Error("bot: Can't send reply message", "error", err)
 		sentry.CaptureException(err)
@@ -198,27 +214,27 @@ func (b *Bot) processMention(message *telego.Message) {
 	b.saveBotReplyToHistory(message, llmReply)
 }
 
-func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
-	slog.Info("bot: /summarize", "message-text", update.Message.Text)
+func (b *Bot) summarizeHandler(ctx *th.Context, message telego.Message) error {
+	slog.Info("bot: /summarize", "message-text", message.Text)
 
 	b.stats.SummarizeRequest()
 
-	chatID := tu.ID(update.Message.Chat.ID)
+	chatID := tu.ID(message.Chat.ID)
 
 	b.sendTyping(chatID)
 
-	args := strings.SplitN(update.Message.Text, " ", 3)
+	args := strings.SplitN(message.Text, " ", 3)
 	argsCount := len(args)
 
 	if argsCount < 2 {
-		_, _ = bot.SendMessage(tu.Message(
-			tu.ID(update.Message.Chat.ID),
+		_, _ = ctx.Bot().SendMessage(ctx.Context(), tu.Message(
+			tu.ID(message.Chat.ID),
 			"Usage: /summarize <link>\r\n\r\n"+
 				"Example:\r\n"+
 				"/summarize https://kernel.org/get-notifications-for-your-patches.html",
 		))
 
-		return
+		return nil
 	}
 
 	url := args[1]
@@ -230,12 +246,12 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 	if !isValidAndAllowedUrl(url) {
 		slog.Error("bot: Provided text is not a valid URL", "text", url)
 
-		_, _ = bot.SendMessage(b.reply(update.Message, tu.Message(
+		_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(
 			chatID,
 			"URL is not valid.",
 		)))
 
-		return
+		return nil
 	}
 
 	article, err := b.extractor.GetArticleFromUrl(url)
@@ -243,24 +259,24 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 		slog.Error("bot: Cannot retrieve an article using extractor", "error", err)
 		sentry.CaptureException(err)
 
-		_, _ = bot.SendMessage(b.reply(update.Message, tu.Message(
+		_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(
 			chatID,
 			"Failed to extract article content. Please check if the URL is correct.",
 		)))
 
-		return
+		return nil
 	}
 
 	if article.Text == "" {
 		slog.Error("bot: Article text is empty", "url", url)
 		sentry.CaptureMessage("Article text is empty")
 
-		_, _ = bot.SendMessage(b.reply(update.Message, tu.Message(
+		_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(
 			chatID,
 			"No text extracted from the article. This resource is not supported at the moment.",
 		)))
 
-		return
+		return nil
 	}
 
 	llmReply, err := b.llm.Summarize(article.Text, b.cfg.Models.SummarizeModel, additionalInstructions)
@@ -268,12 +284,12 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 		slog.Error("bot: Cannot get reply from LLM connector")
 		sentry.CaptureException(err)
 
-		_, _ = b.api.SendMessage(b.reply(update.Message, tu.Message(
+		_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(
 			chatID,
 			"LLM request error. Try again later.",
 		)))
 
-		return
+		return nil
 	}
 
 	slog.Debug("bot: Got completion. Going to send reply.", "llm-completion", llmReply)
@@ -283,31 +299,32 @@ func (b *Bot) summarizeHandler(bot *telego.Bot, update telego.Update) {
 	replyMarkdown := cropToMaxLengthMarkdownV2(b.escapeMarkdownV2Symbols(llmReply), TELEGRAM_CHAR_LIMIT-len(footer)) +
 		footer
 
-	message := tu.Message(
+	replyMessage := tu.Message(
 		chatID,
 		replyMarkdown,
 	).WithParseMode("MarkdownV2")
 
-	_, err = bot.SendMessage(b.reply(update.Message, message))
+	_, err = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, replyMessage))
 
 	if err != nil {
 		slog.Error("bot: Can't send reply message", "error", err)
 		sentry.CaptureException(err)
 
-		b.trySendReplyError(update.Message)
+		b.trySendReplyError(message)
 	}
 
-	b.saveBotReplyToHistory(update.Message, replyMarkdown)
+	b.saveBotReplyToHistory(message, replyMarkdown)
+	return nil
 }
 
-func (b *Bot) helpHandler(bot *telego.Bot, update telego.Update) {
+func (b *Bot) helpHandler(ctx *th.Context, message telego.Message) error {
 	slog.Info("bot: /help")
 
-	chatID := tu.ID(update.Message.Chat.ID)
+	chatID := tu.ID(message.Chat.ID)
 
 	b.sendTyping(chatID)
 
-	_, err := bot.SendMessage(b.reply(update.Message, tu.Messagef(
+	_, err := ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Messagef(
 		chatID,
 		"Instructions:\r\n"+
 			"/hey <text> - Ask something from LLM\r\n"+
@@ -320,18 +337,19 @@ func (b *Bot) helpHandler(bot *telego.Bot, update telego.Update) {
 		slog.Error("bot: Cannot send a message", "error", err)
 		sentry.CaptureException(err)
 
-		b.trySendReplyError(update.Message)
+		b.trySendReplyError(message)
 	}
+	return nil
 }
 
-func (b *Bot) startHandler(bot *telego.Bot, update telego.Update) {
+func (b *Bot) startHandler(ctx *th.Context, message telego.Message) error {
 	slog.Info("bot: /start")
 
-	chatID := tu.ID(update.Message.Chat.ID)
+	chatID := tu.ID(message.Chat.ID)
 
 	b.sendTyping(chatID)
 
-	_, err := bot.SendMessage(b.reply(update.Message, tu.Message(
+	_, err := ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(
 		chatID,
 		"Hey!\r\n"+
 			"Check out /help to learn how to use this bot.",
@@ -340,27 +358,28 @@ func (b *Bot) startHandler(bot *telego.Bot, update telego.Update) {
 		slog.Error("bot: Cannot send a message", "error", err)
 		sentry.CaptureException(err)
 
-		b.trySendReplyError(update.Message)
+		b.trySendReplyError(message)
 	}
+	return nil
 }
 
-func (b *Bot) statsHandler(bot *telego.Bot, update telego.Update) {
+func (b *Bot) statsHandler(ctx *th.Context, message telego.Message) error {
 	slog.Info("bot: /stats")
 
-	if !b.isFromAdmin(update.Message) {
+	if !b.isFromAdmin(&message) {
 		slog.Info("bot: /stats request from non-admin user, denying")
-		_, _ = bot.SendMessage(b.reply(update.Message, tu.Message(
-			tu.ID(update.Message.Chat.ID),
+		_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(
+			tu.ID(message.Chat.ID),
 			"This command is available only to administrators.",
 		)))
-		return
+		return nil
 	}
 
-	chatID := tu.ID(update.Message.Chat.ID)
+	chatID := tu.ID(message.Chat.ID)
 
 	b.sendTyping(chatID)
 
-	_, err := bot.SendMessage(b.reply(update.Message, tu.Message(
+	_, err := ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(
 		chatID,
 		"Current bot stats:\r\n"+
 			"```json\r\n"+
@@ -371,30 +390,31 @@ func (b *Bot) statsHandler(bot *telego.Bot, update telego.Update) {
 		slog.Error("bot: Cannot send a message", "error", err)
 		sentry.CaptureException(err)
 
-		b.trySendReplyError(update.Message)
+		b.trySendReplyError(message)
 	}
+	return nil
 }
 
-func (b *Bot) resetHandler(bot *telego.Bot, update telego.Update) {
+func (b *Bot) resetHandler(ctx *th.Context, message telego.Message) error {
 	slog.Info("bot: /reset")
 
-	if !b.isFromAdmin(update.Message) {
+	if !b.isFromAdmin(&message) {
 		slog.Info("bot: /reset request from non-admin user, denying")
-		_, _ = bot.SendMessage(b.reply(update.Message, tu.Message(
-			tu.ID(update.Message.Chat.ID),
+		_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(
+			tu.ID(message.Chat.ID),
 			"This command is available only to administrators.",
 		)))
-		return
+		return nil
 	}
 
-	chatID := update.Message.Chat.ID
+	chatID := message.Chat.ID
 
 	b.sendTyping(tu.ID(chatID))
 
 	b.ResetChatHistory(chatID)
 	b.stats.ChatHistoryReset()
 
-	_, err := bot.SendMessage(b.reply(update.Message, tu.Message(
+	_, err := ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(
 		tu.ID(chatID),
 		"Okay, let's start fresh.",
 	)))
@@ -402,6 +422,7 @@ func (b *Bot) resetHandler(bot *telego.Bot, update telego.Update) {
 		slog.Error("bot: Cannot send a message", "error", err)
 		sentry.CaptureException(err)
 
-		b.trySendReplyError(update.Message)
+		b.trySendReplyError(message)
 	}
+	return nil
 }

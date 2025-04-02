@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,6 +17,8 @@ import (
 )
 
 func main() {
+	ctx := context.Background()
+
 	cfg := config.Load()
 
 	if cfg.Sentry.DSN != "" {
@@ -46,7 +49,7 @@ func main() {
 
 	slog.Info("main: Checking models availability")
 
-	hasAll, searchResult := llmc.HasAllModels(cfg.Bot.Models)
+	hasAll, searchResult := llmc.HasAllModels(ctx, cfg.Bot.Models)
 	if !hasAll {
 		slog.Error("main: Not all models are available", "result", searchResult)
 		sentry.CaptureMessage("Not all models are available")
@@ -66,7 +69,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	botService := bot.NewBot(telegramApi, llmc, ext, cfg.Bot)
+	botService := bot.NewBot(telegramApi, llmc, ext, cfg.Bot, ctx)
 
 	err = botService.Run()
 	if err != nil {

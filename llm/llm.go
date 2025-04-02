@@ -124,7 +124,7 @@ func (l *LlmConnector) Summarize(text string, model string, instructions string)
 		return "", ErrLlmBackendRequestFailed
 	}
 
-	slog.Debug("llm: Received LLM back-end response", resp)
+	slog.Debug("llm: Received LLM back-end response", "response", resp)
 
 	if len(resp.Choices) < 1 {
 		slog.Error("llm: LLM back-end reply has no choices")
@@ -136,8 +136,8 @@ func (l *LlmConnector) Summarize(text string, model string, instructions string)
 	return resp.Choices[0].Message.Content, nil
 }
 
-func (l *LlmConnector) HasAllModels(models config.ModelSelection) (bool, map[string]bool) {
-	modelList, err := l.client.ListModels(context.Background())
+func (l *LlmConnector) HasAllModels(ctx context.Context, models config.ModelSelection) (bool, map[string]bool) {
+	modelList, err := l.client.ListModels(ctx)
 	if err != nil {
 		slog.Error("llm: Model list request failed", "error", err)
 		sentry.CaptureException(err)

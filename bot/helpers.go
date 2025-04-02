@@ -15,7 +15,7 @@ var (
 	allowedUrlSchemes = []string{"http", "https"}
 )
 
-func (b *Bot) reply(originalMessage *telego.Message, newMessage *telego.SendMessageParams) *telego.SendMessageParams {
+func (b *Bot) reply(originalMessage telego.Message, newMessage *telego.SendMessageParams) *telego.SendMessageParams {
 	return newMessage.WithReplyParameters(&telego.ReplyParameters{
 		MessageID: originalMessage.MessageID,
 	})
@@ -24,40 +24,34 @@ func (b *Bot) reply(originalMessage *telego.Message, newMessage *telego.SendMess
 func (b *Bot) sendTyping(chatId telego.ChatID) {
 	slog.Debug("Setting 'typing' chat action")
 
-	err := b.api.SendChatAction(tu.ChatAction(chatId, "typing"))
+	err := b.api.SendChatAction(b.ctx, tu.ChatAction(chatId, "typing"))
 	if err != nil {
 		slog.Error("Cannot set chat action", "error", err)
 		sentry.CaptureException(err)
 	}
 }
 
-func (b *Bot) trySendReplyError(message *telego.Message) {
-	if message == nil {
-		sentry.CaptureMessage("Trying to send reply for an empty message")
-
-		return
-	}
-
-	_, _ = b.api.SendMessage(b.reply(message, tu.Message(
+func (b *Bot) trySendReplyError(message telego.Message) {
+	_, _ = b.api.SendMessage(b.ctx, b.reply(message, tu.Message(
 		tu.ID(message.Chat.ID),
 		"Error occurred while trying to send reply.",
 	)))
 }
 
-func (b *Bot) isMentionOfMe(update telego.Update) bool {
-	if update.Message == nil {
+func (b *Bot) isMentionOfMe(message telego.Message) bool {
+	if message.Text == "" {
 		return false
 	}
 
-	return strings.Contains(update.Message.Text, "@"+b.profile.Username)
+	slog.Debug("bot: Checking if message mentions me",
+		"message_text", message.Text,
+		"bot_username", b.profile.Username,
+		"contains_mention", strings.Contains(message.Text, "@"+b.profile.Username))
+
+	return strings.Contains(message.Text, "@"+b.profile.Username)
 }
 
-func (b *Bot) isReplyToMe(update telego.Update) bool {
-	message := update.Message
-
-	if message == nil {
-		return false
-	}
+func (b *Bot) isReplyToMe(message telego.Message) bool {
 	if message.ReplyToMessage == nil {
 		return false
 	}
@@ -70,13 +64,7 @@ func (b *Bot) isReplyToMe(update telego.Update) bool {
 	return replyToMessage != nil && replyToMessage.From.ID == b.profile.Id
 }
 
-func (b *Bot) isPrivateWithMe(update telego.Update) bool {
-	message := update.Message
-
-	if message == nil {
-		return false
-	}
-
+func (b *Bot) isPrivateWithMe(message telego.Message) bool {
 	return message.Chat.Type == telego.ChatTypePrivate
 }
 

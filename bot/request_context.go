@@ -1,20 +1,15 @@
 package bot
 
 import (
-	"github.com/mymmrac/telego"
 	"log/slog"
 	"telegram-ollama-reply-bot/llm"
+
+	"github.com/mymmrac/telego"
 )
 
-func (b *Bot) createLlmRequestContextFromMessage(message *telego.Message) llm.RequestContext {
+func (b *Bot) createLlmRequestContextFromMessage(message telego.Message) llm.RequestContext {
 	rc := llm.RequestContext{
 		Empty: true,
-	}
-
-	if message == nil {
-		slog.Debug("bot: request context creation problem: no message provided. returning empty context.", "request-context", rc)
-
-		return rc
 	}
 
 	rc.Empty = false
