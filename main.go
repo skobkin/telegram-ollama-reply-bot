@@ -24,17 +24,18 @@ func main() {
 	if cfg.Sentry.DSN != "" {
 		slog.Info("main: Initializing sentry with provided DSN")
 
-		if err := sentry.Init(sentry.ClientOptions{
+		err := sentry.Init(sentry.ClientOptions{
 			Dsn:              cfg.Sentry.DSN,
 			AttachStacktrace: true,
-		}); err != nil {
+		})
+		if err != nil {
 			slog.Error("main: Sentry initialization failed", "error", err)
+		} else {
+			defer sentry.Flush(2 * time.Second)
 		}
 	} else {
 		slog.Info("main: Sentry disabled (no DSN provided)")
 	}
-
-	defer sentry.Flush(2 * time.Second)
 
 	slog.Info("main: Selected", "models", cfg.Bot.Models)
 
