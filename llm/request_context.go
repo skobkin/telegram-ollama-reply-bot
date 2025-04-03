@@ -30,6 +30,8 @@ type ChatMessage struct {
 	Text          string
 	IsMe          bool
 	IsUserRequest bool
+	HasImage      bool
+	Image         string
 	ReplyTo       *ChatMessage
 }
 
@@ -84,10 +86,18 @@ func chatMessageToOpenAiChatCompletionMessage(message ChatMessage) openai.ChatCo
 		msgRole = openai.ChatMessageRoleSystem
 	}
 
+	if message.HasImage {
+		if message.Image != "" {
+			msgText = "[Image you see in the message (described by LLM): " + message.Image + "]\n"
+		} else {
+			msgText = "[Image present in the message, but it wasn't recognized]\n"
+		}
+	}
+
 	if message.IsMe {
-		msgText = message.Text
+		msgText += message.Text
 	} else {
-		msgText = chatMessageToText(message)
+		msgText += chatMessageToText(message)
 	}
 
 	return openai.ChatCompletionMessage{
@@ -116,7 +126,17 @@ func presentUserMessageAsText(message ChatMessage) string {
 	if message.Username != "" {
 		result += " (@" + message.Username + ")"
 	}
-	result += " wrote:\n" + message.Text
+	result += " wrote:\n"
+
+	if message.HasImage {
+		if message.Image != "" {
+			result += "[Image description: " + message.Image + "]\n"
+		} else {
+			result += "[Image present but not described]\n"
+		}
+	}
+
+	result += message.Text
 
 	return result
 }

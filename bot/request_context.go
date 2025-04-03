@@ -66,6 +66,8 @@ func messageDataToLlmMessage(data MessageData) llm.ChatMessage {
 		Text:          data.Text,
 		IsMe:          data.IsMe,
 		IsUserRequest: data.IsUserRequest,
+		HasImage:      data.HasImage,
+		Image:         data.Image,
 	}
 
 	if data.ReplyTo != nil {

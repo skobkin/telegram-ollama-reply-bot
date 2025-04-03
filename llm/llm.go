@@ -3,10 +3,13 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strconv"
 	"telegram-ollama-reply-bot/config"
+
+	"encoding/base64"
 
 	"github.com/getsentry/sentry-go"
 	"github.com/sashabaranov/go-openai"
@@ -37,8 +40,8 @@ func NewConnector(cfg config.LLMConfig, templateProcessor *TemplateProcessor) *L
 	}
 }
 
-func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, model string, requestContext RequestContext) (string, error) {
-	systemPrompt, err := l.templateProcessor.ProcessChatTemplate(model, requestContext.Prompt())
+func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, requestContext RequestContext) (string, error) {
+	systemPrompt, err := l.templateProcessor.ProcessChatTemplate(l.cfg.Models.TextRequestModel, requestContext.Prompt())
 	if err != nil {
 		slog.Error("llm: Template processing failed", "error", err)
 		sentry.CaptureException(err)
@@ -52,7 +55,7 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, model string, 
 	}
 
 	req := openai.ChatCompletionRequest{
-		Model: model,
+		Model: l.cfg.Models.TextRequestModel,
 		Messages: []openai.ChatCompletionMessage{
 			{
 				Role:    openai.ChatMessageRoleSystem,
@@ -89,7 +92,7 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, model string, 
 	return resp.Choices[0].Message.Content, nil
 }
 
-func (l *LlmConnector) Summarize(text string, model string, instructions string) (string, error) {
+func (l *LlmConnector) Summarize(text string, instructions string) (string, error) {
 	systemPrompt, err := l.templateProcessor.ProcessSummarizeTemplate()
 	if err != nil {
 		slog.Error("llm: Template processing failed", "error", err)
@@ -102,7 +105,7 @@ func (l *LlmConnector) Summarize(text string, model string, instructions string)
 	}
 
 	req := openai.ChatCompletionRequest{
-		Model: model,
+		Model: l.cfg.Models.SummarizeModel,
 		Messages: []openai.ChatCompletionMessage{
 			{
 				Role:    openai.ChatMessageRoleSystem,
@@ -170,4 +173,54 @@ func (l *LlmConnector) HasAllModels(ctx context.Context, models config.ModelSele
 	}
 
 	return true, searchResult
+}
+
+func (l *LlmConnector) RecognizeImage(imageData []byte) (string, error) {
+	systemPrompt, err := l.templateProcessor.ProcessImageRecognitionTemplate()
+	if err != nil {
+		slog.Error("llm: Template processing failed", "error", err)
+		sentry.CaptureException(err)
+		return "", ErrTemplateProcessing
+	}
+
+	req := openai.ChatCompletionRequest{
+		Model: l.cfg.Models.ImageRecognitionModel,
+		Messages: []openai.ChatCompletionMessage{
+			{
+				Role:    openai.ChatMessageRoleSystem,
+				Content: systemPrompt,
+			},
+			{
+				Role: openai.ChatMessageRoleUser,
+				MultiContent: []openai.ChatMessagePart{
+					//{
+					//	Type: openai.ChatMessagePartTypeText,
+					//	Text: "What do you see in this image?",
+					//},
+					{
+						Type: openai.ChatMessagePartTypeImageURL,
+						ImageURL: &openai.ChatMessageImageURL{
+							URL: fmt.Sprintf("data:image/jpeg;base64,%s", base64.StdEncoding.EncodeToString(imageData)),
+							//Detail: "auto",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	resp, err := l.client.CreateChatCompletion(context.Background(), req)
+	if err != nil {
+		slog.Error("llm: LLM back-end request failed", "error", err)
+		sentry.CaptureException(err)
+		return "", ErrLlmBackendRequestFailed
+	}
+
+	if len(resp.Choices) < 1 {
+		slog.Error("llm: LLM back-end reply has no choices")
+		sentry.CaptureMessage("LLM back-end reply has no choices")
+		return "", ErrNoChoices
+	}
+
+	return resp.Choices[0].Message.Content, nil
 }

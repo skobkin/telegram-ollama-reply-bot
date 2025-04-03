@@ -134,7 +134,8 @@ func (b *Bot) Run() error {
 	bh.HandleMessage(b.statsHandler, th.CommandEqual("stats"))
 	bh.HandleMessage(b.helpHandler, th.CommandEqual("help"))
 	bh.HandleMessage(b.resetHandler, th.CommandEqual("reset"))
-	bh.HandleMessage(b.textMessageHandler, th.AnyMessageWithText())
+	// Since we're need to process both text and photo messages, we need to use Update handler instead of Message handler
+	bh.Handle(b.textMessageHandler, th.Or(th.AnyMessageWithText(), AnyMessageWithPhoto()))
 	slog.Debug("bot: Message handlers registered")
 
 	slog.Info("bot: Starting bot handler")
@@ -148,7 +149,12 @@ func (b *Bot) Run() error {
 	return nil
 }
 
-func (b *Bot) textMessageHandler(ctx *th.Context, message telego.Message) error {
+func (b *Bot) textMessageHandler(ctx *th.Context, update telego.Update) error {
+	if update.Message == nil {
+		return nil
+	}
+	message := *update.Message
+
 	if b.isMentionOfMe(message) || b.isReplyToMe(message) || b.isPrivateWithMe(message) {
 		messageType := "private"
 		if b.isMentionOfMe(message) {
@@ -157,14 +163,14 @@ func (b *Bot) textMessageHandler(ctx *th.Context, message telego.Message) error 
 			messageType = "reply"
 		}
 		slog.Info("bot: Processing message", "type", messageType)
-		b.processMention(message)
+		b.processMention(ctx, message)
 	} else {
 		slog.Debug("bot: Skipping message - not a mention, reply, or private chat")
 	}
 	return nil
 }
 
-func (b *Bot) processMention(message telego.Message) {
+func (b *Bot) processMention(reqCtx *th.Context, message telego.Message) {
 	b.stats.Mention()
 
 	slog.Info("bot: /mention", "chat", message.Chat.ID)
@@ -175,11 +181,11 @@ func (b *Bot) processMention(message telego.Message) {
 
 	requestContext := b.createLlmRequestContextFromMessage(message)
 
-	userMessageData := tgUserMessageToMessageData(message, true)
+	// Get MessageData from the request context if available, otherwise create it on the fly
+	userMessageData := b.getMessageDataFromRequestContextOrCreate(reqCtx, message, true)
 
 	llmReply, err := b.llm.HandleChatMessage(
 		messageDataToLlmMessage(userMessageData),
-		b.cfg.Models.TextRequestModel,
 		requestContext,
 	)
 	if err != nil {
@@ -279,7 +285,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message telego.Message) error {
 		return nil
 	}
 
-	llmReply, err := b.llm.Summarize(article.Text, b.cfg.Models.SummarizeModel, additionalInstructions)
+	llmReply, err := b.llm.Summarize(article.Text, additionalInstructions)
 	if err != nil {
 		slog.Error("bot: Cannot get reply from LLM connector")
 		sentry.CaptureException(err)

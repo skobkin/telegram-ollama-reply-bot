@@ -37,7 +37,7 @@ func main() {
 		slog.Info("main: Sentry disabled (no DSN provided)")
 	}
 
-	slog.Info("main: Selected", "models", cfg.Bot.Models)
+	slog.Info("main: Selected", "models", cfg.LLM.Models)
 
 	templateProcessor, err := llm.NewTemplateProcessor(cfg.LLM.Prompts)
 	if err != nil {
@@ -50,7 +50,7 @@ func main() {
 
 	slog.Info("main: Checking models availability")
 
-	hasAll, searchResult := llmc.HasAllModels(ctx, cfg.Bot.Models)
+	hasAll, searchResult := llmc.HasAllModels(ctx, cfg.LLM.Models)
 	if !hasAll {
 		slog.Error("main: Not all models are available", "result", searchResult)
 		sentry.CaptureMessage("Not all models are available")
@@ -62,7 +62,7 @@ func main() {
 
 	ext := extractor.NewExtractor()
 
-	telegramApi, err := tg.NewBot(cfg.Telegram.Token, tg.WithLogger(bot.NewLogger("telego: ")))
+	telegramApi, err := tg.NewBot(cfg.Bot.Telegram.Token, tg.WithLogger(bot.NewLogger("telego: ")))
 	if err != nil {
 		fmt.Println(err)
 		sentry.CaptureMessage("Telegram API initialization failed")

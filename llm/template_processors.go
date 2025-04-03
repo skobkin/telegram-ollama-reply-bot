@@ -8,11 +8,12 @@ import (
 
 // TemplateProcessor handles template processing for LLM prompts
 type TemplateProcessor struct {
-	chatTemplate      *template.Template
-	summarizeTemplate *template.Template
-	language          string
-	gender            string
-	maxSummaryLength  int
+	chatTemplate             *template.Template
+	summarizeTemplate        *template.Template
+	imageRecognitionTemplate *template.Template
+	language                 string
+	gender                   string
+	maxSummaryLength         int
 }
 
 // NewTemplateProcessor creates a new TemplateProcessor with initialized templates
@@ -27,12 +28,18 @@ func NewTemplateProcessor(prompts config.PromptConfig) (*TemplateProcessor, erro
 		return nil, err
 	}
 
+	imageRecognitionTmpl, err := template.New("image_recognition").Parse(prompts.ImageRecognitionPrompt)
+	if err != nil {
+		return nil, err
+	}
+
 	return &TemplateProcessor{
-		chatTemplate:      chatTmpl,
-		summarizeTemplate: summarizeTmpl,
-		language:          prompts.Language,
-		gender:            prompts.Gender,
-		maxSummaryLength:  prompts.MaxSummaryLength,
+		chatTemplate:             chatTmpl,
+		summarizeTemplate:        summarizeTmpl,
+		imageRecognitionTemplate: imageRecognitionTmpl,
+		language:                 prompts.Language,
+		gender:                   prompts.Gender,
+		maxSummaryLength:         prompts.MaxSummaryLength,
 	}, nil
 }
 
@@ -65,6 +72,20 @@ func (p *TemplateProcessor) ProcessSummarizeTemplate() (string, error) {
 	}{
 		Language:  p.language,
 		MaxLength: p.maxSummaryLength,
+	})
+	if err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// ProcessImageRecognitionTemplate processes the image recognition prompt template
+func (p *TemplateProcessor) ProcessImageRecognitionTemplate() (string, error) {
+	var buf bytes.Buffer
+	err := p.imageRecognitionTemplate.Execute(&buf, struct {
+		Language string
+	}{
+		Language: p.language,
 	})
 	if err != nil {
 		return "", err

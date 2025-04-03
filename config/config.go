@@ -8,10 +8,9 @@ import (
 
 // Config represents the root configuration structure
 type Config struct {
-	LLM      LLMConfig
-	Sentry   SentryConfig
-	Telegram TelegramConfig
-	Bot      BotConfig
+	LLM    LLMConfig
+	Sentry SentryConfig
+	Bot    BotConfig
 }
 
 // LLMConfig contains configuration for the LLM connector
@@ -19,15 +18,17 @@ type LLMConfig struct {
 	APIBaseURL string
 	APIToken   string
 	Prompts    PromptConfig
+	Models     ModelSelection
 }
 
 // PromptConfig contains configuration for prompts
 type PromptConfig struct {
-	ChatSystemPrompt string
-	SummarizePrompt  string
-	Language         string
-	Gender           string
-	MaxSummaryLength int
+	ChatSystemPrompt       string
+	SummarizePrompt        string
+	ImageRecognitionPrompt string
+	Language               string
+	Gender                 string
+	MaxSummaryLength       int
 }
 
 // SentryConfig contains configuration for Sentry error tracking
@@ -35,22 +36,23 @@ type SentryConfig struct {
 	DSN string
 }
 
-// TelegramConfig contains configuration for Telegram bot
-type TelegramConfig struct {
-	Token string
-}
-
 // BotConfig contains configuration for bot settings
 type BotConfig struct {
 	HistoryLength int
-	Models        ModelSelection
 	AdminIDs      []int64
+	Telegram      TelegramConfig
 }
 
 // ModelSelection contains configuration for LLM models
 type ModelSelection struct {
-	TextRequestModel string
-	SummarizeModel   string
+	TextRequestModel      string
+	SummarizeModel        string
+	ImageRecognitionModel string
+}
+
+// TelegramConfig contains configuration for Telegram bot
+type TelegramConfig struct {
+	Token string
 }
 
 // Load creates a new Config instance populated from environment variables
@@ -100,31 +102,38 @@ func Load() *Config {
 		"Limit the summary to maximum of {{.MaxLength}} characters. \n" +
 		"Avoid exceeding it at any cost. Be as brief as possible."
 
+	defaultImageRecognitionPrompt := "You're an image recognition bot. Describe what you see in the image in detail for an LLM to understand.\n" +
+		"If you can understand the meaning of the image, describe it in detail. If you can't understand the meaning, describe what you see in general.\n" +
+		"You should reply in the following language: {{.Language}}.\n" +
+		"Be concise but informative."
+
 	return &Config{
 		LLM: LLMConfig{
 			APIBaseURL: os.Getenv("OPENAI_API_BASE_URL"),
 			APIToken:   os.Getenv("OPENAI_API_TOKEN"),
+			Models: ModelSelection{
+				TextRequestModel:      os.Getenv("MODEL_TEXT_REQUEST"),
+				SummarizeModel:        os.Getenv("MODEL_SUMMARIZE_REQUEST"),
+				ImageRecognitionModel: os.Getenv("MODEL_IMAGE_RECOGNITION"),
+			},
 			Prompts: PromptConfig{
-				ChatSystemPrompt: getEnvOrDefault("PROMPT_CHAT", defaultChatPrompt),
-				SummarizePrompt:  getEnvOrDefault("PROMPT_SUMMARIZE", defaultSummarizePrompt),
-				Language:         getEnvOrDefault("RESPONSE_LANGUAGE", "Russian"),
-				Gender:           getEnvOrDefault("RESPONSE_GENDER", "neutral"),
-				MaxSummaryLength: maxSummaryLength,
+				ChatSystemPrompt:       getEnvOrDefault("PROMPT_CHAT", defaultChatPrompt),
+				SummarizePrompt:        getEnvOrDefault("PROMPT_SUMMARIZE", defaultSummarizePrompt),
+				ImageRecognitionPrompt: getEnvOrDefault("PROMPT_IMAGE_RECOGNITION", defaultImageRecognitionPrompt),
+				Language:               getEnvOrDefault("RESPONSE_LANGUAGE", "Russian"),
+				Gender:                 getEnvOrDefault("RESPONSE_GENDER", "neutral"),
+				MaxSummaryLength:       maxSummaryLength,
 			},
 		},
 		Sentry: SentryConfig{
 			DSN: os.Getenv("SENTRY_DSN"),
 		},
-		Telegram: TelegramConfig{
-			Token: os.Getenv("TELEGRAM_TOKEN"),
-		},
 		Bot: BotConfig{
 			HistoryLength: historyLength,
-			Models: ModelSelection{
-				TextRequestModel: os.Getenv("MODEL_TEXT_REQUEST"),
-				SummarizeModel:   os.Getenv("MODEL_SUMMARIZE_REQUEST"),
+			AdminIDs:      adminIDs,
+			Telegram: TelegramConfig{
+				Token: os.Getenv("TELEGRAM_TOKEN"),
 			},
-			AdminIDs: adminIDs,
 		},
 	}
 }

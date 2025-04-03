@@ -3,6 +3,7 @@ package bot
 import (
 	"log/slog"
 
+	"github.com/getsentry/sentry-go"
 	"github.com/mymmrac/telego"
 )
 
@@ -13,6 +14,9 @@ type MessageData struct {
 	IsMe          bool
 	IsUserRequest bool
 	ReplyTo       *MessageData
+	HasImage      bool
+	Image         string
+	chatID        int64
 }
 
 type MessageHistory struct {
@@ -39,23 +43,13 @@ func (b *MessageHistory) GetAll() []MessageData {
 	return b.messages
 }
 
-func (b *Bot) saveChatMessageToHistory(message telego.Message) {
-	chatId := message.Chat.ID
-
-	slog.Info(
-		"history-message-save",
-		"chat", chatId,
-		"from_id", message.From.ID,
-		"from_name", message.From.FirstName,
-		"text", message.Text,
-	)
+func (b *Bot) saveChatMessageToHistory(msgData MessageData) {
+	chatId := msgData.chatID
 
 	_, ok := b.history[chatId]
 	if !ok {
 		b.history[chatId] = NewMessageHistory(b.cfg.HistoryLength)
 	}
-
-	msgData := tgUserMessageToMessageData(message, false)
 
 	b.history[chatId].Push(msgData)
 }
@@ -64,7 +58,7 @@ func (b *Bot) saveBotReplyToHistory(replyTo telego.Message, text string) {
 	chatId := replyTo.Chat.ID
 
 	slog.Info(
-		"history-reply-save",
+		"bot:history: saving bot reply",
 		"chat", chatId,
 		"to_id", replyTo.From.ID,
 		"to_name", replyTo.From.FirstName,
@@ -98,17 +92,40 @@ func (b *Bot) saveBotReplyToHistory(replyTo telego.Message, text string) {
 	b.history[chatId].Push(msgData)
 }
 
-func tgUserMessageToMessageData(message telego.Message, isUserRequest bool) MessageData {
+func (b *Bot) tgUserMessageToMessageData(message telego.Message, isUserRequest bool) MessageData {
 	msgData := MessageData{
 		Name:          message.From.FirstName,
 		Username:      message.From.Username,
 		Text:          message.Text,
 		IsMe:          false,
 		IsUserRequest: isUserRequest,
+		HasImage:      false,
+		Image:         "",
+		chatID:        message.Chat.ID,
+	}
+
+	if len(message.Photo) > 0 {
+		slog.Debug("Processing message photo", "message_id", message.MessageID, "photo_sizes", len(message.Photo), "photo", message.Photo)
+
+		msgData.HasImage = true
+		// Get the highest quality photo (last in the array)
+		// TODO: add image size selection according to size limit (needs to be implemented too)
+		photo := message.Photo[len(message.Photo)-1]
+		description, err := b.describeImage(photo)
+
+		if err != nil {
+			slog.Error("bot: Failed to describe image", "error", err, "message_id", message.MessageID)
+			sentry.CaptureException(err)
+		} else if description != "" {
+			slog.Debug("bot: Got image description", "description", description, "message_id", message.MessageID)
+			msgData.Image = description
+		} else {
+			slog.Info("bot: Image recognition ended with empty description", "message_id", message.MessageID)
+		}
 	}
 
 	if message.ReplyToMessage != nil {
-		replyData := tgUserMessageToMessageData(*message.ReplyToMessage, false)
+		replyData := b.tgUserMessageToMessageData(*message.ReplyToMessage, false)
 		msgData.ReplyTo = &replyData
 	}
 
