@@ -8,6 +8,7 @@
 
 - Context-dependent dialogue in chats
 - Summarization of articles by provided link
+- Image recognition and description
 
 ## Configuration
 
@@ -20,6 +21,7 @@ The bot can be configured using the following environment variables:
 | `TELEGRAM_TOKEN`          | Telegram Bot API token                             | Yes      | -      |
 | `MODEL_TEXT_REQUEST`      | Model name for text requests                       | Yes      | -      |
 | `MODEL_SUMMARIZE_REQUEST` | Model name for summarization requests              | Yes      | -      |
+| `MODEL_IMAGE_RECOGNITION` | Model name for image recognition                   | No       | -      |
 | `BOT_HISTORY_LENGTH`      | Number of messages to keep in conversation history | No       | 150    |
 | `SENTRY_DSN`              | Sentry DSN for error tracking                      | No       | empty  |
 | `RESPONSE_LANGUAGE`       | Language for bot responses                          | No       | Russian |
@@ -27,6 +29,7 @@ The bot can be configured using the following environment variables:
 | `MAX_SUMMARY_LENGTH`      | Maximum length of generated summaries              | No       | 2000   |
 | `PROMPT_CHAT`             | System prompt for chat interactions                 | No       | See [config.go](config/config.go) |
 | `PROMPT_SUMMARIZE`        | System prompt for summarization                    | No       | See [config.go](config/config.go) |
+| `PROMPT_IMAGE_RECOGNITION`| System prompt for image recognition                | No       | See [config.go](config/config.go) |
 | `BOT_ADMIN_IDS`           | Comma-separated list of admin user IDs             | No       | empty  |
 
 ## Usage
@@ -46,6 +49,7 @@ You can also interact with the bot by:
 - Mentioning it in a message
 - Replying to its messages
 - Sending direct messages in private chat (if enabled)
+- Sending images (the bot will describe what it sees in the image)
 
 ## Running
 
@@ -58,6 +62,7 @@ docker run \
   -e TELEGRAM_TOKEN=12345 \
   -e MODEL_TEXT_REQUEST=gemma3:27b \
   -e MODEL_SUMMARIZE_REQUEST=gemma3:12b \
+  -e MODEL_IMAGE_RECOGNITION=gemma3:12b \
   -e BOT_HISTORY_LENGTH=150 \
   -e SENTRY_DSN=https://your-sentry-dsn \
   -e BOT_ADMIN_IDS=123456789,987654321 \
