@@ -4,7 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/getsentry/sentry-go"
-	"github.com/mymmrac/telego"
+	t "github.com/mymmrac/telego"
 )
 
 type MessageData struct {
@@ -54,7 +54,7 @@ func (b *Bot) saveChatMessageToHistory(msgData MessageData) {
 	b.history[chatId].Push(msgData)
 }
 
-func (b *Bot) saveBotReplyToHistory(replyTo telego.Message, text string) {
+func (b *Bot) saveBotReplyToHistory(replyTo t.Message, text string) {
 	chatId := replyTo.Chat.ID
 
 	slog.Info(
@@ -92,7 +92,7 @@ func (b *Bot) saveBotReplyToHistory(replyTo telego.Message, text string) {
 	b.history[chatId].Push(msgData)
 }
 
-func (b *Bot) tgUserMessageToMessageData(message telego.Message, isUserRequest bool) MessageData {
+func (b *Bot) tgUserMessageToMessageData(message t.Message, isUserRequest bool) MessageData {
 	msgData := MessageData{
 		Name:          message.From.FirstName,
 		Username:      message.From.Username,

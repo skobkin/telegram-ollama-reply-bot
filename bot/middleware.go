@@ -3,14 +3,14 @@ package bot
 import (
 	"log/slog"
 
-	"github.com/mymmrac/telego"
+	t "github.com/mymmrac/telego"
 	th "github.com/mymmrac/telego/telegohandler"
 )
 
 // requestContextMessageDataKey is the context key for storing processed message data in request context
 const requestContextMessageDataKey = "message_data"
 
-func (b *Bot) chatTypeStatsCounter(ctx *th.Context, update telego.Update) error {
+func (b *Bot) chatTypeStatsCounter(ctx *th.Context, update t.Update) error {
 	message := update.Message
 
 	if message == nil {
@@ -19,19 +19,19 @@ func (b *Bot) chatTypeStatsCounter(ctx *th.Context, update telego.Update) error 
 	}
 
 	switch message.Chat.Type {
-	case telego.ChatTypeGroup, telego.ChatTypeSupergroup:
+	case t.ChatTypeGroup, t.ChatTypeSupergroup:
 		if b.isMentionOfMe(*message) || b.isReplyToMe(*message) {
 			slog.Info("bot:middleware:stats: counting message chat type in stats", "type", message.Chat.Type)
 			b.stats.GroupRequest()
 		}
-	case telego.ChatTypePrivate:
+	case t.ChatTypePrivate:
 		slog.Info("bot:middleware:stats: counting message chat type in stats", "type", message.Chat.Type)
 		b.stats.PrivateRequest()
 	}
 	return ctx.Next(update)
 }
 
-func (b *Bot) chatHistory(ctx *th.Context, update telego.Update) error {
+func (b *Bot) chatHistory(ctx *th.Context, update t.Update) error {
 	message := update.Message
 
 	if message == nil {

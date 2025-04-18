@@ -4,10 +4,10 @@ import (
 	"log/slog"
 	"telegram-ollama-reply-bot/llm"
 
-	"github.com/mymmrac/telego"
+	t "github.com/mymmrac/telego"
 )
 
-func (b *Bot) createLlmRequestContextFromMessage(message telego.Message) llm.RequestContext {
+func (b *Bot) createLlmRequestContextFromMessage(message t.Message) llm.RequestContext {
 	rc := llm.RequestContext{
 		Empty: true,
 	}

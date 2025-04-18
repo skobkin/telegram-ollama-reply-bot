@@ -12,7 +12,7 @@ import (
 	"telegram-ollama-reply-bot/stats"
 
 	"github.com/getsentry/sentry-go"
-	"github.com/mymmrac/telego"
+	t "github.com/mymmrac/telego"
 	th "github.com/mymmrac/telego/telegohandler"
 	tu "github.com/mymmrac/telego/telegoutil"
 )
@@ -33,7 +33,7 @@ type Info struct {
 }
 
 type Bot struct {
-	api       *telego.Bot
+	api       *t.Bot
 	llm       *llm.LlmConnector
 	extractor extractor.Extractor
 	stats     *stats.Stats
@@ -46,7 +46,7 @@ type Bot struct {
 }
 
 func NewBot(
-	api *telego.Bot,
+	api *t.Bot,
 	llm *llm.LlmConnector,
 	extractor extractor.Extractor,
 	cfg config.BotConfig,
@@ -149,7 +149,7 @@ func (b *Bot) Run() error {
 	return nil
 }
 
-func (b *Bot) textMessageHandler(ctx *th.Context, update telego.Update) error {
+func (b *Bot) textMessageHandler(ctx *th.Context, update t.Update) error {
 	if update.Message == nil {
 		return nil
 	}
@@ -170,7 +170,7 @@ func (b *Bot) textMessageHandler(ctx *th.Context, update telego.Update) error {
 	return nil
 }
 
-func (b *Bot) processMention(reqCtx *th.Context, message telego.Message) {
+func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 	b.stats.Mention()
 
 	slog.Info("bot: /mention", "chat", message.Chat.ID)
@@ -204,8 +204,8 @@ func (b *Bot) processMention(reqCtx *th.Context, message telego.Message) {
 
 	reply := tu.Message(
 		chatID,
-		b.escapeMarkdownV1Symbols(llmReply),
-	).WithParseMode("Markdown")
+		b.escapeMarkdownV2Symbols(llmReply),
+	).WithParseMode(t.ModeMarkdownV2)
 
 	_, err = b.api.SendMessage(b.ctx, b.reply(message, reply))
 	if err != nil {
@@ -220,7 +220,7 @@ func (b *Bot) processMention(reqCtx *th.Context, message telego.Message) {
 	b.saveBotReplyToHistory(message, llmReply)
 }
 
-func (b *Bot) summarizeHandler(ctx *th.Context, message telego.Message) error {
+func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 	slog.Info("bot: /summarize", "message-text", message.Text)
 
 	b.stats.SummarizeRequest()
@@ -308,7 +308,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message telego.Message) error {
 	replyMessage := tu.Message(
 		chatID,
 		replyMarkdown,
-	).WithParseMode("MarkdownV2")
+	).WithParseMode(t.ModeMarkdownV2)
 
 	_, err = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, replyMessage))
 
@@ -323,7 +323,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message telego.Message) error {
 	return nil
 }
 
-func (b *Bot) helpHandler(ctx *th.Context, message telego.Message) error {
+func (b *Bot) helpHandler(ctx *th.Context, message t.Message) error {
 	slog.Info("bot: /help")
 
 	chatID := tu.ID(message.Chat.ID)
@@ -348,7 +348,7 @@ func (b *Bot) helpHandler(ctx *th.Context, message telego.Message) error {
 	return nil
 }
 
-func (b *Bot) startHandler(ctx *th.Context, message telego.Message) error {
+func (b *Bot) startHandler(ctx *th.Context, message t.Message) error {
 	slog.Info("bot: /start")
 
 	chatID := tu.ID(message.Chat.ID)
@@ -369,7 +369,7 @@ func (b *Bot) startHandler(ctx *th.Context, message telego.Message) error {
 	return nil
 }
 
-func (b *Bot) statsHandler(ctx *th.Context, message telego.Message) error {
+func (b *Bot) statsHandler(ctx *th.Context, message t.Message) error {
 	slog.Info("bot: /stats")
 
 	if !b.isFromAdmin(&message) {
@@ -391,7 +391,7 @@ func (b *Bot) statsHandler(ctx *th.Context, message telego.Message) error {
 			"```json\r\n"+
 			b.stats.String()+"\r\n"+
 			"```",
-	)).WithParseMode("Markdown"))
+	)).WithParseMode(t.ModeMarkdown))
 	if err != nil {
 		slog.Error("bot: Cannot send a message", "error", err)
 		sentry.CaptureException(err)
@@ -401,7 +401,7 @@ func (b *Bot) statsHandler(ctx *th.Context, message telego.Message) error {
 	return nil
 }
 
-func (b *Bot) resetHandler(ctx *th.Context, message telego.Message) error {
+func (b *Bot) resetHandler(ctx *th.Context, message t.Message) error {
 	slog.Info("bot: /reset")
 
 	if !b.isFromAdmin(&message) {

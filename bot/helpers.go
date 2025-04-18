@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/getsentry/sentry-go"
-	"github.com/mymmrac/telego"
+	t "github.com/mymmrac/telego"
 	th "github.com/mymmrac/telego/telegohandler"
 	tu "github.com/mymmrac/telego/telegoutil"
 )
@@ -19,13 +19,13 @@ var (
 	ErrImageRecognition = errors.New("image recognition error")
 )
 
-func (b *Bot) reply(originalMessage telego.Message, newMessage *telego.SendMessageParams) *telego.SendMessageParams {
-	return newMessage.WithReplyParameters(&telego.ReplyParameters{
+func (b *Bot) reply(originalMessage t.Message, newMessage *t.SendMessageParams) *t.SendMessageParams {
+	return newMessage.WithReplyParameters(&t.ReplyParameters{
 		MessageID: originalMessage.MessageID,
 	})
 }
 
-func (b *Bot) sendTyping(chatId telego.ChatID) {
+func (b *Bot) sendTyping(chatId t.ChatID) {
 	slog.Debug("bot: Setting 'typing' chat action")
 
 	err := b.api.SendChatAction(b.ctx, tu.ChatAction(chatId, "typing"))
@@ -35,14 +35,14 @@ func (b *Bot) sendTyping(chatId telego.ChatID) {
 	}
 }
 
-func (b *Bot) trySendReplyError(message telego.Message) {
+func (b *Bot) trySendReplyError(message t.Message) {
 	_, _ = b.api.SendMessage(b.ctx, b.reply(message, tu.Message(
 		tu.ID(message.Chat.ID),
 		"Error occurred while trying to send reply.",
 	)))
 }
 
-func (b *Bot) isMentionOfMe(message telego.Message) bool {
+func (b *Bot) isMentionOfMe(message t.Message) bool {
 	textToCheck := message.Text
 	if textToCheck == "" && message.Caption != "" {
 		textToCheck = message.Caption
@@ -59,7 +59,7 @@ func (b *Bot) isMentionOfMe(message telego.Message) bool {
 	return strings.Contains(textToCheck, "@"+b.profile.Username)
 }
 
-func (b *Bot) isReplyToMe(message telego.Message) bool {
+func (b *Bot) isReplyToMe(message t.Message) bool {
 	if message.ReplyToMessage == nil {
 		return false
 	}
@@ -72,8 +72,8 @@ func (b *Bot) isReplyToMe(message telego.Message) bool {
 	return replyToMessage != nil && replyToMessage.From.ID == b.profile.Id
 }
 
-func (b *Bot) isPrivateWithMe(message telego.Message) bool {
-	return message.Chat.Type == telego.ChatTypePrivate
+func (b *Bot) isPrivateWithMe(message t.Message) bool {
+	return message.Chat.Type == t.ChatTypePrivate
 }
 
 func isValidAndAllowedUrl(text string) bool {
@@ -107,7 +107,7 @@ func cropToMaxLengthMarkdownV2(text string, max int) string {
 	return text[:cropPoint] + "\\.\\.\\."
 }
 
-func (b *Bot) isFromAdmin(message *telego.Message) bool {
+func (b *Bot) isFromAdmin(message *t.Message) bool {
 	if message == nil || message.From == nil {
 		return false
 	}
@@ -115,26 +115,24 @@ func (b *Bot) isFromAdmin(message *telego.Message) bool {
 	return slices.Contains(b.cfg.AdminIDs, message.From.ID)
 }
 
-func (b *Bot) escapeMarkdownV1Symbols(input string) string {
-	return b.markdownV1Replacer.Replace(input)
-}
-
 func (b *Bot) escapeMarkdownV2Symbols(input string) string {
-	specialChars := "_*[]()~`>#+-=|{}.!"
-	var escaped strings.Builder
+	slog.Debug("bot: Escaping markdown", "input_text", input)
 
-	for _, char := range input {
-		if strings.ContainsRune(specialChars, char) {
-			escaped.WriteRune('\\')
+	var result strings.Builder
+	for _, r := range input {
+		// Only escape non-alphanumeric ASCII characters (codes 1-126)
+		if r > 0 && r < 127 && !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			result.WriteRune('\\')
 		}
-		escaped.WriteRune(char)
+		result.WriteRune(r)
 	}
 
-	return escaped.String()
+	slog.Debug("bot:helpers: Markdown escaped", "output_text", result.String())
+	return result.String()
 }
 
-func (b *Bot) describeImage(photo telego.PhotoSize) (string, error) {
-	file, err := b.api.GetFile(b.ctx, &telego.GetFileParams{
+func (b *Bot) describeImage(photo t.PhotoSize) (string, error) {
+	file, err := b.api.GetFile(b.ctx, &t.GetFileParams{
 		FileID: photo.FileID,
 	})
 	if err != nil {
@@ -162,7 +160,7 @@ func (b *Bot) describeImage(photo telego.PhotoSize) (string, error) {
 }
 
 // gets MessageData from Telego request context if previously stored by history middleware, otherwise creates it on the fly
-func (b *Bot) getMessageDataFromRequestContextOrCreate(ctx *th.Context, message telego.Message, isUserRequest bool) MessageData {
+func (b *Bot) getMessageDataFromRequestContextOrCreate(ctx *th.Context, message t.Message, isUserRequest bool) MessageData {
 	if msgData, ok := ctx.Value(requestContextMessageDataKey).(MessageData); ok {
 		msgData.IsUserRequest = isUserRequest
 		slog.Debug("bot: Message data retrieved from context", "message_data", msgData)
