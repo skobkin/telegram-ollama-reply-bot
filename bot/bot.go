@@ -243,10 +243,10 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message telego.Message) error {
 		return nil
 	}
 
-	url := args[1]
+	url := strings.TrimSpace(args[1])
 	additionalInstructions := ""
 	if argsCount == 3 {
-		additionalInstructions = args[2]
+		additionalInstructions = strings.TrimSpace(args[2])
 	}
 
 	if !isValidAndAllowedUrl(url) {
