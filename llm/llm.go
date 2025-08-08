@@ -64,6 +64,13 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, requestContext
 		},
 	}
 
+	if requestContext.Chat.EarlierSummary != "" {
+		req.Messages = append(req.Messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleSystem,
+			Content: "[Earlier conversation summary: " + requestContext.Chat.EarlierSummary + "]",
+		})
+	}
+
 	if historyLength > 0 {
 		for _, msg := range requestContext.Chat.History {
 			req.Messages = append(req.Messages, chatMessageToOpenAiChatCompletionMessage(msg))

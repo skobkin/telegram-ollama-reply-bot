@@ -18,10 +18,11 @@ type UserContext struct {
 }
 
 type ChatContext struct {
-	Title       string
-	Description string
-	Type        string
-	History     []ChatMessage
+	Title          string
+	Description    string
+	Type           string
+	History        []ChatMessage
+	EarlierSummary string
 }
 
 type ChatMessage struct {
@@ -67,7 +68,7 @@ func (c RequestContext) Prompt() string {
 		prompt += "Last name: \"" + c.User.LastName + "\"\n"
 	}
 	//if c.User.IsPremium {
-	//  prompt += "Telegram Premium subscription: active."
+	//      prompt += "Telegram Premium subscription: active."
 	//}
 
 	return prompt
