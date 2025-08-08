@@ -75,7 +75,6 @@ func (c RequestContext) Prompt() string {
 
 func chatMessageToOpenAiChatCompletionMessage(message ChatMessage) openai.ChatCompletionMessage {
 	var msgRole string
-	var msgText string
 
 	switch {
 	case message.IsMe:
@@ -86,18 +85,18 @@ func chatMessageToOpenAiChatCompletionMessage(message ChatMessage) openai.ChatCo
 		msgRole = openai.ChatMessageRoleSystem
 	}
 
-	if message.HasImage {
-		if message.Image != "" {
-			msgText = "[Image you see in the message (described by LLM): " + message.Image + "]\n"
-		} else {
-			msgText = "[Image present in the message, but it wasn't recognized]\n"
-		}
-	}
-
+	var msgText string
 	if message.IsMe {
+		if message.HasImage {
+			if message.Image != "" {
+				msgText += "[Image: " + message.Image + "] "
+			} else {
+				msgText += "[Image] "
+			}
+		}
 		msgText += message.Text
 	} else {
-		msgText += chatMessageToText(message)
+		msgText = chatMessageToText(message)
 	}
 
 	return openai.ChatCompletionMessage{
@@ -108,16 +107,10 @@ func chatMessageToOpenAiChatCompletionMessage(message ChatMessage) openai.ChatCo
 
 func chatMessageToText(message ChatMessage) string {
 	var msgText string
-
 	if message.ReplyTo != nil {
-		msgText += "In reply to message by " + message.ReplyTo.Name
-		if message.ReplyTo.Username != "" {
-			msgText += " (@" + message.ReplyTo.Username + ")"
-		}
-		msgText += ":\n"
+		msgText = "> " + presentUserMessageAsText(*message.ReplyTo) + "\n"
 	}
 	msgText += presentUserMessageAsText(message)
-
 	return msgText
 }
 
@@ -126,13 +119,13 @@ func presentUserMessageAsText(message ChatMessage) string {
 	if message.Username != "" {
 		result += " (@" + message.Username + ")"
 	}
-	result += " wrote:\n"
+	result += ": "
 
 	if message.HasImage {
 		if message.Image != "" {
-			result += "[Image description: " + message.Image + "]\n"
+			result += "[Image: " + message.Image + "] "
 		} else {
-			result += "[Image present but not described]\n"
+			result += "[Image] "
 		}
 	}
 
