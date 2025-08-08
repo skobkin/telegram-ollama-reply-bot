@@ -83,7 +83,7 @@ func chatMessageToOpenAiChatCompletionMessage(message ChatMessage) openai.ChatCo
 	case message.IsUserRequest:
 		msgRole = openai.ChatMessageRoleUser
 	default:
-		msgRole = openai.ChatMessageRoleSystem
+		msgRole = openai.ChatMessageRoleUser
 	}
 
 	if message.HasImage {
