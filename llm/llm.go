@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strconv"
 	"telegram-ollama-reply-bot/config"
 
 	"encoding/base64"
@@ -49,27 +48,28 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, requestContext
 	}
 
 	history := requestContext.Chat.History
-	const maxHistoryMessages = 15
+	maxHistoryMessages := l.cfg.RequestHistoryLength
+	if maxHistoryMessages == 0 {
+		maxHistoryMessages = 15
+	}
 	var summary string
-	if len(history) > maxHistoryMessages {
+	if maxHistoryMessages > 0 && len(history) > maxHistoryMessages {
 		earlier := history[:len(history)-maxHistoryMessages]
 		history = history[len(history)-maxHistoryMessages:]
 
 		text := chatHistoryToPlainText(earlier)
 		if text != "" {
-			var err error
-			summary, err = l.Summarize(text, "")
+			sum, err := l.Summarize(text, "")
 			if err != nil {
 				slog.Error("llm: failed to summarize earlier messages", "error", err)
 				sentry.CaptureException(err)
+			} else {
+				summary = sum
 			}
 		}
 	}
 
 	historyLength := len(history)
-	if historyLength > 0 {
-		systemPrompt += "\nYou have access to last " + strconv.Itoa(historyLength) + " messages in this chat."
-	}
 
 	req := openai.ChatCompletionRequest{
 		Model: l.cfg.Models.TextRequestModel,

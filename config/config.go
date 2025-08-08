@@ -15,10 +15,11 @@ type Config struct {
 
 // LLMConfig contains configuration for the LLM connector
 type LLMConfig struct {
-	APIBaseURL string
-	APIToken   string
-	Prompts    PromptConfig
-	Models     ModelSelection
+	APIBaseURL           string
+	APIToken             string
+	Prompts              PromptConfig
+	Models               ModelSelection
+	RequestHistoryLength int
 }
 
 // PromptConfig contains configuration for prompts
@@ -68,6 +69,13 @@ func Load() *Config {
 	if lengthStr := os.Getenv("MAX_SUMMARY_LENGTH"); lengthStr != "" {
 		if length, err := strconv.Atoi(lengthStr); err == nil {
 			maxSummaryLength = length
+		}
+	}
+
+	requestHistoryLength := 15 // default value
+	if lengthStr := os.Getenv("LLM_REQUEST_HISTORY_LENGTH"); lengthStr != "" {
+		if length, err := strconv.Atoi(lengthStr); err == nil {
+			requestHistoryLength = length
 		}
 	}
 
@@ -124,6 +132,7 @@ func Load() *Config {
 				Gender:                 getEnvOrDefault("RESPONSE_GENDER", "neutral"),
 				MaxSummaryLength:       maxSummaryLength,
 			},
+			RequestHistoryLength: requestHistoryLength,
 		},
 		Sentry: SentryConfig{
 			DSN: os.Getenv("SENTRY_DSN"),
