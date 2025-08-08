@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"strings"
+
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -18,11 +20,10 @@ type UserContext struct {
 }
 
 type ChatContext struct {
-	Title          string
-	Description    string
-	Type           string
-	History        []ChatMessage
-	EarlierSummary string
+	Title       string
+	Description string
+	Type        string
+	History     []ChatMessage
 }
 
 type ChatMessage struct {
@@ -135,4 +136,13 @@ func presentUserMessageAsText(message ChatMessage) string {
 	result += message.Text
 
 	return result
+}
+
+func chatHistoryToPlainText(history []ChatMessage) string {
+	var sb strings.Builder
+	for _, msg := range history {
+		sb.WriteString(chatMessageToText(msg))
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }

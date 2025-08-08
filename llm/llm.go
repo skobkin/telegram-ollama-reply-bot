@@ -48,8 +48,25 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, requestContext
 		return "", ErrTemplateProcessing
 	}
 
-	historyLength := len(requestContext.Chat.History)
+	history := requestContext.Chat.History
+	const maxHistoryMessages = 15
+	var summary string
+	if len(history) > maxHistoryMessages {
+		earlier := history[:len(history)-maxHistoryMessages]
+		history = history[len(history)-maxHistoryMessages:]
 
+		text := chatHistoryToPlainText(earlier)
+		if text != "" {
+			var err error
+			summary, err = l.Summarize(text, "")
+			if err != nil {
+				slog.Error("llm: failed to summarize earlier messages", "error", err)
+				sentry.CaptureException(err)
+			}
+		}
+	}
+
+	historyLength := len(history)
 	if historyLength > 0 {
 		systemPrompt += "\nYou have access to last " + strconv.Itoa(historyLength) + " messages in this chat."
 	}
@@ -64,15 +81,15 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, requestContext
 		},
 	}
 
-	if requestContext.Chat.EarlierSummary != "" {
+	if summary != "" {
 		req.Messages = append(req.Messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleSystem,
-			Content: "[Earlier conversation summary: " + requestContext.Chat.EarlierSummary + "]",
+			Content: "[Earlier conversation summary: " + summary + "]",
 		})
 	}
 
 	if historyLength > 0 {
-		for _, msg := range requestContext.Chat.History {
+		for _, msg := range history {
 			req.Messages = append(req.Messages, chatMessageToOpenAiChatCompletionMessage(msg))
 		}
 	}
