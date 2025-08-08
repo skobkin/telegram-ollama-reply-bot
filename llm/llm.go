@@ -48,14 +48,11 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, requestContext
 	}
 
 	history := requestContext.Chat.History
-	maxHistoryMessages := l.cfg.RequestHistoryLength
-	if maxHistoryMessages == 0 {
-		maxHistoryMessages = 15
-	}
+	limit := l.cfg.UncompressedHistoryLimit
 	var summary string
-	if maxHistoryMessages > 0 && len(history) > maxHistoryMessages {
-		earlier := history[:len(history)-maxHistoryMessages]
-		history = history[len(history)-maxHistoryMessages:]
+	if limit > 0 && len(history) > limit {
+		earlier := history[:len(history)-limit]
+		history = history[len(history)-limit:]
 
 		text := chatHistoryToPlainText(earlier)
 		if text != "" {

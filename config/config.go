@@ -15,11 +15,11 @@ type Config struct {
 
 // LLMConfig contains configuration for the LLM connector
 type LLMConfig struct {
-	APIBaseURL           string
-	APIToken             string
-	Prompts              PromptConfig
-	Models               ModelSelection
-	RequestHistoryLength int
+	APIBaseURL               string
+	APIToken                 string
+	Prompts                  PromptConfig
+	Models                   ModelSelection
+	UncompressedHistoryLimit int
 }
 
 // PromptConfig contains configuration for prompts
@@ -58,24 +58,24 @@ type TelegramConfig struct {
 
 // Load creates a new Config instance populated from environment variables
 func Load() *Config {
-	historyLength := 150 // default value
+	historyLength := 150
 	if lengthStr := os.Getenv("BOT_HISTORY_LENGTH"); lengthStr != "" {
 		if length, err := strconv.Atoi(lengthStr); err == nil {
 			historyLength = length
 		}
 	}
 
-	maxSummaryLength := 2000 // default value
+	maxSummaryLength := 2000
 	if lengthStr := os.Getenv("MAX_SUMMARY_LENGTH"); lengthStr != "" {
 		if length, err := strconv.Atoi(lengthStr); err == nil {
 			maxSummaryLength = length
 		}
 	}
 
-	requestHistoryLength := 15 // default value
-	if lengthStr := os.Getenv("LLM_REQUEST_HISTORY_LENGTH"); lengthStr != "" {
+	uncompressedHistoryLimit := 15
+	if lengthStr := os.Getenv("LLM_UNCOMPRESSED_HISTORY_LIMIT"); lengthStr != "" {
 		if length, err := strconv.Atoi(lengthStr); err == nil {
-			requestHistoryLength = length
+			uncompressedHistoryLimit = length
 		}
 	}
 
@@ -132,7 +132,7 @@ func Load() *Config {
 				Gender:                 getEnvOrDefault("RESPONSE_GENDER", "neutral"),
 				MaxSummaryLength:       maxSummaryLength,
 			},
-			RequestHistoryLength: requestHistoryLength,
+			UncompressedHistoryLimit: uncompressedHistoryLimit,
 		},
 		Sentry: SentryConfig{
 			DSN: os.Getenv("SENTRY_DSN"),
