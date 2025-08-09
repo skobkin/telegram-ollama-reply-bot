@@ -23,6 +23,7 @@ The bot can be configured using the following environment variables:
 | `MODEL_SUMMARIZE_REQUEST` | Model name for summarization requests              | Yes      | -      |
 | `MODEL_IMAGE_RECOGNITION` | Model name for image recognition                   | No       | -      |
 | `BOT_HISTORY_LENGTH`      | Number of messages to keep in conversation history | No       | 150    |
+| `LLM_UNCOMPRESSED_HISTORY_LIMIT` | Recent chat messages sent verbatim to LLM; older ones summarized. Set to `0` to disable summarization | No | 15 |
 | `SENTRY_DSN`              | Sentry DSN for error tracking                      | No       | empty  |
 | `RESPONSE_LANGUAGE`       | Language for bot responses                          | No       | Russian |
 | `RESPONSE_GENDER`         | Gender for bot responses                            | No       | neutral |
@@ -64,6 +65,7 @@ docker run \
   -e MODEL_SUMMARIZE_REQUEST=gemma3:12b \
   -e MODEL_IMAGE_RECOGNITION=gemma3:12b \
   -e BOT_HISTORY_LENGTH=150 \
+  -e LLM_UNCOMPRESSED_HISTORY_LIMIT=15 \
   -e SENTRY_DSN=https://your-sentry-dsn \
   -e BOT_ADMIN_IDS=123456789,987654321 \
   skobkin/telegram-llm-bot

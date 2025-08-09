@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strconv"
 	"telegram-ollama-reply-bot/config"
 
 	"encoding/base64"
@@ -28,10 +27,10 @@ type LlmConnector struct {
 }
 
 func NewConnector(cfg config.LLMConfig, templateProcessor *TemplateProcessor) *LlmConnector {
-	config := openai.DefaultConfig(cfg.APIToken)
-	config.BaseURL = cfg.APIBaseURL
+	clientCfg := openai.DefaultConfig(cfg.APIToken)
+	clientCfg.BaseURL = cfg.APIBaseURL
 
-	client := openai.NewClientWithConfig(config)
+	client := openai.NewClientWithConfig(clientCfg)
 
 	return &LlmConnector{
 		client:            client,
@@ -48,10 +47,30 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, requestContext
 		return "", ErrTemplateProcessing
 	}
 
-	historyLength := len(requestContext.Chat.History)
+	history := requestContext.Chat.History
+	uncompressedLimit := l.cfg.UncompressedHistoryLimit
+	var summary string
 
-	if historyLength > 0 {
-		systemPrompt += "\nYou have access to last " + strconv.Itoa(historyLength) + " messages in this chat."
+	historyLength := len(history)
+	if uncompressedLimit > 0 && historyLength > uncompressedLimit {
+		slog.Debug(
+			"llm: history length exceeded limit, going to summarize",
+			"history_length", historyLength,
+		)
+
+		earlier := history[:historyLength-uncompressedLimit]
+		history = history[historyLength-uncompressedLimit:]
+
+		text := chatHistoryToPlainText(earlier)
+		if text != "" {
+			sum, err := l.Summarize(text, "")
+			if err != nil {
+				slog.Error("llm: failed to summarize earlier messages", "error", err)
+				sentry.CaptureException(err)
+			} else {
+				summary = sum
+			}
+		}
 	}
 
 	req := openai.ChatCompletionRequest{
@@ -64,8 +83,15 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, requestContext
 		},
 	}
 
+	if summary != "" {
+		req.Messages = append(req.Messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleSystem,
+			Content: "[Earlier conversation summary: " + summary + "]",
+		})
+	}
+
 	if historyLength > 0 {
-		for _, msg := range requestContext.Chat.History {
+		for _, msg := range history {
 			req.Messages = append(req.Messages, chatMessageToOpenAiChatCompletionMessage(msg))
 		}
 	}

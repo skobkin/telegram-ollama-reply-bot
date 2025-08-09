@@ -16,9 +16,9 @@ func NewLogger(prefix string) Logger {
 }
 
 func (l Logger) Debugf(format string, args ...any) {
-	slog.Debug(l.prefix + fmt.Sprint(format, args))
+	slog.Debug(l.prefix + fmt.Sprintf(format, args...))
 }
 
 func (l Logger) Errorf(format string, args ...any) {
-	slog.Error(l.prefix + fmt.Sprintf(format, args))
+	slog.Error(l.prefix + fmt.Sprintf(format, args...))
 }

@@ -2,6 +2,7 @@ package bot
 
 import (
 	"log/slog"
+
 	"telegram-ollama-reply-bot/llm"
 
 	t "github.com/mymmrac/telego"
