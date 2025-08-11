@@ -177,14 +177,19 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 
 	chatID := tu.ID(message.Chat.ID)
 
-	b.sendTyping(chatID)
+	b.maybeSummarizeHistory(message.Chat.ID)
+
+	ctx, cancel := context.WithTimeout(b.ctx, b.cfg.LlmRequestTimeout)
+	defer cancel()
+	go b.sendTypingUntil(ctx, chatID)
 
 	requestContext := b.createLlmRequestContextFromMessage(message)
 
 	// Get MessageData from the request context if available, otherwise create it on the fly
 	userMessageData := b.getMessageDataFromRequestContextOrCreate(reqCtx, message, true)
 
-	llmReply, err := b.llm.HandleChatMessage(
+	llmReply, usage, err := b.llm.HandleChatMessage(
+		ctx,
 		messageDataToLlmMessage(userMessageData),
 		requestContext,
 	)
@@ -198,6 +203,10 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 		)))
 
 		return
+	}
+
+	if usage != nil {
+		b.stats.AddUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.Cost)
 	}
 
 	slog.Debug("bot: Got completion. Going to send.", "llm-completion", llmReply)
@@ -227,7 +236,9 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 
 	chatID := tu.ID(message.Chat.ID)
 
-	b.sendTyping(chatID)
+	ctxReq, cancel := context.WithTimeout(b.ctx, b.cfg.LlmRequestTimeout)
+	defer cancel()
+	go b.sendTypingUntil(ctxReq, chatID)
 
 	args := strings.SplitN(message.Text, " ", 3)
 	argsCount := len(args)
@@ -285,7 +296,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 		return nil
 	}
 
-	llmReply, err := b.llm.Summarize(article.Text, additionalInstructions)
+	llmReply, usage, err := b.llm.Summarize(ctxReq, article.Text, additionalInstructions)
 	if err != nil {
 		slog.Error("bot: Cannot get reply from LLM connector")
 		sentry.CaptureException(err)
@@ -296,6 +307,10 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 		)))
 
 		return nil
+	}
+
+	if usage != nil {
+		b.stats.AddUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.Cost)
 	}
 
 	slog.Debug("bot: Got completion. Going to send reply.", "llm-completion", llmReply)
@@ -333,7 +348,6 @@ func (b *Bot) helpHandler(ctx *th.Context, message t.Message) error {
 	_, err := ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Messagef(
 		chatID,
 		"Instructions:\r\n"+
-			"/hey <text> - Ask something from LLM\r\n"+
 			"/summarize <link> - Summarize text from the provided link\r\n"+
 			"/s <link> - Shorter version\r\n"+
 			"/help - Show this help\r\n\r\n"+

@@ -26,6 +26,13 @@ type LlmConnector struct {
 	templateProcessor *TemplateProcessor
 }
 
+type TokenUsage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	Cost             float64
+}
+
 func NewConnector(cfg config.LLMConfig, templateProcessor *TemplateProcessor) *LlmConnector {
 	clientCfg := openai.DefaultConfig(cfg.APIToken)
 	clientCfg.BaseURL = cfg.APIBaseURL
@@ -39,39 +46,16 @@ func NewConnector(cfg config.LLMConfig, templateProcessor *TemplateProcessor) *L
 	}
 }
 
-func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, requestContext RequestContext) (string, error) {
+func (l *LlmConnector) HandleChatMessage(ctx context.Context, userMessage ChatMessage, requestContext RequestContext) (string, *TokenUsage, error) {
 	systemPrompt, err := l.templateProcessor.ProcessChatTemplate(l.cfg.Models.TextRequestModel, requestContext.Prompt())
 	if err != nil {
 		slog.Error("llm: Template processing failed", "error", err)
 		sentry.CaptureException(err)
-		return "", ErrTemplateProcessing
+		return "", nil, ErrTemplateProcessing
 	}
 
 	history := requestContext.Chat.History
-	uncompressedLimit := l.cfg.UncompressedHistoryLimit
-	var summary string
-
-	historyLength := len(history)
-	if uncompressedLimit > 0 && historyLength > uncompressedLimit {
-		slog.Debug(
-			"llm: history length exceeded limit, going to summarize",
-			"history_length", historyLength,
-		)
-
-		earlier := history[:historyLength-uncompressedLimit]
-		history = history[historyLength-uncompressedLimit:]
-
-		text := chatHistoryToPlainText(earlier)
-		if text != "" {
-			sum, err := l.Summarize(text, "")
-			if err != nil {
-				slog.Error("llm: failed to summarize earlier messages", "error", err)
-				sentry.CaptureException(err)
-			} else {
-				summary = sum
-			}
-		}
-	}
+	earlierSummary := requestContext.Chat.EarlierSummary
 
 	req := openai.ChatCompletionRequest{
 		Model: l.cfg.Models.TextRequestModel,
@@ -83,14 +67,14 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, requestContext
 		},
 	}
 
-	if summary != "" {
+	if earlierSummary != "" {
 		req.Messages = append(req.Messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleSystem,
-			Content: "[Earlier conversation summary: " + summary + "]",
+			Content: "[Earlier conversation summary: " + earlierSummary + "]",
 		})
 	}
 
-	if historyLength > 0 {
+	if len(history) > 0 {
 		for _, msg := range history {
 			req.Messages = append(req.Messages, chatMessageToOpenAiChatCompletionMessage(msg))
 		}
@@ -98,12 +82,12 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, requestContext
 
 	req.Messages = append(req.Messages, chatMessageToOpenAiChatCompletionMessage(userMessage))
 
-	resp, err := l.client.CreateChatCompletion(context.Background(), req)
+	resp, err := l.client.CreateChatCompletion(ctx, req)
 	if err != nil {
 		slog.Error("llm: LLM back-end request failed", "error", err)
 		sentry.CaptureException(err)
 
-		return "", ErrLlmBackendRequestFailed
+		return "", nil, ErrLlmBackendRequestFailed
 	}
 
 	slog.Debug("llm: Received LLM back-end response", "response", resp)
@@ -112,18 +96,24 @@ func (l *LlmConnector) HandleChatMessage(userMessage ChatMessage, requestContext
 		slog.Error("llm: LLM back-end reply has no choices")
 		sentry.CaptureMessage("LLM back-end reply has no choices")
 
-		return "", ErrNoChoices
+		return "", nil, ErrNoChoices
 	}
 
-	return resp.Choices[0].Message.Content, nil
+	usage := &TokenUsage{
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+		TotalTokens:      resp.Usage.TotalTokens,
+	}
+
+	return resp.Choices[0].Message.Content, usage, nil
 }
 
-func (l *LlmConnector) Summarize(text string, instructions string) (string, error) {
+func (l *LlmConnector) Summarize(ctx context.Context, text string, instructions string) (string, *TokenUsage, error) {
 	systemPrompt, err := l.templateProcessor.ProcessSummarizeTemplate()
 	if err != nil {
 		slog.Error("llm: Template processing failed", "error", err)
 		sentry.CaptureException(err)
-		return "", ErrTemplateProcessing
+		return "", nil, ErrTemplateProcessing
 	}
 
 	if instructions != "" {
@@ -145,12 +135,12 @@ func (l *LlmConnector) Summarize(text string, instructions string) (string, erro
 		Content: text,
 	})
 
-	resp, err := l.client.CreateChatCompletion(context.Background(), req)
+	resp, err := l.client.CreateChatCompletion(ctx, req)
 	if err != nil {
 		slog.Error("llm: LLM back-end request failed", "error", err)
 		sentry.CaptureException(err)
 
-		return "", ErrLlmBackendRequestFailed
+		return "", nil, ErrLlmBackendRequestFailed
 	}
 
 	slog.Debug("llm: Received LLM back-end response", "response", resp)
@@ -159,10 +149,16 @@ func (l *LlmConnector) Summarize(text string, instructions string) (string, erro
 		slog.Error("llm: LLM back-end reply has no choices")
 		sentry.CaptureMessage("LLM back-end reply has no choices")
 
-		return "", ErrNoChoices
+		return "", nil, ErrNoChoices
 	}
 
-	return resp.Choices[0].Message.Content, nil
+	usage := &TokenUsage{
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+		TotalTokens:      resp.Usage.TotalTokens,
+	}
+
+	return resp.Choices[0].Message.Content, usage, nil
 }
 
 func (l *LlmConnector) HasAllModels(ctx context.Context, models config.ModelSelection) (bool, map[string]bool) {
@@ -201,12 +197,12 @@ func (l *LlmConnector) HasAllModels(ctx context.Context, models config.ModelSele
 	return true, searchResult
 }
 
-func (l *LlmConnector) RecognizeImage(imageData []byte) (string, error) {
+func (l *LlmConnector) RecognizeImage(ctx context.Context, imageData []byte) (string, *TokenUsage, error) {
 	systemPrompt, err := l.templateProcessor.ProcessImageRecognitionTemplate()
 	if err != nil {
 		slog.Error("llm: Template processing failed", "error", err)
 		sentry.CaptureException(err)
-		return "", ErrTemplateProcessing
+		return "", nil, ErrTemplateProcessing
 	}
 
 	req := openai.ChatCompletionRequest{
@@ -235,18 +231,24 @@ func (l *LlmConnector) RecognizeImage(imageData []byte) (string, error) {
 		},
 	}
 
-	resp, err := l.client.CreateChatCompletion(context.Background(), req)
+	resp, err := l.client.CreateChatCompletion(ctx, req)
 	if err != nil {
 		slog.Error("llm: LLM back-end request failed", "error", err)
 		sentry.CaptureException(err)
-		return "", ErrLlmBackendRequestFailed
+		return "", nil, ErrLlmBackendRequestFailed
 	}
 
 	if len(resp.Choices) < 1 {
 		slog.Error("llm: LLM back-end reply has no choices")
 		sentry.CaptureMessage("LLM back-end reply has no choices")
-		return "", ErrNoChoices
+		return "", nil, ErrNoChoices
 	}
 
-	return resp.Choices[0].Message.Content, nil
+	usage := &TokenUsage{
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+		TotalTokens:      resp.Usage.TotalTokens,
+	}
+
+	return resp.Choices[0].Message.Content, usage, nil
 }

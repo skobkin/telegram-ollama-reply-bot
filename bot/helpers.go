@@ -1,11 +1,13 @@
 package bot
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/getsentry/sentry-go"
 	t "github.com/mymmrac/telego"
@@ -35,6 +37,21 @@ func (b *Bot) sendTyping(chatId t.ChatID) {
 	}
 }
 
+func (b *Bot) sendTypingUntil(ctx context.Context, chatId t.ChatID) {
+	b.sendTyping(chatId)
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.sendTyping(chatId)
+		}
+	}
+}
+
 func (b *Bot) trySendReplyError(message t.Message) {
 	_, _ = b.api.SendMessage(b.ctx, b.reply(message, tu.Message(
 		tu.ID(message.Chat.ID),
@@ -44,19 +61,54 @@ func (b *Bot) trySendReplyError(message t.Message) {
 
 func (b *Bot) isMentionOfMe(message t.Message) bool {
 	textToCheck := message.Text
+	entities := message.Entities
 	if textToCheck == "" && message.Caption != "" {
 		textToCheck = message.Caption
+		entities = message.CaptionEntities
 	}
 	if textToCheck == "" {
 		return false
 	}
 
-	slog.Debug("bot: Checking if message mentions me",
-		"message_text", textToCheck,
-		"bot_username", b.profile.Username,
-		"contains_mention", strings.Contains(textToCheck, "@"+b.profile.Username))
+	for _, e := range entities {
+		switch e.Type {
+		case t.EntityTypeTextMention:
+			if e.User != nil && e.User.ID == b.profile.Id {
+				return true
+			}
+		case t.EntityTypeMention:
+			if entityText(textToCheck, e) == "@"+b.profile.Username {
+				return true
+			}
+		}
+	}
 
-	return strings.Contains(textToCheck, "@"+b.profile.Username)
+	return false
+}
+
+func entityText(text string, entity t.MessageEntity) string {
+	r := []rune(text)
+	start := utf16Index(r, entity.Offset)
+	end := utf16Index(r, entity.Offset+entity.Length)
+	if start < 0 || end > len(r) || start > end {
+		return ""
+	}
+	return string(r[start:end])
+}
+
+func utf16Index(runes []rune, utf16Pos int) int {
+	count := 0
+	for i, r := range runes {
+		if r > 0xFFFF {
+			count += 2
+		} else {
+			count++
+		}
+		if count > utf16Pos {
+			return i
+		}
+	}
+	return len(runes)
 }
 
 func (b *Bot) isReplyToMe(message t.Message) bool {
@@ -148,10 +200,17 @@ func (b *Bot) describeImage(photo t.PhotoSize) (string, error) {
 
 	slog.Info("bot: Image downloaded", "file_path", file.FilePath, "file_size", len(fileBytes))
 
-	description, err := b.llm.RecognizeImage(fileBytes)
+	ctx, cancel := context.WithTimeout(b.ctx, b.cfg.LlmRequestTimeout)
+	defer cancel()
+
+	description, usage, err := b.llm.RecognizeImage(ctx, fileBytes)
 	if err != nil {
 		slog.Error("bot: Failed to recognize image", "error", err)
 		return "", errors.Join(ErrImageRecognition, err)
+	}
+
+	if usage != nil {
+		b.stats.AddUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.Cost)
 	}
 
 	slog.Debug("bot: Image recognized", "description", description)

@@ -1,7 +1,9 @@
 package bot
 
 import (
+	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/getsentry/sentry-go"
 	t "github.com/mymmrac/telego"
@@ -19,21 +21,33 @@ type MessageData struct {
 	chatID        int64
 }
 
+type EarlierSummary struct {
+	Text string
+	// SummarizedUntil is the index of the first message that has not yet been
+	// summarized into Text.
+	SummarizedUntil int
+}
+
 type MessageHistory struct {
-	messages []MessageData
-	capacity int
+	messages       []MessageData
+	capacity       int
+	earlierSummary EarlierSummary
 }
 
 func NewMessageHistory(capacity int) *MessageHistory {
 	return &MessageHistory{
-		messages: make([]MessageData, 0, capacity),
-		capacity: capacity,
+		messages:       make([]MessageData, 0, capacity),
+		capacity:       capacity,
+		earlierSummary: EarlierSummary{},
 	}
 }
 
 func (b *MessageHistory) Push(element MessageData) {
 	if len(b.messages) >= b.capacity {
 		b.messages = b.messages[1:]
+		if b.earlierSummary.SummarizedUntil > 0 {
+			b.earlierSummary.SummarizedUntil--
+		}
 	}
 
 	b.messages = append(b.messages, element)
@@ -41,6 +55,14 @@ func (b *MessageHistory) Push(element MessageData) {
 
 func (b *MessageHistory) GetAll() []MessageData {
 	return b.messages
+}
+
+func (b *MessageHistory) EarlierSummary() string {
+	return b.earlierSummary.Text
+}
+
+func (b *MessageHistory) SetEarlierSummary(sum string) {
+	b.earlierSummary.Text = sum
 }
 
 func (b *Bot) saveChatMessageToHistory(msgData MessageData) {
@@ -152,4 +174,92 @@ func (b *Bot) ResetChatHistory(chatId int64) {
 
 	slog.Info("bot: Resetting chat history", "chat_id", chatId)
 	b.history[chatId] = NewMessageHistory(b.cfg.HistoryLength)
+}
+
+func (b *Bot) maybeSummarizeHistory(chatId int64) {
+	mh, ok := b.history[chatId]
+	if !ok {
+		return
+	}
+
+	limit := b.cfg.UncompressedHistoryLimit
+	threshold := b.cfg.HistorySummaryThreshold
+	if limit <= 0 {
+		return
+	}
+
+	historyLen := len(mh.messages)
+	unsummarized := historyLen - mh.earlierSummary.SummarizedUntil
+	if unsummarized <= limit+threshold {
+		return
+	}
+
+	end := historyLen - limit
+	start := mh.earlierSummary.SummarizedUntil
+	if start >= end {
+		return
+	}
+	slice := mh.messages[start:end]
+	if len(slice) == 0 {
+		mh.earlierSummary.SummarizedUntil = end
+		return
+	}
+	text := historyToPlainText(slice)
+
+	if mh.earlierSummary.Text != "" {
+		// TODO: introduce a dedicated llm method for history summarization
+		// that provides a consistent presentation for earlier and recent messages
+		text = "Earlier conversation summary:\n" + mh.earlierSummary.Text + "\n\nRecent messages:\n" + text
+	}
+
+	ctx, cancel := context.WithTimeout(b.ctx, b.cfg.LlmRequestTimeout)
+	defer cancel()
+	summary, usage, err := b.llm.Summarize(ctx, text, "")
+	if err != nil {
+		slog.Error("bot: failed to summarize history", "error", err, "chat", chatId)
+		sentry.CaptureException(err)
+		return
+	}
+	if usage != nil {
+		b.stats.AddUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.Cost)
+	}
+	mh.SetEarlierSummary(summary)
+	mh.earlierSummary.SummarizedUntil = end
+}
+
+func historyToPlainText(history []MessageData) string {
+	var sb strings.Builder
+	for _, msg := range history {
+		sb.WriteString(messageDataToPlainText(msg))
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+func messageDataToPlainText(msg MessageData) string {
+	var sb strings.Builder
+	if msg.ReplyTo != nil {
+		sb.WriteString("> ")
+		sb.WriteString(messageDataToPlainText(*msg.ReplyTo))
+		sb.WriteString("\n")
+	}
+	sb.WriteString(presentMessage(msg))
+	return sb.String()
+}
+
+func presentMessage(msg MessageData) string {
+	result := msg.Name
+	if msg.Username != "" {
+		result += " (@" + msg.Username + ")"
+	}
+	result += ": "
+	if msg.HasImage {
+		if msg.Image != "" {
+			result += "[Image: " + msg.Image + "] "
+		} else {
+			result += "[Image] "
+		}
+	}
+	result += msg.Text
+	return result
 }
