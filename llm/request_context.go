@@ -20,10 +20,11 @@ type UserContext struct {
 }
 
 type ChatContext struct {
-	Title       string
-	Description string
-	Type        string
-	History     []ChatMessage
+	Title          string
+	Description    string
+	Type           string
+	History        []ChatMessage
+	EarlierSummary string
 }
 
 type ChatMessage struct {

@@ -20,6 +20,11 @@ type Stats struct {
 	Mentions          uint64
 	SummarizeRequests uint64
 	ChatHistoryResets uint64
+
+	PromptTokens     uint64
+	CompletionTokens uint64
+	TotalTokens      uint64
+	TotalCost        float64
 }
 
 func NewStats() *Stats {
@@ -33,6 +38,11 @@ func NewStats() *Stats {
 		Mentions:          0,
 		SummarizeRequests: 0,
 		ChatHistoryResets: 0,
+
+		PromptTokens:     0,
+		CompletionTokens: 0,
+		TotalTokens:      0,
+		TotalCost:        0,
 	}
 }
 
@@ -47,6 +57,11 @@ func (s *Stats) MarshalJSON() ([]byte, error) {
 		Mentions          uint64 `json:"mentions"`
 		SummarizeRequests uint64 `json:"summarize_requests"`
 		ChatHistoryResets uint64 `json:"chat_history_resets"`
+
+		PromptTokens     uint64  `json:"prompt_tokens"`
+		CompletionTokens uint64  `json:"completion_tokens"`
+		TotalTokens      uint64  `json:"total_tokens"`
+		TotalCost        float64 `json:"total_cost"`
 	}{
 		Uptime: time.Now().Sub(s.RunningSince).String(),
 
@@ -57,6 +72,11 @@ func (s *Stats) MarshalJSON() ([]byte, error) {
 		Mentions:          s.Mentions,
 		SummarizeRequests: s.SummarizeRequests,
 		ChatHistoryResets: s.ChatHistoryResets,
+
+		PromptTokens:     s.PromptTokens,
+		CompletionTokens: s.CompletionTokens,
+		TotalTokens:      s.TotalTokens,
+		TotalCost:        s.TotalCost,
 	})
 }
 
@@ -105,4 +125,13 @@ func (s *Stats) ChatHistoryReset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ChatHistoryResets++
+}
+
+func (s *Stats) AddUsage(prompt, completion, total int, cost float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.PromptTokens += uint64(prompt)
+	s.CompletionTokens += uint64(completion)
+	s.TotalTokens += uint64(total)
+	s.TotalCost += cost
 }

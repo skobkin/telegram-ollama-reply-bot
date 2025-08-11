@@ -4,6 +4,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config represents the root configuration structure
@@ -15,11 +16,10 @@ type Config struct {
 
 // LLMConfig contains configuration for the LLM connector
 type LLMConfig struct {
-	APIBaseURL               string
-	APIToken                 string
-	Prompts                  PromptConfig
-	Models                   ModelSelection
-	UncompressedHistoryLimit int
+	APIBaseURL string
+	APIToken   string
+	Prompts    PromptConfig
+	Models     ModelSelection
 }
 
 // PromptConfig contains configuration for prompts
@@ -39,9 +39,12 @@ type SentryConfig struct {
 
 // BotConfig contains configuration for bot settings
 type BotConfig struct {
-	HistoryLength int
-	AdminIDs      []int64
-	Telegram      TelegramConfig
+	HistoryLength            int
+	AdminIDs                 []int64
+	Telegram                 TelegramConfig
+	UncompressedHistoryLimit int
+	HistorySummaryThreshold  int
+	LlmRequestTimeout        time.Duration
 }
 
 // ModelSelection contains configuration for LLM models
@@ -78,6 +81,21 @@ func Load() *Config {
 			uncompressedHistoryLimit = length
 		}
 	}
+
+	historySummaryThreshold := 5
+	if thrStr := os.Getenv("LLM_HISTORY_SUMMARY_THRESHOLD"); thrStr != "" {
+		if thr, err := strconv.Atoi(thrStr); err == nil {
+			historySummaryThreshold = thr
+		}
+	}
+
+	requestTimeout := 60
+	if toStr := os.Getenv("LLM_REQUEST_TIMEOUT"); toStr != "" {
+		if to, err := strconv.Atoi(toStr); err == nil {
+			requestTimeout = to
+		}
+	}
+	requestTimeoutDuration := time.Duration(requestTimeout) * time.Second
 
 	// Parse admin IDs from environment variable
 	var adminIDs []int64
@@ -132,7 +150,6 @@ func Load() *Config {
 				Gender:                 getEnvOrDefault("RESPONSE_GENDER", "neutral"),
 				MaxSummaryLength:       maxSummaryLength,
 			},
-			UncompressedHistoryLimit: uncompressedHistoryLimit,
 		},
 		Sentry: SentryConfig{
 			DSN: os.Getenv("SENTRY_DSN"),
@@ -143,6 +160,9 @@ func Load() *Config {
 			Telegram: TelegramConfig{
 				Token: os.Getenv("TELEGRAM_TOKEN"),
 			},
+			UncompressedHistoryLimit: uncompressedHistoryLimit,
+			HistorySummaryThreshold:  historySummaryThreshold,
+			LlmRequestTimeout:        requestTimeoutDuration,
 		},
 	}
 }

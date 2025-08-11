@@ -30,13 +30,18 @@ func (b *Bot) createLlmRequestContextFromMessage(message t.Message) llm.RequestC
 	chat := message.Chat
 
 	history := b.getChatHistory(chat.ID)
+	earlierSummary := ""
+	if mh, ok := b.history[chat.ID]; ok {
+		earlierSummary = mh.EarlierSummary()
+	}
 
 	rc.Chat = llm.ChatContext{
 		Title: chat.Title,
 		// TODO: fill when ChatFullInfo retrieved
 		//Description: chat.Description,
-		Type:    chat.Type,
-		History: historyToLlmMessages(history),
+		Type:           chat.Type,
+		History:        historyToLlmMessages(history),
+		EarlierSummary: earlierSummary,
 	}
 
 	slog.Debug("bot: request context created", "request-context", rc)

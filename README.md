@@ -24,6 +24,8 @@ The bot can be configured using the following environment variables:
 | `MODEL_IMAGE_RECOGNITION` | Model name for image recognition                   | No       | -      |
 | `BOT_HISTORY_LENGTH`      | Number of messages to keep in conversation history | No       | 150    |
 | `LLM_UNCOMPRESSED_HISTORY_LIMIT` | Recent chat messages sent verbatim to LLM; older ones summarized. Set to `0` to disable summarization | No | 15 |
+| `LLM_HISTORY_SUMMARY_THRESHOLD` | Extra messages beyond the limit before summarization triggers again | No | 5 |
+| `LLM_REQUEST_TIMEOUT` | Timeout in seconds for LLM requests | No | 60 |
 | `SENTRY_DSN`              | Sentry DSN for error tracking                      | No       | empty  |
 | `RESPONSE_LANGUAGE`       | Language for bot responses                          | No       | Russian |
 | `RESPONSE_GENDER`         | Gender for bot responses                            | No       | neutral |
@@ -41,7 +43,6 @@ The bot supports the following commands:
 |-------------|------------------------------------------------|---------|
 | `/start`    | Start the bot and get a welcome message        | `/start` |
 | `/help`     | Show help message with available commands      | `/help` |
-| `/hey`      | Ask something from the LLM                     | `/hey what is the capital of France?` |
 | `/summarize`, `/s` | Summarize text from the provided link   | `/summarize https://ex.co/article`, `/s https://ex.co/article concentrate on tech stuff` |
 | `/stats`    | Show bot statistics (admin only)               | `/stats` |
 | `/reset`    | Reset current chat history (admin only)        | `/reset` |
