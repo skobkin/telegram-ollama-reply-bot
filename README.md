@@ -35,6 +35,18 @@ The bot can be configured using the following environment variables:
 | `PROMPT_IMAGE_RECOGNITION`| System prompt for image recognition                | No       | See [config.go](config/config.go) |
 | `BOT_ADMIN_IDS`           | Comma-separated list of admin user IDs             | No       | empty  |
 
+### Prompt placeholders
+
+Prompt environment variables support Go's [`text/template`](https://pkg.go.dev/text/template) placeholders. The following
+placeholders are available:
+
+- **`PROMPT_CHAT`** – `{{.Model}}`, `{{.Language}}`, `{{.Gender}}`, `{{.Context}}`
+- **`PROMPT_SUMMARIZE`** – `{{.Language}}`, `{{.MaxLength}}`
+- **`PROMPT_IMAGE_RECOGNITION`** – `{{.Language}}`
+
+`{{.Model}}` is the model name, `{{.Language}}` is the response language, `{{.Gender}}` defines how the bot speaks about
+itself, `{{.Context}}` is the recent conversation history, and `{{.MaxLength}}` limits summary size.
+
 ## Usage
 
 The bot supports the following commands:
