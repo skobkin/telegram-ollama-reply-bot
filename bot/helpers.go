@@ -147,16 +147,53 @@ func isValidAndAllowedUrl(text string) bool {
 }
 
 func cropToMaxLengthMarkdownV2(text string, max int) string {
-	if len(text) <= max {
+	runes := []rune(text)
+	if len(runes) <= max {
 		return text
 	}
 
 	cropPoint := max - 3
-	for cropPoint > 0 && text[cropPoint] != ' ' {
+	if cropPoint > len(runes) {
+		cropPoint = len(runes)
+	}
+	for cropPoint > 0 && (runes[cropPoint] != ' ' || runes[cropPoint-1] == '\\') {
 		cropPoint--
 	}
 
-	return text[:cropPoint] + "\\.\\.\\."
+	croppedRunes := runes[:cropPoint]
+
+	// escape dangling formatting markers
+	markers := []rune{'*', '_', '~', '|'}
+	for _, m := range markers {
+		unescapedCount := 0
+		lastIdx := -1
+		for i := 0; i < len(croppedRunes); i++ {
+			if croppedRunes[i] == '\\' {
+				i++
+				continue
+			}
+			if croppedRunes[i] == m {
+				unescapedCount++
+				lastIdx = i
+			}
+		}
+		if unescapedCount%2 != 0 && lastIdx >= 0 {
+			croppedRunes = append(croppedRunes[:lastIdx], append([]rune{'\\'}, croppedRunes[lastIdx:]...)...)
+		}
+	}
+
+	if len(croppedRunes)+3 > max {
+		cropPoint := max - 3
+		if cropPoint > len(croppedRunes) {
+			cropPoint = len(croppedRunes)
+		}
+		for cropPoint > 0 && croppedRunes[cropPoint-1] == '\\' {
+			cropPoint--
+		}
+		croppedRunes = croppedRunes[:cropPoint]
+	}
+
+	return string(croppedRunes) + "\\.\\.\\."
 }
 
 func (b *Bot) isFromAdmin(message *t.Message) bool {
@@ -165,22 +202,6 @@ func (b *Bot) isFromAdmin(message *t.Message) bool {
 	}
 
 	return slices.Contains(b.cfg.AdminIDs, message.From.ID)
-}
-
-func (b *Bot) escapeMarkdownV2Symbols(input string) string {
-	slog.Debug("bot: Escaping markdown", "input_text", input)
-
-	var result strings.Builder
-	for _, r := range input {
-		// Only escape non-alphanumeric ASCII characters (codes 1-126)
-		if r > 0 && r < 127 && !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
-			result.WriteRune('\\')
-		}
-		result.WriteRune(r)
-	}
-
-	slog.Debug("bot:helpers: Markdown escaped", "output_text", result.String())
-	return result.String()
 }
 
 func (b *Bot) describeImage(photo t.PhotoSize) (string, error) {
