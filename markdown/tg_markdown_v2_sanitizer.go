@@ -113,14 +113,55 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 			continue
 		}
 		if r == '\\' {
+			if i+1 < len(runes) {
+				next := runes[i+1]
+				if strings.ContainsRune("_*[]()~`># +- =|{}.!", next) {
+					b.WriteRune('\\')
+					b.WriteRune(next)
+					i++
+					continue
+				}
+			}
 			b.WriteString("\\\\")
 			continue
 		}
-		switch r {
-		case '#', '+', '-', '=', '{', '}', '.', '!':
-			b.WriteRune('\\')
+		if r == '!' {
+			if i+1 < len(runes) && runes[i+1] == '[' {
+				b.WriteRune('!')
+				continue
+			}
+			b.WriteString("\\!")
+			continue
 		}
-		b.WriteRune(r)
+		if r == '>' {
+			j := i - 1
+			for j >= 0 && runes[j] != '\n' {
+				if runes[j] == '*' || runes[j] == '_' || runes[j] == '~' || runes[j] == '|' {
+					j--
+					continue
+				}
+				if runes[j] == '\\' {
+					j -= 2
+					continue
+				}
+				break
+			}
+			if j < 0 || runes[j] == '\n' {
+				b.WriteRune('>')
+			} else {
+				b.WriteString("\\>")
+			}
+			continue
+		}
+		switch r {
+		case '#', '+', '-', '=', '{', '}', '.':
+			b.WriteRune('\\')
+			b.WriteRune(r)
+		case '|', '*', '_', '~':
+			b.WriteRune(r)
+		default:
+			b.WriteRune(r)
+		}
 	}
 	return b.String()
 }

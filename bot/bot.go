@@ -313,6 +313,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 	footer := "\n\n[src](" + footerURL + ")"
 	body := b.sanitizer.Sanitize(llmReply)
 	body = cropToMaxLengthMarkdownV2(body, TELEGRAM_CHAR_LIMIT-len(footer))
+	body = b.sanitizer.Sanitize(body)
 	replyMarkdown := body + footer
 
 	replyMessage := tu.Message(
