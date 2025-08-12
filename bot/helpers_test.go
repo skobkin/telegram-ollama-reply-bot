@@ -11,7 +11,10 @@ func TestCropToMaxLengthMarkdownV2_SanitizesAfterCrop(t *testing.T) {
 	text := "*bold text* trailing"
 	s := markdown.NewTgMarkdownV2Sanitizer()
 	sanitized := s.Sanitize(text)
-	cropped := cropToMaxLengthMarkdownV2(sanitized, 12)
+	cropped, changed := cropToMaxLengthMarkdownV2(sanitized, 12)
+	if !changed {
+		t.Fatalf("expected crop to modify text")
+	}
 	expected := "\\*bold\\.\\.\\."
 	if cropped != expected {
 		t.Fatalf("unexpected cropped text: expected %q got %q", expected, cropped)
@@ -22,8 +25,8 @@ func TestSanitizeAndCrop_LongReply(t *testing.T) {
 	s := markdown.NewTgMarkdownV2Sanitizer()
 	long := strings.Repeat("a", 5000) + "*"
 	sanitized := s.Sanitize(long)
-	cropped := cropToMaxLengthMarkdownV2(sanitized, 100)
-	if cropped != sanitized {
+	cropped, changed := cropToMaxLengthMarkdownV2(sanitized, 100)
+	if changed {
 		cropped = s.Sanitize(cropped)
 	}
 	if len([]rune(cropped)) > 100 {

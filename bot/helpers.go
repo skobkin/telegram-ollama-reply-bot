@@ -146,10 +146,10 @@ func isValidAndAllowedUrl(text string) bool {
 	return true
 }
 
-func cropToMaxLengthMarkdownV2(text string, max int) string {
+func cropToMaxLengthMarkdownV2(text string, max int) (string, bool) {
 	runes := []rune(text)
 	if len(runes) <= max {
-		return text
+		return text, false
 	}
 
 	cropPoint := max - 3
@@ -193,7 +193,7 @@ func cropToMaxLengthMarkdownV2(text string, max int) string {
 		croppedRunes = croppedRunes[:cropPoint]
 	}
 
-	return string(croppedRunes) + "\\.\\.\\."
+	return string(croppedRunes) + "\\.\\.\\.", true
 }
 
 func (b *Bot) isFromAdmin(message *t.Message) bool {

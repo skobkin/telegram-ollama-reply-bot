@@ -312,8 +312,8 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 	footerURL := b.sanitizer.EscapeURL(article.Url)
 	footer := "\n\n[src](" + footerURL + ")"
 	body := b.sanitizer.Sanitize(llmReply)
-	cropped := cropToMaxLengthMarkdownV2(body, TELEGRAM_CHAR_LIMIT-len(footer))
-	if cropped != body {
+	cropped, changed := cropToMaxLengthMarkdownV2(body, TELEGRAM_CHAR_LIMIT-len(footer))
+	if changed {
 		cropped = b.sanitizer.Sanitize(cropped)
 	}
 	replyMarkdown := cropped + footer
