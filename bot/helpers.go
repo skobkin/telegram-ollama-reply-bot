@@ -152,7 +152,10 @@ func cropToMaxLengthMarkdownV2(text string, max int) (string, bool) {
 		return text, false
 	}
 
-	cropPoint := max - 3
+	const ellipsis = "\\.\\.\\."
+	ellipsisLen := len(ellipsis)
+
+	cropPoint := max - ellipsisLen
 	if cropPoint > len(runes) {
 		cropPoint = len(runes)
 	}
@@ -163,7 +166,7 @@ func cropToMaxLengthMarkdownV2(text string, max int) (string, bool) {
 	croppedRunes := runes[:cropPoint]
 
 	// escape dangling formatting markers
-	markers := []rune{'*', '_', '~', '|'}
+	markers := []rune{'*', '_', '~', '|', '`'}
 	for _, m := range markers {
 		unescapedCount := 0
 		lastIdx := -1
@@ -182,8 +185,8 @@ func cropToMaxLengthMarkdownV2(text string, max int) (string, bool) {
 		}
 	}
 
-	if len(croppedRunes)+3 > max {
-		cropPoint := max - 3
+	if len(croppedRunes)+ellipsisLen > max {
+		cropPoint := max - ellipsisLen
 		if cropPoint > len(croppedRunes) {
 			cropPoint = len(croppedRunes)
 		}
@@ -193,7 +196,7 @@ func cropToMaxLengthMarkdownV2(text string, max int) (string, bool) {
 		croppedRunes = croppedRunes[:cropPoint]
 	}
 
-	return string(croppedRunes) + "\\.\\.\\.", true
+	return string(croppedRunes) + ellipsis, true
 }
 
 func (b *Bot) isFromAdmin(message *t.Message) bool {
