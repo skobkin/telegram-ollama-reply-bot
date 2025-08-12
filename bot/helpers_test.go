@@ -23,7 +23,9 @@ func TestSanitizeAndCrop_LongReply(t *testing.T) {
 	long := strings.Repeat("a", 5000) + "*"
 	sanitized := s.Sanitize(long)
 	cropped := cropToMaxLengthMarkdownV2(sanitized, 100)
-	cropped = s.Sanitize(cropped)
+	if cropped != sanitized {
+		cropped = s.Sanitize(cropped)
+	}
 	if len([]rune(cropped)) > 100 {
 		t.Fatalf("cropped text length %d exceeds limit", len([]rune(cropped)))
 	}
