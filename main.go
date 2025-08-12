@@ -9,6 +9,7 @@ import (
 	"telegram-ollama-reply-bot/config"
 	"telegram-ollama-reply-bot/extractor"
 	"telegram-ollama-reply-bot/llm"
+	"telegram-ollama-reply-bot/markdown"
 	"time"
 
 	"github.com/getsentry/sentry-go"
@@ -70,7 +71,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	botService := bot.NewBot(telegramApi, llmc, ext, cfg.Bot, ctx)
+	sanitizer := markdown.NewTgMarkdownV2Sanitizer()
+	botService := bot.NewBot(telegramApi, llmc, ext, sanitizer, cfg.Bot, ctx)
 
 	err = botService.Run()
 	if err != nil {

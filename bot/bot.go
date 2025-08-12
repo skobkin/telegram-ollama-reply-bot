@@ -9,6 +9,7 @@ import (
 	"telegram-ollama-reply-bot/config"
 	"telegram-ollama-reply-bot/extractor"
 	"telegram-ollama-reply-bot/llm"
+	"telegram-ollama-reply-bot/markdown"
 	"telegram-ollama-reply-bot/stats"
 
 	"github.com/getsentry/sentry-go"
@@ -36,19 +37,19 @@ type Bot struct {
 	api       *t.Bot
 	llm       *llm.LlmConnector
 	extractor extractor.Extractor
+	sanitizer markdown.Sanitizer
 	stats     *stats.Stats
 	history   map[int64]*MessageHistory
 	profile   Info
 	cfg       config.BotConfig
 	ctx       context.Context
-
-	markdownV1Replacer *strings.Replacer
 }
 
 func NewBot(
 	api *t.Bot,
 	llm *llm.LlmConnector,
 	extractor extractor.Extractor,
+	sanitizer markdown.Sanitizer,
 	cfg config.BotConfig,
 	ctx context.Context,
 ) *Bot {
@@ -56,19 +57,12 @@ func NewBot(
 		api:       api,
 		llm:       llm,
 		extractor: extractor,
+		sanitizer: sanitizer,
 		stats:     stats.NewStats(),
 		history:   make(map[int64]*MessageHistory),
 		profile:   Info{0, "", ""},
 		cfg:       cfg,
 		ctx:       ctx,
-
-		markdownV1Replacer: strings.NewReplacer(
-			// https://core.telegram.org/bots/api#markdown-style
-			"_", "\\_",
-			//"*", "\\*",
-			//"`", "\\`",
-			//"[", "\\[",
-		),
 	}
 }
 
@@ -213,7 +207,7 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 
 	reply := tu.Message(
 		chatID,
-		b.escapeMarkdownV2Symbols(llmReply),
+		b.sanitizer.Sanitize(llmReply),
 	).WithParseMode(t.ModeMarkdownV2)
 
 	_, err = b.api.SendMessage(b.ctx, b.reply(message, reply))
@@ -315,10 +309,14 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 
 	slog.Debug("bot: Got completion. Going to send reply.", "llm-completion", llmReply)
 
-	footer := "\n\n[src](" + article.Url + ")"
-
-	replyMarkdown := cropToMaxLengthMarkdownV2(b.escapeMarkdownV2Symbols(llmReply), TELEGRAM_CHAR_LIMIT-len(footer)) +
-		footer
+	footerURL := b.sanitizer.EscapeURL(article.Url)
+	footer := "\n\n[src](" + footerURL + ")"
+	body := b.sanitizer.Sanitize(llmReply)
+	cropped, changed := cropToMaxLengthMarkdownV2(body, TELEGRAM_CHAR_LIMIT-len(footer))
+	if changed {
+		cropped = b.sanitizer.Sanitize(cropped)
+	}
+	replyMarkdown := cropped + footer
 
 	replyMessage := tu.Message(
 		chatID,
@@ -399,13 +397,12 @@ func (b *Bot) statsHandler(ctx *th.Context, message t.Message) error {
 
 	b.sendTyping(chatID)
 
+	statsJSON := "```json\n" + b.stats.String() + "\n```"
+	replyText := b.sanitizer.Sanitize("Current bot stats:\n" + statsJSON)
 	_, err := ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(
 		chatID,
-		"Current bot stats:\r\n"+
-			"```json\r\n"+
-			b.stats.String()+"\r\n"+
-			"```",
-	)).WithParseMode(t.ModeMarkdown))
+		replyText,
+	)).WithParseMode(t.ModeMarkdownV2))
 	if err != nil {
 		slog.Error("bot: Cannot send a message", "error", err)
 		sentry.CaptureException(err)
