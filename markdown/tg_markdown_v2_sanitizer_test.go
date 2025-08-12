@@ -25,6 +25,40 @@ func TestTgMarkdownV2Sanitizer_EscapesIllegalChars(t *testing.T) {
 	}
 }
 
+func TestTgMarkdownV2Sanitizer_UnclosedInlineCode(t *testing.T) {
+	s := NewTgMarkdownV2Sanitizer()
+	input := "Here is `code"
+	expected := "Here is \\`code"
+	if got := s.Sanitize(input); got != expected {
+		t.Fatalf("unexpected sanitized text:\nexpected: %q\nactual:   %q", expected, got)
+	}
+}
+
+func TestTgMarkdownV2Sanitizer_UnclosedFencedCode(t *testing.T) {
+	s := NewTgMarkdownV2Sanitizer()
+	input := "```\nline"
+	expected := "\\`\\`\\`\nline"
+	if got := s.Sanitize(input); got != expected {
+		t.Fatalf("unexpected sanitized text:\nexpected: %q\nactual:   %q", expected, got)
+	}
+}
+
+func TestTgMarkdownV2Sanitizer_UnclosedFormatting(t *testing.T) {
+	s := NewTgMarkdownV2Sanitizer()
+	cases := []struct{ in, out string }{
+		{"Here is *bold", "Here is \\*bold"},
+		{"Here is _italic", "Here is \\_italic"},
+		{"Here is __underline", "Here is \\_\\_underline"},
+		{"Here is ~strike", "Here is \\~strike"},
+		{"Here is ||spoiler", "Here is \\|\\|spoiler"},
+	}
+	for _, tc := range cases {
+		if got := s.Sanitize(tc.in); got != tc.out {
+			t.Fatalf("unexpected sanitized text for %q:\nexpected: %q\nactual:   %q", tc.in, tc.out, got)
+		}
+	}
+}
+
 func TestTgMarkdownV2Sanitizer_OfficialExamples(t *testing.T) {
 	s := NewTgMarkdownV2Sanitizer()
 	lines := []string{
@@ -54,7 +88,7 @@ func TestTgMarkdownV2Sanitizer_OfficialExamples(t *testing.T) {
 		">Expandable block quotation continued",
 		">Hidden by default part of the expandable block quotation started",
 		">Expandable block quotation continued",
-		">The last line of the expandable block quotation with the expandability mark||",
+		">The last line of the expandable block quotation with the expandability mark\\|\\|",
 	}
 	input := strings.Join(lines, "\n")
 	if got := s.Sanitize(input); got != input {

@@ -24,6 +24,7 @@ type tgMarkdownV2Sanitizer struct{}
 func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 	var b strings.Builder
 	runes := []rune(text)
+	var boldOpen, italicOpen, underlineOpen, strikeOpen, spoilerOpen bool
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
 
@@ -31,35 +32,188 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 		if r == '`' {
 			// fenced code block
 			if i+2 < len(runes) && runes[i+1] == '`' && runes[i+2] == '`' {
-				b.WriteString("```")
-				i += 3
-				for i < len(runes) {
-					if i+2 < len(runes) && runes[i] == '`' && runes[i+1] == '`' && runes[i+2] == '`' {
-						b.WriteString("```")
-						i += 2
+				end := i + 3
+				for end+2 < len(runes) {
+					if runes[end] == '`' && runes[end+1] == '`' && runes[end+2] == '`' {
 						break
 					}
+					end++
+				}
+				if end+2 < len(runes) {
+					b.WriteString("```")
+					i += 3
+					for i < end {
+						if runes[i] == '\\' || runes[i] == '`' {
+							b.WriteRune('\\')
+						}
+						b.WriteRune(runes[i])
+						i++
+					}
+					b.WriteString("```")
+					i = end + 2
+				} else {
+					b.WriteString("\\`\\`\\`")
+					i += 2
+				}
+				continue
+			}
+
+			// inline code
+			end := i + 1
+			for end < len(runes) && runes[end] != '`' {
+				end++
+			}
+			if end < len(runes) {
+				b.WriteRune('`')
+				i++
+				for i < end {
 					if runes[i] == '\\' || runes[i] == '`' {
 						b.WriteRune('\\')
 					}
 					b.WriteRune(runes[i])
 					i++
 				}
+				b.WriteRune('`')
+				i = end
+			} else {
+				b.WriteString("\\`")
+			}
+			continue
+		}
+
+		// handle simple formatting entities
+		if r == '*' {
+			if boldOpen {
+				b.WriteRune('*')
+				boldOpen = false
 				continue
 			}
-
-			// inline code
-			b.WriteRune('`')
-			i++
-			for i < len(runes) && runes[i] != '`' {
-				if runes[i] == '\\' || runes[i] == '`' {
-					b.WriteRune('\\')
+			end := i + 1
+			for end < len(runes) {
+				if runes[end] == '\\' {
+					end += 2
+					continue
 				}
-				b.WriteRune(runes[i])
-				i++
+				if runes[end] == '*' {
+					break
+				}
+				end++
 			}
-			if i < len(runes) {
-				b.WriteRune('`')
+			if end < len(runes) {
+				b.WriteRune('*')
+				boldOpen = true
+			} else {
+				b.WriteString("\\*")
+			}
+			continue
+		}
+		if r == '_' {
+			if i+1 < len(runes) && runes[i+1] == '_' {
+				if underlineOpen {
+					b.WriteString("__")
+					underlineOpen = false
+					i++
+					continue
+				}
+				end := i + 2
+				for end+1 < len(runes) {
+					if runes[end] == '\\' {
+						end += 2
+						continue
+					}
+					if runes[end] == '_' && runes[end+1] == '_' {
+						break
+					}
+					end++
+				}
+				if end+1 < len(runes) {
+					b.WriteString("__")
+					underlineOpen = true
+					i++
+				} else {
+					b.WriteString("\\_\\_")
+					i++
+				}
+				continue
+			}
+			if italicOpen {
+				b.WriteRune('_')
+				italicOpen = false
+				continue
+			}
+			end := i + 1
+			for end < len(runes) {
+				if runes[end] == '\\' {
+					end += 2
+					continue
+				}
+				if runes[end] == '_' {
+					break
+				}
+				end++
+			}
+			if end < len(runes) {
+				b.WriteRune('_')
+				italicOpen = true
+			} else {
+				b.WriteString("\\_")
+			}
+			continue
+		}
+		if r == '~' {
+			if strikeOpen {
+				b.WriteRune('~')
+				strikeOpen = false
+				continue
+			}
+			end := i + 1
+			for end < len(runes) {
+				if runes[end] == '\\' {
+					end += 2
+					continue
+				}
+				if runes[end] == '~' {
+					break
+				}
+				end++
+			}
+			if end < len(runes) {
+				b.WriteRune('~')
+				strikeOpen = true
+			} else {
+				b.WriteString("\\~")
+			}
+			continue
+		}
+		if r == '|' {
+			if i+1 < len(runes) && runes[i+1] == '|' {
+				if spoilerOpen {
+					b.WriteString("||")
+					spoilerOpen = false
+					i++
+					continue
+				}
+				end := i + 2
+				for end+1 < len(runes) {
+					if runes[end] == '\\' {
+						end += 2
+						continue
+					}
+					if runes[end] == '|' && runes[end+1] == '|' {
+						break
+					}
+					end++
+				}
+				if end+1 < len(runes) {
+					b.WriteString("||")
+					spoilerOpen = true
+					i++
+				} else {
+					b.WriteString("\\|\\|")
+					i++
+				}
+			} else {
+				b.WriteString("\\|")
 			}
 			continue
 		}
@@ -156,8 +310,6 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 		switch r {
 		case '#', '+', '-', '=', '{', '}', '.':
 			b.WriteRune('\\')
-			b.WriteRune(r)
-		case '|', '*', '_', '~':
 			b.WriteRune(r)
 		default:
 			b.WriteRune(r)

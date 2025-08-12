@@ -25,7 +25,7 @@ var (
 	ErrHandlerStart   = errors.New("cannot start bot handler")
 )
 
-const TELEGRAM_CHAR_LIMIT = 4096
+const TelegramCharLimit = 4000
 
 type Info struct {
 	Id       int64
@@ -314,7 +314,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 	footerURL := b.sanitizer.EscapeURL(article.Url)
 	footer := "\n\n[src](" + footerURL + ")"
 	body := b.sanitizer.Sanitize(llmReply)
-	cropped, changed := cropToMaxLengthMarkdownV2(body, TELEGRAM_CHAR_LIMIT-len(footer))
+	cropped, changed := cropToMaxLengthMarkdownV2(body, TelegramCharLimit-len(footer))
 	if changed {
 		cropped = b.sanitizer.Sanitize(cropped)
 	}
