@@ -205,14 +205,16 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 
 	slog.Debug("bot: Got completion. Going to send.", "llm-completion", llmReply)
 
+	sanitizedReply := b.sanitizer.Sanitize(llmReply)
+
 	reply := tu.Message(
 		chatID,
-		b.sanitizer.Sanitize(llmReply),
+		sanitizedReply,
 	).WithParseMode(t.ModeMarkdownV2)
 
 	_, err = b.api.SendMessage(b.ctx, b.reply(message, reply))
 	if err != nil {
-		slog.Error("bot: Can't send reply message", "error", err)
+		slog.Error("bot: Can't send reply message", "error", err, "sanitized_reply", sanitizedReply)
 		sentry.CaptureException(err)
 
 		b.trySendReplyError(message)
@@ -326,7 +328,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 	_, err = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, replyMessage))
 
 	if err != nil {
-		slog.Error("bot: Can't send reply message", "error", err)
+		slog.Error("bot: Can't send reply message", "error", err, "sanitized_reply", replyMarkdown)
 		sentry.CaptureException(err)
 
 		b.trySendReplyError(message)
