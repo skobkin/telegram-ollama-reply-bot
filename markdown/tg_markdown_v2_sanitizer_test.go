@@ -116,8 +116,8 @@ func TestTgMarkdownV2Sanitizer_CustomEmoji(t *testing.T) {
 func TestTgMarkdownV2Sanitizer_StripsImages(t *testing.T) {
 	s := NewTgMarkdownV2Sanitizer()
 	cases := []struct{ in, out string }{
-		{"![img](https://example.com/image.png)", "https://example.com/image.png"},
-		{"![](https://link.tld/1.jpg)", "https://link.tld/1.jpg"},
+		{"![img](https://example.com/image.png)", "https://example\\.com/image\\.png"},
+		{"![](https://link.tld/1.jpg)", "https://link\\.tld/1\\.jpg"},
 		{"![]()", ""},
 	}
 	for _, tc := range cases {
