@@ -281,8 +281,40 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 		}
 		if r == '!' {
 			if i+1 < len(runes) && runes[i+1] == '[' {
-				b.WriteRune('!')
-				continue
+				end := i + 2
+				for end < len(runes) && runes[end] != ']' {
+					end++
+				}
+				if end < len(runes)-1 && runes[end+1] == '(' {
+					urlStart := end + 2
+					urlEnd := urlStart
+					depth := 1
+					for urlEnd < len(runes) {
+						if runes[urlEnd] == '(' {
+							depth++
+						} else if runes[urlEnd] == ')' {
+							depth--
+							if depth == 0 {
+								break
+							}
+						}
+						urlEnd++
+					}
+					rawURL := string(runes[urlStart:urlEnd])
+					escapedURL := s.EscapeURL(rawURL)
+					if strings.HasPrefix(rawURL, "tg://") {
+						alt := s.Sanitize(string(runes[i+2 : end]))
+						b.WriteString("![")
+						b.WriteString(alt)
+						b.WriteString("](")
+						b.WriteString(escapedURL)
+						b.WriteRune(')')
+					} else {
+						b.WriteString(escapedURL)
+					}
+					i = urlEnd
+					continue
+				}
 			}
 			b.WriteString("\\!")
 			continue
