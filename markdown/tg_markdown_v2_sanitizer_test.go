@@ -113,6 +113,20 @@ func TestTgMarkdownV2Sanitizer_CustomEmoji(t *testing.T) {
 	}
 }
 
+func TestTgMarkdownV2Sanitizer_StripsImages(t *testing.T) {
+	s := NewTgMarkdownV2Sanitizer()
+	cases := []struct{ in, out string }{
+		{"![img](https://example.com/image.png)", "https://example.com/image.png"},
+		{"![](https://link.tld/1.jpg)", "https://link.tld/1.jpg"},
+		{"![]()", ""},
+	}
+	for _, tc := range cases {
+		if got := s.Sanitize(tc.in); got != tc.out {
+			t.Fatalf("unexpected sanitized text for %q: expected %q got %q", tc.in, tc.out, got)
+		}
+	}
+}
+
 func TestTgMarkdownV2Sanitizer_EscapeURL(t *testing.T) {
 	s := NewTgMarkdownV2Sanitizer()
 	input := "https://example.com/a(b)\\c"
