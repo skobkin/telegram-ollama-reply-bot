@@ -301,8 +301,8 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 						urlEnd++
 					}
 					rawURL := string(runes[urlStart:urlEnd])
-					escapedURL := s.EscapeURL(rawURL)
 					if strings.HasPrefix(rawURL, "tg://") {
+						escapedURL := s.EscapeURL(rawURL)
 						alt := s.Sanitize(string(runes[i+2 : end]))
 						b.WriteString("![")
 						b.WriteString(alt)
@@ -310,7 +310,8 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 						b.WriteString(escapedURL)
 						b.WriteRune(')')
 					} else {
-						b.WriteString(escapedURL)
+						sanitizedURL := s.Sanitize(rawURL)
+						b.WriteString(sanitizedURL)
 					}
 					i = urlEnd
 					continue
