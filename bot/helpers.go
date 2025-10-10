@@ -73,11 +73,11 @@ func (b *Bot) isMentionOfMe(message t.Message) bool {
 	for _, e := range entities {
 		switch e.Type {
 		case t.EntityTypeTextMention:
-			if e.User != nil && e.User.ID == b.profile.Id {
+			if e.User != nil && e.User.ID == b.me.ID {
 				return true
 			}
 		case t.EntityTypeMention:
-			if entityText(textToCheck, e) == "@"+b.profile.Username {
+			if entityText(textToCheck, e) == "@"+b.me.Username {
 				return true
 			}
 		}
@@ -121,7 +121,7 @@ func (b *Bot) isReplyToMe(message t.Message) bool {
 
 	replyToMessage := message.ReplyToMessage
 
-	return replyToMessage != nil && replyToMessage.From.ID == b.profile.Id
+	return replyToMessage != nil && replyToMessage.From.ID == b.me.ID
 }
 
 func (b *Bot) isPrivateWithMe(message t.Message) bool {

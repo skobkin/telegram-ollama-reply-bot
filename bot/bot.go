@@ -27,12 +27,6 @@ var (
 
 const TelegramCharLimit = 4000
 
-type Info struct {
-	Id       int64
-	Username string
-	Name     string
-}
-
 type Bot struct {
 	api       *t.Bot
 	llm       *llm.LlmConnector
@@ -40,7 +34,7 @@ type Bot struct {
 	sanitizer markdown.Sanitizer
 	stats     *stats.Stats
 	history   map[int64]*MessageHistory
-	profile   Info
+	me        botInfo
 	cfg       config.BotConfig
 	ctx       context.Context
 }
@@ -60,7 +54,7 @@ func NewBot(
 		sanitizer: sanitizer,
 		stats:     stats.NewStats(),
 		history:   make(map[int64]*MessageHistory),
-		profile:   Info{0, "", ""},
+		me:        botInfo{},
 		cfg:       cfg,
 		ctx:       ctx,
 	}
@@ -75,22 +69,22 @@ func (b *Bot) Run() error {
 		return ErrGetMe
 	}
 
+	b.me = botInfoFromUser(botUser)
+
 	slog.Info("bot: Running api as",
-		"id", botUser.ID,
-		"username", botUser.Username,
-		"name", botUser.FirstName,
-		"is_bot", botUser.IsBot)
+		"id", b.me.ID,
+		"username", b.me.Username,
+		"first_name", b.me.FirstName,
+		"last_name", b.me.LastName,
+		"is_bot", b.me.IsBot,
+		"can_join_groups", b.me.CanJoinGroups,
+		"can_read_all_group_messages", b.me.CanReadAllGroupMessages,
+		"supports_inline_queries", b.me.SupportsInlineQueries)
 	sentry.AddBreadcrumb(&sentry.Breadcrumb{
 		Category: "telegram-api",
 		Message:  "Bot ID: " + strconv.FormatInt(botUser.ID, 10),
 		Level:    sentry.LevelInfo,
 	})
-
-	b.profile = Info{
-		Id:       botUser.ID,
-		Username: botUser.Username,
-		Name:     botUser.FirstName,
-	}
 
 	updates, err := b.api.UpdatesViaLongPolling(b.ctx, nil)
 	if err != nil {
@@ -123,11 +117,12 @@ func (b *Bot) Run() error {
 
 	// Command handlers
 	slog.Debug("bot: Registering message handlers")
-	bh.HandleMessage(b.startHandler, th.CommandEqual("start"))
-	bh.HandleMessage(b.summarizeHandler, th.Or(th.CommandEqual("summarize"), th.CommandEqual("s")))
-	bh.HandleMessage(b.statsHandler, th.CommandEqual("stats"))
-	bh.HandleMessage(b.helpHandler, th.CommandEqual("help"))
-	bh.HandleMessage(b.resetHandler, th.CommandEqual("reset"))
+	commandForMe := b.commandForThisBot()
+	bh.HandleMessage(b.startHandler, th.And(commandForMe, th.CommandEqual("start")))
+	bh.HandleMessage(b.summarizeHandler, th.And(commandForMe, th.Or(th.CommandEqual("summarize"), th.CommandEqual("s"))))
+	bh.HandleMessage(b.statsHandler, th.And(commandForMe, th.CommandEqual("stats")))
+	bh.HandleMessage(b.helpHandler, th.And(commandForMe, th.CommandEqual("help")))
+	bh.HandleMessage(b.resetHandler, th.And(commandForMe, th.CommandEqual("reset")))
 	// Since we're need to process both text and photo messages, we need to use Update handler instead of Message handler
 	bh.Handle(b.textMessageHandler, th.Or(th.AnyMessageWithText(), AnyMessageWithPhoto()))
 	slog.Debug("bot: Message handlers registered")

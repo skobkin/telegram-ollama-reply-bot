@@ -92,9 +92,15 @@ func (b *Bot) saveBotReplyToHistory(replyTo t.Message, text string) {
 		b.history[chatId] = NewMessageHistory(b.cfg.HistoryLength)
 	}
 
+	botName := strings.TrimSpace(b.me.FirstName + " " + b.me.LastName)
+	if botName == "" {
+		botName = b.me.Username
+	}
+	botUsername := b.me.Username
+
 	msgData := MessageData{
-		Name:     b.profile.Name,
-		Username: b.profile.Username,
+		Name:     botName,
+		Username: botUsername,
 		Text:     text,
 		IsMe:     true,
 	}
