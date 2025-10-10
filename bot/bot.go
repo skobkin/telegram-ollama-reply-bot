@@ -342,11 +342,13 @@ func (b *Bot) helpHandler(ctx *th.Context, message t.Message) error {
 
 	_, err := ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Messagef(
 		chatID,
-		"Instructions:\r\n"+
-			"/summarize <link> - Summarize text from the provided link\r\n"+
-			"/s <link> - Shorter version\r\n"+
-			"/help - Show this help\r\n\r\n"+
-			"Mention bot or reply to it's message to communicate with it",
+		`Instructions:
+Mention the bot, reply to it to chat; text and photos are supported.
+
+- /summarize <link> [extra notes] - Summarize a page (alias: /s)
+- /reset - Clear conversation history (admins only)
+- /stats - Show usage stats (admins only)
+- /help - Show this help`,
 	)))
 	if err != nil {
 		slog.Error("bot: Cannot send a message", "error", err)
