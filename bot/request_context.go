@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"log/slog"
 
 	"telegram-ollama-reply-bot/llm"
@@ -8,12 +9,17 @@ import (
 	t "github.com/mymmrac/telego"
 )
 
-func (b *Bot) createLlmRequestContextFromMessage(message t.Message) llm.RequestContext {
+func (b *Bot) createLlmRequestContextFromMessage(ctx context.Context, message t.Message) llm.RequestContext {
 	rc := llm.RequestContext{
 		Empty: true,
 	}
 
 	rc.Empty = false
+	if ctx == nil {
+		ctx = b.ctx
+	}
+
+	b.ensureHistoryMessagesImageDescriptions(ctx, message.Chat.ID)
 
 	user := message.From
 

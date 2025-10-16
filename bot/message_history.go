@@ -17,7 +17,26 @@ type MessageData struct {
 	ReplyTo       *MessageData
 	HasImage      bool
 	Image         string
+	ImageMeta     *ImageMeta
 	chatID        int64
+}
+
+type ImageMeta struct {
+	FileID       string
+	FileUniqueID string
+	Width        int
+	Height       int
+	FileSize     int
+}
+
+func (i *ImageMeta) cacheKey() string {
+	if i == nil {
+		return ""
+	}
+	if i.FileUniqueID != "" {
+		return i.FileUniqueID
+	}
+	return i.FileID
 }
 
 type EarlierSummary struct {
@@ -132,22 +151,16 @@ func (b *Bot) tgUserMessageToMessageData(message t.Message, isUserRequest bool) 
 	}
 
 	if len(message.Photo) > 0 {
-		slog.Debug("Processing message photo", "message_id", message.MessageID, "photo_sizes", len(message.Photo), "photo", message.Photo)
+		slog.Debug("bot: message contains photo", "message_id", message.MessageID, "photo_sizes", len(message.Photo))
 
 		msgData.HasImage = true
-		// Get the highest quality photo (last in the array)
-		// TODO: add image size selection according to size limit (needs to be implemented too)
 		photo := message.Photo[len(message.Photo)-1]
-		description, err := b.describeImage(photo)
-
-		if err != nil {
-			slog.Error("bot: Failed to describe image", "error", err, "message_id", message.MessageID)
-			sentry.CaptureException(err)
-		} else if description != "" {
-			slog.Debug("bot: Got image description", "description", description, "message_id", message.MessageID)
-			msgData.Image = description
-		} else {
-			slog.Info("bot: Image recognition ended with empty description", "message_id", message.MessageID)
+		msgData.ImageMeta = &ImageMeta{
+			FileID:       photo.FileID,
+			FileUniqueID: photo.FileUniqueID,
+			Width:        photo.Width,
+			Height:       photo.Height,
+			FileSize:     photo.FileSize,
 		}
 	}
 
@@ -209,6 +222,12 @@ func (b *Bot) maybeSummarizeHistory(chatId int64) {
 		mh.earlierSummary.SummarizedUntil = end
 		return
 	}
+
+	ctx, cancel := b.withProcessingDeadline(b.ctx)
+	defer cancel()
+
+	b.ensureHistoryMessagesImageDescriptions(ctx, chatId)
+
 	text := historyToPlainText(slice)
 
 	if mh.earlierSummary.Text != "" {
@@ -217,8 +236,6 @@ func (b *Bot) maybeSummarizeHistory(chatId int64) {
 		text = "Earlier conversation summary:\n" + mh.earlierSummary.Text + "\n\nRecent messages:\n" + text
 	}
 
-	ctx, cancel := b.withProcessingDeadline(b.ctx)
-	defer cancel()
 	summary, usage, err := b.llm.Summarize(ctx, text, "")
 	if err != nil {
 		slog.Error("bot: failed to summarize history", "error", err, "chat", chatId)

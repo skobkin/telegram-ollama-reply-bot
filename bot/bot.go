@@ -30,15 +30,16 @@ var (
 const TelegramCharLimit = 4000
 
 type Bot struct {
-	api       *t.Bot
-	llm       *llm.LlmConnector
-	extractor extractor.Extractor
-	sanitizer markdown.Sanitizer
-	stats     *stats.Stats
-	history   map[int64]*MessageHistory
-	me        botInfo
-	cfg       config.BotConfig
-	ctx       context.Context
+	api        *t.Bot
+	llm        *llm.LlmConnector
+	extractor  extractor.Extractor
+	sanitizer  markdown.Sanitizer
+	stats      *stats.Stats
+	history    map[int64]*MessageHistory
+	me         botInfo
+	cfg        config.BotConfig
+	ctx        context.Context
+	imageCache *ImageCache
 }
 
 func NewBot(
@@ -46,19 +47,25 @@ func NewBot(
 	llm *llm.LlmConnector,
 	extractor extractor.Extractor,
 	sanitizer markdown.Sanitizer,
+	imageCache *ImageCache,
 	cfg config.BotConfig,
 	ctx context.Context,
 ) *Bot {
+	if imageCache == nil {
+		panic("image cache is required")
+	}
+
 	return &Bot{
-		api:       api,
-		llm:       llm,
-		extractor: extractor,
-		sanitizer: sanitizer,
-		stats:     stats.NewStats(),
-		history:   make(map[int64]*MessageHistory),
-		me:        botInfo{},
-		cfg:       cfg,
-		ctx:       ctx,
+		api:        api,
+		llm:        llm,
+		extractor:  extractor,
+		sanitizer:  sanitizer,
+		stats:      stats.NewStats(),
+		history:    make(map[int64]*MessageHistory),
+		me:         botInfo{},
+		cfg:        cfg,
+		ctx:        ctx,
+		imageCache: imageCache,
 	}
 }
 
@@ -170,7 +177,6 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 
 	b.maybeSummarizeHistory(message.Chat.ID)
 
-	requestContext := b.createLlmRequestContextFromMessage(message)
 	baseCtx := b.handlerContext(reqCtx)
 
 	// Get MessageData from the request context if available, otherwise create it on the fly
@@ -181,6 +187,8 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 	var err error
 
 	err = b.runWithTimeout(baseCtx, chatID, func(ctx context.Context) error {
+		requestContext := b.createLlmRequestContextFromMessage(ctx, message)
+
 		llmCtx, cancel := b.withProcessingDeadline(ctx)
 		defer cancel()
 

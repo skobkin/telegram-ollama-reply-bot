@@ -3,7 +3,10 @@ package bot
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -110,6 +113,43 @@ func (b *Bot) withProcessingDeadline(baseCtx context.Context) (context.Context, 
 	}
 
 	return context.WithCancel(baseCtx)
+}
+
+func (b *Bot) ensureHistoryMessagesImageDescriptions(ctx context.Context, chatID int64) {
+	mh, ok := b.history[chatID]
+	if !ok {
+		return
+	}
+
+	for i := range mh.messages {
+		b.ensureMessageImageDescription(ctx, &mh.messages[i])
+	}
+}
+
+func (b *Bot) ensureMessageImageDescription(ctx context.Context, msg *MessageData) {
+	if msg == nil {
+		return
+	}
+
+	if msg.HasImage && msg.ImageMeta != nil && msg.Image == "" {
+		if desc, ok := b.imageCache.Get(msg.ImageMeta); ok {
+			msg.Image = desc
+		} else {
+			description, err := b.describeImage(ctx, msg.ImageMeta)
+			if err != nil {
+				slog.Error("bot: Failed to describe image", "error", err, "file_id", msg.ImageMeta.FileID)
+				sentry.CaptureException(err)
+			} else {
+				b.imageCache.Set(msg.ImageMeta, description)
+				msg.Image = description
+				slog.Debug("bot: Image described", "file_id", msg.ImageMeta.FileID, "description", description)
+			}
+		}
+	}
+
+	if msg.ReplyTo != nil {
+		b.ensureMessageImageDescription(ctx, msg.ReplyTo)
+	}
 }
 
 func (b *Bot) trySendReplyError(ctx context.Context, message t.Message) {
@@ -270,29 +310,27 @@ func (b *Bot) isFromAdmin(message *t.Message) bool {
 	return slices.Contains(b.cfg.AdminIDs, message.From.ID)
 }
 
-func (b *Bot) describeImage(photo t.PhotoSize) (string, error) {
-	file, err := b.api.GetFile(b.ctx, &t.GetFileParams{
-		FileID: photo.FileID,
-	})
+func (b *Bot) describeImage(ctx context.Context, imageMeta *ImageMeta) (string, error) {
+	if imageMeta == nil {
+		return "", ErrImageRecognition
+	}
+
+	if ctx == nil {
+		ctx = b.ctx
+	}
+
+	file, err := b.api.GetFile(ctx, &t.GetFileParams{FileID: imageMeta.FileID})
 	if err != nil {
-		slog.Error("bot: Failed to get file info", "error", err, "file_id", photo.FileID)
 		return "", errors.Join(ErrImageRecognition, err)
 	}
 
-	fileBytes, err := tu.DownloadFile(b.api.FileDownloadURL(file.FilePath))
+	fileBytes, err := downloadFileWithContext(ctx, b.api.FileDownloadURL(file.FilePath))
 	if err != nil {
-		slog.Error("bot: Failed to download file", "error", err, "file_path", file.FilePath)
 		return "", errors.Join(ErrImageRecognition, err)
 	}
-
-	slog.Info("bot: Image downloaded", "file_path", file.FilePath, "file_size", len(fileBytes))
-
-	ctx, cancel := b.withProcessingDeadline(b.ctx)
-	defer cancel()
 
 	description, usage, err := b.llm.RecognizeImage(ctx, fileBytes)
 	if err != nil {
-		slog.Error("bot: Failed to recognize image", "error", err)
 		return "", errors.Join(ErrImageRecognition, err)
 	}
 
@@ -300,20 +338,48 @@ func (b *Bot) describeImage(photo t.PhotoSize) (string, error) {
 		b.stats.AddUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.Cost)
 	}
 
-	slog.Debug("bot: Image recognized", "description", description)
+	slog.Debug("bot: Image recognized", "file_id", imageMeta.FileID, "description", description)
 
 	return description, nil
+}
+
+func downloadFileWithContext(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+
+		return nil, fmt.Errorf("http request failed: %s", resp.Status)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return data, nil
 }
 
 // gets MessageData from Telego request context if previously stored by history middleware, otherwise creates it on the fly
 func (b *Bot) getMessageDataFromRequestContextOrCreate(ctx *th.Context, message t.Message, isUserRequest bool) MessageData {
 	if msgData, ok := ctx.Value(requestContextMessageDataKey).(MessageData); ok {
 		msgData.IsUserRequest = isUserRequest
+		b.ensureMessageImageDescription(b.handlerContext(ctx), &msgData)
 		slog.Debug("bot: Message data retrieved from context", "message_data", msgData)
 		return msgData
 	}
 
 	msgData := b.tgUserMessageToMessageData(message, isUserRequest)
+	b.ensureMessageImageDescription(b.handlerContext(ctx), &msgData)
 	slog.Debug("bot: Message data created from message on the fly", "message_data", msgData)
 	return msgData
 }

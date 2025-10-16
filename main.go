@@ -72,7 +72,7 @@ func main() {
 	}
 
 	sanitizer := markdown.NewTgMarkdownV2Sanitizer()
-	botService := bot.NewBot(telegramApi, llmc, ext, sanitizer, cfg.Bot, ctx)
+	botService := bot.NewBot(telegramApi, llmc, ext, sanitizer, bot.NewImageCache(), cfg.Bot, ctx)
 
 	err = botService.Run()
 	if err != nil {
