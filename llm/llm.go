@@ -87,7 +87,7 @@ func (l *LlmConnector) HandleChatMessage(ctx context.Context, userMessage ChatMe
 		slog.Error("llm: LLM back-end request failed", "error", err)
 		sentry.CaptureException(err)
 
-		return "", nil, ErrLlmBackendRequestFailed
+		return "", nil, errors.Join(ErrLlmBackendRequestFailed, err)
 	}
 
 	slog.Debug("llm: Received LLM back-end response", "response", resp)
@@ -140,7 +140,7 @@ func (l *LlmConnector) Summarize(ctx context.Context, text string, instructions 
 		slog.Error("llm: LLM back-end request failed", "error", err)
 		sentry.CaptureException(err)
 
-		return "", nil, ErrLlmBackendRequestFailed
+		return "", nil, errors.Join(ErrLlmBackendRequestFailed, err)
 	}
 
 	slog.Debug("llm: Received LLM back-end response", "response", resp)
@@ -235,7 +235,7 @@ func (l *LlmConnector) RecognizeImage(ctx context.Context, imageData []byte) (st
 	if err != nil {
 		slog.Error("llm: LLM back-end request failed", "error", err)
 		sentry.CaptureException(err)
-		return "", nil, ErrLlmBackendRequestFailed
+		return "", nil, errors.Join(ErrLlmBackendRequestFailed, err)
 	}
 
 	if len(resp.Choices) < 1 {

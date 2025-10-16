@@ -19,6 +19,7 @@ var (
 	allowedUrlSchemes = []string{"http", "https"}
 
 	ErrImageRecognition = errors.New("image recognition error")
+	ErrRequestTimeout   = errors.New("request timed out")
 )
 
 func (b *Bot) reply(originalMessage t.Message, newMessage *t.SendMessageParams) *t.SendMessageParams {
@@ -50,6 +51,37 @@ func (b *Bot) sendTypingUntil(ctx context.Context, chatId t.ChatID) {
 			b.sendTyping(chatId)
 		}
 	}
+}
+
+func (b *Bot) runWithTimeout(chatId t.ChatID, work func(ctx context.Context) error) error {
+	ctx, cancel := context.WithTimeout(b.ctx, b.cfg.LlmRequestTimeout)
+	defer cancel()
+
+	go b.sendTypingUntil(ctx, chatId)
+
+	err := work(ctx)
+
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			b.stats.LlmTimeout()
+
+			return errors.Join(ErrRequestTimeout, err)
+		}
+		if ctxErr := ctx.Err(); errors.Is(ctxErr, context.DeadlineExceeded) {
+			b.stats.LlmTimeout()
+
+			return errors.Join(ErrRequestTimeout, err)
+		}
+		return err
+	}
+
+	if ctxErr := ctx.Err(); errors.Is(ctxErr, context.DeadlineExceeded) {
+		b.stats.LlmTimeout()
+
+		return ErrRequestTimeout
+	}
+
+	return nil
 }
 
 func (b *Bot) trySendReplyError(message t.Message) {

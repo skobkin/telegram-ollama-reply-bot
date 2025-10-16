@@ -25,6 +25,8 @@ type Stats struct {
 	CompletionTokens uint64
 	TotalTokens      uint64
 	TotalCost        float64
+
+	LlmTimeouts uint64
 }
 
 func NewStats() *Stats {
@@ -43,6 +45,8 @@ func NewStats() *Stats {
 		CompletionTokens: 0,
 		TotalTokens:      0,
 		TotalCost:        0,
+
+		LlmTimeouts: 0,
 	}
 }
 
@@ -62,6 +66,8 @@ func (s *Stats) MarshalJSON() ([]byte, error) {
 		CompletionTokens uint64  `json:"completion_tokens"`
 		TotalTokens      uint64  `json:"total_tokens"`
 		TotalCost        float64 `json:"total_cost"`
+
+		LlmTimeouts uint64 `json:"llm_timeouts"`
 	}{
 		Uptime: time.Now().Sub(s.RunningSince).String(),
 
@@ -77,6 +83,8 @@ func (s *Stats) MarshalJSON() ([]byte, error) {
 		CompletionTokens: s.CompletionTokens,
 		TotalTokens:      s.TotalTokens,
 		TotalCost:        s.TotalCost,
+
+		LlmTimeouts: s.LlmTimeouts,
 	})
 }
 
@@ -134,4 +142,10 @@ func (s *Stats) AddUsage(prompt, completion, total int, cost float64) {
 	s.CompletionTokens += uint64(completion)
 	s.TotalTokens += uint64(total)
 	s.TotalCost += cost
+}
+
+func (s *Stats) LlmTimeout() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.LlmTimeouts++
 }

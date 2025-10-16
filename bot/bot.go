@@ -3,9 +3,11 @@ package bot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
+
 	"telegram-ollama-reply-bot/config"
 	"telegram-ollama-reply-bot/extractor"
 	"telegram-ollama-reply-bot/llm"
@@ -168,22 +170,36 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 
 	b.maybeSummarizeHistory(message.Chat.ID)
 
-	ctx, cancel := context.WithTimeout(b.ctx, b.cfg.LlmRequestTimeout)
-	defer cancel()
-	go b.sendTypingUntil(ctx, chatID)
-
 	requestContext := b.createLlmRequestContextFromMessage(message)
 
 	// Get MessageData from the request context if available, otherwise create it on the fly
 	userMessageData := b.getMessageDataFromRequestContextOrCreate(reqCtx, message, true)
 
-	llmReply, usage, err := b.llm.HandleChatMessage(
-		ctx,
-		messageDataToLlmMessage(userMessageData),
-		requestContext,
-	)
+	var llmReply string
+	var usage *llm.TokenUsage
+	var err error
+
+	err = b.runWithTimeout(chatID, func(ctx context.Context) error {
+		var err error
+		llmReply, usage, err = b.llm.HandleChatMessage(
+			ctx,
+			messageDataToLlmMessage(userMessageData),
+			requestContext,
+		)
+		return err
+	})
 	if err != nil {
-		slog.Error("bot: Cannot get reply from LLM connector")
+		if errors.Is(err, ErrRequestTimeout) {
+			slog.Error("bot: LLM request timed out", "chat", message.Chat.ID, "error", err)
+			_, _ = b.api.SendMessage(b.ctx, b.reply(message, tu.Message(
+				chatID,
+				fmt.Sprintf("LLM request timed out after %s. Try again later.", b.cfg.LlmRequestTimeout),
+			)))
+
+			return
+		}
+
+		slog.Error("bot: Cannot get reply from LLM connector", "error", err)
 		sentry.CaptureException(err)
 
 		_, _ = b.api.SendMessage(b.ctx, b.reply(message, tu.Message(
@@ -227,10 +243,6 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 
 	chatID := tu.ID(message.Chat.ID)
 
-	ctxReq, cancel := context.WithTimeout(b.ctx, b.cfg.LlmRequestTimeout)
-	defer cancel()
-	go b.sendTypingUntil(ctxReq, chatID)
-
 	args := strings.SplitN(message.Text, " ", 3)
 	argsCount := len(args)
 
@@ -262,6 +274,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 		return nil
 	}
 
+	var err error
 	article, err := b.extractor.GetArticleFromUrl(url)
 	if err != nil {
 		slog.Error("bot: Cannot retrieve an article using extractor", "error", err)
@@ -287,9 +300,26 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 		return nil
 	}
 
-	llmReply, usage, err := b.llm.Summarize(ctxReq, article.Text, additionalInstructions)
+	var summarizeReply string
+	var summarizeUsage *llm.TokenUsage
+
+	err = b.runWithTimeout(chatID, func(ctx context.Context) error {
+		var err error
+		summarizeReply, summarizeUsage, err = b.llm.Summarize(ctx, article.Text, additionalInstructions)
+		return err
+	})
 	if err != nil {
-		slog.Error("bot: Cannot get reply from LLM connector")
+		if errors.Is(err, ErrRequestTimeout) {
+			slog.Error("bot: Summarize request timed out", "chat", message.Chat.ID, "error", err)
+			_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(
+				chatID,
+				fmt.Sprintf("LLM request timed out after %s. Try again later.", b.cfg.LlmRequestTimeout),
+			)))
+
+			return nil
+		}
+
+		slog.Error("bot: Cannot get reply from LLM connector", "error", err)
 		sentry.CaptureException(err)
 
 		_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(
@@ -300,15 +330,15 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 		return nil
 	}
 
-	if usage != nil {
-		b.stats.AddUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.Cost)
+	if summarizeUsage != nil {
+		b.stats.AddUsage(summarizeUsage.PromptTokens, summarizeUsage.CompletionTokens, summarizeUsage.TotalTokens, summarizeUsage.Cost)
 	}
 
-	slog.Debug("bot: Got completion. Going to send reply.", "llm-completion", llmReply)
+	slog.Debug("bot: Got completion. Going to send reply.", "llm-completion", summarizeReply)
 
 	footerURL := b.sanitizer.EscapeURL(article.Url)
 	footer := "\n\n[src](" + footerURL + ")"
-	body := b.sanitizer.Sanitize(llmReply)
+	body := b.sanitizer.Sanitize(summarizeReply)
 	cropped, changed := cropToMaxLengthMarkdownV2(body, TelegramCharLimit-len(footer))
 	if changed {
 		cropped = b.sanitizer.Sanitize(cropped)
