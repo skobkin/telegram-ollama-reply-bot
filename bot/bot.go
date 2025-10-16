@@ -171,6 +171,7 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 	b.maybeSummarizeHistory(message.Chat.ID)
 
 	requestContext := b.createLlmRequestContextFromMessage(message)
+	baseCtx := b.handlerContext(reqCtx)
 
 	// Get MessageData from the request context if available, otherwise create it on the fly
 	userMessageData := b.getMessageDataFromRequestContextOrCreate(reqCtx, message, true)
@@ -179,21 +180,25 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 	var usage *llm.TokenUsage
 	var err error
 
-	err = b.runWithTimeout(chatID, func(ctx context.Context) error {
-		var err error
-		llmReply, usage, err = b.llm.HandleChatMessage(
-			ctx,
+	err = b.runWithTimeout(baseCtx, chatID, func(ctx context.Context) error {
+		llmCtx, cancel := b.withProcessingDeadline(ctx)
+		defer cancel()
+
+		var llmErr error
+		llmReply, usage, llmErr = b.llm.HandleChatMessage(
+			llmCtx,
 			messageDataToLlmMessage(userMessageData),
 			requestContext,
 		)
-		return err
+		return llmErr
 	})
 	if err != nil {
 		if errors.Is(err, ErrRequestTimeout) {
 			slog.Error("bot: LLM request timed out", "chat", message.Chat.ID, "error", err)
-			_, _ = b.api.SendMessage(b.ctx, b.reply(message, tu.Message(
+			timeout := b.cfg.ProcessingTimeout
+			_, _ = b.api.SendMessage(baseCtx, b.reply(message, tu.Message(
 				chatID,
-				fmt.Sprintf("LLM request timed out after %s. Try again later.", b.cfg.LlmRequestTimeout),
+				fmt.Sprintf("LLM request timed out after %s. Try again later.", timeout),
 			)))
 
 			return
@@ -202,7 +207,7 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 		slog.Error("bot: Cannot get reply from LLM connector", "error", err)
 		sentry.CaptureException(err)
 
-		_, _ = b.api.SendMessage(b.ctx, b.reply(message, tu.Message(
+		_, _ = b.api.SendMessage(baseCtx, b.reply(message, tu.Message(
 			chatID,
 			"LLM request error. Try again later.",
 		)))
@@ -223,12 +228,12 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 		sanitizedReply,
 	).WithParseMode(t.ModeMarkdownV2)
 
-	_, err = b.api.SendMessage(b.ctx, b.reply(message, reply))
+	_, err = b.api.SendMessage(baseCtx, b.reply(message, reply))
 	if err != nil {
 		slog.Error("bot: Can't send reply message", "error", err, "sanitized_reply", sanitizedReply)
 		sentry.CaptureException(err)
 
-		b.trySendReplyError(message)
+		b.trySendReplyError(baseCtx, message)
 
 		return
 	}
@@ -303,17 +308,21 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 	var summarizeReply string
 	var summarizeUsage *llm.TokenUsage
 
-	err = b.runWithTimeout(chatID, func(ctx context.Context) error {
-		var err error
-		summarizeReply, summarizeUsage, err = b.llm.Summarize(ctx, article.Text, additionalInstructions)
-		return err
+	err = b.runWithTimeout(ctx.Context(), chatID, func(ctx context.Context) error {
+		llmCtx, cancel := b.withProcessingDeadline(ctx)
+		defer cancel()
+
+		var llmErr error
+		summarizeReply, summarizeUsage, llmErr = b.llm.Summarize(llmCtx, article.Text, additionalInstructions)
+		return llmErr
 	})
 	if err != nil {
 		if errors.Is(err, ErrRequestTimeout) {
 			slog.Error("bot: Summarize request timed out", "chat", message.Chat.ID, "error", err)
+			timeout := b.cfg.ProcessingTimeout
 			_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(
 				chatID,
-				fmt.Sprintf("LLM request timed out after %s. Try again later.", b.cfg.LlmRequestTimeout),
+				fmt.Sprintf("LLM request timed out after %s. Try again later.", timeout),
 			)))
 
 			return nil
@@ -356,7 +365,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 		slog.Error("bot: Can't send reply message", "error", err, "sanitized_reply", replyMarkdown)
 		sentry.CaptureException(err)
 
-		b.trySendReplyError(message)
+		b.trySendReplyError(ctx.Context(), message)
 	}
 
 	b.saveBotReplyToHistory(message, replyMarkdown)
@@ -368,7 +377,7 @@ func (b *Bot) helpHandler(ctx *th.Context, message t.Message) error {
 
 	chatID := tu.ID(message.Chat.ID)
 
-	b.sendTyping(chatID)
+	b.sendTyping(ctx.Context(), chatID)
 
 	_, err := ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Messagef(
 		chatID,
@@ -384,7 +393,7 @@ Mention the bot, reply to it to chat; text and photos are supported.
 		slog.Error("bot: Cannot send a message", "error", err)
 		sentry.CaptureException(err)
 
-		b.trySendReplyError(message)
+		b.trySendReplyError(ctx.Context(), message)
 	}
 	return nil
 }
@@ -394,7 +403,7 @@ func (b *Bot) startHandler(ctx *th.Context, message t.Message) error {
 
 	chatID := tu.ID(message.Chat.ID)
 
-	b.sendTyping(chatID)
+	b.sendTyping(ctx.Context(), chatID)
 
 	_, err := ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(
 		chatID,
@@ -405,7 +414,7 @@ func (b *Bot) startHandler(ctx *th.Context, message t.Message) error {
 		slog.Error("bot: Cannot send a message", "error", err)
 		sentry.CaptureException(err)
 
-		b.trySendReplyError(message)
+		b.trySendReplyError(ctx.Context(), message)
 	}
 	return nil
 }
@@ -424,7 +433,7 @@ func (b *Bot) statsHandler(ctx *th.Context, message t.Message) error {
 
 	chatID := tu.ID(message.Chat.ID)
 
-	b.sendTyping(chatID)
+	b.sendTyping(ctx.Context(), chatID)
 
 	statsJSON := "```json\n" + b.stats.String() + "\n```"
 	replyText := b.sanitizer.Sanitize("Current bot stats:\n" + statsJSON)
@@ -436,7 +445,7 @@ func (b *Bot) statsHandler(ctx *th.Context, message t.Message) error {
 		slog.Error("bot: Cannot send a message", "error", err)
 		sentry.CaptureException(err)
 
-		b.trySendReplyError(message)
+		b.trySendReplyError(ctx.Context(), message)
 	}
 	return nil
 }
@@ -455,7 +464,7 @@ func (b *Bot) resetHandler(ctx *th.Context, message t.Message) error {
 
 	chatID := message.Chat.ID
 
-	b.sendTyping(tu.ID(chatID))
+	b.sendTyping(ctx.Context(), tu.ID(chatID))
 
 	b.ResetChatHistory(chatID)
 	b.stats.ChatHistoryReset()
@@ -468,7 +477,7 @@ func (b *Bot) resetHandler(ctx *th.Context, message t.Message) error {
 		slog.Error("bot: Cannot send a message", "error", err)
 		sentry.CaptureException(err)
 
-		b.trySendReplyError(message)
+		b.trySendReplyError(ctx.Context(), message)
 	}
 	return nil
 }

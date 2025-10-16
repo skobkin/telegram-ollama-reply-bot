@@ -44,7 +44,7 @@ type BotConfig struct {
 	Telegram                 TelegramConfig
 	UncompressedHistoryLimit int
 	HistorySummaryThreshold  int
-	LlmRequestTimeout        time.Duration
+	ProcessingTimeout        time.Duration
 }
 
 // ModelSelection contains configuration for LLM models
@@ -89,13 +89,12 @@ func Load() *Config {
 		}
 	}
 
-	requestTimeout := 60
-	if toStr := os.Getenv("LLM_REQUEST_TIMEOUT"); toStr != "" {
-		if to, err := strconv.Atoi(toStr); err == nil {
-			requestTimeout = to
+	processingTimeout := 30 * time.Second
+	if toStr := os.Getenv("BOT_PROCESSING_TIMEOUT"); toStr != "" {
+		if to, err := time.ParseDuration(toStr); err == nil {
+			processingTimeout = to
 		}
 	}
-	requestTimeoutDuration := time.Duration(requestTimeout) * time.Second
 
 	// Parse admin IDs from environment variable
 	var adminIDs []int64
@@ -162,7 +161,7 @@ func Load() *Config {
 			},
 			UncompressedHistoryLimit: uncompressedHistoryLimit,
 			HistorySummaryThreshold:  historySummaryThreshold,
-			LlmRequestTimeout:        requestTimeoutDuration,
+			ProcessingTimeout:        processingTimeout,
 		},
 	}
 }

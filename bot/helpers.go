@@ -28,10 +28,22 @@ func (b *Bot) reply(originalMessage t.Message, newMessage *t.SendMessageParams) 
 	})
 }
 
-func (b *Bot) sendTyping(chatId t.ChatID) {
+// handlerContext returns a context tied to the current telego handler, falling back
+// to the bot root context if the handler does not expose one.
+func (b *Bot) handlerContext(handlerCtx *th.Context) context.Context {
+	if handlerCtx != nil {
+		if ctx := handlerCtx.Context(); ctx != nil {
+			return ctx
+		}
+	}
+
+	return b.ctx
+}
+
+func (b *Bot) sendTyping(ctx context.Context, chatId t.ChatID) {
 	slog.Debug("bot: Setting 'typing' chat action")
 
-	err := b.api.SendChatAction(b.ctx, tu.ChatAction(chatId, "typing"))
+	err := b.api.SendChatAction(ctx, tu.ChatAction(chatId, "typing"))
 	if err != nil {
 		slog.Error("bot: Cannot set chat action", "error", err)
 		sentry.CaptureException(err)
@@ -39,7 +51,7 @@ func (b *Bot) sendTyping(chatId t.ChatID) {
 }
 
 func (b *Bot) sendTypingUntil(ctx context.Context, chatId t.ChatID) {
-	b.sendTyping(chatId)
+	b.sendTyping(ctx, chatId)
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -48,13 +60,14 @@ func (b *Bot) sendTypingUntil(ctx context.Context, chatId t.ChatID) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			b.sendTyping(chatId)
+			b.sendTyping(ctx, chatId)
 		}
 	}
 }
 
-func (b *Bot) runWithTimeout(chatId t.ChatID, work func(ctx context.Context) error) error {
-	ctx, cancel := context.WithTimeout(b.ctx, b.cfg.LlmRequestTimeout)
+// runWithTimeout wraps handler work with typing feedback and the processing deadline.
+func (b *Bot) runWithTimeout(baseCtx context.Context, chatId t.ChatID, work func(ctx context.Context) error) error {
+	ctx, cancel := b.withProcessingDeadline(baseCtx)
 	defer cancel()
 
 	go b.sendTypingUntil(ctx, chatId)
@@ -84,8 +97,26 @@ func (b *Bot) runWithTimeout(chatId t.ChatID, work func(ctx context.Context) err
 	return nil
 }
 
-func (b *Bot) trySendReplyError(message t.Message) {
-	_, _ = b.api.SendMessage(b.ctx, b.reply(message, tu.Message(
+// withProcessingDeadline derives a child context that is cancelled either after the
+// configured processing timeout or when the parent is cancelled.
+func (b *Bot) withProcessingDeadline(baseCtx context.Context) (context.Context, context.CancelFunc) {
+	if baseCtx == nil {
+		baseCtx = b.ctx
+	}
+
+	timeout := b.cfg.ProcessingTimeout
+	if timeout > 0 {
+		return context.WithTimeout(baseCtx, timeout)
+	}
+
+	return context.WithCancel(baseCtx)
+}
+
+func (b *Bot) trySendReplyError(ctx context.Context, message t.Message) {
+	if ctx == nil {
+		ctx = b.ctx
+	}
+	_, _ = b.api.SendMessage(ctx, b.reply(message, tu.Message(
 		tu.ID(message.Chat.ID),
 		"Error occurred while trying to send reply.",
 	)))
@@ -256,7 +287,7 @@ func (b *Bot) describeImage(photo t.PhotoSize) (string, error) {
 
 	slog.Info("bot: Image downloaded", "file_path", file.FilePath, "file_size", len(fileBytes))
 
-	ctx, cancel := context.WithTimeout(b.ctx, b.cfg.LlmRequestTimeout)
+	ctx, cancel := b.withProcessingDeadline(b.ctx)
 	defer cancel()
 
 	description, usage, err := b.llm.RecognizeImage(ctx, fileBytes)

@@ -25,7 +25,7 @@ The bot can be configured using the following environment variables:
 | `BOT_HISTORY_LENGTH`      | Number of messages to keep in conversation history | No       | 150    |
 | `LLM_UNCOMPRESSED_HISTORY_LIMIT` | Recent chat messages sent verbatim to LLM; older ones summarized. Set to `0` to disable summarization | No | 15 |
 | `LLM_HISTORY_SUMMARY_THRESHOLD` | Extra messages beyond the limit before summarization triggers again | No | 5 |
-| `LLM_REQUEST_TIMEOUT` | Timeout in seconds for LLM requests | No | 60 |
+| `BOT_PROCESSING_TIMEOUT` | Timeout for processing incoming requests (includes LLM calls). Accepts Go duration strings (e.g. `45s`, `1m30s`). | No | `30s` |
 | `SENTRY_DSN`              | Sentry DSN for error tracking                      | No       | empty  |
 | `RESPONSE_LANGUAGE`       | Language for bot responses                          | No       | Russian |
 | `RESPONSE_GENDER`         | Gender for bot responses                            | No       | neutral |

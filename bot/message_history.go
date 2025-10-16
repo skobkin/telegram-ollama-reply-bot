@@ -1,7 +1,6 @@
 package bot
 
 import (
-	"context"
 	"log/slog"
 	"strings"
 
@@ -218,7 +217,7 @@ func (b *Bot) maybeSummarizeHistory(chatId int64) {
 		text = "Earlier conversation summary:\n" + mh.earlierSummary.Text + "\n\nRecent messages:\n" + text
 	}
 
-	ctx, cancel := context.WithTimeout(b.ctx, b.cfg.LlmRequestTimeout)
+	ctx, cancel := b.withProcessingDeadline(b.ctx)
 	defer cancel()
 	summary, usage, err := b.llm.Summarize(ctx, text, "")
 	if err != nil {
