@@ -76,7 +76,7 @@ go build -o /tmp/telegram-ollama-reply-bot ./cmd/bot
 ### Lint
 
 ```shell
-golangci-lint run ./cmd/... ./internal/...
+golangci-lint run ./cmd/bot/... ./internal/...
 ```
 
 ### Docker
