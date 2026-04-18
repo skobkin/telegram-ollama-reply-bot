@@ -2,7 +2,7 @@ package llm
 
 import (
 	"bytes"
-	"telegram-ollama-reply-bot/config"
+	"telegram-ollama-reply-bot/internal/config"
 	"text/template"
 )
 

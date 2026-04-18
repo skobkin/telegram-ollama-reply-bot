@@ -14,26 +14,26 @@
 
 The bot can be configured using the following environment variables:
 
-| Variable                  | Description                                        | Required | Default |
-|---------------------------|----------------------------------------------------|----------|--------|
-| `OPENAI_API_TOKEN`        | API token for OpenAI compatible API                | Yes      | -      |
-| `OPENAI_API_BASE_URL`     | Base URL for OpenAI compatible API                 | Yes      | -      |
-| `TELEGRAM_TOKEN`          | Telegram Bot API token                             | Yes      | -      |
-| `MODEL_TEXT_REQUEST`      | Model name for text requests                       | Yes      | -      |
-| `MODEL_SUMMARIZE_REQUEST` | Model name for summarization requests              | Yes      | -      |
-| `MODEL_IMAGE_RECOGNITION` | Model name for image recognition                   | No       | -      |
-| `BOT_HISTORY_LENGTH`      | Number of messages to keep in conversation history | No       | 150    |
-| `LLM_UNCOMPRESSED_HISTORY_LIMIT` | Recent chat messages sent verbatim to LLM; older ones summarized. Set to `0` to disable summarization | No | 15 |
-| `LLM_HISTORY_SUMMARY_THRESHOLD` | Extra messages beyond the limit before summarization triggers again | No | 5 |
-| `BOT_PROCESSING_TIMEOUT` | Timeout for processing incoming requests (includes LLM calls). Accepts Go duration strings (e.g. `45s`, `1m30s`). | No | `30s` |
-| `SENTRY_DSN`              | Sentry DSN for error tracking                      | No       | empty  |
-| `RESPONSE_LANGUAGE`       | Language for bot responses                          | No       | Russian |
-| `RESPONSE_GENDER`         | Gender for bot responses                            | No       | neutral |
-| `MAX_SUMMARY_LENGTH`      | Maximum length of generated summaries              | No       | 2000   |
-| `PROMPT_CHAT`             | System prompt for chat interactions                 | No       | See [config.go](config/config.go) |
-| `PROMPT_SUMMARIZE`        | System prompt for summarization                    | No       | See [config.go](config/config.go) |
-| `PROMPT_IMAGE_RECOGNITION`| System prompt for image recognition                | No       | See [config.go](config/config.go) |
-| `BOT_ADMIN_IDS`           | Comma-separated list of admin user IDs             | No       | empty  |
+| Variable                         | Description                                                                                                       | Required | Default                                    |
+|----------------------------------|-------------------------------------------------------------------------------------------------------------------|----------|--------------------------------------------|
+| `OPENAI_API_TOKEN`               | API token for OpenAI compatible API                                                                               | Yes      | -                                          |
+| `OPENAI_API_BASE_URL`            | Base URL for OpenAI compatible API                                                                                | Yes      | -                                          |
+| `TELEGRAM_TOKEN`                 | Telegram Bot API token                                                                                            | Yes      | -                                          |
+| `MODEL_TEXT_REQUEST`             | Model name for text requests                                                                                      | Yes      | -                                          |
+| `MODEL_SUMMARIZE_REQUEST`        | Model name for summarization requests                                                                             | Yes      | -                                          |
+| `MODEL_IMAGE_RECOGNITION`        | Model name for image recognition                                                                                  | No       | -                                          |
+| `BOT_HISTORY_LENGTH`             | Number of messages to keep in conversation history                                                                | No       | 150                                        |
+| `LLM_UNCOMPRESSED_HISTORY_LIMIT` | Recent chat messages sent verbatim to LLM; older ones summarized. Set to `0` to disable summarization             | No       | 15                                         |
+| `LLM_HISTORY_SUMMARY_THRESHOLD`  | Extra messages beyond the limit before summarization triggers again                                               | No       | 5                                          |
+| `BOT_PROCESSING_TIMEOUT`         | Timeout for processing incoming requests (includes LLM calls). Accepts Go duration strings (e.g. `45s`, `1m30s`). | No       | `30s`                                      |
+| `SENTRY_DSN`                     | Sentry DSN for error tracking                                                                                     | No       | empty                                      |
+| `RESPONSE_LANGUAGE`              | Language for bot responses                                                                                        | No       | Russian                                    |
+| `RESPONSE_GENDER`                | Gender for bot responses                                                                                          | No       | neutral                                    |
+| `MAX_SUMMARY_LENGTH`             | Maximum length of generated summaries                                                                             | No       | 2000                                       |
+| `PROMPT_CHAT`                    | System prompt for chat interactions                                                                               | No       | See [config.go](internal/config/config.go) |
+| `PROMPT_SUMMARIZE`               | System prompt for summarization                                                                                   | No       | See [config.go](internal/config/config.go) |
+| `PROMPT_IMAGE_RECOGNITION`       | System prompt for image recognition                                                                               | No       | See [config.go](internal/config/config.go) |
+| `BOT_ADMIN_IDS`                  | Comma-separated list of admin user IDs                                                                            | No       | empty                                      |
 
 ### Prompt placeholders
 
@@ -66,6 +66,12 @@ You can also interact with the bot by:
 - Sending images (the bot will describe what it sees in the image)
 
 ## Running
+
+### Local build
+
+```shell
+go build -o /tmp/telegram-ollama-reply-bot ./cmd/bot
+```
 
 ### Docker
 

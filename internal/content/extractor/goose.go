@@ -43,7 +43,7 @@ func (e *GoOseExtractor) GetArticleFromUrl(url string) (Article, error) {
 		if result.err != nil {
 			slog.Error("goose-extractor: failed extracting from URL", "url", url)
 			sentry.CaptureException(result.err)
-			
+
 			return Article{}, ErrExtractFailed
 		}
 

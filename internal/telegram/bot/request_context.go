@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"telegram-ollama-reply-bot/llm"
+	"telegram-ollama-reply-bot/internal/llm"
 
 	t "github.com/mymmrac/telego"
 )

@@ -4,14 +4,14 @@ WORKDIR /build
 
 COPY . .
 
-RUN go build -o app
+RUN go build -o /tmp/app ./cmd/bot
 
 
 FROM alpine:latest
 
 WORKDIR /app
 
-COPY --from=builder /build/app .
+COPY --from=builder /tmp/app .
 
 # Do not forget "/v1" in the end
 ENV OPENAI_API_BASE_URL="" \

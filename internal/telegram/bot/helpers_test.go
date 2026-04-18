@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"telegram-ollama-reply-bot/markdown"
+	"telegram-ollama-reply-bot/internal/support/markdown"
 )
 
 func TestCropToMaxLengthMarkdownV2_SanitizesAfterCrop(t *testing.T) {

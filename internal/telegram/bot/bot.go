@@ -8,11 +8,11 @@ import (
 	"strconv"
 	"strings"
 
-	"telegram-ollama-reply-bot/config"
-	"telegram-ollama-reply-bot/extractor"
-	"telegram-ollama-reply-bot/llm"
-	"telegram-ollama-reply-bot/markdown"
-	"telegram-ollama-reply-bot/stats"
+	"telegram-ollama-reply-bot/internal/config"
+	"telegram-ollama-reply-bot/internal/content/extractor"
+	"telegram-ollama-reply-bot/internal/llm"
+	"telegram-ollama-reply-bot/internal/support/markdown"
+	"telegram-ollama-reply-bot/internal/support/stats"
 
 	"github.com/getsentry/sentry-go"
 	t "github.com/mymmrac/telego"

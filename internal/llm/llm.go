@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"telegram-ollama-reply-bot/config"
+	"telegram-ollama-reply-bot/internal/config"
 
 	"encoding/base64"
 
