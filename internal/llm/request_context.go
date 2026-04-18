@@ -1,10 +1,6 @@
 package llm
 
-import (
-	"strings"
-
-	"github.com/sashabaranov/go-openai"
-)
+import "github.com/sashabaranov/go-openai"
 
 type RequestContext struct {
 	Empty bool
@@ -69,9 +65,9 @@ func (c RequestContext) Prompt() string {
 	if c.User.LastName != "" {
 		prompt += "Last name: \"" + c.User.LastName + "\"\n"
 	}
-	//if c.User.IsPremium {
-	//      prompt += "Telegram Premium subscription: active."
-	//}
+	// if c.User.IsPremium {
+	// 	prompt += "Telegram Premium subscription: active."
+	// }
 
 	return prompt
 }
@@ -137,13 +133,4 @@ func presentUserMessageAsText(message ChatMessage) string {
 	result += message.Text
 
 	return result
-}
-
-func chatHistoryToPlainText(history []ChatMessage) string {
-	var sb strings.Builder
-	for _, msg := range history {
-		sb.WriteString(chatMessageToText(msg))
-		sb.WriteString("\n")
-	}
-	return sb.String()
 }

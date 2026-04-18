@@ -73,6 +73,12 @@ You can also interact with the bot by:
 go build -o /tmp/telegram-ollama-reply-bot ./cmd/bot
 ```
 
+### Lint
+
+```shell
+golangci-lint run ./cmd/... ./internal/...
+```
+
 ### Docker
 
 ```shell

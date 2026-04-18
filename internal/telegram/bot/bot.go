@@ -31,7 +31,7 @@ const TelegramCharLimit = 4000
 
 type Bot struct {
 	api        *t.Bot
-	llm        *llm.LlmConnector
+	llm        *llm.Connector
 	extractor  extractor.Extractor
 	sanitizer  markdown.Sanitizer
 	stats      *stats.Stats
@@ -43,13 +43,13 @@ type Bot struct {
 }
 
 func NewBot(
+	ctx context.Context,
 	api *t.Bot,
-	llm *llm.LlmConnector,
+	llm *llm.Connector,
 	extractor extractor.Extractor,
 	sanitizer markdown.Sanitizer,
 	imageCache *ImageCache,
 	cfg config.BotConfig,
-	ctx context.Context,
 ) *Bot {
 	if imageCache == nil {
 		panic("image cache is required")
@@ -165,6 +165,7 @@ func (b *Bot) textMessageHandler(ctx *th.Context, update t.Update) error {
 	} else {
 		slog.Debug("bot: Skipping message - not a mention, reply, or private chat")
 	}
+
 	return nil
 }
 
@@ -198,6 +199,7 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 			messageDataToLlmMessage(userMessageData),
 			requestContext,
 		)
+
 		return llmErr
 	})
 	if err != nil {
@@ -276,7 +278,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 		additionalInstructions = strings.TrimSpace(args[2])
 	}
 
-	if !isValidAndAllowedUrl(url) {
+	if !isValidAndAllowedURL(url) {
 		slog.Error("bot: Provided text is not a valid URL", "text", url)
 
 		_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(
@@ -288,7 +290,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 	}
 
 	var err error
-	article, err := b.extractor.GetArticleFromUrl(url)
+	article, err := b.extractor.GetArticleFromURL(url)
 	if err != nil {
 		slog.Error("bot: Cannot retrieve an article using extractor", "error", err)
 		sentry.CaptureException(err)
@@ -322,6 +324,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 
 		var llmErr error
 		summarizeReply, summarizeUsage, llmErr = b.llm.Summarize(llmCtx, article.Text, additionalInstructions)
+
 		return llmErr
 	})
 	if err != nil {
@@ -353,7 +356,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 
 	slog.Debug("bot: Got completion. Going to send reply.", "llm-completion", summarizeReply)
 
-	footerURL := b.sanitizer.EscapeURL(article.Url)
+	footerURL := b.sanitizer.EscapeURL(article.URL)
 	footer := "\n\n[src](" + footerURL + ")"
 	body := b.sanitizer.Sanitize(summarizeReply)
 	cropped, changed := cropToMaxLengthMarkdownV2(body, TelegramCharLimit-len(footer))
@@ -377,6 +380,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 	}
 
 	b.saveBotReplyToHistory(message, replyMarkdown)
+
 	return nil
 }
 
@@ -403,6 +407,7 @@ Mention the bot, reply to it to chat; text and photos are supported.
 
 		b.trySendReplyError(ctx.Context(), message)
 	}
+
 	return nil
 }
 
@@ -424,6 +429,7 @@ func (b *Bot) startHandler(ctx *th.Context, message t.Message) error {
 
 		b.trySendReplyError(ctx.Context(), message)
 	}
+
 	return nil
 }
 
@@ -436,6 +442,7 @@ func (b *Bot) statsHandler(ctx *th.Context, message t.Message) error {
 			tu.ID(message.Chat.ID),
 			"This command is available only to administrators.",
 		)))
+
 		return nil
 	}
 
@@ -455,6 +462,7 @@ func (b *Bot) statsHandler(ctx *th.Context, message t.Message) error {
 
 		b.trySendReplyError(ctx.Context(), message)
 	}
+
 	return nil
 }
 
@@ -467,6 +475,7 @@ func (b *Bot) resetHandler(ctx *th.Context, message t.Message) error {
 			tu.ID(message.Chat.ID),
 			"This command is available only to administrators.",
 		)))
+
 		return nil
 	}
 
@@ -487,5 +496,6 @@ func (b *Bot) resetHandler(ctx *th.Context, message t.Message) error {
 
 		b.trySendReplyError(ctx.Context(), message)
 	}
+
 	return nil
 }

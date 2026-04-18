@@ -14,12 +14,13 @@ type GoOseExtractor struct {
 
 func NewGoOseExtractor() *GoOseExtractor {
 	gooseExtractor := goose.New()
+
 	return &GoOseExtractor{
 		goose: &gooseExtractor,
 	}
 }
 
-func (e *GoOseExtractor) GetArticleFromUrl(url string) (Article, error) {
+func (e *GoOseExtractor) GetArticleFromURL(url string) (Article, error) {
 	slog.Info("goose-extractor: requested extraction from URL ", "url", url)
 
 	ctx, cancel := context.WithTimeout(context.Background(), ExtractionTimeout)
@@ -52,11 +53,12 @@ func (e *GoOseExtractor) GetArticleFromUrl(url string) (Article, error) {
 		return Article{
 			Title: result.article.Title,
 			Text:  result.article.CleanedText,
-			Url:   result.article.FinalURL,
+			URL:   result.article.FinalURL,
 		}, nil
 	case <-ctx.Done():
 		slog.Error("goose-extractor: extraction timed out", "url", url)
 		sentry.CaptureMessage("Article extraction timed out")
+
 		return Article{}, ErrExtractFailed
 	}
 }

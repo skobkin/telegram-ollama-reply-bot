@@ -1,0 +1,65 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - ineffassign
+    - unused
+    - bodyclose
+    - unconvert
+    - unparam
+    - errorlint
+    - revive
+    - gocritic
+    - nilerr
+    - misspell
+    - gosec
+    - nlreturn
+  exclusions:
+    rules:
+      - linters:
+          - revive
+        text: "package-comments: should have a package comment"
+      - linters:
+          - revive
+        text: "exported const "
+      - linters:
+          - revive
+        text: "exported var "
+      - linters:
+          - revive
+        text: "exported type "
+      - linters:
+          - revive
+        text: "exported function "
+      - linters:
+          - revive
+        text: "exported method "
+      - path: _test\.go
+        linters:
+          - errcheck
+
+settings:
+  revive:
+    rules:
+      - name: blank-imports
+      - name: context-keys-type
+      - name: errorf
+      - name: exported
+        arguments:
+          - disableStutteringCheck
+      - name: if-return
+      - name: range
+      - name: time-naming
+      - name: unreachable-code
+      - name: unnecessary-stmt
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

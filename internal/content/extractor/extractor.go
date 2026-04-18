@@ -19,11 +19,11 @@ var (
 type Article struct {
 	Title string
 	Text  string
-	Url   string
+	URL   string
 }
 
 type Extractor interface {
-	GetArticleFromUrl(url string) (Article, error)
+	GetArticleFromURL(url string) (Article, error)
 }
 
 type MultiExtractor struct {
@@ -38,10 +38,10 @@ func NewMultiExtractor() *MultiExtractor {
 	}
 }
 
-func (e *MultiExtractor) GetArticleFromUrl(url string) (Article, error) {
+func (e *MultiExtractor) GetArticleFromURL(url string) (Article, error) {
 	slog.Info("multi-extractor: requested extraction from URL ", "url", url)
 
-	article, err := e.primary.GetArticleFromUrl(url)
+	article, err := e.primary.GetArticleFromURL(url)
 	if err == nil && article.Text != "" {
 		slog.Info("multi-extractor: successfully extracted using primary extractor")
 
@@ -52,7 +52,7 @@ func (e *MultiExtractor) GetArticleFromUrl(url string) (Article, error) {
 	}
 
 	slog.Info("multi-extractor: trying fallback extractor")
-	article, err = e.fallback.GetArticleFromUrl(url)
+	article, err = e.fallback.GetArticleFromURL(url)
 	if err == nil && article.Text != "" {
 		slog.Info("multi-extractor: successfully extracted using fallback extractor")
 

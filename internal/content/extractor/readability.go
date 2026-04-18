@@ -13,7 +13,7 @@ func NewReadabilityExtractor() *ReadabilityExtractor {
 	return &ReadabilityExtractor{}
 }
 
-func (e *ReadabilityExtractor) GetArticleFromUrl(url string) (Article, error) {
+func (e *ReadabilityExtractor) GetArticleFromURL(url string) (Article, error) {
 	slog.Info("readability-extractor: requested extraction from URL ", "url", url)
 
 	article, err := readability.FromURL(url, ExtractionTimeout)
@@ -29,6 +29,6 @@ func (e *ReadabilityExtractor) GetArticleFromUrl(url string) (Article, error) {
 	return Article{
 		Title: article.Title,
 		Text:  article.TextContent,
-		Url:   url,
+		URL:   url,
 	}, nil
 }

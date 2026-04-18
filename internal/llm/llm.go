@@ -20,7 +20,7 @@ var (
 	ErrTemplateProcessing      = errors.New("template processing failed")
 )
 
-type LlmConnector struct {
+type Connector struct {
 	client            *openai.Client
 	cfg               config.LLMConfig
 	templateProcessor *TemplateProcessor
@@ -33,24 +33,25 @@ type TokenUsage struct {
 	Cost             float64
 }
 
-func NewConnector(cfg config.LLMConfig, templateProcessor *TemplateProcessor) *LlmConnector {
+func NewConnector(cfg config.LLMConfig, templateProcessor *TemplateProcessor) *Connector {
 	clientCfg := openai.DefaultConfig(cfg.APIToken)
 	clientCfg.BaseURL = cfg.APIBaseURL
 
 	client := openai.NewClientWithConfig(clientCfg)
 
-	return &LlmConnector{
+	return &Connector{
 		client:            client,
 		cfg:               cfg,
 		templateProcessor: templateProcessor,
 	}
 }
 
-func (l *LlmConnector) HandleChatMessage(ctx context.Context, userMessage ChatMessage, requestContext RequestContext) (string, *TokenUsage, error) {
+func (l *Connector) HandleChatMessage(ctx context.Context, userMessage ChatMessage, requestContext RequestContext) (string, *TokenUsage, error) {
 	systemPrompt, err := l.templateProcessor.ProcessChatTemplate(l.cfg.Models.TextRequestModel, requestContext.Prompt())
 	if err != nil {
 		slog.Error("llm: Template processing failed", "error", err)
 		sentry.CaptureException(err)
+
 		return "", nil, ErrTemplateProcessing
 	}
 
@@ -108,11 +109,12 @@ func (l *LlmConnector) HandleChatMessage(ctx context.Context, userMessage ChatMe
 	return resp.Choices[0].Message.Content, usage, nil
 }
 
-func (l *LlmConnector) Summarize(ctx context.Context, text string, instructions string) (string, *TokenUsage, error) {
+func (l *Connector) Summarize(ctx context.Context, text string, instructions string) (string, *TokenUsage, error) {
 	systemPrompt, err := l.templateProcessor.ProcessSummarizeTemplate()
 	if err != nil {
 		slog.Error("llm: Template processing failed", "error", err)
 		sentry.CaptureException(err)
+
 		return "", nil, ErrTemplateProcessing
 	}
 
@@ -161,7 +163,7 @@ func (l *LlmConnector) Summarize(ctx context.Context, text string, instructions 
 	return resp.Choices[0].Message.Content, usage, nil
 }
 
-func (l *LlmConnector) HasAllModels(ctx context.Context, models config.ModelSelection) (bool, map[string]bool) {
+func (l *Connector) HasAllModels(ctx context.Context, models config.ModelSelection) (bool, map[string]bool) {
 	modelList, err := l.client.ListModels(ctx)
 	if err != nil {
 		slog.Error("llm: Model list request failed", "error", err)
@@ -170,20 +172,20 @@ func (l *LlmConnector) HasAllModels(ctx context.Context, models config.ModelSele
 		return false, map[string]bool{}
 	}
 
-	modelIds := []string{models.TextRequestModel, models.SummarizeModel}
+	modelIDs := []string{models.TextRequestModel, models.SummarizeModel}
 	slog.Info("llm: Returned models count", "count", len(modelList.Models))
 	slog.Debug("llm: Returned model list", "models", modelList)
-	slog.Info("llm: Checking for requested models", "requested", modelIds)
+	slog.Info("llm: Checking for requested models", "requested", modelIDs)
 
-	requestedModelsCount := len(modelIds)
+	requestedModelsCount := len(modelIDs)
 	searchResult := make(map[string]bool, requestedModelsCount)
 
-	for _, modelId := range modelIds {
-		searchResult[modelId] = false
+	for _, modelID := range modelIDs {
+		searchResult[modelID] = false
 	}
 
 	for _, model := range modelList.Models {
-		if slices.Contains(modelIds, model.ID) {
+		if slices.Contains(modelIDs, model.ID) {
 			searchResult[model.ID] = true
 		}
 	}
@@ -197,11 +199,12 @@ func (l *LlmConnector) HasAllModels(ctx context.Context, models config.ModelSele
 	return true, searchResult
 }
 
-func (l *LlmConnector) RecognizeImage(ctx context.Context, imageData []byte) (string, *TokenUsage, error) {
+func (l *Connector) RecognizeImage(ctx context.Context, imageData []byte) (string, *TokenUsage, error) {
 	systemPrompt, err := l.templateProcessor.ProcessImageRecognitionTemplate()
 	if err != nil {
 		slog.Error("llm: Template processing failed", "error", err)
 		sentry.CaptureException(err)
+
 		return "", nil, ErrTemplateProcessing
 	}
 
@@ -215,15 +218,15 @@ func (l *LlmConnector) RecognizeImage(ctx context.Context, imageData []byte) (st
 			{
 				Role: openai.ChatMessageRoleUser,
 				MultiContent: []openai.ChatMessagePart{
-					//{
-					//	Type: openai.ChatMessagePartTypeText,
-					//	Text: "What do you see in this image?",
-					//},
+					// {
+					// 	Type: openai.ChatMessagePartTypeText,
+					// 	Text: "What do you see in this image?",
+					// },
 					{
 						Type: openai.ChatMessagePartTypeImageURL,
 						ImageURL: &openai.ChatMessageImageURL{
 							URL: fmt.Sprintf("data:image/jpeg;base64,%s", base64.StdEncoding.EncodeToString(imageData)),
-							//Detail: "auto",
+							// Detail: "auto",
 						},
 					},
 				},
@@ -235,12 +238,14 @@ func (l *LlmConnector) RecognizeImage(ctx context.Context, imageData []byte) (st
 	if err != nil {
 		slog.Error("llm: LLM back-end request failed", "error", err)
 		sentry.CaptureException(err)
+
 		return "", nil, errors.Join(ErrLlmBackendRequestFailed, err)
 	}
 
 	if len(resp.Choices) < 1 {
 		slog.Error("llm: LLM back-end reply has no choices")
 		sentry.CaptureMessage("LLM back-end reply has no choices")
+
 		return "", nil, ErrNoChoices
 	}
 

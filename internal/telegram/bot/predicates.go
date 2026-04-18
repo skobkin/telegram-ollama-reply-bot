@@ -9,7 +9,7 @@ import (
 
 // AnyMessageWithPhoto returns a predicate that matches any message with a photo
 func AnyMessageWithPhoto() th.Predicate {
-	return func(ctx context.Context, update t.Update) bool {
+	return func(_ context.Context, update t.Update) bool {
 		if update.Message == nil {
 			return false
 		}

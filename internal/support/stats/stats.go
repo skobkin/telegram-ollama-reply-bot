@@ -2,6 +2,7 @@ package stats
 
 import (
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 
@@ -69,7 +70,7 @@ func (s *Stats) MarshalJSON() ([]byte, error) {
 
 		LlmTimeouts uint64 `json:"llm_timeouts"`
 	}{
-		Uptime: time.Now().Sub(s.RunningSince).String(),
+		Uptime: time.Since(s.RunningSince).String(),
 
 		GroupRequests:   s.GroupRequests,
 		PrivateRequests: s.PrivateRequests,
@@ -138,6 +139,13 @@ func (s *Stats) ChatHistoryReset() {
 func (s *Stats) AddUsage(prompt, completion, total int, cost float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if prompt < 0 || completion < 0 || total < 0 {
+		sentry.CaptureException(errors.New("stats: negative token usage"))
+
+		return
+	}
+
 	s.PromptTokens += uint64(prompt)
 	s.CompletionTokens += uint64(completion)
 	s.TotalTokens += uint64(total)

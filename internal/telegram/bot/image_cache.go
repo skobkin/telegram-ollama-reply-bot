@@ -25,6 +25,7 @@ func (c *ImageCache) Get(imageMeta *ImageMeta) (string, bool) {
 	defer c.mu.RUnlock()
 
 	desc, ok := c.items[key]
+
 	return desc, ok
 }
 

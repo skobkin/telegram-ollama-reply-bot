@@ -36,6 +36,7 @@ func (i *ImageMeta) cacheKey() string {
 	if i.FileUniqueID != "" {
 		return i.FileUniqueID
 	}
+
 	return i.FileID
 }
 
@@ -84,30 +85,30 @@ func (b *MessageHistory) SetEarlierSummary(sum string) {
 }
 
 func (b *Bot) saveChatMessageToHistory(msgData MessageData) {
-	chatId := msgData.chatID
+	chatID := msgData.chatID
 
-	_, ok := b.history[chatId]
+	_, ok := b.history[chatID]
 	if !ok {
-		b.history[chatId] = NewMessageHistory(b.cfg.HistoryLength)
+		b.history[chatID] = NewMessageHistory(b.cfg.HistoryLength)
 	}
 
-	b.history[chatId].Push(msgData)
+	b.history[chatID].Push(msgData)
 }
 
 func (b *Bot) saveBotReplyToHistory(replyTo t.Message, text string) {
-	chatId := replyTo.Chat.ID
+	chatID := replyTo.Chat.ID
 
 	slog.Info(
 		"bot:history: saving bot reply",
-		"chat", chatId,
+		"chat", chatID,
 		"to_id", replyTo.From.ID,
 		"to_name", replyTo.From.FirstName,
 		"text", text,
 	)
 
-	_, ok := b.history[chatId]
+	_, ok := b.history[chatID]
 	if !ok {
-		b.history[chatId] = NewMessageHistory(b.cfg.HistoryLength)
+		b.history[chatID] = NewMessageHistory(b.cfg.HistoryLength)
 	}
 
 	botName := strings.TrimSpace(b.me.FirstName + " " + b.me.LastName)
@@ -135,7 +136,7 @@ func (b *Bot) saveBotReplyToHistory(replyTo t.Message, text string) {
 		}
 	}
 
-	b.history[chatId].Push(msgData)
+	b.history[chatID].Push(msgData)
 }
 
 func (b *Bot) tgUserMessageToMessageData(message t.Message, isUserRequest bool) MessageData {
@@ -172,30 +173,31 @@ func (b *Bot) tgUserMessageToMessageData(message t.Message, isUserRequest bool) 
 	return msgData
 }
 
-func (b *Bot) getChatHistory(chatId int64) []MessageData {
-	_, ok := b.history[chatId]
+func (b *Bot) getChatHistory(chatID int64) []MessageData {
+	_, ok := b.history[chatID]
 	if !ok {
-		slog.Debug("bot: Chat ID not found in history", "chat_id", chatId)
+		slog.Debug("bot: Chat ID not found in history", "chat_id", chatID)
 
 		return make([]MessageData, 0)
 	}
 
-	return b.history[chatId].GetAll()
+	return b.history[chatID].GetAll()
 }
 
-func (b *Bot) ResetChatHistory(chatId int64) {
-	_, ok := b.history[chatId]
+func (b *Bot) ResetChatHistory(chatID int64) {
+	_, ok := b.history[chatID]
 	if !ok {
-		slog.Debug("bot: Chat ID not found in history", "chat_id", chatId)
+		slog.Debug("bot: Chat ID not found in history", "chat_id", chatID)
+
 		return
 	}
 
-	slog.Info("bot: Resetting chat history", "chat_id", chatId)
-	b.history[chatId] = NewMessageHistory(b.cfg.HistoryLength)
+	slog.Info("bot: Resetting chat history", "chat_id", chatID)
+	b.history[chatID] = NewMessageHistory(b.cfg.HistoryLength)
 }
 
-func (b *Bot) maybeSummarizeHistory(chatId int64) {
-	mh, ok := b.history[chatId]
+func (b *Bot) maybeSummarizeHistory(chatID int64) {
+	mh, ok := b.history[chatID]
 	if !ok {
 		return
 	}
@@ -220,13 +222,14 @@ func (b *Bot) maybeSummarizeHistory(chatId int64) {
 	slice := mh.messages[start:end]
 	if len(slice) == 0 {
 		mh.earlierSummary.SummarizedUntil = end
+
 		return
 	}
 
 	ctx, cancel := b.withProcessingDeadline(b.ctx)
 	defer cancel()
 
-	b.ensureHistoryMessagesImageDescriptions(ctx, chatId)
+	b.ensureHistoryMessagesImageDescriptions(ctx, chatID)
 
 	text := historyToPlainText(slice)
 
@@ -238,8 +241,9 @@ func (b *Bot) maybeSummarizeHistory(chatId int64) {
 
 	summary, usage, err := b.llm.Summarize(ctx, text, "")
 	if err != nil {
-		slog.Error("bot: failed to summarize history", "error", err, "chat", chatId)
+		slog.Error("bot: failed to summarize history", "error", err, "chat", chatID)
 		sentry.CaptureException(err)
+
 		return
 	}
 	if usage != nil {
@@ -255,6 +259,7 @@ func historyToPlainText(history []MessageData) string {
 		sb.WriteString(messageDataToPlainText(msg))
 		sb.WriteString("\n")
 	}
+
 	return sb.String()
 }
 
@@ -266,6 +271,7 @@ func messageDataToPlainText(msg MessageData) string {
 		sb.WriteString("\n")
 	}
 	sb.WriteString(presentMessage(msg))
+
 	return sb.String()
 }
 
@@ -283,5 +289,6 @@ func presentMessage(msg MessageData) string {
 		}
 	}
 	result += msg.Text
+
 	return result
 }

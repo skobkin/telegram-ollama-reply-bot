@@ -55,6 +55,7 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 					b.WriteString("\\`\\`\\`")
 					i += 2
 				}
+
 				continue
 			}
 
@@ -78,6 +79,7 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 			} else {
 				b.WriteString("\\`")
 			}
+
 			continue
 		}
 
@@ -86,12 +88,14 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 			if boldOpen {
 				b.WriteRune('*')
 				boldOpen = false
+
 				continue
 			}
 			end := i + 1
 			for end < len(runes) {
 				if runes[end] == '\\' {
 					end += 2
+
 					continue
 				}
 				if runes[end] == '*' {
@@ -105,6 +109,7 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 			} else {
 				b.WriteString("\\*")
 			}
+
 			continue
 		}
 		if r == '_' {
@@ -113,12 +118,14 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 					b.WriteString("__")
 					underlineOpen = false
 					i++
+
 					continue
 				}
 				end := i + 2
 				for end+1 < len(runes) {
 					if runes[end] == '\\' {
 						end += 2
+
 						continue
 					}
 					if runes[end] == '_' && runes[end+1] == '_' {
@@ -134,17 +141,20 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 					b.WriteString("\\_\\_")
 					i++
 				}
+
 				continue
 			}
 			if italicOpen {
 				b.WriteRune('_')
 				italicOpen = false
+
 				continue
 			}
 			end := i + 1
 			for end < len(runes) {
 				if runes[end] == '\\' {
 					end += 2
+
 					continue
 				}
 				if runes[end] == '_' {
@@ -158,18 +168,21 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 			} else {
 				b.WriteString("\\_")
 			}
+
 			continue
 		}
 		if r == '~' {
 			if strikeOpen {
 				b.WriteRune('~')
 				strikeOpen = false
+
 				continue
 			}
 			end := i + 1
 			for end < len(runes) {
 				if runes[end] == '\\' {
 					end += 2
+
 					continue
 				}
 				if runes[end] == '~' {
@@ -183,6 +196,7 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 			} else {
 				b.WriteString("\\~")
 			}
+
 			continue
 		}
 		if r == '|' {
@@ -191,12 +205,14 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 					b.WriteString("||")
 					spoilerOpen = false
 					i++
+
 					continue
 				}
 				end := i + 2
 				for end+1 < len(runes) {
 					if runes[end] == '\\' {
 						end += 2
+
 						continue
 					}
 					if runes[end] == '|' && runes[end+1] == '|' {
@@ -215,6 +231,7 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 			} else {
 				b.WriteString("\\|")
 			}
+
 			continue
 		}
 
@@ -248,22 +265,27 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 				b.WriteString(urlPart)
 				b.WriteRune(')')
 				i = urlEnd
+
 				continue
 			}
 			// not a link, escape
 			b.WriteString("\\[")
+
 			continue
 		}
 		if r == ']' {
 			b.WriteString("\\]")
+
 			continue
 		}
 		if r == '(' {
 			b.WriteString("\\(")
+
 			continue
 		}
 		if r == ')' {
 			b.WriteString("\\)")
+
 			continue
 		}
 		if r == '\\' {
@@ -273,10 +295,12 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 					b.WriteRune('\\')
 					b.WriteRune(next)
 					i++
+
 					continue
 				}
 			}
 			b.WriteString("\\\\")
+
 			continue
 		}
 		if r == '!' {
@@ -314,10 +338,12 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 						b.WriteString(sanitizedURL)
 					}
 					i = urlEnd
+
 					continue
 				}
 			}
 			b.WriteString("\\!")
+
 			continue
 		}
 		if r == '>' {
@@ -325,12 +351,15 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 			for j >= 0 && runes[j] != '\n' {
 				if runes[j] == '*' || runes[j] == '_' || runes[j] == '~' || runes[j] == '|' {
 					j--
+
 					continue
 				}
 				if runes[j] == '\\' {
 					j -= 2
+
 					continue
 				}
+
 				break
 			}
 			if j < 0 || runes[j] == '\n' {
@@ -338,6 +367,7 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 			} else {
 				b.WriteString("\\>")
 			}
+
 			continue
 		}
 		switch r {
@@ -348,6 +378,7 @@ func (s tgMarkdownV2Sanitizer) Sanitize(text string) string {
 			b.WriteRune(r)
 		}
 	}
+
 	return b.String()
 }
 
@@ -360,5 +391,6 @@ func (s tgMarkdownV2Sanitizer) EscapeURL(url string) string {
 		}
 		b.WriteRune(r)
 	}
+
 	return b.String()
 }

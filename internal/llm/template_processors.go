@@ -60,6 +60,7 @@ func (p *TemplateProcessor) ProcessChatTemplate(model, context string) (string, 
 	if err != nil {
 		return "", err
 	}
+
 	return buf.String(), nil
 }
 
@@ -76,6 +77,7 @@ func (p *TemplateProcessor) ProcessSummarizeTemplate() (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	return buf.String(), nil
 }
 
@@ -90,5 +92,6 @@ func (p *TemplateProcessor) ProcessImageRecognitionTemplate() (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	return buf.String(), nil
 }

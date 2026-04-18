@@ -15,6 +15,7 @@ func (b *Bot) chatTypeStatsCounter(ctx *th.Context, update t.Update) error {
 
 	if message == nil {
 		slog.Info("bot:middleware:stats: update has no message. skipping.")
+
 		return ctx.Next(update)
 	}
 
@@ -28,6 +29,7 @@ func (b *Bot) chatTypeStatsCounter(ctx *th.Context, update t.Update) error {
 		slog.Info("bot:middleware:stats: counting message chat type in stats", "type", message.Chat.Type)
 		b.stats.PrivateRequest()
 	}
+
 	return ctx.Next(update)
 }
 
@@ -36,6 +38,7 @@ func (b *Bot) chatHistory(ctx *th.Context, update t.Update) error {
 
 	if message == nil {
 		slog.Info("bot:middleware:history: update has no message. skipping.")
+
 		return ctx.Next(update)
 	}
 

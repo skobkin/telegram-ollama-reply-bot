@@ -19,7 +19,7 @@ import (
 )
 
 var (
-	allowedUrlSchemes = []string{"http", "https"}
+	allowedURLSchemes = []string{"http", "https"}
 
 	ErrImageRecognition = errors.New("image recognition error")
 	ErrRequestTimeout   = errors.New("request timed out")
@@ -43,18 +43,18 @@ func (b *Bot) handlerContext(handlerCtx *th.Context) context.Context {
 	return b.ctx
 }
 
-func (b *Bot) sendTyping(ctx context.Context, chatId t.ChatID) {
+func (b *Bot) sendTyping(ctx context.Context, chatID t.ChatID) {
 	slog.Debug("bot: Setting 'typing' chat action")
 
-	err := b.api.SendChatAction(ctx, tu.ChatAction(chatId, "typing"))
+	err := b.api.SendChatAction(ctx, tu.ChatAction(chatID, "typing"))
 	if err != nil {
 		slog.Error("bot: Cannot set chat action", "error", err)
 		sentry.CaptureException(err)
 	}
 }
 
-func (b *Bot) sendTypingUntil(ctx context.Context, chatId t.ChatID) {
-	b.sendTyping(ctx, chatId)
+func (b *Bot) sendTypingUntil(ctx context.Context, chatID t.ChatID) {
+	b.sendTyping(ctx, chatID)
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -63,17 +63,17 @@ func (b *Bot) sendTypingUntil(ctx context.Context, chatId t.ChatID) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			b.sendTyping(ctx, chatId)
+			b.sendTyping(ctx, chatID)
 		}
 	}
 }
 
 // runWithTimeout wraps handler work with typing feedback and the processing deadline.
-func (b *Bot) runWithTimeout(baseCtx context.Context, chatId t.ChatID, work func(ctx context.Context) error) error {
+func (b *Bot) runWithTimeout(baseCtx context.Context, chatID t.ChatID, work func(ctx context.Context) error) error {
 	ctx, cancel := b.withProcessingDeadline(baseCtx)
 	defer cancel()
 
-	go b.sendTypingUntil(ctx, chatId)
+	go b.sendTypingUntil(ctx, chatID)
 
 	err := work(ctx)
 
@@ -88,6 +88,7 @@ func (b *Bot) runWithTimeout(baseCtx context.Context, chatId t.ChatID, work func
 
 			return errors.Join(ErrRequestTimeout, err)
 		}
+
 		return err
 	}
 
@@ -196,6 +197,7 @@ func entityText(text string, entity t.MessageEntity) string {
 	if start < 0 || end > len(r) || start > end {
 		return ""
 	}
+
 	return string(r[start:end])
 }
 
@@ -211,6 +213,7 @@ func utf16Index(runes []rune, utf16Pos int) int {
 			return i
 		}
 	}
+
 	return len(runes)
 }
 
@@ -231,7 +234,7 @@ func (b *Bot) isPrivateWithMe(message t.Message) bool {
 	return message.Chat.Type == t.ChatTypePrivate
 }
 
-func isValidAndAllowedUrl(text string) bool {
+func isValidAndAllowedURL(text string) bool {
 	u, err := url.ParseRequestURI(text)
 	if err != nil {
 		slog.Debug("bot: Provided text is not an URL", "text", text)
@@ -240,8 +243,8 @@ func isValidAndAllowedUrl(text string) bool {
 		return false
 	}
 
-	if !slices.Contains(allowedUrlSchemes, strings.ToLower(u.Scheme)) {
-		slog.Debug("bot: Provided URL has disallowed scheme", "scheme", u.Scheme, "allowed-schemes", allowedUrlSchemes)
+	if !slices.Contains(allowedURLSchemes, strings.ToLower(u.Scheme)) {
+		slog.Debug("bot: Provided URL has disallowed scheme", "scheme", u.Scheme, "allowed-schemes", allowedURLSchemes)
 
 		return false
 	}
@@ -249,16 +252,16 @@ func isValidAndAllowedUrl(text string) bool {
 	return true
 }
 
-func cropToMaxLengthMarkdownV2(text string, max int) (string, bool) {
+func cropToMaxLengthMarkdownV2(text string, limit int) (string, bool) {
 	runes := []rune(text)
-	if len(runes) <= max {
+	if len(runes) <= limit {
 		return text, false
 	}
 
 	const ellipsis = "\\.\\.\\."
 	ellipsisLen := len(ellipsis)
 
-	cropPoint := max - ellipsisLen
+	cropPoint := limit - ellipsisLen
 	if cropPoint > len(runes) {
 		cropPoint = len(runes)
 	}
@@ -276,6 +279,7 @@ func cropToMaxLengthMarkdownV2(text string, max int) (string, bool) {
 		for i := 0; i < len(croppedRunes); i++ {
 			if croppedRunes[i] == '\\' {
 				i++
+
 				continue
 			}
 			if croppedRunes[i] == m {
@@ -288,8 +292,8 @@ func cropToMaxLengthMarkdownV2(text string, max int) (string, bool) {
 		}
 	}
 
-	if len(croppedRunes)+ellipsisLen > max {
-		cropPoint := max - ellipsisLen
+	if len(croppedRunes)+ellipsisLen > limit {
+		cropPoint := limit - ellipsisLen
 		if cropPoint > len(croppedRunes) {
 			cropPoint = len(croppedRunes)
 		}
@@ -353,7 +357,9 @@ func downloadFileWithContext(ctx context.Context, url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
@@ -375,11 +381,13 @@ func (b *Bot) getMessageDataFromRequestContextOrCreate(ctx *th.Context, message 
 		msgData.IsUserRequest = isUserRequest
 		b.ensureMessageImageDescription(b.handlerContext(ctx), &msgData)
 		slog.Debug("bot: Message data retrieved from context", "message_data", msgData)
+
 		return msgData
 	}
 
 	msgData := b.tgUserMessageToMessageData(message, isUserRequest)
 	b.ensureMessageImageDescription(b.handlerContext(ctx), &msgData)
 	slog.Debug("bot: Message data created from message on the fly", "message_data", msgData)
+
 	return msgData
 }

@@ -40,6 +40,7 @@ func Run(ctx context.Context) error {
 	if err != nil {
 		slog.Error("app: Failed to initialize template processor", "error", err)
 		sentry.CaptureException(err)
+
 		return err
 	}
 
@@ -51,6 +52,7 @@ func Run(ctx context.Context) error {
 	if !hasAll {
 		slog.Error("app: Not all models are available", "result", searchResult)
 		sentry.CaptureMessage("Not all models are available")
+
 		return fmt.Errorf("missing required models: %v", searchResult)
 	}
 
@@ -62,15 +64,17 @@ func Run(ctx context.Context) error {
 	if err != nil {
 		slog.Error("app: Telegram API initialization failed", "error", err)
 		sentry.CaptureException(err)
+
 		return err
 	}
 
 	sanitizer := markdown.NewTgMarkdownV2Sanitizer()
-	botService := bot.NewBot(telegramAPI, llmc, ext, sanitizer, bot.NewImageCache(), cfg.Bot, ctx)
+	botService := bot.NewBot(ctx, telegramAPI, llmc, ext, sanitizer, bot.NewImageCache(), cfg.Bot)
 
 	if err := botService.Run(); err != nil {
 		slog.Error("app: Running bot finished with an error", "error", err)
 		sentry.CaptureMessage("Bot start error")
+
 		return err
 	}
 
