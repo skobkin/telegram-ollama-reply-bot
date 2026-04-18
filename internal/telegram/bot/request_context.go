@@ -2,7 +2,6 @@ package bot
 
 import (
 	"context"
-	"log/slog"
 
 	"telegram-ollama-reply-bot/internal/llm"
 
@@ -50,7 +49,12 @@ func (b *Bot) createLlmRequestContextFromMessage(ctx context.Context, message t.
 		EarlierSummary: earlierSummary,
 	}
 
-	slog.Debug("bot: request context created", "request-context", rc)
+	b.loggerFromContext(ctx).Debug(
+		"request context created",
+		"history_messages", len(rc.Chat.History),
+		"has_earlier_summary", rc.Chat.EarlierSummary != "",
+		"chat_type", rc.Chat.Type,
+	)
 
 	return rc
 }

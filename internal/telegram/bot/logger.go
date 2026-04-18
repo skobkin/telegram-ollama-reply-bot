@@ -3,22 +3,33 @@ package bot
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 type Logger struct {
-	prefix string
+	logger *slog.Logger
+	token  string
 }
 
-func NewLogger(prefix string) Logger {
+func NewLogger(logger *slog.Logger, token string) Logger {
 	return Logger{
-		prefix: prefix,
+		logger: logger,
+		token:  token,
 	}
 }
 
 func (l Logger) Debugf(format string, args ...any) {
-	slog.Debug(l.prefix + fmt.Sprintf(format, args...))
+	l.logger.Debug(l.sanitize(fmt.Sprintf(format, args...)))
 }
 
 func (l Logger) Errorf(format string, args ...any) {
-	slog.Error(l.prefix + fmt.Sprintf(format, args...))
+	l.logger.Error(l.sanitize(fmt.Sprintf(format, args...)))
+}
+
+func (l Logger) sanitize(message string) string {
+	if l.token == "" {
+		return message
+	}
+
+	return strings.ReplaceAll(message, l.token, "[REDACTED]")
 }

@@ -1,7 +1,7 @@
 package bot
 
 import (
-	"log/slog"
+	"telegram-ollama-reply-bot/internal/logging"
 
 	t "github.com/mymmrac/telego"
 	th "github.com/mymmrac/telego/telegohandler"
@@ -10,11 +10,39 @@ import (
 // requestContextMessageDataKey is the context key for storing processed message data in request context
 const requestContextMessageDataKey = "message_data"
 
+func (b *Bot) requestLogger(ctx *th.Context, update t.Update) error {
+	requestID, err := logging.NewRequestID()
+	if err != nil {
+		return err
+	}
+
+	baseLogger := b.loggerFromContext(ctx.Context())
+	requestLogger := baseLogger.With("update_id", update.UpdateID)
+
+	if update.Message != nil {
+		requestLogger = requestLogger.With(
+			"chat_id", update.Message.Chat.ID,
+			"message_id", update.Message.MessageID,
+			"chat_type", update.Message.Chat.Type,
+		)
+		if update.Message.From != nil {
+			requestLogger = requestLogger.With("from_id", update.Message.From.ID)
+		}
+	}
+
+	requestCtx := logging.WithRequestLogger(ctx.Context(), requestLogger, requestID)
+	ctx = ctx.WithContext(requestCtx)
+	b.handlerLogger(ctx).Debug("request context initialized")
+
+	return ctx.Next(update)
+}
+
 func (b *Bot) chatTypeStatsCounter(ctx *th.Context, update t.Update) error {
 	message := update.Message
+	logger := b.handlerLogger(ctx)
 
 	if message == nil {
-		slog.Info("bot:middleware:stats: update has no message. skipping.")
+		logger.Debug("stats middleware skipped update without message")
 
 		return ctx.Next(update)
 	}
@@ -22,11 +50,11 @@ func (b *Bot) chatTypeStatsCounter(ctx *th.Context, update t.Update) error {
 	switch message.Chat.Type {
 	case t.ChatTypeGroup, t.ChatTypeSupergroup:
 		if b.isMentionOfMe(*message) || b.isReplyToMe(*message) {
-			slog.Info("bot:middleware:stats: counting message chat type in stats", "type", message.Chat.Type)
+			logger.Debug("counting group request in stats", "chat_type", message.Chat.Type)
 			b.stats.GroupRequest()
 		}
 	case t.ChatTypePrivate:
-		slog.Info("bot:middleware:stats: counting message chat type in stats", "type", message.Chat.Type)
+		logger.Debug("counting private request in stats", "chat_type", message.Chat.Type)
 		b.stats.PrivateRequest()
 	}
 
@@ -35,26 +63,15 @@ func (b *Bot) chatTypeStatsCounter(ctx *th.Context, update t.Update) error {
 
 func (b *Bot) chatHistory(ctx *th.Context, update t.Update) error {
 	message := update.Message
+	logger := b.handlerLogger(ctx)
 
 	if message == nil {
-		slog.Info("bot:middleware:history: update has no message. skipping.")
+		logger.Debug("history middleware skipped update without message")
 
 		return ctx.Next(update)
 	}
 
-	slog.Debug("bot:middleware:history: saving message to history for", "chat_id", message.Chat.ID)
-
-	slog.Info(
-		"bot:middleware:history: saving message",
-		"chat", message.Chat.ID,
-		"chat_type", message.Chat.Type,
-		"chat_name", message.Chat.Title,
-		"from_id", message.From.ID,
-		"from_name", message.From.FirstName,
-		"has_image", len(message.Photo) > 0,
-		"caption", message.Caption,
-		"text", message.Text,
-	)
+	logger.Debug("saving message to history", "chat_id", message.Chat.ID, "has_image", len(message.Photo) > 0)
 
 	// Process message and store in context
 	msgData := b.tgUserMessageToMessageData(*message, false)

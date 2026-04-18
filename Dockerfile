@@ -17,6 +17,7 @@ COPY --from=builder /tmp/app .
 ENV OPENAI_API_BASE_URL="" \
     OPENAI_API_TOKEN="" \
     TELEGRAM_TOKEN="" \
+    LOG_LEVEL="info" \
     MODEL_TEXT_REQUEST="llama3.1:8b-instruct-q6_K" \
     MODEL_SUMMARIZE_REQUEST="llama3.1:8b-instruct-q6_K"
 

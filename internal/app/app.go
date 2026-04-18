@@ -3,10 +3,10 @@ package app
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/content/extractor"
 	"telegram-ollama-reply-bot/internal/llm"
+	"telegram-ollama-reply-bot/internal/logging"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/telegram/bot"
 	"time"
@@ -17,62 +17,78 @@ import (
 
 func Run(ctx context.Context) error {
 	cfg := config.Load()
+	logManager, err := logging.NewManager(logging.Options{
+		Level:      cfg.Logging.Level,
+		SetDefault: true,
+	})
+	if err != nil {
+		return fmt.Errorf("configure logging: %w", err)
+	}
+	logger := logManager.Logger("app")
 
 	if cfg.Sentry.DSN != "" {
-		slog.Info("app: Initializing sentry with provided DSN")
+		logger.Info("initializing sentry")
 
-		err := sentry.Init(sentry.ClientOptions{
+		err = sentry.Init(sentry.ClientOptions{
 			Dsn:              cfg.Sentry.DSN,
 			AttachStacktrace: true,
 		})
 		if err != nil {
-			slog.Error("app: Sentry initialization failed", "error", err)
+			logger.Error("sentry initialization failed", "error", err)
 		} else {
 			defer sentry.Flush(2 * time.Second)
 		}
 	} else {
-		slog.Info("app: Sentry disabled (no DSN provided)")
+		logger.Info("sentry disabled")
 	}
 
-	slog.Info("app: Selected", "models", cfg.LLM.Models)
+	logger.Info(
+		"selected models",
+		"text_request_model", cfg.LLM.Models.TextRequestModel,
+		"summarize_model", cfg.LLM.Models.SummarizeModel,
+		"image_recognition_model", cfg.LLM.Models.ImageRecognitionModel,
+	)
 
 	templateProcessor, err := llm.NewTemplateProcessor(cfg.LLM.Prompts)
 	if err != nil {
-		slog.Error("app: Failed to initialize template processor", "error", err)
+		logger.Error("failed to initialize template processor", "error", err)
 		sentry.CaptureException(err)
 
 		return err
 	}
 
-	llmc := llm.NewConnector(cfg.LLM, templateProcessor)
+	llmc := llm.NewConnector(cfg.LLM, templateProcessor, logManager.Logger("llm"))
 
-	slog.Info("app: Checking models availability")
+	logger.Info("checking models availability")
 
 	hasAll, searchResult := llmc.HasAllModels(ctx, cfg.LLM.Models)
 	if !hasAll {
-		slog.Error("app: Not all models are available", "result", searchResult)
+		logger.Error("required models are unavailable", "result", searchResult)
 		sentry.CaptureMessage("Not all models are available")
 
 		return fmt.Errorf("missing required models: %v", searchResult)
 	}
 
-	slog.Info("app: All needed models are available")
+	logger.Info("all required models are available")
 
-	ext := extractor.NewExtractor()
+	ext := extractor.NewExtractor(logManager.Logger("content/extractor"))
 
-	telegramAPI, err := tg.NewBot(cfg.Bot.Telegram.Token, tg.WithLogger(bot.NewLogger("telego: ")))
+	telegramAPI, err := tg.NewBot(cfg.Bot.Telegram.Token, tg.WithLogger(bot.NewLogger(
+		logManager.Logger("telegram/bot").With("source", "telego"),
+		cfg.Bot.Telegram.Token,
+	)))
 	if err != nil {
-		slog.Error("app: Telegram API initialization failed", "error", err)
+		logger.Error("telegram api initialization failed", "error", err)
 		sentry.CaptureException(err)
 
 		return err
 	}
 
 	sanitizer := markdown.NewTgMarkdownV2Sanitizer()
-	botService := bot.NewBot(ctx, telegramAPI, llmc, ext, sanitizer, bot.NewImageCache(), cfg.Bot)
+	botService := bot.NewBot(ctx, telegramAPI, llmc, ext, sanitizer, bot.NewImageCache(), cfg.Bot, logManager.Logger("telegram/bot"))
 
 	if err := botService.Run(); err != nil {
-		slog.Error("app: Running bot finished with an error", "error", err)
+		logger.Error("bot exited with error", "error", err)
 		sentry.CaptureMessage("Bot start error")
 
 		return err

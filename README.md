@@ -26,6 +26,7 @@ The bot can be configured using the following environment variables:
 | `LLM_UNCOMPRESSED_HISTORY_LIMIT` | Recent chat messages sent verbatim to LLM; older ones summarized. Set to `0` to disable summarization             | No       | 15                                         |
 | `LLM_HISTORY_SUMMARY_THRESHOLD`  | Extra messages beyond the limit before summarization triggers again                                               | No       | 5                                          |
 | `BOT_PROCESSING_TIMEOUT`         | Timeout for processing incoming requests (includes LLM calls). Accepts Go duration strings (e.g. `45s`, `1m30s`). | No       | `30s`                                      |
+| `LOG_LEVEL`                      | Structured log verbosity: `debug`, `info`, `warn`, or `error`                                                     | No       | `info`                                     |
 | `SENTRY_DSN`                     | Sentry DSN for error tracking                                                                                     | No       | empty                                      |
 | `RESPONSE_LANGUAGE`              | Language for bot responses                                                                                        | No       | Russian                                    |
 | `RESPONSE_GENDER`                | Gender for bot responses                                                                                          | No       | neutral                                    |
@@ -91,6 +92,7 @@ docker run \
   -e MODEL_IMAGE_RECOGNITION=gemma3:12b \
   -e BOT_HISTORY_LENGTH=150 \
   -e LLM_UNCOMPRESSED_HISTORY_LIMIT=15 \
+  -e LOG_LEVEL=info \
   -e SENTRY_DSN=https://your-sentry-dsn \
   -e BOT_ADMIN_IDS=123456789,987654321 \
   skobkin/telegram-llm-bot

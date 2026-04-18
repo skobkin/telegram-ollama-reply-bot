@@ -1,30 +1,35 @@
 package extractor
 
 import (
+	"context"
 	"log/slog"
+	"telegram-ollama-reply-bot/internal/logging"
 
 	"github.com/getsentry/sentry-go"
 	"github.com/go-shiori/go-readability"
 )
 
-type ReadabilityExtractor struct{}
-
-func NewReadabilityExtractor() *ReadabilityExtractor {
-	return &ReadabilityExtractor{}
+type ReadabilityExtractor struct {
+	logger *slog.Logger
 }
 
-func (e *ReadabilityExtractor) GetArticleFromURL(url string) (Article, error) {
-	slog.Info("readability-extractor: requested extraction from URL ", "url", url)
+func NewReadabilityExtractor(logger *slog.Logger) *ReadabilityExtractor {
+	return &ReadabilityExtractor{logger: logger}
+}
+
+func (e *ReadabilityExtractor) GetArticleFromURL(ctx context.Context, url string) (Article, error) {
+	logger := logging.FromContext(ctx, e.logger)
+	logger.Info("extracting article", "url", url)
 
 	article, err := readability.FromURL(url, ExtractionTimeout)
 	if err != nil {
-		slog.Error("readability-extractor: failed extracting from URL", "url", url)
+		logger.Warn("extraction failed", "url", url, "error", err)
 		sentry.CaptureException(err)
 
 		return Article{}, ErrExtractFailed
 	}
 
-	slog.Debug("readability-extractor: article extracted", "article", article)
+	logger.Debug("article extracted", "url", url, "text_length", len(article.TextContent))
 
 	return Article{
 		Title: article.Title,

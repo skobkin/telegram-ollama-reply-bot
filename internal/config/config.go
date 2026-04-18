@@ -9,9 +9,10 @@ import (
 
 // Config represents the root configuration structure
 type Config struct {
-	LLM    LLMConfig
-	Sentry SentryConfig
-	Bot    BotConfig
+	LLM     LLMConfig
+	Sentry  SentryConfig
+	Bot     BotConfig
+	Logging LoggingConfig
 }
 
 // LLMConfig contains configuration for the LLM connector
@@ -35,6 +36,11 @@ type PromptConfig struct {
 // SentryConfig contains configuration for Sentry error tracking
 type SentryConfig struct {
 	DSN string
+}
+
+// LoggingConfig contains configuration for structured logging
+type LoggingConfig struct {
+	Level string
 }
 
 // BotConfig contains configuration for bot settings
@@ -152,6 +158,9 @@ func Load() *Config {
 		},
 		Sentry: SentryConfig{
 			DSN: os.Getenv("SENTRY_DSN"),
+		},
+		Logging: LoggingConfig{
+			Level: getEnvOrDefault("LOG_LEVEL", "info"),
 		},
 		Bot: BotConfig{
 			HistoryLength: historyLength,

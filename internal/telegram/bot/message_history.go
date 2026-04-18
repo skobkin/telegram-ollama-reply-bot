@@ -1,7 +1,7 @@
 package bot
 
 import (
-	"log/slog"
+	"context"
 	"strings"
 
 	"github.com/getsentry/sentry-go"
@@ -95,16 +95,9 @@ func (b *Bot) saveChatMessageToHistory(msgData MessageData) {
 	b.history[chatID].Push(msgData)
 }
 
-func (b *Bot) saveBotReplyToHistory(replyTo t.Message, text string) {
+func (b *Bot) saveBotReplyToHistory(ctx context.Context, replyTo t.Message, text string) {
 	chatID := replyTo.Chat.ID
-
-	slog.Info(
-		"bot:history: saving bot reply",
-		"chat", chatID,
-		"to_id", replyTo.From.ID,
-		"to_name", replyTo.From.FirstName,
-		"text", text,
-	)
+	b.loggerFromContext(ctx).Debug("saving bot reply to history", "chat_id", chatID, "reply_length", len(text))
 
 	_, ok := b.history[chatID]
 	if !ok {
@@ -152,7 +145,7 @@ func (b *Bot) tgUserMessageToMessageData(message t.Message, isUserRequest bool) 
 	}
 
 	if len(message.Photo) > 0 {
-		slog.Debug("bot: message contains photo", "message_id", message.MessageID, "photo_sizes", len(message.Photo))
+		b.loggerFromContext(b.ctx).Debug("message contains photo", "message_id", message.MessageID, "photo_sizes", len(message.Photo))
 
 		msgData.HasImage = true
 		photo := message.Photo[len(message.Photo)-1]
@@ -176,7 +169,7 @@ func (b *Bot) tgUserMessageToMessageData(message t.Message, isUserRequest bool) 
 func (b *Bot) getChatHistory(chatID int64) []MessageData {
 	_, ok := b.history[chatID]
 	if !ok {
-		slog.Debug("bot: Chat ID not found in history", "chat_id", chatID)
+		b.loggerFromContext(b.ctx).Debug("chat history not found", "chat_id", chatID)
 
 		return make([]MessageData, 0)
 	}
@@ -187,16 +180,16 @@ func (b *Bot) getChatHistory(chatID int64) []MessageData {
 func (b *Bot) ResetChatHistory(chatID int64) {
 	_, ok := b.history[chatID]
 	if !ok {
-		slog.Debug("bot: Chat ID not found in history", "chat_id", chatID)
+		b.loggerFromContext(b.ctx).Debug("chat history not found", "chat_id", chatID)
 
 		return
 	}
 
-	slog.Info("bot: Resetting chat history", "chat_id", chatID)
+	b.loggerFromContext(b.ctx).Info("resetting chat history", "chat_id", chatID)
 	b.history[chatID] = NewMessageHistory(b.cfg.HistoryLength)
 }
 
-func (b *Bot) maybeSummarizeHistory(chatID int64) {
+func (b *Bot) maybeSummarizeHistory(ctx context.Context, chatID int64) {
 	mh, ok := b.history[chatID]
 	if !ok {
 		return
@@ -226,10 +219,10 @@ func (b *Bot) maybeSummarizeHistory(chatID int64) {
 		return
 	}
 
-	ctx, cancel := b.withProcessingDeadline(b.ctx)
+	workCtx, cancel := b.withProcessingDeadline(ctx)
 	defer cancel()
 
-	b.ensureHistoryMessagesImageDescriptions(ctx, chatID)
+	b.ensureHistoryMessagesImageDescriptions(workCtx, chatID)
 
 	text := historyToPlainText(slice)
 
@@ -239,9 +232,9 @@ func (b *Bot) maybeSummarizeHistory(chatID int64) {
 		text = "Earlier conversation summary:\n" + mh.earlierSummary.Text + "\n\nRecent messages:\n" + text
 	}
 
-	summary, usage, err := b.llm.Summarize(ctx, text, "")
+	summary, usage, err := b.llm.Summarize(workCtx, text, "")
 	if err != nil {
-		slog.Error("bot: failed to summarize history", "error", err, "chat", chatID)
+		b.loggerFromContext(workCtx).Error("failed to summarize history", "error", err, "chat_id", chatID)
 		sentry.CaptureException(err)
 
 		return

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"slices"
 	"telegram-ollama-reply-bot/internal/config"
+	"telegram-ollama-reply-bot/internal/logging"
 
 	"encoding/base64"
+
+	"log/slog"
 
 	"github.com/getsentry/sentry-go"
 	"github.com/sashabaranov/go-openai"
@@ -24,6 +26,7 @@ type Connector struct {
 	client            *openai.Client
 	cfg               config.LLMConfig
 	templateProcessor *TemplateProcessor
+	logger            *slog.Logger
 }
 
 type TokenUsage struct {
@@ -33,7 +36,7 @@ type TokenUsage struct {
 	Cost             float64
 }
 
-func NewConnector(cfg config.LLMConfig, templateProcessor *TemplateProcessor) *Connector {
+func NewConnector(cfg config.LLMConfig, templateProcessor *TemplateProcessor, logger *slog.Logger) *Connector {
 	clientCfg := openai.DefaultConfig(cfg.APIToken)
 	clientCfg.BaseURL = cfg.APIBaseURL
 
@@ -43,13 +46,16 @@ func NewConnector(cfg config.LLMConfig, templateProcessor *TemplateProcessor) *C
 		client:            client,
 		cfg:               cfg,
 		templateProcessor: templateProcessor,
+		logger:            logger,
 	}
 }
 
 func (l *Connector) HandleChatMessage(ctx context.Context, userMessage ChatMessage, requestContext RequestContext) (string, *TokenUsage, error) {
+	logger := logging.FromContext(ctx, l.logger)
+
 	systemPrompt, err := l.templateProcessor.ProcessChatTemplate(l.cfg.Models.TextRequestModel, requestContext.Prompt())
 	if err != nil {
-		slog.Error("llm: Template processing failed", "error", err)
+		logger.Error("chat template processing failed", "error", err)
 		sentry.CaptureException(err)
 
 		return "", nil, ErrTemplateProcessing
@@ -85,16 +91,23 @@ func (l *Connector) HandleChatMessage(ctx context.Context, userMessage ChatMessa
 
 	resp, err := l.client.CreateChatCompletion(ctx, req)
 	if err != nil {
-		slog.Error("llm: LLM back-end request failed", "error", err)
+		logger.Error("chat completion request failed", "error", err, "model", req.Model, "history_messages", len(history))
 		sentry.CaptureException(err)
 
 		return "", nil, errors.Join(ErrLlmBackendRequestFailed, err)
 	}
 
-	slog.Debug("llm: Received LLM back-end response", "response", resp)
+	logger.Debug(
+		"chat completion received",
+		"model", req.Model,
+		"choices", len(resp.Choices),
+		"prompt_tokens", resp.Usage.PromptTokens,
+		"completion_tokens", resp.Usage.CompletionTokens,
+		"total_tokens", resp.Usage.TotalTokens,
+	)
 
 	if len(resp.Choices) < 1 {
-		slog.Error("llm: LLM back-end reply has no choices")
+		logger.Error("chat completion has no choices", "model", req.Model)
 		sentry.CaptureMessage("LLM back-end reply has no choices")
 
 		return "", nil, ErrNoChoices
@@ -110,9 +123,11 @@ func (l *Connector) HandleChatMessage(ctx context.Context, userMessage ChatMessa
 }
 
 func (l *Connector) Summarize(ctx context.Context, text string, instructions string) (string, *TokenUsage, error) {
+	logger := logging.FromContext(ctx, l.logger)
+
 	systemPrompt, err := l.templateProcessor.ProcessSummarizeTemplate()
 	if err != nil {
-		slog.Error("llm: Template processing failed", "error", err)
+		logger.Error("summarize template processing failed", "error", err)
 		sentry.CaptureException(err)
 
 		return "", nil, ErrTemplateProcessing
@@ -139,16 +154,23 @@ func (l *Connector) Summarize(ctx context.Context, text string, instructions str
 
 	resp, err := l.client.CreateChatCompletion(ctx, req)
 	if err != nil {
-		slog.Error("llm: LLM back-end request failed", "error", err)
+		logger.Error("summarize request failed", "error", err, "model", req.Model, "text_length", len(text), "has_instructions", instructions != "")
 		sentry.CaptureException(err)
 
 		return "", nil, errors.Join(ErrLlmBackendRequestFailed, err)
 	}
 
-	slog.Debug("llm: Received LLM back-end response", "response", resp)
+	logger.Debug(
+		"summarize completion received",
+		"model", req.Model,
+		"choices", len(resp.Choices),
+		"prompt_tokens", resp.Usage.PromptTokens,
+		"completion_tokens", resp.Usage.CompletionTokens,
+		"total_tokens", resp.Usage.TotalTokens,
+	)
 
 	if len(resp.Choices) < 1 {
-		slog.Error("llm: LLM back-end reply has no choices")
+		logger.Error("summarize completion has no choices", "model", req.Model)
 		sentry.CaptureMessage("LLM back-end reply has no choices")
 
 		return "", nil, ErrNoChoices
@@ -164,18 +186,19 @@ func (l *Connector) Summarize(ctx context.Context, text string, instructions str
 }
 
 func (l *Connector) HasAllModels(ctx context.Context, models config.ModelSelection) (bool, map[string]bool) {
+	logger := logging.FromContext(ctx, l.logger)
+
 	modelList, err := l.client.ListModels(ctx)
 	if err != nil {
-		slog.Error("llm: Model list request failed", "error", err)
+		logger.Error("model list request failed", "error", err)
 		sentry.CaptureException(err)
 
 		return false, map[string]bool{}
 	}
 
 	modelIDs := []string{models.TextRequestModel, models.SummarizeModel}
-	slog.Info("llm: Returned models count", "count", len(modelList.Models))
-	slog.Debug("llm: Returned model list", "models", modelList)
-	slog.Info("llm: Checking for requested models", "requested", modelIDs)
+	logger.Info("received model list", "count", len(modelList.Models))
+	logger.Debug("checking requested models", "requested", modelIDs)
 
 	requestedModelsCount := len(modelIDs)
 	searchResult := make(map[string]bool, requestedModelsCount)
@@ -200,9 +223,11 @@ func (l *Connector) HasAllModels(ctx context.Context, models config.ModelSelecti
 }
 
 func (l *Connector) RecognizeImage(ctx context.Context, imageData []byte) (string, *TokenUsage, error) {
+	logger := logging.FromContext(ctx, l.logger)
+
 	systemPrompt, err := l.templateProcessor.ProcessImageRecognitionTemplate()
 	if err != nil {
-		slog.Error("llm: Template processing failed", "error", err)
+		logger.Error("image recognition template processing failed", "error", err)
 		sentry.CaptureException(err)
 
 		return "", nil, ErrTemplateProcessing
@@ -236,14 +261,14 @@ func (l *Connector) RecognizeImage(ctx context.Context, imageData []byte) (strin
 
 	resp, err := l.client.CreateChatCompletion(ctx, req)
 	if err != nil {
-		slog.Error("llm: LLM back-end request failed", "error", err)
+		logger.Error("image recognition request failed", "error", err, "model", req.Model, "image_bytes", len(imageData))
 		sentry.CaptureException(err)
 
 		return "", nil, errors.Join(ErrLlmBackendRequestFailed, err)
 	}
 
 	if len(resp.Choices) < 1 {
-		slog.Error("llm: LLM back-end reply has no choices")
+		logger.Error("image recognition completion has no choices", "model", req.Model)
 		sentry.CaptureMessage("LLM back-end reply has no choices")
 
 		return "", nil, ErrNoChoices

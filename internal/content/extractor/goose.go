@@ -3,27 +3,31 @@ package extractor
 import (
 	"context"
 	"log/slog"
+	"telegram-ollama-reply-bot/internal/logging"
 
 	goose "github.com/advancedlogic/GoOse"
 	"github.com/getsentry/sentry-go"
 )
 
 type GoOseExtractor struct {
-	goose *goose.Goose
+	goose  *goose.Goose
+	logger *slog.Logger
 }
 
-func NewGoOseExtractor() *GoOseExtractor {
+func NewGoOseExtractor(logger *slog.Logger) *GoOseExtractor {
 	gooseExtractor := goose.New()
 
 	return &GoOseExtractor{
-		goose: &gooseExtractor,
+		goose:  &gooseExtractor,
+		logger: logger,
 	}
 }
 
-func (e *GoOseExtractor) GetArticleFromURL(url string) (Article, error) {
-	slog.Info("goose-extractor: requested extraction from URL ", "url", url)
+func (e *GoOseExtractor) GetArticleFromURL(ctx context.Context, url string) (Article, error) {
+	logger := logging.FromContext(ctx, e.logger)
+	logger.Info("extracting article", "url", url)
 
-	ctx, cancel := context.WithTimeout(context.Background(), ExtractionTimeout)
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), ExtractionTimeout)
 	defer cancel()
 
 	resultChan := make(chan struct {
@@ -42,21 +46,21 @@ func (e *GoOseExtractor) GetArticleFromURL(url string) (Article, error) {
 	select {
 	case result := <-resultChan:
 		if result.err != nil {
-			slog.Error("goose-extractor: failed extracting from URL", "url", url)
+			logger.Warn("extraction failed", "url", url, "error", result.err)
 			sentry.CaptureException(result.err)
 
 			return Article{}, ErrExtractFailed
 		}
 
-		slog.Debug("goose-extractor: article extracted", "article", result.article)
+		logger.Debug("article extracted", "url", url, "text_length", len(result.article.CleanedText))
 
 		return Article{
 			Title: result.article.Title,
 			Text:  result.article.CleanedText,
 			URL:   result.article.FinalURL,
 		}, nil
-	case <-ctx.Done():
-		slog.Error("goose-extractor: extraction timed out", "url", url)
+	case <-timeoutCtx.Done():
+		logger.Error("extraction timed out", "url", url, "timeout", ExtractionTimeout.String())
 		sentry.CaptureMessage("Article extraction timed out")
 
 		return Article{}, ErrExtractFailed

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"telegram-ollama-reply-bot/internal/logging"
 	"time"
 
 	"github.com/getsentry/sentry-go"
@@ -43,12 +44,21 @@ func (b *Bot) handlerContext(handlerCtx *th.Context) context.Context {
 	return b.ctx
 }
 
+func (b *Bot) loggerFromContext(ctx context.Context) *slog.Logger {
+	return logging.FromContext(ctx, b.logger)
+}
+
+func (b *Bot) handlerLogger(ctx *th.Context) *slog.Logger {
+	return b.loggerFromContext(b.handlerContext(ctx))
+}
+
 func (b *Bot) sendTyping(ctx context.Context, chatID t.ChatID) {
-	slog.Debug("bot: Setting 'typing' chat action")
+	logger := b.loggerFromContext(ctx)
+	logger.Debug("setting typing chat action", "chat_id", chatID)
 
 	err := b.api.SendChatAction(ctx, tu.ChatAction(chatID, "typing"))
 	if err != nil {
-		slog.Error("bot: Cannot set chat action", "error", err)
+		logger.Error("cannot set chat action", "error", err, "chat_id", chatID)
 		sentry.CaptureException(err)
 	}
 }
@@ -138,12 +148,12 @@ func (b *Bot) ensureMessageImageDescription(ctx context.Context, msg *MessageDat
 		} else {
 			description, err := b.describeImage(ctx, msg.ImageMeta)
 			if err != nil {
-				slog.Error("bot: Failed to describe image", "error", err, "file_id", msg.ImageMeta.FileID)
+				b.loggerFromContext(ctx).Error("failed to describe image", "error", err, "file_id", msg.ImageMeta.FileID)
 				sentry.CaptureException(err)
 			} else {
 				b.imageCache.Set(msg.ImageMeta, description)
 				msg.Image = description
-				slog.Debug("bot: Image described", "file_id", msg.ImageMeta.FileID, "description", description)
+				b.loggerFromContext(ctx).Debug("image described", "file_id", msg.ImageMeta.FileID, "description_length", len(description))
 			}
 		}
 	}
@@ -237,15 +247,12 @@ func (b *Bot) isPrivateWithMe(message t.Message) bool {
 func isValidAndAllowedURL(text string) bool {
 	u, err := url.ParseRequestURI(text)
 	if err != nil {
-		slog.Debug("bot: Provided text is not an URL", "text", text)
 		sentry.CaptureException(err)
 
 		return false
 	}
 
 	if !slices.Contains(allowedURLSchemes, strings.ToLower(u.Scheme)) {
-		slog.Debug("bot: Provided URL has disallowed scheme", "scheme", u.Scheme, "allowed-schemes", allowedURLSchemes)
-
 		return false
 	}
 
@@ -342,7 +349,7 @@ func (b *Bot) describeImage(ctx context.Context, imageMeta *ImageMeta) (string, 
 		b.stats.AddUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.Cost)
 	}
 
-	slog.Debug("bot: Image recognized", "file_id", imageMeta.FileID, "description", description)
+	b.loggerFromContext(ctx).Debug("image recognized", "file_id", imageMeta.FileID, "image_bytes", len(fileBytes), "description_length", len(description))
 
 	return description, nil
 }
@@ -380,14 +387,14 @@ func (b *Bot) getMessageDataFromRequestContextOrCreate(ctx *th.Context, message 
 	if msgData, ok := ctx.Value(requestContextMessageDataKey).(MessageData); ok {
 		msgData.IsUserRequest = isUserRequest
 		b.ensureMessageImageDescription(b.handlerContext(ctx), &msgData)
-		slog.Debug("bot: Message data retrieved from context", "message_data", msgData)
+		b.handlerLogger(ctx).Debug("message data retrieved from request context", "has_image", msgData.HasImage)
 
 		return msgData
 	}
 
 	msgData := b.tgUserMessageToMessageData(message, isUserRequest)
 	b.ensureMessageImageDescription(b.handlerContext(ctx), &msgData)
-	slog.Debug("bot: Message data created from message on the fly", "message_data", msgData)
+	b.handlerLogger(ctx).Debug("message data created on the fly", "has_image", msgData.HasImage)
 
 	return msgData
 }
