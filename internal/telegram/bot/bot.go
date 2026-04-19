@@ -8,13 +8,13 @@ import (
 	"strconv"
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
+	"telegram-ollama-reply-bot/internal/chatreply"
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/content/extractor"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/llmcontext"
 	"telegram-ollama-reply-bot/internal/state"
 	"telegram-ollama-reply-bot/internal/support/markdown"
-	"telegram-ollama-reply-bot/internal/tooluse"
 
 	"github.com/getsentry/sentry-go"
 	t "github.com/mymmrac/telego"
@@ -45,7 +45,7 @@ type Bot struct {
 	replyCtx   *llmcontext.ReplyBuilder
 	logger     *slog.Logger
 	admin      *adminconfig.Service
-	tools      *tooluse.Runtime
+	replier    *chatreply.Service
 }
 
 func NewBot(
@@ -59,7 +59,7 @@ func NewBot(
 	stats state.StatsStore,
 	cfg config.BotConfig,
 	admin *adminconfig.Service,
-	tools *tooluse.Runtime,
+	replier *chatreply.Service,
 	logger *slog.Logger,
 ) *Bot {
 	if history == nil {
@@ -70,6 +70,9 @@ func NewBot(
 	}
 	if stats == nil {
 		panic("stats store is required")
+	}
+	if replier == nil {
+		panic("chat replier is required")
 	}
 
 	bot := &Bot{
@@ -85,7 +88,7 @@ func NewBot(
 		imageCache: imageCache,
 		logger:     logger,
 		admin:      admin,
-		tools:      tools,
+		replier:    replier,
 	}
 
 	bot.replyCtx = llmcontext.NewReplyBuilder(history, bot.hydrateMessagesWithImageDescriptions)
@@ -277,19 +280,14 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 		llmCtx, cancel := b.withProcessingDeadline(ctx)
 		defer cancel()
 
-		var llmErr error
-		if b.tools != nil {
-			llmReply, usage, llmErr = b.tools.HandleChatMessage(llmCtx, tooluse.ChatRequest{
-				Scope:          scopeFromMessage(message),
-				PromptScope:    llm.PromptScope{ChatID: message.Chat.ID},
-				ReplyContext:   requestContext,
-				RequestMessage: userMessageData,
-			})
-		} else {
-			llmReply, usage, llmErr = b.llm.HandleChatMessage(llmCtx, llm.PromptScope{ChatID: message.Chat.ID}, requestContext)
-		}
+		llmReply, usage, err = b.replier.HandleChatMessage(llmCtx, chatreply.Request{
+			Scope:          scopeFromMessage(message),
+			PromptScope:    llm.PromptScope{ChatID: message.Chat.ID},
+			ReplyContext:   requestContext,
+			RequestMessage: userMessageData,
+		})
 
-		return llmErr
+		return err
 	})
 	if err != nil {
 		if errors.Is(err, ErrRequestTimeout) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"telegram-ollama-reply-bot/internal/adminconfig"
+	"telegram-ollama-reply-bot/internal/chatreply"
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/content/extractor"
 	"telegram-ollama-reply-bot/internal/llm"
@@ -119,6 +120,7 @@ func Run(ctx context.Context) error {
 		logManager.Logger("tooluse"),
 		tooluse.Config{MaxIterations: cfg.LLM.ToolLoopMaxIterations},
 	)
+	replier := chatreply.New(llmc, tools)
 	botService := bot.NewBot(
 		ctx,
 		telegramAPI,
@@ -130,7 +132,7 @@ func Run(ctx context.Context) error {
 		stores.Stats(),
 		cfg.Bot,
 		adminService,
-		tools,
+		replier,
 		logManager.Logger("telegram/bot"),
 	)
 

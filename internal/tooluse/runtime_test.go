@@ -21,10 +21,7 @@ import (
 type stubLLM struct {
 	buildErr        error
 	generateErr     error
-	fallbackReply   string
-	fallbackUsage   *llm.TokenUsage
 	buildCount      int
-	fallbackCount   int
 	responses       []llm.Response
 	lastBuildPolicy string
 	lastBuildTools  []llm.ToolDefinition
@@ -59,12 +56,6 @@ func (s *stubLLM) Generate(_ context.Context, req llm.Request) (llm.Response, er
 	return resp, nil
 }
 
-func (s *stubLLM) HandleChatMessage(context.Context, llm.PromptScope, llm.ChatReplyContext) (string, *llm.TokenUsage, error) {
-	s.fallbackCount++
-
-	return s.fallbackReply, s.fallbackUsage, nil
-}
-
 type stubExtractor struct {
 	article extractor.Article
 	err     error
@@ -86,9 +77,9 @@ func (s *stubPollSender) SendPoll(_ context.Context, params *tg.SendPollParams) 
 	return s.message, s.err
 }
 
-func TestRuntimeFallsBackToChatWhenToolUseGenerateFailsImmediately(t *testing.T) {
+func TestRuntimeReturnsUnavailableWhenToolUseGenerateFailsImmediately(t *testing.T) {
 	runtime := New(
-		&stubLLM{generateErr: errors.New("boom"), fallbackReply: "fallback", fallbackUsage: &llm.TokenUsage{TotalTokens: 5}},
+		&stubLLM{generateErr: errors.New("boom")},
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
 		&stubPollSender{},
@@ -96,19 +87,19 @@ func TestRuntimeFallsBackToChatWhenToolUseGenerateFailsImmediately(t *testing.T)
 		Config{MaxIterations: 6},
 	)
 
-	reply, usage, err := runtime.HandleChatMessage(context.Background(), ChatRequest{
+	reply, usage, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
 		Scope:        state.ConversationScope{ChatID: 1},
 		PromptScope:  llm.PromptScope{ChatID: 1},
 		ReplyContext: llm.ChatReplyContext{UserMessage: llm.TextMessage(llm.RoleUser, "hi")},
 	})
-	if err != nil {
-		t.Fatalf("HandleChatMessage() error = %v", err)
+	if !errors.Is(err, ErrToolUseUnavailable) {
+		t.Fatalf("expected ErrToolUseUnavailable, got %v", err)
 	}
-	if reply != "fallback" {
-		t.Fatalf("unexpected fallback reply: %q", reply)
+	if reply != "" {
+		t.Fatalf("unexpected reply: %q", reply)
 	}
-	if usage == nil || usage.TotalTokens != 5 {
-		t.Fatalf("unexpected fallback usage: %+v", usage)
+	if usage != nil {
+		t.Fatalf("unexpected usage: %+v", usage)
 	}
 }
 
@@ -142,14 +133,14 @@ func TestRuntimeExecutesToolCallsAndReturnsFinalReply(t *testing.T) {
 		Config{MaxIterations: 6},
 	)
 
-	reply, usage, err := runtime.HandleChatMessage(context.Background(), ChatRequest{
+	reply, usage, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
 		Scope:          state.ConversationScope{ChatID: 1},
 		PromptScope:    llm.PromptScope{ChatID: 1},
 		ReplyContext:   llm.ChatReplyContext{UserMessage: llm.TextMessage(llm.RoleUser, "what was planned?")},
 		RequestMessage: state.Message{FromID: 11},
 	})
 	if err != nil {
-		t.Fatalf("HandleChatMessage() error = %v", err)
+		t.Fatalf("ReplyWithTools() error = %v", err)
 	}
 	if reply != "Found it" {
 		t.Fatalf("unexpected reply: %q", reply)
@@ -184,7 +175,7 @@ func TestRuntimeRespectsConfiguredIterationLimit(t *testing.T) {
 		Config{MaxIterations: 1},
 	)
 
-	_, _, err := runtime.HandleChatMessage(context.Background(), ChatRequest{
+	_, _, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
 		Scope:        state.ConversationScope{ChatID: 1},
 		PromptScope:  llm.PromptScope{ChatID: 1},
 		ReplyContext: llm.ChatReplyContext{UserMessage: llm.TextMessage(llm.RoleUser, "hi")},

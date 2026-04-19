@@ -2,12 +2,10 @@ package tooluse
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
-	"unicode/utf8"
 
 	"telegram-ollama-reply-bot/internal/content/extractor"
 	"telegram-ollama-reply-bot/internal/llm"
@@ -18,13 +16,11 @@ import (
 )
 
 var ErrToolLoopLimitReached = errors.New("tool loop iteration limit reached")
-
-const defaultToolResultBudget = 1800
+var ErrToolUseUnavailable = errors.New("tool use is unavailable")
 
 type llmService interface {
 	BuildToolUseRequest(ctx context.Context, scope llm.PromptScope, requestContext llm.ChatReplyContext, tools []llm.ToolDefinition, toolPolicy string, extraMessages []llm.Message) (llm.Request, error)
 	Generate(ctx context.Context, req llm.Request) (llm.Response, error)
-	HandleChatMessage(ctx context.Context, scope llm.PromptScope, requestContext llm.ChatReplyContext) (string, *llm.TokenUsage, error)
 }
 
 type PollSender interface {
@@ -73,7 +69,7 @@ func New(llmService llmService, history state.ConversationStore, extractor extra
 	return runtime
 }
 
-func (r *Runtime) HandleChatMessage(ctx context.Context, req ChatRequest) (string, *llm.TokenUsage, error) {
+func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (string, *llm.TokenUsage, error) {
 	logger := logging.FromContext(ctx, r.logger)
 	definitions := r.registry.DefaultDefinitions()
 	modelTools := toLLMToolDefinitions(definitions)
@@ -89,9 +85,9 @@ func (r *Runtime) HandleChatMessage(ctx context.Context, req ChatRequest) (strin
 		request, err := r.llm.BuildToolUseRequest(ctx, req.PromptScope, req.ReplyContext, modelTools, toolPolicy, extraMessages)
 		if err != nil {
 			if !started {
-				logger.Warn("tool-use request preparation failed, falling back to chat", "error", err)
+				logger.Warn("tool-use request preparation failed", "error", err)
 
-				return r.llm.HandleChatMessage(ctx, req.PromptScope, req.ReplyContext)
+				return "", nil, errors.Join(ErrToolUseUnavailable, err)
 			}
 
 			return "", usagePointer(totalUsage), err
@@ -100,9 +96,9 @@ func (r *Runtime) HandleChatMessage(ctx context.Context, req ChatRequest) (strin
 		resp, err := r.llm.Generate(ctx, request)
 		if err != nil {
 			if !started {
-				logger.Warn("tool-use backend failed, falling back to chat", "error", err)
+				logger.Warn("tool-use backend failed", "error", err)
 
-				return r.llm.HandleChatMessage(ctx, req.PromptScope, req.ReplyContext)
+				return "", nil, errors.Join(ErrToolUseUnavailable, err)
 			}
 
 			return "", usagePointer(totalUsage), err
@@ -119,6 +115,9 @@ func (r *Runtime) HandleChatMessage(ctx context.Context, req ChatRequest) (strin
 			return resp.Message.Text(), usagePointer(totalUsage), nil
 		}
 
+		// Preserve the assistant tool-call message and the corresponding tool outputs.
+		// Backends such as OpenAI-style APIs use that pairing to associate tool results
+		// with specific tool call IDs on subsequent turns.
 		extraMessages = append(extraMessages, resp.Message)
 
 		for _, call := range resp.Message.ToolCalls {
@@ -139,7 +138,7 @@ func (r *Runtime) executeToolCall(ctx context.Context, req ChatRequest, call llm
 		return toolResponseMessage(call.ID, marshalResult(toolResult{
 			Status: "error",
 			Error:  fmt.Sprintf("unknown tool %q", call.Name),
-		}, defaultToolResultBudget))
+		}, defaultToolResultCharBudget))
 	}
 
 	logger.Info(
@@ -147,7 +146,6 @@ func (r *Runtime) executeToolCall(ctx context.Context, req ChatRequest, call llm
 		"tool_name", definition.Name,
 		"tool_call_id", call.ID,
 		"invocation_policy", definition.InvocationPolicy,
-		"implementation_status", definition.ImplementationStatus,
 		"request_id", logging.RequestIDFromContext(ctx),
 	)
 
@@ -165,7 +163,7 @@ func (r *Runtime) executeToolCall(ctx context.Context, req ChatRequest, call llm
 		}
 	}
 
-	return toolResponseMessage(call.ID, marshalResult(result, definition.ResultBudget))
+	return toolResponseMessage(call.ID, marshalResult(result, definition.ResultCharBudget))
 }
 
 func toolResponseMessage(toolCallID, text string) llm.Message {
@@ -194,7 +192,6 @@ func toLLMToolDefinitions(definitions []Definition) []llm.ToolDefinition {
 func buildToolPolicy(definitions []Definition) string {
 	discretionary := make([]string, 0, len(definitions))
 	explicitOnly := make([]string, 0, len(definitions))
-	stubs := make([]string, 0, len(definitions))
 
 	for _, definition := range definitions {
 		line := fmt.Sprintf("- %s: %s", definition.Name, definition.Description)
@@ -203,10 +200,6 @@ func buildToolPolicy(definitions []Definition) string {
 			discretionary = append(discretionary, line)
 		default:
 			explicitOnly = append(explicitOnly, line)
-		}
-
-		if definition.ImplementationStatus == ImplementationStatusStub {
-			stubs = append(stubs, fmt.Sprintf("- %s currently returns a structured not_implemented result.", definition.Name))
 		}
 	}
 
@@ -217,46 +210,6 @@ func buildToolPolicy(definitions []Definition) string {
 	if len(explicitOnly) > 0 {
 		sections = append(sections, "Explicit-request-only tools: use these only when the user clearly asks for that action or lookup.\n"+strings.Join(explicitOnly, "\n"))
 	}
-	if len(stubs) > 0 {
-		sections = append(sections, "Stub tools:\n"+strings.Join(stubs, "\n"))
-	}
 
 	return strings.Join(sections, "\n\n")
-}
-
-func marshalResult(result toolResult, budget int) string {
-	if budget <= 0 {
-		budget = defaultToolResultBudget
-	}
-
-	data, err := json.Marshal(result)
-	if err != nil {
-		data = []byte(`{"status":"error","error":"failed to serialize tool result"}`)
-	}
-
-	return truncateUTF8(string(data), budget)
-}
-
-func truncateUTF8(text string, limit int) string {
-	if limit <= 0 || utf8.RuneCountInString(text) <= limit {
-		return text
-	}
-
-	runes := []rune(text)
-	if limit <= 1 {
-		return string(runes[:limit])
-	}
-
-	return string(runes[:limit-1]) + "…"
-}
-
-func accumulateUsage(total *llm.TokenUsage, next llm.TokenUsage) {
-	total.PromptTokens += next.PromptTokens
-	total.CompletionTokens += next.CompletionTokens
-	total.TotalTokens += next.TotalTokens
-	total.Cost += next.Cost
-}
-
-func usagePointer(usage llm.TokenUsage) *llm.TokenUsage {
-	return &usage
 }
