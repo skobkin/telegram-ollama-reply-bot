@@ -1,5 +1,50 @@
 # Upgrade Notes
 
+## 2026-04-19 - Conversational tool calling introduced for ordinary chat
+
+### Tool-Use Route
+
+`LLM_FEATURE_TOOL_USE_BACKEND` and `LLM_FEATURE_TOOL_USE_MODEL` now control a real conversational tool-calling path for ordinary chat replies.
+
+If the route is configured and supported by the backend, free-form chat replies may use tools before responding. If tool use is unavailable, the bot falls back to the normal chat route.
+
+`/summarize` remains on the existing direct extractor-plus-summary workflow.
+
+### Tool Loop Config
+
+New environment variable:
+
+- `LLM_TOOL_LOOP_MAX_ITERATIONS`
+
+Default: `6`
+
+This controls how many model-tool iterations one ordinary chat reply may use before the request stops.
+
+### Prompt Features
+
+New prompt feature:
+
+- `tool_use`
+
+It is stored in SQLite alongside the existing prompt templates and can be managed from admin DMs through the existing prompt commands.
+
+### First Tool Slice
+
+The first conversational tool set includes:
+
+- `fetch_url_content`
+- `search_recent_history`
+- `get_conversation_summary`
+- `create_poll`
+
+Reminder tools are also exposed to the model:
+
+- `list_chat_schedule`
+- `add_schedule_item`
+- `remove_schedule_item`
+
+These reminder tools are currently scaffolding only and return structured `not_implemented` results until scheduling and persistence are implemented.
+
 ## 2026-04-19 - SQLite-backed admin config and DM control introduced
 
 ### Persistent Store Path

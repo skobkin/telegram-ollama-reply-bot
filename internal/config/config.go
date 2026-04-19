@@ -25,8 +25,9 @@ const (
 
 // LLMConfig contains configuration for the LLM service.
 type LLMConfig struct {
-	Backends BackendConfig
-	Features FeatureConfig
+	Backends              BackendConfig
+	Features              FeatureConfig
+	ToolLoopMaxIterations int
 }
 
 // SentryConfig contains configuration for Sentry error tracking.
@@ -119,6 +120,7 @@ func Load() *Config {
 	imageRecognitionModel := getEnvOrDefault("LLM_FEATURE_IMAGE_RECOGNITION_MODEL", chatModel)
 	toolUseBackend := getEnvOrDefault("LLM_FEATURE_TOOL_USE_BACKEND", chatBackend)
 	toolUseModel := getEnvOrDefault("LLM_FEATURE_TOOL_USE_MODEL", chatModel)
+	toolLoopMaxIterations := intFromEnv("LLM_TOOL_LOOP_MAX_ITERATIONS", 6)
 
 	return &Config{
 		LLM: LLMConfig{
@@ -149,6 +151,7 @@ func Load() *Config {
 					Model:   toolUseModel,
 				},
 			},
+			ToolLoopMaxIterations: toolLoopMaxIterations,
 		},
 		Sentry: SentryConfig{
 			DSN: os.Getenv("SENTRY_DSN"),

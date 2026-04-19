@@ -25,6 +25,7 @@ const (
 	PromptFeatureChat             PromptFeature = "chat"
 	PromptFeatureSummarize        PromptFeature = "summarize"
 	PromptFeatureImageRecognition PromptFeature = "image_recognition"
+	PromptFeatureToolUse          PromptFeature = "tool_use"
 )
 
 type GlobalSettings struct {

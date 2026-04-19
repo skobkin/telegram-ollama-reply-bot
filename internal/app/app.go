@@ -12,6 +12,7 @@ import (
 	"telegram-ollama-reply-bot/internal/state/memory"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/telegram/bot"
+	"telegram-ollama-reply-bot/internal/tooluse"
 	"time"
 
 	"github.com/getsentry/sentry-go"
@@ -110,6 +111,14 @@ func Run(ctx context.Context) error {
 	}
 
 	sanitizer := markdown.NewTgMarkdownV2Sanitizer()
+	tools := tooluse.New(
+		llmc,
+		stores.Conversations(),
+		ext,
+		telegramAPI,
+		logManager.Logger("tooluse"),
+		tooluse.Config{MaxIterations: cfg.LLM.ToolLoopMaxIterations},
+	)
 	botService := bot.NewBot(
 		ctx,
 		telegramAPI,
@@ -121,6 +130,7 @@ func Run(ctx context.Context) error {
 		stores.Stats(),
 		cfg.Bot,
 		adminService,
+		tools,
 		logManager.Logger("telegram/bot"),
 	)
 

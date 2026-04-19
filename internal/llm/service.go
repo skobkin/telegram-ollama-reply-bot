@@ -100,27 +100,11 @@ func (s *Service) Generate(ctx context.Context, req Request) (Response, error) {
 
 func (s *Service) HandleChatMessage(ctx context.Context, scope PromptScope, requestContext ChatReplyContext) (string, *TokenUsage, error) {
 	logger := logging.FromContext(ctx, s.logger)
-	route, err := s.cfg.RouteForFeature(string(FeatureChat))
+
+	messages, err := s.buildConversationMessages(ctx, scope, FeatureChat, requestContext, "")
 	if err != nil {
-		return "", nil, errors.Join(ErrFeatureRouteInvalid, err)
+		return "", nil, err
 	}
-
-	systemPrompt, err := s.prompts.RenderChatSystemPrompt(ctx, scope, route.Model, requestContext.SystemHint)
-	if err != nil {
-		logger.Error("chat template processing failed", "error", err)
-		sentry.CaptureException(err)
-
-		return "", nil, ErrTemplateProcessing
-	}
-
-	messages := []Message{TextMessage(RoleSystem, systemPrompt)}
-
-	if requestContext.EarlierSummary != "" {
-		messages = append(messages, TextMessage(RoleSystem, "[Earlier conversation summary: "+requestContext.EarlierSummary+"]"))
-	}
-
-	messages = append(messages, requestContext.History...)
-	messages = append(messages, requestContext.UserMessage)
 
 	resp, err := s.Generate(ctx, Request{
 		Feature:  FeatureChat,
@@ -140,6 +124,28 @@ func (s *Service) HandleChatMessage(ctx context.Context, scope PromptScope, requ
 	usage := resp.Usage
 
 	return resp.Message.Text(), &usage, nil
+}
+
+func (s *Service) BuildToolUseRequest(
+	ctx context.Context,
+	scope PromptScope,
+	requestContext ChatReplyContext,
+	tools []ToolDefinition,
+	toolPolicy string,
+	extraMessages []Message,
+) (Request, error) {
+	messages, err := s.buildConversationMessages(ctx, scope, FeatureToolUse, requestContext, toolPolicy)
+	if err != nil {
+		return Request{}, err
+	}
+
+	messages = append(messages, extraMessages...)
+
+	return Request{
+		Feature:  FeatureToolUse,
+		Messages: messages,
+		Tools:    tools,
+	}, nil
 }
 
 func (s *Service) Summarize(ctx context.Context, scope PromptScope, text string, instructions string) (string, *TokenUsage, error) {
@@ -271,6 +277,45 @@ func (s *Service) HasAllModels(ctx context.Context) (bool, map[string]bool) {
 	}
 
 	return true, result
+}
+
+func (s *Service) buildConversationMessages(ctx context.Context, scope PromptScope, feature Feature, requestContext ChatReplyContext, toolPolicy string) ([]Message, error) {
+	logger := logging.FromContext(ctx, s.logger)
+	route, err := s.cfg.RouteForFeature(string(feature))
+	if err != nil {
+		return nil, errors.Join(ErrFeatureRouteInvalid, err)
+	}
+
+	var systemPrompt string
+
+	switch feature {
+	case FeatureChat:
+		systemPrompt, err = s.prompts.RenderChatSystemPrompt(ctx, scope, route.Model, requestContext.SystemHint)
+		if err != nil {
+			logger.Error("chat template processing failed", "error", err)
+		}
+	case FeatureToolUse:
+		systemPrompt, err = s.prompts.RenderToolUseSystemPrompt(ctx, scope, route.Model, requestContext.SystemHint, toolPolicy)
+		if err != nil {
+			logger.Error("tool-use template processing failed", "error", err)
+		}
+	default:
+		return nil, errors.Join(ErrFeatureRouteInvalid, fmt.Errorf("feature=%s cannot build chat messages", feature))
+	}
+	if err != nil {
+		sentry.CaptureException(err)
+
+		return nil, ErrTemplateProcessing
+	}
+
+	messages := []Message{TextMessage(RoleSystem, systemPrompt)}
+	if requestContext.EarlierSummary != "" {
+		messages = append(messages, TextMessage(RoleSystem, "[Earlier conversation summary: "+requestContext.EarlierSummary+"]"))
+	}
+	messages = append(messages, requestContext.History...)
+	messages = append(messages, requestContext.UserMessage)
+
+	return messages, nil
 }
 
 func requestHasImage(req Request) bool {

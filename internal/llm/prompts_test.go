@@ -78,3 +78,28 @@ func TestAdminPromptRendererUsesPerChatLanguageAndGender(t *testing.T) {
 		t.Fatalf("unexpected rendered prompt: %q", rendered)
 	}
 }
+
+func TestAdminPromptRendererUsesToolUsePromptTemplate(t *testing.T) {
+	svc := adminconfig.NewService(&promptStoreStub{
+		global: adminconfig.GlobalSettings{
+			CharacterName:            "bot",
+			Language:                 "Russian",
+			Gender:                   "neutral",
+			ToneMode:                 "default",
+			DefaultInteractivityMode: adminconfig.InteractivityDisabled,
+		},
+		prompts: map[string]string{
+			"tool_use:0": "policy={{.ToolPolicy}} lang={{.Language}} model={{.Model}}",
+		},
+	})
+
+	renderer := NewAdminPromptRenderer(svc)
+	rendered, err := renderer.RenderToolUseSystemPrompt(context.Background(), PromptScope{}, "gemma", "ctx", "line one")
+	if err != nil {
+		t.Fatalf("render tool use prompt: %v", err)
+	}
+
+	if !strings.Contains(rendered, "policy=line one") || !strings.Contains(rendered, "lang=Russian") || !strings.Contains(rendered, "model=gemma") {
+		t.Fatalf("unexpected rendered prompt: %q", rendered)
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"telegram-ollama-reply-bot/internal/llmcontext"
 	"telegram-ollama-reply-bot/internal/state"
 	"telegram-ollama-reply-bot/internal/support/markdown"
+	"telegram-ollama-reply-bot/internal/tooluse"
 
 	"github.com/getsentry/sentry-go"
 	t "github.com/mymmrac/telego"
@@ -44,6 +45,7 @@ type Bot struct {
 	replyCtx   *llmcontext.ReplyBuilder
 	logger     *slog.Logger
 	admin      *adminconfig.Service
+	tools      *tooluse.Runtime
 }
 
 func NewBot(
@@ -57,6 +59,7 @@ func NewBot(
 	stats state.StatsStore,
 	cfg config.BotConfig,
 	admin *adminconfig.Service,
+	tools *tooluse.Runtime,
 	logger *slog.Logger,
 ) *Bot {
 	if history == nil {
@@ -82,6 +85,7 @@ func NewBot(
 		imageCache: imageCache,
 		logger:     logger,
 		admin:      admin,
+		tools:      tools,
 	}
 
 	bot.replyCtx = llmcontext.NewReplyBuilder(history, bot.hydrateMessagesWithImageDescriptions)
@@ -274,7 +278,16 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 		defer cancel()
 
 		var llmErr error
-		llmReply, usage, llmErr = b.llm.HandleChatMessage(llmCtx, llm.PromptScope{ChatID: message.Chat.ID}, requestContext)
+		if b.tools != nil {
+			llmReply, usage, llmErr = b.tools.HandleChatMessage(llmCtx, tooluse.ChatRequest{
+				Scope:          scopeFromMessage(message),
+				PromptScope:    llm.PromptScope{ChatID: message.Chat.ID},
+				ReplyContext:   requestContext,
+				RequestMessage: userMessageData,
+			})
+		} else {
+			llmReply, usage, llmErr = b.llm.HandleChatMessage(llmCtx, llm.PromptScope{ChatID: message.Chat.ID}, requestContext)
+		}
 
 		return llmErr
 	})

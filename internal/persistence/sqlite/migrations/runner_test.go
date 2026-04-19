@@ -60,8 +60,8 @@ func TestApplySeedsGlobalDefaults(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM prompt_templates WHERE scope_type='global' AND scope_id=0`).Scan(&count); err != nil {
 		t.Fatalf("count prompt templates: %v", err)
 	}
-	if count != 3 {
-		t.Fatalf("expected 3 prompt templates, got %d", count)
+	if count != 4 {
+		t.Fatalf("expected 4 prompt templates, got %d", count)
 	}
 }
 

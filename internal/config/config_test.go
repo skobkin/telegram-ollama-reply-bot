@@ -22,6 +22,10 @@ func TestLoadUsesFeatureDefaults(t *testing.T) {
 	if cfg.LLM.Features.ToolUse.Model != "gemma3:27b" {
 		t.Fatalf("expected tool use model to inherit chat model, got %q", cfg.LLM.Features.ToolUse.Model)
 	}
+
+	if cfg.LLM.ToolLoopMaxIterations != 6 {
+		t.Fatalf("expected tool loop max iterations default to be 6, got %d", cfg.LLM.ToolLoopMaxIterations)
+	}
 }
 
 func TestLoadUsesExplicitFeatureRoutes(t *testing.T) {
@@ -32,6 +36,7 @@ func TestLoadUsesExplicitFeatureRoutes(t *testing.T) {
 	t.Setenv("LLM_BACKEND_OLLAMA_BASE_URL", "http://ollama.internal:11434")
 	t.Setenv("LLM_BACKEND_OPENAI_COMPAT_BASE_URL", "http://openai-compat.internal/v1")
 	t.Setenv("LLM_BACKEND_OPENAI_COMPAT_API_TOKEN", "secret")
+	t.Setenv("LLM_TOOL_LOOP_MAX_ITERATIONS", "9")
 
 	cfg := Load()
 
@@ -53,6 +58,10 @@ func TestLoadUsesExplicitFeatureRoutes(t *testing.T) {
 
 	if cfg.LLM.Features.Summarize.Model != "gpt-4.1-mini" {
 		t.Fatalf("unexpected summarize model: %q", cfg.LLM.Features.Summarize.Model)
+	}
+
+	if cfg.LLM.ToolLoopMaxIterations != 9 {
+		t.Fatalf("unexpected tool loop max iterations: %d", cfg.LLM.ToolLoopMaxIterations)
 	}
 }
 

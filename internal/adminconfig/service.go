@@ -28,7 +28,7 @@ func (s *Service) ChatFields() []string {
 }
 
 func (s *Service) PromptFeatures() []PromptFeature {
-	return []PromptFeature{PromptFeatureChat, PromptFeatureSummarize, PromptFeatureImageRecognition}
+	return []PromptFeature{PromptFeatureChat, PromptFeatureSummarize, PromptFeatureImageRecognition, PromptFeatureToolUse}
 }
 
 func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (ResolvedChatConfig, error) {

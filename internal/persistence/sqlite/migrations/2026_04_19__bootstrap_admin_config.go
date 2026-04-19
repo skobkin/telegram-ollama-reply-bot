@@ -78,6 +78,7 @@ ON CONFLICT(id) DO NOTHING
 		{name: "chat", body: llm.DefaultChatPromptTemplate},
 		{name: "summarize", body: llm.DefaultSummarizePromptTemplate},
 		{name: "image_recognition", body: llm.DefaultImageRecognitionPromptTemplate},
+		{name: "tool_use", body: llm.DefaultToolUsePromptTemplate},
 	} {
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO prompt_templates(scope_type, scope_id, feature, template_text, updated_at, updated_by)
