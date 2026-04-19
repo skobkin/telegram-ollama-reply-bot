@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"telegram-ollama-reply-bot/internal/config"
@@ -127,5 +128,83 @@ func TestServiceRejectsUnsupportedCapability(t *testing.T) {
 	})
 	if !errors.Is(err, ErrUnsupportedCapability) {
 		t.Fatalf("expected unsupported capability error, got %v", err)
+	}
+}
+
+func TestServiceHandleChatMessageBuildsRequestFromCompactContext(t *testing.T) {
+	t.Parallel()
+
+	backendStub := &stubBackend{
+		name: config.LLMBackendOpenAICompat,
+		caps: Capabilities{ToolCalls: true, ImageInput: true, ModelListing: true},
+		response: Response{
+			Backend: config.LLMBackendOpenAICompat,
+			Model:   "gpt",
+			Message: TextMessage(RoleAssistant, "reply"),
+		},
+	}
+
+	templateProcessor, err := NewTemplateProcessor(config.PromptConfig{
+		ChatSystemPrompt:       "Model={{.Model}}\n{{.Context}}",
+		SummarizePrompt:        "{{.Language}}",
+		ImageRecognitionPrompt: "{{.Language}}",
+		Language:               "English",
+		Gender:                 "neutral",
+		MaxSummaryLength:       100,
+	})
+	if err != nil {
+		t.Fatalf("NewTemplateProcessor: %v", err)
+	}
+
+	service := &Service{
+		cfg: config.LLMConfig{
+			Features: config.FeatureConfig{
+				Chat: config.FeatureRouteConfig{Backend: config.LLMBackendOpenAICompat, Model: "gpt"},
+			},
+		},
+		templateProcessor: templateProcessor,
+		logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		backends: map[string]backend{
+			config.LLMBackendOpenAICompat: backendStub,
+		},
+	}
+
+	reply, usage, err := service.HandleChatMessage(context.Background(), ChatReplyContext{
+		SystemHint:     "compact context",
+		EarlierSummary: "earlier summary",
+		History: []Message{
+			TextMessage(RoleUser, "history 1"),
+			TextMessage(RoleAssistant, "history 2"),
+		},
+		UserMessage: TextMessage(RoleUser, "current"),
+	})
+	if err != nil {
+		t.Fatalf("HandleChatMessage: %v", err)
+	}
+	if reply != "reply" {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if usage == nil {
+		t.Fatal("expected usage")
+	}
+
+	messages := backendStub.lastRequest.Messages
+	if len(messages) != 5 {
+		t.Fatalf("unexpected message count: %d", len(messages))
+	}
+	if got := messages[0].Text(); !strings.Contains(got, "compact context") {
+		t.Fatalf("expected compact system context, got %q", got)
+	}
+	if got := messages[1].Text(); got != "[Earlier conversation summary: earlier summary]" {
+		t.Fatalf("unexpected summary message: %q", got)
+	}
+	if got := messages[2].Text(); got != "history 1" {
+		t.Fatalf("unexpected first history message: %q", got)
+	}
+	if got := messages[3].Text(); got != "history 2" {
+		t.Fatalf("unexpected second history message: %q", got)
+	}
+	if got := messages[4].Text(); got != "current" {
+		t.Fatalf("unexpected current user message: %q", got)
 	}
 }

@@ -98,14 +98,14 @@ func (s *Service) Generate(ctx context.Context, req Request) (Response, error) {
 	return resp, nil
 }
 
-func (s *Service) HandleChatMessage(ctx context.Context, userMessage ChatMessage, requestContext RequestContext) (string, *TokenUsage, error) {
+func (s *Service) HandleChatMessage(ctx context.Context, requestContext ChatReplyContext) (string, *TokenUsage, error) {
 	logger := logging.FromContext(ctx, s.logger)
 	route, err := s.cfg.RouteForFeature(string(FeatureChat))
 	if err != nil {
 		return "", nil, errors.Join(ErrFeatureRouteInvalid, err)
 	}
 
-	systemPrompt, err := s.templateProcessor.ProcessChatTemplate(route.Model, requestContext.Prompt())
+	systemPrompt, err := s.templateProcessor.ProcessChatTemplate(route.Model, requestContext.SystemHint)
 	if err != nil {
 		logger.Error("chat template processing failed", "error", err)
 		sentry.CaptureException(err)
@@ -115,15 +115,12 @@ func (s *Service) HandleChatMessage(ctx context.Context, userMessage ChatMessage
 
 	messages := []Message{TextMessage(RoleSystem, systemPrompt)}
 
-	if requestContext.Chat.EarlierSummary != "" {
-		messages = append(messages, TextMessage(RoleSystem, "[Earlier conversation summary: "+requestContext.Chat.EarlierSummary+"]"))
+	if requestContext.EarlierSummary != "" {
+		messages = append(messages, TextMessage(RoleSystem, "[Earlier conversation summary: "+requestContext.EarlierSummary+"]"))
 	}
 
-	for _, msg := range requestContext.Chat.History {
-		messages = append(messages, chatMessageToMessage(msg))
-	}
-
-	messages = append(messages, chatMessageToMessage(userMessage))
+	messages = append(messages, requestContext.History...)
+	messages = append(messages, requestContext.UserMessage)
 
 	resp, err := s.Generate(ctx, Request{
 		Feature:  FeatureChat,

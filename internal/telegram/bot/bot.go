@@ -11,6 +11,7 @@ import (
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/content/extractor"
 	"telegram-ollama-reply-bot/internal/llm"
+	"telegram-ollama-reply-bot/internal/llmcontext"
 	"telegram-ollama-reply-bot/internal/state"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 
@@ -40,6 +41,7 @@ type Bot struct {
 	cfg        config.BotConfig
 	ctx        context.Context
 	imageCache state.ImageStore
+	replyCtx   *llmcontext.ReplyBuilder
 	logger     *slog.Logger
 }
 
@@ -65,7 +67,7 @@ func NewBot(
 		panic("stats store is required")
 	}
 
-	return &Bot{
+	bot := &Bot{
 		api:        api,
 		llm:        llm,
 		extractor:  extractor,
@@ -78,6 +80,10 @@ func NewBot(
 		imageCache: imageCache,
 		logger:     logger,
 	}
+
+	bot.replyCtx = llmcontext.NewReplyBuilder(history, bot.hydrateMessagesWithImageDescriptions)
+
+	return bot
 }
 
 func (b *Bot) Run() error {
@@ -196,23 +202,39 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 
 	// Get MessageData from the request context if available, otherwise create it on the fly
 	userMessageData := b.getMessageDataFromRequestContextOrCreate(reqCtx, message, true)
+	triggerKind := b.replyTriggerKind(message)
 
 	var llmReply string
 	var usage *llm.TokenUsage
 	var err error
 
 	err = b.runWithTimeout(baseCtx, chatID, func(ctx context.Context) error {
-		requestContext := b.createLlmRequestContextFromMessage(ctx, message)
+		var userCtx llmcontext.UserContext
+		if message.From != nil {
+			userCtx = llmcontext.UserContext{
+				Username:  message.From.Username,
+				FirstName: message.From.FirstName,
+				LastName:  message.From.LastName,
+				IsPremium: message.From.IsPremium,
+			}
+		}
+
+		requestContext := b.replyCtx.BuildReplyContext(ctx, llmcontext.ReplyInput{
+			Chat: llmcontext.ChatContext{
+				Title: message.Chat.Title,
+				Type:  message.Chat.Type,
+			},
+			User:           userCtx,
+			Scope:          scopeFromMessage(message),
+			CurrentMessage: userMessageData,
+			Trigger:        triggerKind,
+		})
 
 		llmCtx, cancel := b.withProcessingDeadline(ctx)
 		defer cancel()
 
 		var llmErr error
-		llmReply, usage, llmErr = b.llm.HandleChatMessage(
-			llmCtx,
-			messageDataToLlmMessage(userMessageData),
-			requestContext,
-		)
+		llmReply, usage, llmErr = b.llm.HandleChatMessage(llmCtx, requestContext)
 
 		return llmErr
 	})
@@ -263,6 +285,17 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 	}
 
 	b.saveBotReplyToHistory(baseCtx, message, llmReply)
+}
+
+func (b *Bot) replyTriggerKind(message t.Message) llmcontext.TriggerKind {
+	switch {
+	case b.isMentionOfMe(message):
+		return llmcontext.TriggerMention
+	case b.isReplyToMe(message):
+		return llmcontext.TriggerReply
+	default:
+		return llmcontext.TriggerPrivate
+	}
 }
 
 func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {

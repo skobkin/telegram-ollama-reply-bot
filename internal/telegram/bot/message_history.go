@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"telegram-ollama-reply-bot/internal/llmcontext"
 	"telegram-ollama-reply-bot/internal/state"
 
 	"github.com/getsentry/sentry-go"
@@ -97,15 +98,6 @@ func (b *Bot) tgUserMessageToMessageData(message t.Message, isUserRequest bool) 
 	return msg
 }
 
-func (b *Bot) getConversationSnapshot(scope state.ConversationScope) state.ConversationSnapshot {
-	snapshot := b.history.Snapshot(scope)
-	if len(snapshot.Messages) == 0 && snapshot.EarlierSummary == "" {
-		b.loggerFromContext(b.ctx).Debug("conversation history not found", "chat_id", scope.ChatID, "topic_id", scope.TopicID)
-	}
-
-	return snapshot
-}
-
 func (b *Bot) ResetChatHistory(chatID int64) {
 	b.loggerFromContext(b.ctx).Info("resetting chat history", "chat_id", chatID)
 	b.history.ResetChat(chatID)
@@ -147,7 +139,7 @@ func (b *Bot) maybeSummarizeHistory(ctx context.Context, message t.Message) {
 
 	slice = b.hydrateMessagesWithImageDescriptions(workCtx, slice)
 
-	text := historyToPlainText(slice)
+	text := llmcontext.RenderMessagesPlainText(slice)
 	if snapshot.EarlierSummary != "" {
 		text = "Earlier conversation summary:\n" + snapshot.EarlierSummary + "\n\nRecent messages:\n" + text
 	}
@@ -163,44 +155,4 @@ func (b *Bot) maybeSummarizeHistory(ctx context.Context, message t.Message) {
 		b.stats.AddUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.Cost)
 	}
 	b.history.SetEarlierSummary(scope, summary, end)
-}
-
-func historyToPlainText(history []state.Message) string {
-	var sb strings.Builder
-	for _, msg := range history {
-		sb.WriteString(messageDataToPlainText(msg))
-		sb.WriteString("\n")
-	}
-
-	return sb.String()
-}
-
-func messageDataToPlainText(msg state.Message) string {
-	var sb strings.Builder
-	if msg.ReplyTo != nil {
-		sb.WriteString("> ")
-		sb.WriteString(messageDataToPlainText(*msg.ReplyTo))
-		sb.WriteString("\n")
-	}
-	sb.WriteString(presentMessage(msg))
-
-	return sb.String()
-}
-
-func presentMessage(msg state.Message) string {
-	result := msg.Name
-	if msg.Username != "" {
-		result += " (@" + msg.Username + ")"
-	}
-	result += ": "
-	if msg.HasImage {
-		if msg.Image != "" {
-			result += "[Image: " + msg.Image + "] "
-		} else {
-			result += "[Image] "
-		}
-	}
-	result += msg.Text
-
-	return result
 }
