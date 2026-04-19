@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"telegram-ollama-reply-bot/internal/logging"
+	"telegram-ollama-reply-bot/internal/state"
 	"time"
 
 	"github.com/getsentry/sentry-go"
@@ -126,18 +127,18 @@ func (b *Bot) withProcessingDeadline(baseCtx context.Context) (context.Context, 
 	return context.WithCancel(baseCtx)
 }
 
-func (b *Bot) ensureHistoryMessagesImageDescriptions(ctx context.Context, chatID int64) {
-	mh, ok := b.history[chatID]
-	if !ok {
-		return
+func (b *Bot) hydrateMessagesWithImageDescriptions(ctx context.Context, messages []state.Message) []state.Message {
+	result := make([]state.Message, 0, len(messages))
+	for i := range messages {
+		msg := messages[i]
+		b.ensureMessageImageDescription(ctx, &msg)
+		result = append(result, msg)
 	}
 
-	for i := range mh.messages {
-		b.ensureMessageImageDescription(ctx, &mh.messages[i])
-	}
+	return result
 }
 
-func (b *Bot) ensureMessageImageDescription(ctx context.Context, msg *MessageData) {
+func (b *Bot) ensureMessageImageDescription(ctx context.Context, msg *state.Message) {
 	if msg == nil {
 		return
 	}
@@ -321,7 +322,7 @@ func (b *Bot) isFromAdmin(message *t.Message) bool {
 	return slices.Contains(b.cfg.AdminIDs, message.From.ID)
 }
 
-func (b *Bot) describeImage(ctx context.Context, imageMeta *ImageMeta) (string, error) {
+func (b *Bot) describeImage(ctx context.Context, imageMeta *state.ImageMeta) (string, error) {
 	if imageMeta == nil {
 		return "", ErrImageRecognition
 	}
@@ -382,9 +383,10 @@ func downloadFileWithContext(ctx context.Context, url string) ([]byte, error) {
 	return data, nil
 }
 
-// gets MessageData from Telego request context if previously stored by history middleware, otherwise creates it on the fly
-func (b *Bot) getMessageDataFromRequestContextOrCreate(ctx *th.Context, message t.Message, isUserRequest bool) MessageData {
-	if msgData, ok := ctx.Value(requestContextMessageDataKey).(MessageData); ok {
+// gets a state message from Telego request context if previously stored by history middleware,
+// otherwise creates it on the fly
+func (b *Bot) getMessageDataFromRequestContextOrCreate(ctx *th.Context, message t.Message, isUserRequest bool) state.Message {
+	if msgData, ok := ctx.Value(requestContextMessageDataKey).(state.Message); ok {
 		msgData.IsUserRequest = isUserRequest
 		b.ensureMessageImageDescription(b.handlerContext(ctx), &msgData)
 		b.handlerLogger(ctx).Debug("message data retrieved from request context", "has_image", msgData.HasImage)

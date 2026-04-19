@@ -7,6 +7,7 @@ import (
 	"telegram-ollama-reply-bot/internal/content/extractor"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/logging"
+	"telegram-ollama-reply-bot/internal/state/memory"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/telegram/bot"
 	"time"
@@ -83,6 +84,14 @@ func Run(ctx context.Context) error {
 	logger.Info("all required models are available")
 
 	ext := extractor.NewExtractor(logManager.Logger("content/extractor"))
+	stores := memory.New(memory.Config{
+		MaxBytes:                 cfg.State.MaxBytes,
+		HistoryMaxBytes:          cfg.State.HistoryMaxBytes,
+		HistoryStreamsMax:        cfg.State.HistoryStreamsMax,
+		HistoryMessagesPerStream: cfg.State.HistoryMessagesPerStream,
+		ImageCacheMaxBytes:       cfg.State.ImageCacheMaxBytes,
+		ImageCacheTTL:            cfg.State.ImageCacheTTL,
+	}, logManager.Logger("state/memory"))
 
 	telegramAPI, err := tg.NewBot(cfg.Bot.Telegram.Token, tg.WithLogger(bot.NewLogger(
 		logManager.Logger("telegram/bot").With("source", "telego"),
@@ -96,7 +105,18 @@ func Run(ctx context.Context) error {
 	}
 
 	sanitizer := markdown.NewTgMarkdownV2Sanitizer()
-	botService := bot.NewBot(ctx, telegramAPI, llmc, ext, sanitizer, bot.NewImageCache(), cfg.Bot, logManager.Logger("telegram/bot"))
+	botService := bot.NewBot(
+		ctx,
+		telegramAPI,
+		llmc,
+		ext,
+		sanitizer,
+		stores.Conversations(),
+		stores.Images(),
+		stores.Stats(),
+		cfg.Bot,
+		logManager.Logger("telegram/bot"),
+	)
 
 	if err := botService.Run(); err != nil {
 		logger.Error("bot exited with error", "error", err)

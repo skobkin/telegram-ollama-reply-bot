@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"telegram-ollama-reply-bot/internal/llm"
+	"telegram-ollama-reply-bot/internal/state"
 
 	t "github.com/mymmrac/telego"
 )
@@ -17,8 +18,6 @@ func (b *Bot) createLlmRequestContextFromMessage(ctx context.Context, message t.
 	if ctx == nil {
 		ctx = b.ctx
 	}
-
-	b.ensureHistoryMessagesImageDescriptions(ctx, message.Chat.ID)
 
 	user := message.From
 
@@ -34,19 +33,17 @@ func (b *Bot) createLlmRequestContextFromMessage(ctx context.Context, message t.
 	// TODO: implement retrieval of chat description
 	chat := message.Chat
 
-	history := b.getChatHistory(chat.ID)
-	earlierSummary := ""
-	if mh, ok := b.history[chat.ID]; ok {
-		earlierSummary = mh.EarlierSummary()
-	}
+	scope := scopeFromMessage(message)
+	snapshot := b.getConversationSnapshot(scope)
+	snapshot.Messages = b.hydrateMessagesWithImageDescriptions(ctx, snapshot.Messages)
 
 	rc.Chat = llm.ChatContext{
 		Title: chat.Title,
 		// TODO: fill when ChatFullInfo retrieved
 		//Description: chat.Description,
 		Type:           chat.Type,
-		History:        historyToLlmMessages(history),
-		EarlierSummary: earlierSummary,
+		History:        historyToLlmMessages(snapshot.Messages),
+		EarlierSummary: snapshot.EarlierSummary,
 	}
 
 	b.loggerFromContext(ctx).Debug(
@@ -59,7 +56,7 @@ func (b *Bot) createLlmRequestContextFromMessage(ctx context.Context, message t.
 	return rc
 }
 
-func historyToLlmMessages(history []MessageData) []llm.ChatMessage {
+func historyToLlmMessages(history []state.Message) []llm.ChatMessage {
 	length := len(history)
 
 	if length > 0 {
@@ -75,7 +72,7 @@ func historyToLlmMessages(history []MessageData) []llm.ChatMessage {
 	return make([]llm.ChatMessage, 0)
 }
 
-func messageDataToLlmMessage(data MessageData) llm.ChatMessage {
+func messageDataToLlmMessage(data state.Message) llm.ChatMessage {
 	llmMessage := llm.ChatMessage{
 		Name:          data.Name,
 		Username:      data.Username,

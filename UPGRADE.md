@@ -1,6 +1,42 @@
 # Upgrade Notes
 
-## 2026-04-19 - Backend abstractions and Ollama backend introduced
+## 2026-04-19 - Privacy-first in-memory state layer introduced
+
+### State Config Migration
+
+The old history size variable was removed.
+
+Replace:
+
+- `BOT_HISTORY_LENGTH` -> `STATE_HISTORY_MESSAGES_PER_STREAM`
+
+Add explicit state limits as needed:
+
+- `STATE_MAX_BYTES`
+- `STATE_HISTORY_MAX_BYTES`
+- `STATE_HISTORY_STREAMS_MAX`
+- `STATE_IMAGE_CACHE_MAX_BYTES`
+- `STATE_IMAGE_CACHE_TTL`
+
+### Example
+
+Old:
+
+```env
+BOT_HISTORY_LENGTH=150
+```
+
+New:
+
+```env
+STATE_HISTORY_MESSAGES_PER_STREAM=150
+STATE_HISTORY_STREAMS_MAX=1024
+STATE_HISTORY_MAX_BYTES=167772160
+STATE_IMAGE_CACHE_TTL=24h
+```
+
+
+## 2026-04-18 - Backend abstractions and Ollama backend introduced
 
 ### Backend Config Migration
 

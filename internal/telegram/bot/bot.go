@@ -11,8 +11,8 @@ import (
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/content/extractor"
 	"telegram-ollama-reply-bot/internal/llm"
+	"telegram-ollama-reply-bot/internal/state"
 	"telegram-ollama-reply-bot/internal/support/markdown"
-	"telegram-ollama-reply-bot/internal/support/stats"
 
 	"github.com/getsentry/sentry-go"
 	t "github.com/mymmrac/telego"
@@ -34,12 +34,12 @@ type Bot struct {
 	llm        *llm.Service
 	extractor  extractor.Extractor
 	sanitizer  markdown.Sanitizer
-	stats      *stats.Stats
-	history    map[int64]*MessageHistory
+	stats      state.StatsStore
+	history    state.ConversationStore
 	me         botInfo
 	cfg        config.BotConfig
 	ctx        context.Context
-	imageCache *ImageCache
+	imageCache state.ImageStore
 	logger     *slog.Logger
 }
 
@@ -49,12 +49,20 @@ func NewBot(
 	llm *llm.Service,
 	extractor extractor.Extractor,
 	sanitizer markdown.Sanitizer,
-	imageCache *ImageCache,
+	history state.ConversationStore,
+	imageCache state.ImageStore,
+	stats state.StatsStore,
 	cfg config.BotConfig,
 	logger *slog.Logger,
 ) *Bot {
+	if history == nil {
+		panic("history store is required")
+	}
 	if imageCache == nil {
-		panic("image cache is required")
+		panic("image store is required")
+	}
+	if stats == nil {
+		panic("stats store is required")
 	}
 
 	return &Bot{
@@ -62,8 +70,8 @@ func NewBot(
 		llm:        llm,
 		extractor:  extractor,
 		sanitizer:  sanitizer,
-		stats:      stats.NewStats(),
-		history:    make(map[int64]*MessageHistory),
+		stats:      stats,
+		history:    history,
 		me:         botInfo{},
 		cfg:        cfg,
 		ctx:        ctx,
@@ -182,7 +190,7 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 	chatID := tu.ID(message.Chat.ID)
 
 	baseCtx := b.handlerContext(reqCtx)
-	b.maybeSummarizeHistory(baseCtx, message.Chat.ID)
+	b.maybeSummarizeHistory(baseCtx, message)
 	logger := b.loggerFromContext(baseCtx)
 	logger.Info("handling mention", "chat_id", message.Chat.ID)
 

@@ -13,6 +13,7 @@ type Config struct {
 	LLM     LLMConfig
 	Sentry  SentryConfig
 	Bot     BotConfig
+	State   StateConfig
 	Logging LoggingConfig
 }
 
@@ -50,12 +51,20 @@ type LoggingConfig struct {
 
 // BotConfig contains configuration for bot settings
 type BotConfig struct {
-	HistoryLength            int
 	AdminIDs                 []int64
 	Telegram                 TelegramConfig
 	UncompressedHistoryLimit int
 	HistorySummaryThreshold  int
 	ProcessingTimeout        time.Duration
+}
+
+type StateConfig struct {
+	MaxBytes                 int64
+	HistoryMaxBytes          int64
+	HistoryStreamsMax        int
+	HistoryMessagesPerStream int
+	ImageCacheMaxBytes       int64
+	ImageCacheTTL            time.Duration
 }
 
 // BackendConfig contains configuration for all supported LLM backends.
@@ -96,13 +105,6 @@ type TelegramConfig struct {
 
 // Load creates a new Config instance populated from environment variables
 func Load() *Config {
-	historyLength := 150
-	if lengthStr := os.Getenv("BOT_HISTORY_LENGTH"); lengthStr != "" {
-		if length, err := strconv.Atoi(lengthStr); err == nil {
-			historyLength = length
-		}
-	}
-
 	maxSummaryLength := 2000
 	if lengthStr := os.Getenv("MAX_SUMMARY_LENGTH"); lengthStr != "" {
 		if length, err := strconv.Atoi(lengthStr); err == nil {
@@ -128,6 +130,48 @@ func Load() *Config {
 	if toStr := os.Getenv("BOT_PROCESSING_TIMEOUT"); toStr != "" {
 		if to, err := time.ParseDuration(toStr); err == nil {
 			processingTimeout = to
+		}
+	}
+
+	stateMaxBytes := int64(256 << 20)
+	if value := os.Getenv("STATE_MAX_BYTES"); value != "" {
+		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
+			stateMaxBytes = parsed
+		}
+	}
+
+	stateHistoryMaxBytes := int64(160 << 20)
+	if value := os.Getenv("STATE_HISTORY_MAX_BYTES"); value != "" {
+		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
+			stateHistoryMaxBytes = parsed
+		}
+	}
+
+	stateHistoryStreamsMax := 1024
+	if value := os.Getenv("STATE_HISTORY_STREAMS_MAX"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			stateHistoryStreamsMax = parsed
+		}
+	}
+
+	stateHistoryMessagesPerStream := 150
+	if value := os.Getenv("STATE_HISTORY_MESSAGES_PER_STREAM"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			stateHistoryMessagesPerStream = parsed
+		}
+	}
+
+	stateImageCacheMaxBytes := int64(64 << 20)
+	if value := os.Getenv("STATE_IMAGE_CACHE_MAX_BYTES"); value != "" {
+		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
+			stateImageCacheMaxBytes = parsed
+		}
+	}
+
+	stateImageCacheTTL := 24 * time.Hour
+	if value := os.Getenv("STATE_IMAGE_CACHE_TTL"); value != "" {
+		if parsed, err := time.ParseDuration(value); err == nil {
+			stateImageCacheTTL = parsed
 		}
 	}
 
@@ -217,12 +261,19 @@ func Load() *Config {
 		Sentry: SentryConfig{
 			DSN: os.Getenv("SENTRY_DSN"),
 		},
+		State: StateConfig{
+			MaxBytes:                 stateMaxBytes,
+			HistoryMaxBytes:          stateHistoryMaxBytes,
+			HistoryStreamsMax:        stateHistoryStreamsMax,
+			HistoryMessagesPerStream: stateHistoryMessagesPerStream,
+			ImageCacheMaxBytes:       stateImageCacheMaxBytes,
+			ImageCacheTTL:            stateImageCacheTTL,
+		},
 		Logging: LoggingConfig{
 			Level: getEnvOrDefault("LOG_LEVEL", "info"),
 		},
 		Bot: BotConfig{
-			HistoryLength: historyLength,
-			AdminIDs:      adminIDs,
+			AdminIDs: adminIDs,
 			Telegram: TelegramConfig{
 				Token: os.Getenv("TELEGRAM_TOKEN"),
 			},

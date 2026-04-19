@@ -55,3 +55,50 @@ func TestLoadUsesExplicitFeatureRoutes(t *testing.T) {
 		t.Fatalf("unexpected summarize model: %q", cfg.LLM.Features.Summarize.Model)
 	}
 }
+
+func TestLoadUsesStateDefaults(t *testing.T) {
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma3:27b")
+
+	cfg := Load()
+
+	if cfg.State.HistoryMessagesPerStream != 150 {
+		t.Fatalf("unexpected history messages per stream: %d", cfg.State.HistoryMessagesPerStream)
+	}
+	if cfg.State.HistoryStreamsMax != 1024 {
+		t.Fatalf("unexpected history streams max: %d", cfg.State.HistoryStreamsMax)
+	}
+	if cfg.State.ImageCacheTTL <= 0 {
+		t.Fatalf("expected positive image cache ttl, got %s", cfg.State.ImageCacheTTL)
+	}
+}
+
+func TestLoadUsesExplicitStateConfig(t *testing.T) {
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma3:27b")
+	t.Setenv("STATE_MAX_BYTES", "123456")
+	t.Setenv("STATE_HISTORY_MAX_BYTES", "45678")
+	t.Setenv("STATE_HISTORY_STREAMS_MAX", "32")
+	t.Setenv("STATE_HISTORY_MESSAGES_PER_STREAM", "24")
+	t.Setenv("STATE_IMAGE_CACHE_MAX_BYTES", "8192")
+	t.Setenv("STATE_IMAGE_CACHE_TTL", "45m")
+
+	cfg := Load()
+
+	if cfg.State.MaxBytes != 123456 {
+		t.Fatalf("unexpected state max bytes: %d", cfg.State.MaxBytes)
+	}
+	if cfg.State.HistoryMaxBytes != 45678 {
+		t.Fatalf("unexpected history max bytes: %d", cfg.State.HistoryMaxBytes)
+	}
+	if cfg.State.HistoryStreamsMax != 32 {
+		t.Fatalf("unexpected history streams max: %d", cfg.State.HistoryStreamsMax)
+	}
+	if cfg.State.HistoryMessagesPerStream != 24 {
+		t.Fatalf("unexpected history messages per stream: %d", cfg.State.HistoryMessagesPerStream)
+	}
+	if cfg.State.ImageCacheMaxBytes != 8192 {
+		t.Fatalf("unexpected image cache max bytes: %d", cfg.State.ImageCacheMaxBytes)
+	}
+	if cfg.State.ImageCacheTTL.Minutes() != 45 {
+		t.Fatalf("unexpected image cache ttl: %s", cfg.State.ImageCacheTTL)
+	}
+}

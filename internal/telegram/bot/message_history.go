@@ -3,153 +3,84 @@ package bot
 import (
 	"context"
 	"strings"
+	"time"
+
+	"telegram-ollama-reply-bot/internal/state"
 
 	"github.com/getsentry/sentry-go"
 	t "github.com/mymmrac/telego"
 )
 
-type MessageData struct {
-	Name          string
-	Username      string
-	Text          string
-	IsMe          bool
-	IsUserRequest bool
-	ReplyTo       *MessageData
-	HasImage      bool
-	Image         string
-	ImageMeta     *ImageMeta
-	chatID        int64
-}
-
-type ImageMeta struct {
-	FileID       string
-	FileUniqueID string
-	Width        int
-	Height       int
-	FileSize     int
-}
-
-func (i *ImageMeta) cacheKey() string {
-	if i == nil {
-		return ""
-	}
-	if i.FileUniqueID != "" {
-		return i.FileUniqueID
-	}
-
-	return i.FileID
-}
-
-type EarlierSummary struct {
-	Text string
-	// SummarizedUntil is the index of the first message that has not yet been
-	// summarized into Text.
-	SummarizedUntil int
-}
-
-type MessageHistory struct {
-	messages       []MessageData
-	capacity       int
-	earlierSummary EarlierSummary
-}
-
-func NewMessageHistory(capacity int) *MessageHistory {
-	return &MessageHistory{
-		messages:       make([]MessageData, 0, capacity),
-		capacity:       capacity,
-		earlierSummary: EarlierSummary{},
+func scopeFromMessage(message t.Message) state.ConversationScope {
+	return state.ConversationScope{
+		ChatID:  message.Chat.ID,
+		TopicID: message.MessageThreadID,
 	}
 }
 
-func (b *MessageHistory) Push(element MessageData) {
-	if len(b.messages) >= b.capacity {
-		b.messages = b.messages[1:]
-		if b.earlierSummary.SummarizedUntil > 0 {
-			b.earlierSummary.SummarizedUntil--
-		}
-	}
-
-	b.messages = append(b.messages, element)
-}
-
-func (b *MessageHistory) GetAll() []MessageData {
-	return b.messages
-}
-
-func (b *MessageHistory) EarlierSummary() string {
-	return b.earlierSummary.Text
-}
-
-func (b *MessageHistory) SetEarlierSummary(sum string) {
-	b.earlierSummary.Text = sum
-}
-
-func (b *Bot) saveChatMessageToHistory(msgData MessageData) {
-	chatID := msgData.chatID
-
-	_, ok := b.history[chatID]
-	if !ok {
-		b.history[chatID] = NewMessageHistory(b.cfg.HistoryLength)
-	}
-
-	b.history[chatID].Push(msgData)
+func (b *Bot) saveChatMessageToHistory(msg state.Message) {
+	b.history.AppendMessage(state.ConversationScope{
+		ChatID:  msg.ChatID,
+		TopicID: msg.TopicID,
+	}, msg)
 }
 
 func (b *Bot) saveBotReplyToHistory(ctx context.Context, replyTo t.Message, text string) {
-	chatID := replyTo.Chat.ID
-	b.loggerFromContext(ctx).Debug("saving bot reply to history", "chat_id", chatID, "reply_length", len(text))
-
-	_, ok := b.history[chatID]
-	if !ok {
-		b.history[chatID] = NewMessageHistory(b.cfg.HistoryLength)
-	}
+	scope := scopeFromMessage(replyTo)
+	b.loggerFromContext(ctx).Debug("saving bot reply to history", "chat_id", scope.ChatID, "topic_id", scope.TopicID, "reply_length", len(text))
 
 	botName := strings.TrimSpace(b.me.FirstName + " " + b.me.LastName)
 	if botName == "" {
 		botName = b.me.Username
 	}
-	botUsername := b.me.Username
 
-	msgData := MessageData{
-		Name:     botName,
-		Username: botUsername,
-		Text:     text,
-		IsMe:     true,
+	msg := state.Message{
+		Name:      botName,
+		Username:  b.me.Username,
+		Text:      text,
+		IsMe:      true,
+		ChatID:    scope.ChatID,
+		TopicID:   scope.TopicID,
+		CreatedAt: time.Now().UTC(),
 	}
 
 	if replyTo.ReplyToMessage != nil {
-		replyMessage := replyTo.ReplyToMessage
-
-		msgData.ReplyTo = &MessageData{
-			Name:     replyMessage.From.FirstName,
-			Username: replyMessage.From.Username,
-			Text:     replyMessage.Text,
-			IsMe:     false,
-			ReplyTo:  nil,
-		}
+		replyMessage := *replyTo.ReplyToMessage
+		replyScope := scopeFromMessage(replyMessage)
+		replyData := b.tgUserMessageToMessageData(replyMessage, false)
+		replyData.ChatID = replyScope.ChatID
+		replyData.TopicID = replyScope.TopicID
+		msg.ReplyTo = &replyData
 	}
 
-	b.history[chatID].Push(msgData)
+	b.history.AppendMessage(scope, msg)
 }
 
-func (b *Bot) tgUserMessageToMessageData(message t.Message, isUserRequest bool) MessageData {
-	msgData := MessageData{
-		Name:          message.From.FirstName,
-		Username:      message.From.Username,
-		Text:          message.Text,
-		IsMe:          false,
+func (b *Bot) tgUserMessageToMessageData(message t.Message, isUserRequest bool) state.Message {
+	msg := state.Message{
 		IsUserRequest: isUserRequest,
-		HasImage:      false,
-		Image:         "",
-		chatID:        message.Chat.ID,
+		ChatID:        message.Chat.ID,
+		TopicID:       message.MessageThreadID,
+		MessageID:     message.MessageID,
+		CreatedAt:     time.Now().UTC(),
+		Text:          message.Text,
+	}
+
+	if message.Date != 0 {
+		msg.CreatedAt = time.Unix(message.Date, 0).UTC()
+	}
+	if message.From != nil {
+		msg.Name = message.From.FirstName
+		msg.Username = message.From.Username
+		msg.FromID = message.From.ID
 	}
 
 	if len(message.Photo) > 0 {
 		b.loggerFromContext(b.ctx).Debug("message contains photo", "message_id", message.MessageID, "photo_sizes", len(message.Photo))
 
-		msgData.HasImage = true
 		photo := message.Photo[len(message.Photo)-1]
-		msgData.ImageMeta = &ImageMeta{
+		msg.HasImage = true
+		msg.ImageMeta = &state.ImageMeta{
 			FileID:       photo.FileID,
 			FileUniqueID: photo.FileUniqueID,
 			Width:        photo.Width,
@@ -160,38 +91,30 @@ func (b *Bot) tgUserMessageToMessageData(message t.Message, isUserRequest bool) 
 
 	if message.ReplyToMessage != nil {
 		replyData := b.tgUserMessageToMessageData(*message.ReplyToMessage, false)
-		msgData.ReplyTo = &replyData
+		msg.ReplyTo = &replyData
 	}
 
-	return msgData
+	return msg
 }
 
-func (b *Bot) getChatHistory(chatID int64) []MessageData {
-	_, ok := b.history[chatID]
-	if !ok {
-		b.loggerFromContext(b.ctx).Debug("chat history not found", "chat_id", chatID)
-
-		return make([]MessageData, 0)
+func (b *Bot) getConversationSnapshot(scope state.ConversationScope) state.ConversationSnapshot {
+	snapshot := b.history.Snapshot(scope)
+	if len(snapshot.Messages) == 0 && snapshot.EarlierSummary == "" {
+		b.loggerFromContext(b.ctx).Debug("conversation history not found", "chat_id", scope.ChatID, "topic_id", scope.TopicID)
 	}
 
-	return b.history[chatID].GetAll()
+	return snapshot
 }
 
 func (b *Bot) ResetChatHistory(chatID int64) {
-	_, ok := b.history[chatID]
-	if !ok {
-		b.loggerFromContext(b.ctx).Debug("chat history not found", "chat_id", chatID)
-
-		return
-	}
-
 	b.loggerFromContext(b.ctx).Info("resetting chat history", "chat_id", chatID)
-	b.history[chatID] = NewMessageHistory(b.cfg.HistoryLength)
+	b.history.ResetChat(chatID)
 }
 
-func (b *Bot) maybeSummarizeHistory(ctx context.Context, chatID int64) {
-	mh, ok := b.history[chatID]
-	if !ok {
+func (b *Bot) maybeSummarizeHistory(ctx context.Context, message t.Message) {
+	scope := scopeFromMessage(message)
+	snapshot := b.history.Snapshot(scope)
+	if len(snapshot.Messages) == 0 {
 		return
 	}
 
@@ -201,20 +124,20 @@ func (b *Bot) maybeSummarizeHistory(ctx context.Context, chatID int64) {
 		return
 	}
 
-	historyLen := len(mh.messages)
-	unsummarized := historyLen - mh.earlierSummary.SummarizedUntil
+	historyLen := len(snapshot.Messages)
+	unsummarized := historyLen - snapshot.SummarizedUntil
 	if unsummarized <= limit+threshold {
 		return
 	}
 
 	end := historyLen - limit
-	start := mh.earlierSummary.SummarizedUntil
+	start := snapshot.SummarizedUntil
 	if start >= end {
 		return
 	}
-	slice := mh.messages[start:end]
+	slice := snapshot.Messages[start:end]
 	if len(slice) == 0 {
-		mh.earlierSummary.SummarizedUntil = end
+		b.history.SetEarlierSummary(scope, snapshot.EarlierSummary, end)
 
 		return
 	}
@@ -222,19 +145,16 @@ func (b *Bot) maybeSummarizeHistory(ctx context.Context, chatID int64) {
 	workCtx, cancel := b.withProcessingDeadline(ctx)
 	defer cancel()
 
-	b.ensureHistoryMessagesImageDescriptions(workCtx, chatID)
+	slice = b.hydrateMessagesWithImageDescriptions(workCtx, slice)
 
 	text := historyToPlainText(slice)
-
-	if mh.earlierSummary.Text != "" {
-		// TODO: introduce a dedicated llm method for history summarization
-		// that provides a consistent presentation for earlier and recent messages
-		text = "Earlier conversation summary:\n" + mh.earlierSummary.Text + "\n\nRecent messages:\n" + text
+	if snapshot.EarlierSummary != "" {
+		text = "Earlier conversation summary:\n" + snapshot.EarlierSummary + "\n\nRecent messages:\n" + text
 	}
 
 	summary, usage, err := b.llm.Summarize(workCtx, text, "")
 	if err != nil {
-		b.loggerFromContext(workCtx).Error("failed to summarize history", "error", err, "chat_id", chatID)
+		b.loggerFromContext(workCtx).Error("failed to summarize history", "error", err, "chat_id", scope.ChatID, "topic_id", scope.TopicID)
 		sentry.CaptureException(err)
 
 		return
@@ -242,11 +162,10 @@ func (b *Bot) maybeSummarizeHistory(ctx context.Context, chatID int64) {
 	if usage != nil {
 		b.stats.AddUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.Cost)
 	}
-	mh.SetEarlierSummary(summary)
-	mh.earlierSummary.SummarizedUntil = end
+	b.history.SetEarlierSummary(scope, summary, end)
 }
 
-func historyToPlainText(history []MessageData) string {
+func historyToPlainText(history []state.Message) string {
 	var sb strings.Builder
 	for _, msg := range history {
 		sb.WriteString(messageDataToPlainText(msg))
@@ -256,7 +175,7 @@ func historyToPlainText(history []MessageData) string {
 	return sb.String()
 }
 
-func messageDataToPlainText(msg MessageData) string {
+func messageDataToPlainText(msg state.Message) string {
 	var sb strings.Builder
 	if msg.ReplyTo != nil {
 		sb.WriteString("> ")
@@ -268,7 +187,7 @@ func messageDataToPlainText(msg MessageData) string {
 	return sb.String()
 }
 
-func presentMessage(msg MessageData) string {
+func presentMessage(msg state.Message) string {
 	result := msg.Name
 	if msg.Username != "" {
 		result += " (@" + msg.Username + ")"

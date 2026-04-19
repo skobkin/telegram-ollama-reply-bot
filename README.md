@@ -28,7 +28,12 @@ The bot can be configured using the following environment variables:
 | `LLM_FEATURE_IMAGE_RECOGNITION_MODEL`   | Model name for image recognition                                                                                  | No       | chat model                                 |
 | `LLM_FEATURE_TOOL_USE_BACKEND`          | Backend reserved for future tool use                                                                              | No       | chat backend                               |
 | `LLM_FEATURE_TOOL_USE_MODEL`            | Model reserved for future tool use                                                                                | No       | chat model                                 |
-| `BOT_HISTORY_LENGTH`                    | Number of messages to keep in conversation history                                                                | No       | 150                                        |
+| `STATE_MAX_BYTES`                       | Soft total in-memory state budget in bytes                                                                        | No       | `268435456`                                |
+| `STATE_HISTORY_MAX_BYTES`               | Soft history bucket budget in bytes                                                                               | No       | `167772160`                                |
+| `STATE_HISTORY_STREAMS_MAX`             | Maximum number of active conversation scopes kept in RAM                                                          | No       | `1024`                                     |
+| `STATE_HISTORY_MESSAGES_PER_STREAM`     | Number of messages to keep per chat/topic history stream                                                          | No       | `150`                                      |
+| `STATE_IMAGE_CACHE_MAX_BYTES`           | Maximum image-description cache size in bytes                                                                     | No       | `67108864`                                 |
+| `STATE_IMAGE_CACHE_TTL`                 | TTL for cached image descriptions. Accepts Go duration strings (e.g. `1h`, `24h`).                                | No       | `24h`                                      |
 | `LLM_UNCOMPRESSED_HISTORY_LIMIT`        | Recent chat messages sent verbatim to LLM; older ones summarized. Set to `0` to disable summarization             | No       | 15                                         |
 | `LLM_HISTORY_SUMMARY_THRESHOLD`         | Extra messages beyond the limit before summarization triggers again                                               | No       | 5                                          |
 | `BOT_PROCESSING_TIMEOUT`                | Timeout for processing incoming requests (includes LLM calls). Accepts Go duration strings (e.g. `45s`, `1m30s`). | No       | `30s`                                      |
@@ -96,7 +101,9 @@ docker run \
   -e LLM_FEATURE_CHAT_MODEL=gemma3:27b \
   -e LLM_FEATURE_SUMMARIZE_MODEL=gemma3:12b \
   -e LLM_FEATURE_IMAGE_RECOGNITION_MODEL=gemma3:12b \
-  -e BOT_HISTORY_LENGTH=150 \
+  -e STATE_HISTORY_MESSAGES_PER_STREAM=150 \
+  -e STATE_HISTORY_STREAMS_MAX=1024 \
+  -e STATE_IMAGE_CACHE_TTL=24h \
   -e LLM_UNCOMPRESSED_HISTORY_LIMIT=15 \
   -e LOG_LEVEL=info \
   -e SENTRY_DSN=https://your-sentry-dsn \
