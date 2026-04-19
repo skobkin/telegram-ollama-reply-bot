@@ -76,14 +76,6 @@ func NewAdminPromptRenderer(config *adminconfig.Service) *AdminPromptRenderer {
 	return &AdminPromptRenderer{config: config}
 }
 
-func ValidatePromptTemplate(name, body string) error {
-	if _, err := template.New(name).Parse(body); err != nil {
-		return fmt.Errorf("parse template %s: %w", name, err)
-	}
-
-	return nil
-}
-
 func (p *StaticPromptRenderer) RenderChatSystemPrompt(_ context.Context, _ PromptScope, model, compactContext string) (string, error) {
 	return executeTemplate("chat", p.chatTemplate, struct {
 		Language      string
