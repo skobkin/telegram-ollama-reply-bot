@@ -10,6 +10,7 @@ import (
 	"telegram-ollama-reply-bot/internal/content/extractor"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/logging"
+	"telegram-ollama-reply-bot/internal/reminders"
 	"telegram-ollama-reply-bot/internal/state"
 
 	t "github.com/mymmrac/telego"
@@ -29,6 +30,7 @@ type PollSender interface {
 
 type Config struct {
 	MaxIterations int
+	AdminIDs      []int64
 }
 
 type ChatRequest struct {
@@ -43,12 +45,13 @@ type Runtime struct {
 	history   state.ConversationStore
 	extractor extractor.Extractor
 	polls     PollSender
+	reminders *reminders.Service
 	logger    *slog.Logger
 	config    Config
 	registry  *Registry
 }
 
-func New(llmService llmService, history state.ConversationStore, extractor extractor.Extractor, polls PollSender, logger *slog.Logger, cfg Config) *Runtime {
+func New(llmService llmService, history state.ConversationStore, extractor extractor.Extractor, polls PollSender, reminderService *reminders.Service, logger *slog.Logger, cfg Config) *Runtime {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -61,6 +64,7 @@ func New(llmService llmService, history state.ConversationStore, extractor extra
 		history:   history,
 		extractor: extractor,
 		polls:     polls,
+		reminders: reminderService,
 		logger:    logger,
 		config:    cfg,
 	}

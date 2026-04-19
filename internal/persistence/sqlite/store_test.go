@@ -6,8 +6,11 @@ import (
 	"log/slog"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
+	"telegram-ollama-reply-bot/internal/reminders"
+	"telegram-ollama-reply-bot/internal/state"
 )
 
 func openTestStore(t *testing.T) *Store {
@@ -128,5 +131,72 @@ func TestStoreChatCatalogAndWhitelist(t *testing.T) {
 	}
 	if !ok {
 		t.Fatalf("expected chat to be whitelisted")
+	}
+}
+
+func TestStoreReminderLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	createdAt := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	reminder := reminders.Reminder{
+		ID:            "rem_123",
+		Scope:         state.ConversationScope{ChatID: 100, TopicID: 55},
+		CreatorUserID: 42,
+		Text:          "pay lessons",
+		Schedule: reminders.Schedule{
+			Type:             reminders.ScheduleTypeMonthly,
+			Timezone:         "Europe/Moscow",
+			DayOfMonth:       20,
+			TimeOfDayMinutes: 19 * 60,
+		},
+		NextDueAt: createdAt.Add(9 * time.Hour),
+		Active:    true,
+		CreatedAt: createdAt,
+		UpdatedAt: createdAt,
+	}
+	if err := store.CreateReminder(ctx, reminder); err != nil {
+		t.Fatalf("create reminder: %v", err)
+	}
+
+	items, err := store.ListActiveReminders(ctx, 100)
+	if err != nil {
+		t.Fatalf("list reminders: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != reminder.ID || items[0].Scope.TopicID != 55 {
+		t.Fatalf("unexpected reminders: %+v", items)
+	}
+
+	fetched, ok, err := store.GetReminder(ctx, reminder.ID)
+	if err != nil {
+		t.Fatalf("get reminder: %v", err)
+	}
+	if !ok || fetched.Schedule.Type != reminders.ScheduleTypeMonthly {
+		t.Fatalf("unexpected reminder fetch: ok=%v reminder=%+v", ok, fetched)
+	}
+
+	deliveredAt := createdAt.Add(10 * time.Hour)
+	nextDue := createdAt.AddDate(0, 1, 0)
+	if err := store.UpdateReminderDelivery(ctx, reminder.ID, deliveredAt, nextDue, true); err != nil {
+		t.Fatalf("update reminder delivery: %v", err)
+	}
+
+	fetched, ok, err = store.GetReminder(ctx, reminder.ID)
+	if err != nil {
+		t.Fatalf("get updated reminder: %v", err)
+	}
+	if !ok || !fetched.LastDeliveredAt.Equal(deliveredAt) || !fetched.NextDueAt.Equal(nextDue) {
+		t.Fatalf("unexpected updated reminder: %+v", fetched)
+	}
+
+	if err := store.CancelReminder(ctx, reminder.ID); err != nil {
+		t.Fatalf("cancel reminder: %v", err)
+	}
+	items, err = store.ListActiveReminders(ctx, 100)
+	if err != nil {
+		t.Fatalf("list reminders after cancel: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no active reminders, got %+v", items)
 	}
 }

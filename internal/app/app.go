@@ -10,6 +10,7 @@ import (
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/logging"
 	psqlite "telegram-ollama-reply-bot/internal/persistence/sqlite"
+	"telegram-ollama-reply-bot/internal/reminders"
 	"telegram-ollama-reply-bot/internal/state/memory"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/telegram/bot"
@@ -112,13 +113,21 @@ func Run(ctx context.Context) error {
 	}
 
 	sanitizer := markdown.NewTgMarkdownV2Sanitizer()
+	reminderService := reminders.NewService(persistentStore, telegramAPI, cfg.Bot.AdminIDs, logManager.Logger("reminders"))
+	go func() {
+		if err := reminderService.Run(ctx); err != nil {
+			logger.Error("reminder scheduler exited with error", "error", err)
+			sentry.CaptureException(err)
+		}
+	}()
 	tools := tooluse.New(
 		llmc,
 		stores.Conversations(),
 		ext,
 		telegramAPI,
+		reminderService,
 		logManager.Logger("tooluse"),
-		tooluse.Config{MaxIterations: cfg.LLM.ToolLoopMaxIterations},
+		tooluse.Config{MaxIterations: cfg.LLM.ToolLoopMaxIterations, AdminIDs: cfg.Bot.AdminIDs},
 	)
 	replier := chatreply.New(llmc, tools)
 	botService := bot.NewBot(

@@ -83,6 +83,7 @@ func TestRuntimeReturnsUnavailableWhenToolUseGenerateFailsImmediately(t *testing
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
 		&stubPollSender{},
+		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
 	)
@@ -129,6 +130,7 @@ func TestRuntimeExecutesToolCallsAndReturnsFinalReply(t *testing.T) {
 		store,
 		&stubExtractor{},
 		&stubPollSender{},
+		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
 	)
@@ -171,6 +173,7 @@ func TestRuntimeRespectsConfiguredIterationLimit(t *testing.T) {
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
 		&stubPollSender{},
+		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 1},
 	)
@@ -192,6 +195,7 @@ func TestCreatePollUsesCurrentTopic(t *testing.T) {
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
 		sender,
+		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
 	)
@@ -213,12 +217,13 @@ func TestCreatePollUsesCurrentTopic(t *testing.T) {
 	}
 }
 
-func TestReminderStubsAreRegisteredByDefault(t *testing.T) {
+func TestReminderToolsAreRegisteredByDefault(t *testing.T) {
 	runtime := New(
 		&stubLLM{},
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
 		&stubPollSender{},
+		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
 	)
@@ -228,7 +233,7 @@ func TestReminderStubsAreRegisteredByDefault(t *testing.T) {
 		names = append(names, definition.Name)
 	}
 
-	for _, required := range []string{"list_chat_schedule", "add_schedule_item", "remove_schedule_item"} {
+	for _, required := range []string{"get_current_time", "list_chat_schedule", "add_schedule_item", "remove_schedule_item"} {
 		if !slices.Contains(names, required) {
 			t.Fatalf("expected %s in default tool set, got %v", required, names)
 		}

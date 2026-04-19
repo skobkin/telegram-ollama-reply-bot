@@ -24,7 +24,8 @@ const (
 	searchRecentHistoryResultCharBudget = 2200
 	conversationSummaryResultCharBudget = 1800
 	createPollResultCharBudget          = 1200
-	reminderStubResultCharBudget        = 900
+	reminderResultCharBudget            = 1400
+	currentTimeResultCharBudget         = 600
 )
 
 type Handler func(ctx context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error)
@@ -66,6 +67,14 @@ type Registry struct {
 func newRegistry(runtime *Runtime) *Registry {
 	definitions := []Definition{
 		{
+			Name:             "get_current_time",
+			Description:      "Read the current server time and timezone context whenever time-sensitive reasoning would be more accurate with an explicit current timestamp.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+			InvocationPolicy: InvocationPolicyDiscretionary,
+			ResultCharBudget: currentTimeResultCharBudget,
+			Handler:          currentTimeHandler,
+		},
+		{
 			Name:             "fetch_url_content",
 			Description:      "Fetch and extract article-like content from a URL when the user explicitly asks to inspect, explain, summarize, or analyze a link.",
 			Parameters:       json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","description":"HTTP or HTTPS URL to fetch"}},"required":["url"],"additionalProperties":false}`),
@@ -100,27 +109,29 @@ func newRegistry(runtime *Runtime) *Registry {
 		},
 		{
 			Name:             "list_chat_schedule",
-			Description:      "List reminders or scheduled items for the current chat when the user explicitly asks about reminders or schedule. This tool is not implemented yet.",
+			Description:      "List active reminders for the current chat when the user explicitly asks about reminders or the schedule.",
 			Parameters:       json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 			InvocationPolicy: InvocationPolicyExplicitRequestOnly,
-			ResultCharBudget: reminderStubResultCharBudget,
-			Handler:          reminderStubHandler("list_chat_schedule"),
+			ResultCharBudget: reminderResultCharBudget,
+			Handler:          runtime.listChatSchedule,
 		},
 		{
 			Name:             "add_schedule_item",
-			Description:      "Create a reminder or scheduled item for the current chat when the user explicitly asks for a reminder. This tool is not implemented yet.",
-			Parameters:       json.RawMessage(`{"type":"object","properties":{"request":{"type":"string","description":"Natural-language reminder request from the user"}},"required":["request"],"additionalProperties":false}`),
+			Description:      "Create a reminder for the current chat when the user explicitly asks for one. Use get_current_time first when you need to anchor relative time, and ask the user if a calendar-based reminder lacks timezone context.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"text":{"type":"string","description":"Reminder text to deliver later"},"schedule_type":{"type":"string","enum":["one_shot","interval_days","interval_weeks","weekdays","monthly"],"description":"Reminder schedule type"},"run_at":{"type":"string","description":"RFC3339 timestamp with timezone offset for the first run. Required for one_shot and interval-based reminders."},"timezone":{"type":"string","description":"IANA timezone such as Europe/Moscow. Required for weekday and monthly reminders."},"interval_value":{"type":"integer","minimum":1,"description":"Positive interval count for interval_days and interval_weeks reminders."},"weekdays":{"type":"array","items":{"type":"string","enum":["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]},"minItems":1,"description":"Weekdays used by the weekdays schedule type."},"day_of_month":{"type":"integer","minimum":1,"maximum":31,"description":"Day of month used by the monthly schedule type."},"time_of_day":{"type":"string","description":"24-hour local time in HH:MM format for weekday and monthly schedules."}},"required":["text","schedule_type"],"additionalProperties":false}`),
 			InvocationPolicy: InvocationPolicyExplicitRequestOnly,
-			ResultCharBudget: reminderStubResultCharBudget,
-			Handler:          reminderStubHandler("add_schedule_item"),
+			ResultCharBudget: reminderResultCharBudget,
+			SideEffecting:    true,
+			Handler:          runtime.addScheduleItem,
 		},
 		{
 			Name:             "remove_schedule_item",
-			Description:      "Remove a reminder or scheduled item for the current chat when the user explicitly asks to cancel one. This tool is not implemented yet.",
-			Parameters:       json.RawMessage(`{"type":"object","properties":{"target":{"type":"string","description":"Reminder identifier or user-facing description to remove"}},"required":["target"],"additionalProperties":false}`),
+			Description:      "Remove an active reminder from the current chat by stable reminder ID when the user explicitly asks to cancel one.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"reminder_id":{"type":"string","description":"Stable reminder identifier returned by list_chat_schedule"}},"required":["reminder_id"],"additionalProperties":false}`),
 			InvocationPolicy: InvocationPolicyExplicitRequestOnly,
-			ResultCharBudget: reminderStubResultCharBudget,
-			Handler:          reminderStubHandler("remove_schedule_item"),
+			ResultCharBudget: reminderResultCharBudget,
+			SideEffecting:    true,
+			Handler:          runtime.removeScheduleItem,
 		},
 	}
 

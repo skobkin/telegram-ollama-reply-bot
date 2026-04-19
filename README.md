@@ -9,7 +9,7 @@
 - Context-dependent dialogue in chats
 - Summarization of articles by provided link
 - Image recognition and description
-- Tool-assisted free-form chat with URL retrieval, history lookup, summary lookup, poll creation, and reminder-tool scaffolding
+- Tool-assisted free-form chat with URL retrieval, history lookup, summary lookup, current-time lookup, poll creation, and durable reminders
 
 ## Configuration
 
@@ -27,7 +27,7 @@ The bot can be configured using the following environment variables:
 | `LLM_FEATURE_SUMMARIZE_MODEL`           | Model name for summarization                                                                                      | No       | chat model               |
 | `LLM_FEATURE_IMAGE_RECOGNITION_BACKEND` | Backend for image recognition                                                                                     | No       | chat backend             |
 | `LLM_FEATURE_IMAGE_RECOGNITION_MODEL`   | Model name for image recognition                                                                                  | No       | chat model               |
-| `LLM_FEATURE_TOOL_USE_BACKEND`          | Backend reserved for future tool use                                                                              | No       | chat backend             |
+| `LLM_FEATURE_TOOL_USE_BACKEND`          | Backend used for conversational tool calling in ordinary chat replies                                             | No       | chat backend             |
 | `LLM_FEATURE_TOOL_USE_MODEL`            | Model used for conversational tool calling in ordinary chat replies                                               | No       | chat model               |
 | `LLM_TOOL_LOOP_MAX_ITERATIONS`          | Maximum tool-use loop iterations for one conversational reply                                                     | No       | `6`                      |
 | `STATE_MAX_BYTES`                       | Soft total in-memory state budget in bytes                                                                        | No       | `268435456`              |
@@ -75,13 +75,22 @@ You can also interact with the bot by:
 - Sending direct messages in private chat when interactivity is enabled for that chat
 - Sending images (the bot will describe what it sees in the image)
 
-When `LLM_FEATURE_TOOL_USE_*` is configured, ordinary chat replies may use tools before answering. The first tool set is:
+When `LLM_FEATURE_TOOL_USE_*` is configured, ordinary chat replies may use tools before answering. The current tool set is:
 
+- `get_current_time` for time-sensitive reasoning and schedule anchoring
 - `fetch_url_content` for explicit link-analysis requests in free-form chat
 - `search_recent_history` for in-memory recent-message lookup in the current chat/topic
 - `get_conversation_summary` for the current in-memory earlier summary
 - `create_poll` for explicit vote/poll requests
-- `list_chat_schedule`, `add_schedule_item`, `remove_schedule_item` as reminder-tool scaffolding that currently returns structured `not_implemented` responses
+- `list_chat_schedule`, `add_schedule_item`, `remove_schedule_item` for durable chat reminders
+
+Reminder behavior in the first implementation slice:
+
+- one-shot reminders use an exact RFC3339 timestamp internally
+- recurring reminders support `interval_days`, `interval_weeks`, weekday rules, and monthly rules
+- calendar-based reminders require an IANA timezone such as `Europe/Moscow`
+- reminders survive restarts and are delivered back into the original chat topic when `topic_id` is present
+- after downtime, recurring reminders emit only the latest missed occurrence and then continue on schedule
 
 `/summarize` still uses the direct extractor-plus-summary workflow and does not depend on the tool loop.
 

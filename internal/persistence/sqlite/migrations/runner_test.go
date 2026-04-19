@@ -23,7 +23,7 @@ func TestApplyBootstrapsAdminConfigSchema(t *testing.T) {
 		t.Fatalf("apply migrations: %v", err)
 	}
 
-	for _, table := range []string{"global_settings", "chat_settings", "prompt_templates", "chat_catalog", "chat_whitelist"} {
+	for _, table := range []string{"global_settings", "chat_settings", "prompt_templates", "chat_catalog", "chat_whitelist", "reminders"} {
 		var count int
 		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
 			t.Fatalf("query table %s: %v", table, err)
@@ -81,7 +81,7 @@ func TestApplyLogsEachMigrationAtInfo(t *testing.T) {
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "msg=\"applying sqlite migration\"") || !strings.Contains(output, "name=bootstrap_admin_config") || !strings.Contains(output, "name=add_chat_language_and_gender") {
+	if !strings.Contains(output, "msg=\"applying sqlite migration\"") || !strings.Contains(output, "name=bootstrap_admin_config") || !strings.Contains(output, "name=add_chat_language_and_gender") || !strings.Contains(output, "name=add_reminders") {
 		t.Fatalf("expected migration log output, got %q", output)
 	}
 }
