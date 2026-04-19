@@ -8,13 +8,6 @@ import (
 )
 
 const (
-	defaultToolResultCharBudget = 1800
-
-	fetchURLContentResultCharBudget     = 3500
-	searchRecentHistoryResultCharBudget = 2200
-	conversationSummaryResultCharBudget = 1800
-	createPollResultCharBudget          = 1200
-	reminderStubResultCharBudget        = 900
 	fetchURLContentTextCharLimit        = 2600
 	searchRecentHistorySnippetCharLimit = 280
 	conversationSummaryTextCharLimit    = 1400

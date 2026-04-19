@@ -17,6 +17,16 @@ const (
 	InvocationPolicyDiscretionary       InvocationPolicy = "discretionary"
 )
 
+const (
+	defaultToolResultCharBudget = 1800
+
+	fetchURLContentResultCharBudget     = 3500
+	searchRecentHistoryResultCharBudget = 2200
+	conversationSummaryResultCharBudget = 1800
+	createPollResultCharBudget          = 1200
+	reminderStubResultCharBudget        = 900
+)
+
 type Handler func(ctx context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error)
 
 type Definition struct {
