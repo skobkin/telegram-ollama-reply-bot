@@ -43,10 +43,15 @@ func Run(ctx context.Context) error {
 	}
 
 	logger.Info(
-		"selected models",
-		"text_request_model", cfg.LLM.Models.TextRequestModel,
-		"summarize_model", cfg.LLM.Models.SummarizeModel,
-		"image_recognition_model", cfg.LLM.Models.ImageRecognitionModel,
+		"selected llm routes",
+		"chat_backend", cfg.LLM.Features.Chat.Backend,
+		"chat_model", cfg.LLM.Features.Chat.Model,
+		"summarize_backend", cfg.LLM.Features.Summarize.Backend,
+		"summarize_model", cfg.LLM.Features.Summarize.Model,
+		"image_backend", cfg.LLM.Features.ImageRecognition.Backend,
+		"image_model", cfg.LLM.Features.ImageRecognition.Model,
+		"tool_use_backend", cfg.LLM.Features.ToolUse.Backend,
+		"tool_use_model", cfg.LLM.Features.ToolUse.Model,
 	)
 
 	templateProcessor, err := llm.NewTemplateProcessor(cfg.LLM.Prompts)
@@ -57,11 +62,17 @@ func Run(ctx context.Context) error {
 		return err
 	}
 
-	llmc := llm.NewConnector(cfg.LLM, templateProcessor, logManager.Logger("llm"))
+	llmc, err := llm.NewService(cfg.LLM, templateProcessor, logManager.Logger("llm"))
+	if err != nil {
+		logger.Error("failed to initialize llm service", "error", err)
+		sentry.CaptureException(err)
+
+		return err
+	}
 
 	logger.Info("checking models availability")
 
-	hasAll, searchResult := llmc.HasAllModels(ctx, cfg.LLM.Models)
+	hasAll, searchResult := llmc.HasAllModels(ctx)
 	if !hasAll {
 		logger.Error("required models are unavailable", "result", searchResult)
 		sentry.CaptureMessage("Not all models are available")

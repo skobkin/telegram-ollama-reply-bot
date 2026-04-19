@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -15,12 +16,16 @@ type Config struct {
 	Logging LoggingConfig
 }
 
-// LLMConfig contains configuration for the LLM connector
+const (
+	LLMBackendOpenAICompat = "openai_compat"
+	LLMBackendOllama       = "ollama"
+)
+
+// LLMConfig contains configuration for the LLM service
 type LLMConfig struct {
-	APIBaseURL string
-	APIToken   string
-	Prompts    PromptConfig
-	Models     ModelSelection
+	Backends BackendConfig
+	Features FeatureConfig
+	Prompts  PromptConfig
 }
 
 // PromptConfig contains configuration for prompts
@@ -53,11 +58,35 @@ type BotConfig struct {
 	ProcessingTimeout        time.Duration
 }
 
-// ModelSelection contains configuration for LLM models
-type ModelSelection struct {
-	TextRequestModel      string
-	SummarizeModel        string
-	ImageRecognitionModel string
+// BackendConfig contains configuration for all supported LLM backends.
+type BackendConfig struct {
+	OpenAICompat OpenAICompatBackendConfig
+	Ollama       OllamaBackendConfig
+}
+
+// OpenAICompatBackendConfig contains configuration for OpenAI-compatible backends.
+type OpenAICompatBackendConfig struct {
+	BaseURL  string
+	APIToken string
+}
+
+// OllamaBackendConfig contains configuration for the Ollama native API.
+type OllamaBackendConfig struct {
+	BaseURL string
+}
+
+// FeatureConfig contains per-feature backend routing and model selection.
+type FeatureConfig struct {
+	Chat             FeatureRouteConfig
+	Summarize        FeatureRouteConfig
+	ImageRecognition FeatureRouteConfig
+	ToolUse          FeatureRouteConfig
+}
+
+// FeatureRouteConfig contains backend and model selection for one feature.
+type FeatureRouteConfig struct {
+	Backend string
+	Model   string
 }
 
 // TelegramConfig contains configuration for Telegram bot
@@ -138,14 +167,43 @@ func Load() *Config {
 		"You should reply in the following language: {{.Language}}.\n" +
 		"Be concise but informative."
 
+	chatBackend := getEnvOrDefault("LLM_FEATURE_CHAT_BACKEND", LLMBackendOpenAICompat)
+	chatModel := os.Getenv("LLM_FEATURE_CHAT_MODEL")
+	summarizeBackend := getEnvOrDefault("LLM_FEATURE_SUMMARIZE_BACKEND", chatBackend)
+	summarizeModel := getEnvOrDefault("LLM_FEATURE_SUMMARIZE_MODEL", chatModel)
+	imageRecognitionBackend := getEnvOrDefault("LLM_FEATURE_IMAGE_RECOGNITION_BACKEND", chatBackend)
+	imageRecognitionModel := getEnvOrDefault("LLM_FEATURE_IMAGE_RECOGNITION_MODEL", chatModel)
+	toolUseBackend := getEnvOrDefault("LLM_FEATURE_TOOL_USE_BACKEND", chatBackend)
+	toolUseModel := getEnvOrDefault("LLM_FEATURE_TOOL_USE_MODEL", chatModel)
+
 	return &Config{
 		LLM: LLMConfig{
-			APIBaseURL: os.Getenv("OPENAI_API_BASE_URL"),
-			APIToken:   os.Getenv("OPENAI_API_TOKEN"),
-			Models: ModelSelection{
-				TextRequestModel:      os.Getenv("MODEL_TEXT_REQUEST"),
-				SummarizeModel:        os.Getenv("MODEL_SUMMARIZE_REQUEST"),
-				ImageRecognitionModel: os.Getenv("MODEL_IMAGE_RECOGNITION"),
+			Backends: BackendConfig{
+				OpenAICompat: OpenAICompatBackendConfig{
+					BaseURL:  os.Getenv("LLM_BACKEND_OPENAI_COMPAT_BASE_URL"),
+					APIToken: os.Getenv("LLM_BACKEND_OPENAI_COMPAT_API_TOKEN"),
+				},
+				Ollama: OllamaBackendConfig{
+					BaseURL: getEnvOrDefault("LLM_BACKEND_OLLAMA_BASE_URL", "http://localhost:11434"),
+				},
+			},
+			Features: FeatureConfig{
+				Chat: FeatureRouteConfig{
+					Backend: chatBackend,
+					Model:   chatModel,
+				},
+				Summarize: FeatureRouteConfig{
+					Backend: summarizeBackend,
+					Model:   summarizeModel,
+				},
+				ImageRecognition: FeatureRouteConfig{
+					Backend: imageRecognitionBackend,
+					Model:   imageRecognitionModel,
+				},
+				ToolUse: FeatureRouteConfig{
+					Backend: toolUseBackend,
+					Model:   toolUseModel,
+				},
 			},
 			Prompts: PromptConfig{
 				ChatSystemPrompt:       getEnvOrDefault("PROMPT_CHAT", defaultChatPrompt),
@@ -181,4 +239,49 @@ func getEnvOrDefault(key, defaultValue string) string {
 	}
 
 	return defaultValue
+}
+
+func (c LLMConfig) UsedBackends() []string {
+	used := []string{}
+
+	for _, route := range []FeatureRouteConfig{
+		c.Features.Chat,
+		c.Features.Summarize,
+		c.Features.ImageRecognition,
+		c.Features.ToolUse,
+	} {
+		if route.Backend == "" {
+			continue
+		}
+
+		duplicate := false
+		for _, backend := range used {
+			if backend == route.Backend {
+				duplicate = true
+
+				break
+			}
+		}
+
+		if !duplicate {
+			used = append(used, route.Backend)
+		}
+	}
+
+	return used
+}
+
+func (c LLMConfig) RouteForFeature(feature string) (FeatureRouteConfig, error) {
+	switch feature {
+	case "chat":
+		return c.Features.Chat, nil
+	case "summarize":
+		return c.Features.Summarize, nil
+	case "image_recognition":
+		return c.Features.ImageRecognition, nil
+	case "tool_use":
+		return c.Features.ToolUse, nil
+	default:
+		return FeatureRouteConfig{}, fmt.Errorf("unknown feature: %s", feature)
+	}
 }

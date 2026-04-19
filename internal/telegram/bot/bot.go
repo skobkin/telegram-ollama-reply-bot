@@ -31,7 +31,7 @@ const TelegramCharLimit = 4000
 
 type Bot struct {
 	api        *t.Bot
-	llm        *llm.Connector
+	llm        *llm.Service
 	extractor  extractor.Extractor
 	sanitizer  markdown.Sanitizer
 	stats      *stats.Stats
@@ -46,7 +46,7 @@ type Bot struct {
 func NewBot(
 	ctx context.Context,
 	api *t.Bot,
-	llm *llm.Connector,
+	llm *llm.Service,
 	extractor extractor.Extractor,
 	sanitizer markdown.Sanitizer,
 	imageCache *ImageCache,

@@ -1,7 +1,5 @@
 package llm
 
-import "github.com/sashabaranov/go-openai"
-
 type RequestContext struct {
 	Empty bool
 	User  UserContext
@@ -72,16 +70,16 @@ func (c RequestContext) Prompt() string {
 	return prompt
 }
 
-func chatMessageToOpenAiChatCompletionMessage(message ChatMessage) openai.ChatCompletionMessage {
-	var msgRole string
+func chatMessageToMessage(message ChatMessage) Message {
+	var msgRole Role
 
 	switch {
 	case message.IsMe:
-		msgRole = openai.ChatMessageRoleAssistant
+		msgRole = RoleAssistant
 	case message.IsUserRequest:
-		msgRole = openai.ChatMessageRoleUser
+		msgRole = RoleUser
 	default:
-		msgRole = openai.ChatMessageRoleUser
+		msgRole = RoleUser
 	}
 
 	var msgText string
@@ -98,9 +96,11 @@ func chatMessageToOpenAiChatCompletionMessage(message ChatMessage) openai.ChatCo
 		msgText = chatMessageToText(message)
 	}
 
-	return openai.ChatCompletionMessage{
-		Role:    msgRole,
-		Content: msgText,
+	return Message{
+		Role: msgRole,
+		Parts: []Part{
+			{Type: PartTypeText, Text: msgText},
+		},
 	}
 }
 

@@ -14,27 +14,33 @@
 
 The bot can be configured using the following environment variables:
 
-| Variable                         | Description                                                                                                       | Required | Default                                    |
-|----------------------------------|-------------------------------------------------------------------------------------------------------------------|----------|--------------------------------------------|
-| `OPENAI_API_TOKEN`               | API token for OpenAI compatible API                                                                               | Yes      | -                                          |
-| `OPENAI_API_BASE_URL`            | Base URL for OpenAI compatible API                                                                                | Yes      | -                                          |
-| `TELEGRAM_TOKEN`                 | Telegram Bot API token                                                                                            | Yes      | -                                          |
-| `MODEL_TEXT_REQUEST`             | Model name for text requests                                                                                      | Yes      | -                                          |
-| `MODEL_SUMMARIZE_REQUEST`        | Model name for summarization requests                                                                             | Yes      | -                                          |
-| `MODEL_IMAGE_RECOGNITION`        | Model name for image recognition                                                                                  | No       | -                                          |
-| `BOT_HISTORY_LENGTH`             | Number of messages to keep in conversation history                                                                | No       | 150                                        |
-| `LLM_UNCOMPRESSED_HISTORY_LIMIT` | Recent chat messages sent verbatim to LLM; older ones summarized. Set to `0` to disable summarization             | No       | 15                                         |
-| `LLM_HISTORY_SUMMARY_THRESHOLD`  | Extra messages beyond the limit before summarization triggers again                                               | No       | 5                                          |
-| `BOT_PROCESSING_TIMEOUT`         | Timeout for processing incoming requests (includes LLM calls). Accepts Go duration strings (e.g. `45s`, `1m30s`). | No       | `30s`                                      |
-| `LOG_LEVEL`                      | Structured log verbosity: `debug`, `info`, `warn`, or `error`                                                     | No       | `info`                                     |
-| `SENTRY_DSN`                     | Sentry DSN for error tracking                                                                                     | No       | empty                                      |
-| `RESPONSE_LANGUAGE`              | Language for bot responses                                                                                        | No       | Russian                                    |
-| `RESPONSE_GENDER`                | Gender for bot responses                                                                                          | No       | neutral                                    |
-| `MAX_SUMMARY_LENGTH`             | Maximum length of generated summaries                                                                             | No       | 2000                                       |
-| `PROMPT_CHAT`                    | System prompt for chat interactions                                                                               | No       | See [config.go](internal/config/config.go) |
-| `PROMPT_SUMMARIZE`               | System prompt for summarization                                                                                   | No       | See [config.go](internal/config/config.go) |
-| `PROMPT_IMAGE_RECOGNITION`       | System prompt for image recognition                                                                               | No       | See [config.go](internal/config/config.go) |
-| `BOT_ADMIN_IDS`                  | Comma-separated list of admin user IDs                                                                            | No       | empty                                      |
+| Variable                                | Description                                                                                                       | Required | Default                                    |
+|-----------------------------------------|-------------------------------------------------------------------------------------------------------------------|----------|--------------------------------------------|
+| `TELEGRAM_TOKEN`                        | Telegram Bot API token                                                                                            | Yes      | -                                          |
+| `LLM_BACKEND_OPENAI_COMPAT_BASE_URL`    | Base URL for OpenAI-compatible backend                                                                            | No       | empty                                      |
+| `LLM_BACKEND_OPENAI_COMPAT_API_TOKEN`   | API token for OpenAI-compatible backend                                                                           | No       | empty                                      |
+| `LLM_BACKEND_OLLAMA_BASE_URL`           | Base URL for Ollama native API                                                                                    | No       | `http://localhost:11434`                   |
+| `LLM_FEATURE_CHAT_BACKEND`              | Backend for normal chat requests: `openai_compat` or `ollama`                                                     | No       | `openai_compat`                            |
+| `LLM_FEATURE_CHAT_MODEL`                | Model name for normal chat requests                                                                               | Yes      | -                                          |
+| `LLM_FEATURE_SUMMARIZE_BACKEND`         | Backend for summarization                                                                                         | No       | chat backend                               |
+| `LLM_FEATURE_SUMMARIZE_MODEL`           | Model name for summarization                                                                                      | No       | chat model                                 |
+| `LLM_FEATURE_IMAGE_RECOGNITION_BACKEND` | Backend for image recognition                                                                                     | No       | chat backend                               |
+| `LLM_FEATURE_IMAGE_RECOGNITION_MODEL`   | Model name for image recognition                                                                                  | No       | chat model                                 |
+| `LLM_FEATURE_TOOL_USE_BACKEND`          | Backend reserved for future tool use                                                                              | No       | chat backend                               |
+| `LLM_FEATURE_TOOL_USE_MODEL`            | Model reserved for future tool use                                                                                | No       | chat model                                 |
+| `BOT_HISTORY_LENGTH`                    | Number of messages to keep in conversation history                                                                | No       | 150                                        |
+| `LLM_UNCOMPRESSED_HISTORY_LIMIT`        | Recent chat messages sent verbatim to LLM; older ones summarized. Set to `0` to disable summarization             | No       | 15                                         |
+| `LLM_HISTORY_SUMMARY_THRESHOLD`         | Extra messages beyond the limit before summarization triggers again                                               | No       | 5                                          |
+| `BOT_PROCESSING_TIMEOUT`                | Timeout for processing incoming requests (includes LLM calls). Accepts Go duration strings (e.g. `45s`, `1m30s`). | No       | `30s`                                      |
+| `LOG_LEVEL`                             | Structured log verbosity: `debug`, `info`, `warn`, or `error`                                                     | No       | `info`                                     |
+| `SENTRY_DSN`                            | Sentry DSN for error tracking                                                                                     | No       | empty                                      |
+| `RESPONSE_LANGUAGE`                     | Language for bot responses                                                                                        | No       | Russian                                    |
+| `RESPONSE_GENDER`                       | Gender for bot responses                                                                                          | No       | neutral                                    |
+| `MAX_SUMMARY_LENGTH`                    | Maximum length of generated summaries                                                                             | No       | 2000                                       |
+| `PROMPT_CHAT`                           | System prompt for chat interactions                                                                               | No       | See [config.go](internal/config/config.go) |
+| `PROMPT_SUMMARIZE`                      | System prompt for summarization                                                                                   | No       | See [config.go](internal/config/config.go) |
+| `PROMPT_IMAGE_RECOGNITION`              | System prompt for image recognition                                                                               | No       | See [config.go](internal/config/config.go) |
+| `BOT_ADMIN_IDS`                         | Comma-separated list of admin user IDs                                                                            | No       | empty                                      |
 
 ### Prompt placeholders
 
@@ -52,13 +58,13 @@ itself, `{{.Context}}` is the recent conversation history, and `{{.MaxLength}}` 
 
 The bot supports the following commands:
 
-| Command     | Description                                    | Example |
-|-------------|------------------------------------------------|---------|
-| `/start`    | Start the bot and get a welcome message        | `/start` |
-| `/help`     | Show help message with available commands      | `/help` |
-| `/summarize`, `/s` | Summarize text from the provided link   | `/summarize https://ex.co/article`, `/s https://ex.co/article concentrate on tech stuff` |
-| `/stats`    | Show bot statistics (admin only)               | `/stats` |
-| `/reset`    | Reset current chat history (admin only)        | `/reset` |
+| Command            | Description                               | Example                                                                                  |
+|--------------------|-------------------------------------------|------------------------------------------------------------------------------------------|
+| `/start`           | Start the bot and get a welcome message   | `/start`                                                                                 |
+| `/help`            | Show help message with available commands | `/help`                                                                                  |
+| `/summarize`, `/s` | Summarize text from the provided link     | `/summarize https://ex.co/article`, `/s https://ex.co/article concentrate on tech stuff` |
+| `/stats`           | Show bot statistics (admin only)          | `/stats`                                                                                 |
+| `/reset`           | Reset current chat history (admin only)   | `/reset`                                                                                 |
 
 You can also interact with the bot by:
 - Mentioning it in a message
@@ -84,12 +90,12 @@ golangci-lint run ./cmd/bot/... ./internal/...
 
 ```shell
 docker run \
-  -e OPENAI_API_TOKEN=123 \
-  -e OPENAI_API_BASE_URL=http://ollama.localhost:11434/v1 \
   -e TELEGRAM_TOKEN=12345 \
-  -e MODEL_TEXT_REQUEST=gemma3:27b \
-  -e MODEL_SUMMARIZE_REQUEST=gemma3:12b \
-  -e MODEL_IMAGE_RECOGNITION=gemma3:12b \
+  -e LLM_BACKEND_OLLAMA_BASE_URL=http://ollama.localhost:11434 \
+  -e LLM_FEATURE_CHAT_BACKEND=ollama \
+  -e LLM_FEATURE_CHAT_MODEL=gemma3:27b \
+  -e LLM_FEATURE_SUMMARIZE_MODEL=gemma3:12b \
+  -e LLM_FEATURE_IMAGE_RECOGNITION_MODEL=gemma3:12b \
   -e BOT_HISTORY_LENGTH=150 \
   -e LLM_UNCOMPRESSED_HISTORY_LIMIT=15 \
   -e LOG_LEVEL=info \
@@ -97,3 +103,5 @@ docker run \
   -e BOT_ADMIN_IDS=123456789,987654321 \
   skobkin/telegram-llm-bot
 ```
+
+To keep the current OpenAI-compatible path, point `LLM_BACKEND_OPENAI_COMPAT_BASE_URL` and `LLM_BACKEND_OPENAI_COMPAT_API_TOKEN` at that backend and leave feature backends on the default `openai_compat`.
