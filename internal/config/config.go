@@ -8,13 +8,14 @@ import (
 	"time"
 )
 
-// Config represents the root configuration structure
+// Config represents the root configuration structure.
 type Config struct {
-	LLM     LLMConfig
-	Sentry  SentryConfig
-	Bot     BotConfig
-	State   StateConfig
-	Logging LoggingConfig
+	LLM         LLMConfig
+	Sentry      SentryConfig
+	Bot         BotConfig
+	State       StateConfig
+	Logging     LoggingConfig
+	Persistence PersistenceConfig
 }
 
 const (
@@ -22,40 +23,34 @@ const (
 	LLMBackendOllama       = "ollama"
 )
 
-// LLMConfig contains configuration for the LLM service
+// LLMConfig contains configuration for the LLM service.
 type LLMConfig struct {
 	Backends BackendConfig
 	Features FeatureConfig
-	Prompts  PromptConfig
 }
 
-// PromptConfig contains configuration for prompts
-type PromptConfig struct {
-	ChatSystemPrompt       string
-	SummarizePrompt        string
-	ImageRecognitionPrompt string
-	Language               string
-	Gender                 string
-	MaxSummaryLength       int
-}
-
-// SentryConfig contains configuration for Sentry error tracking
+// SentryConfig contains configuration for Sentry error tracking.
 type SentryConfig struct {
 	DSN string
 }
 
-// LoggingConfig contains configuration for structured logging
+// LoggingConfig contains configuration for structured logging.
 type LoggingConfig struct {
 	Level string
 }
 
-// BotConfig contains configuration for bot settings
+// BotConfig contains configuration for bot settings.
 type BotConfig struct {
 	AdminIDs                 []int64
 	Telegram                 TelegramConfig
 	UncompressedHistoryLimit int
 	HistorySummaryThreshold  int
 	ProcessingTimeout        time.Duration
+}
+
+// PersistenceConfig contains durable storage configuration.
+type PersistenceConfig struct {
+	StorePath string
 }
 
 type StateConfig struct {
@@ -98,118 +93,23 @@ type FeatureRouteConfig struct {
 	Model   string
 }
 
-// TelegramConfig contains configuration for Telegram bot
+// TelegramConfig contains configuration for Telegram bot.
 type TelegramConfig struct {
 	Token string
 }
 
-// Load creates a new Config instance populated from environment variables
+// Load creates a new Config instance populated from environment variables.
 func Load() *Config {
-	maxSummaryLength := 2000
-	if lengthStr := os.Getenv("MAX_SUMMARY_LENGTH"); lengthStr != "" {
-		if length, err := strconv.Atoi(lengthStr); err == nil {
-			maxSummaryLength = length
-		}
-	}
+	uncompressedHistoryLimit := intFromEnv("LLM_UNCOMPRESSED_HISTORY_LIMIT", 15)
+	historySummaryThreshold := intFromEnv("LLM_HISTORY_SUMMARY_THRESHOLD", 5)
+	processingTimeout := durationFromEnv("BOT_PROCESSING_TIMEOUT", 30*time.Second)
 
-	uncompressedHistoryLimit := 15
-	if lengthStr := os.Getenv("LLM_UNCOMPRESSED_HISTORY_LIMIT"); lengthStr != "" {
-		if length, err := strconv.Atoi(lengthStr); err == nil {
-			uncompressedHistoryLimit = length
-		}
-	}
-
-	historySummaryThreshold := 5
-	if thrStr := os.Getenv("LLM_HISTORY_SUMMARY_THRESHOLD"); thrStr != "" {
-		if thr, err := strconv.Atoi(thrStr); err == nil {
-			historySummaryThreshold = thr
-		}
-	}
-
-	processingTimeout := 30 * time.Second
-	if toStr := os.Getenv("BOT_PROCESSING_TIMEOUT"); toStr != "" {
-		if to, err := time.ParseDuration(toStr); err == nil {
-			processingTimeout = to
-		}
-	}
-
-	stateMaxBytes := int64(256 << 20)
-	if value := os.Getenv("STATE_MAX_BYTES"); value != "" {
-		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
-			stateMaxBytes = parsed
-		}
-	}
-
-	stateHistoryMaxBytes := int64(160 << 20)
-	if value := os.Getenv("STATE_HISTORY_MAX_BYTES"); value != "" {
-		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
-			stateHistoryMaxBytes = parsed
-		}
-	}
-
-	stateHistoryStreamsMax := 1024
-	if value := os.Getenv("STATE_HISTORY_STREAMS_MAX"); value != "" {
-		if parsed, err := strconv.Atoi(value); err == nil {
-			stateHistoryStreamsMax = parsed
-		}
-	}
-
-	stateHistoryMessagesPerStream := 150
-	if value := os.Getenv("STATE_HISTORY_MESSAGES_PER_STREAM"); value != "" {
-		if parsed, err := strconv.Atoi(value); err == nil {
-			stateHistoryMessagesPerStream = parsed
-		}
-	}
-
-	stateImageCacheMaxBytes := int64(64 << 20)
-	if value := os.Getenv("STATE_IMAGE_CACHE_MAX_BYTES"); value != "" {
-		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
-			stateImageCacheMaxBytes = parsed
-		}
-	}
-
-	stateImageCacheTTL := 24 * time.Hour
-	if value := os.Getenv("STATE_IMAGE_CACHE_TTL"); value != "" {
-		if parsed, err := time.ParseDuration(value); err == nil {
-			stateImageCacheTTL = parsed
-		}
-	}
-
-	// Parse admin IDs from environment variable
-	var adminIDs []int64
-	if adminIDsStr := os.Getenv("BOT_ADMIN_IDS"); adminIDsStr != "" {
-		// Split by comma and parse each ID
-		for _, idStr := range strings.Split(adminIDsStr, ",") {
-			idStr = strings.TrimSpace(idStr)
-			if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
-				adminIDs = append(adminIDs, id)
-			}
-		}
-	}
-
-	defaultChatPrompt := "You're a bot in the Telegram chat.\n" +
-		"You're using a model called \"{{.Model}}\".\n" +
-		"You should reply in the following language: {{.Language}}.\n" +
-		"You should use {{.Gender}} gender when speaking about yourself and neutral gender when speaking about others.\n\n" +
-		"{{.Context}}"
-
-	defaultSummarizePrompt := "You're a text shortener. Give a VERY SHORT summary as a list of facts. \n" +
-		"Format it like this:\n" +
-		"```\n" +
-		"- Fact 1\n" +
-		"- Fact 2\n\n" +
-		"Your short conclusion.\n" +
-		"```\n" +
-		"Avoid any commentaries and value judgement on the matter unless asked by the user. \n" +
-		"Avoid using ANY formatting in the text except simple \"-\" for each fact even if asked to.\n\n" +
-		"You should reply in the following language: {{.Language}} (unless specifically asked by the user).\n\n" +
-		"Limit the summary to maximum of {{.MaxLength}} characters. \n" +
-		"Avoid exceeding it at any cost. Be as brief as possible."
-
-	defaultImageRecognitionPrompt := "You're an image recognition bot. Describe what you see in the image in detail for an LLM to understand.\n" +
-		"If you can understand the meaning of the image, describe it in detail. If you can't understand the meaning, describe what you see in general.\n" +
-		"You should reply in the following language: {{.Language}}.\n" +
-		"Be concise but informative."
+	stateMaxBytes := int64FromEnv("STATE_MAX_BYTES", int64(256<<20))
+	stateHistoryMaxBytes := int64FromEnv("STATE_HISTORY_MAX_BYTES", int64(160<<20))
+	stateHistoryStreamsMax := intFromEnv("STATE_HISTORY_STREAMS_MAX", 1024)
+	stateHistoryMessagesPerStream := intFromEnv("STATE_HISTORY_MESSAGES_PER_STREAM", 150)
+	stateImageCacheMaxBytes := int64FromEnv("STATE_IMAGE_CACHE_MAX_BYTES", int64(64<<20))
+	stateImageCacheTTL := durationFromEnv("STATE_IMAGE_CACHE_TTL", 24*time.Hour)
 
 	chatBackend := getEnvOrDefault("LLM_FEATURE_CHAT_BACKEND", LLMBackendOpenAICompat)
 	chatModel := os.Getenv("LLM_FEATURE_CHAT_MODEL")
@@ -249,17 +149,16 @@ func Load() *Config {
 					Model:   toolUseModel,
 				},
 			},
-			Prompts: PromptConfig{
-				ChatSystemPrompt:       getEnvOrDefault("PROMPT_CHAT", defaultChatPrompt),
-				SummarizePrompt:        getEnvOrDefault("PROMPT_SUMMARIZE", defaultSummarizePrompt),
-				ImageRecognitionPrompt: getEnvOrDefault("PROMPT_IMAGE_RECOGNITION", defaultImageRecognitionPrompt),
-				Language:               getEnvOrDefault("RESPONSE_LANGUAGE", "Russian"),
-				Gender:                 getEnvOrDefault("RESPONSE_GENDER", "neutral"),
-				MaxSummaryLength:       maxSummaryLength,
-			},
 		},
 		Sentry: SentryConfig{
 			DSN: os.Getenv("SENTRY_DSN"),
+		},
+		Bot: BotConfig{
+			AdminIDs:                 adminIDsFromEnv("BOT_ADMIN_IDS"),
+			Telegram:                 TelegramConfig{Token: os.Getenv("TELEGRAM_TOKEN")},
+			UncompressedHistoryLimit: uncompressedHistoryLimit,
+			HistorySummaryThreshold:  historySummaryThreshold,
+			ProcessingTimeout:        processingTimeout,
 		},
 		State: StateConfig{
 			MaxBytes:                 stateMaxBytes,
@@ -272,54 +171,28 @@ func Load() *Config {
 		Logging: LoggingConfig{
 			Level: getEnvOrDefault("LOG_LEVEL", "info"),
 		},
-		Bot: BotConfig{
-			AdminIDs: adminIDs,
-			Telegram: TelegramConfig{
-				Token: os.Getenv("TELEGRAM_TOKEN"),
-			},
-			UncompressedHistoryLimit: uncompressedHistoryLimit,
-			HistorySummaryThreshold:  historySummaryThreshold,
-			ProcessingTimeout:        processingTimeout,
+		Persistence: PersistenceConfig{
+			StorePath: os.Getenv("PERSISTENT_STORE_PATH"),
 		},
 	}
 }
 
-func getEnvOrDefault(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-
-	return defaultValue
-}
-
 func (c LLMConfig) UsedBackends() []string {
-	used := []string{}
+	seen := map[string]struct{}{}
+	result := make([]string, 0, 2)
 
-	for _, route := range []FeatureRouteConfig{
-		c.Features.Chat,
-		c.Features.Summarize,
-		c.Features.ImageRecognition,
-		c.Features.ToolUse,
-	} {
+	for _, route := range []FeatureRouteConfig{c.Features.Chat, c.Features.Summarize, c.Features.ImageRecognition, c.Features.ToolUse} {
 		if route.Backend == "" {
 			continue
 		}
-
-		duplicate := false
-		for _, backend := range used {
-			if backend == route.Backend {
-				duplicate = true
-
-				break
-			}
+		if _, ok := seen[route.Backend]; ok {
+			continue
 		}
-
-		if !duplicate {
-			used = append(used, route.Backend)
-		}
+		seen[route.Backend] = struct{}{}
+		result = append(result, route.Backend)
 	}
 
-	return used
+	return result
 }
 
 func (c LLMConfig) RouteForFeature(feature string) (FeatureRouteConfig, error) {
@@ -333,6 +206,64 @@ func (c LLMConfig) RouteForFeature(feature string) (FeatureRouteConfig, error) {
 	case "tool_use":
 		return c.Features.ToolUse, nil
 	default:
-		return FeatureRouteConfig{}, fmt.Errorf("unknown feature: %s", feature)
+		return FeatureRouteConfig{}, fmt.Errorf("unknown feature %q", feature)
 	}
+}
+
+func adminIDsFromEnv(name string) []int64 {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return nil
+	}
+
+	result := make([]int64, 0, 4)
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if id, err := strconv.ParseInt(item, 10, 64); err == nil {
+			result = append(result, id)
+		}
+	}
+
+	return result
+}
+
+func intFromEnv(name string, fallback int) int {
+	if raw := os.Getenv(name); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			return parsed
+		}
+	}
+
+	return fallback
+}
+
+func int64FromEnv(name string, fallback int64) int64 {
+	if raw := os.Getenv(name); raw != "" {
+		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			return parsed
+		}
+	}
+
+	return fallback
+}
+
+func durationFromEnv(name string, fallback time.Duration) time.Duration {
+	if raw := os.Getenv(name); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil {
+			return parsed
+		}
+	}
+
+	return fallback
+}
+
+func getEnvOrDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+
+	return defaultValue
 }

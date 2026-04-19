@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/llmcontext"
 	"telegram-ollama-reply-bot/internal/state"
 
@@ -144,7 +145,7 @@ func (b *Bot) maybeSummarizeHistory(ctx context.Context, message t.Message) {
 		text = "Earlier conversation summary:\n" + snapshot.EarlierSummary + "\n\nRecent messages:\n" + text
 	}
 
-	summary, usage, err := b.llm.Summarize(workCtx, text, "")
+	summary, usage, err := b.llm.Summarize(workCtx, llm.PromptScope{ChatID: scope.ChatID}, text, "")
 	if err != nil {
 		b.loggerFromContext(workCtx).Error("failed to summarize history", "error", err, "chat_id", scope.ChatID, "topic_id", scope.TopicID)
 		sentry.CaptureException(err)

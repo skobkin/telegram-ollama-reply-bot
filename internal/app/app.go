@@ -3,10 +3,12 @@ package app
 import (
 	"context"
 	"fmt"
+	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/content/extractor"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/logging"
+	psqlite "telegram-ollama-reply-bot/internal/persistence/sqlite"
 	"telegram-ollama-reply-bot/internal/state/memory"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/telegram/bot"
@@ -55,15 +57,22 @@ func Run(ctx context.Context) error {
 		"tool_use_model", cfg.LLM.Features.ToolUse.Model,
 	)
 
-	templateProcessor, err := llm.NewTemplateProcessor(cfg.LLM.Prompts)
+	if cfg.Persistence.StorePath == "" {
+		return fmt.Errorf("PERSISTENT_STORE_PATH is required")
+	}
+
+	persistentStore, err := psqlite.Open(ctx, cfg.Persistence.StorePath, logManager.Logger("persistence/sqlite"))
 	if err != nil {
-		logger.Error("failed to initialize template processor", "error", err)
+		logger.Error("failed to initialize persistent store", "error", err)
 		sentry.CaptureException(err)
 
 		return err
 	}
+	defer func() { _ = persistentStore.Close() }()
 
-	llmc, err := llm.NewService(cfg.LLM, templateProcessor, logManager.Logger("llm"))
+	adminService := adminconfig.NewService(persistentStore)
+
+	llmc, err := llm.NewService(cfg.LLM, adminService, logManager.Logger("llm"))
 	if err != nil {
 		logger.Error("failed to initialize llm service", "error", err)
 		sentry.CaptureException(err)
@@ -115,6 +124,7 @@ func Run(ctx context.Context) error {
 		stores.Images(),
 		stores.Stats(),
 		cfg.Bot,
+		adminService,
 		logManager.Logger("telegram/bot"),
 	)
 

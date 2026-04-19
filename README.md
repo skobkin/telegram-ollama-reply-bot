@@ -39,25 +39,19 @@ The bot can be configured using the following environment variables:
 | `BOT_PROCESSING_TIMEOUT`                | Timeout for processing incoming requests (includes LLM calls). Accepts Go duration strings (e.g. `45s`, `1m30s`). | No       | `30s`                                      |
 | `LOG_LEVEL`                             | Structured log verbosity: `debug`, `info`, `warn`, or `error`                                                     | No       | `info`                                     |
 | `SENTRY_DSN`                            | Sentry DSN for error tracking                                                                                     | No       | empty                                      |
-| `RESPONSE_LANGUAGE`                     | Language for bot responses                                                                                        | No       | Russian                                    |
-| `RESPONSE_GENDER`                       | Gender for bot responses                                                                                          | No       | neutral                                    |
-| `MAX_SUMMARY_LENGTH`                    | Maximum length of generated summaries                                                                             | No       | 2000                                       |
-| `PROMPT_CHAT`                           | System prompt for chat interactions                                                                               | No       | See [config.go](internal/config/config.go) |
-| `PROMPT_SUMMARIZE`                      | System prompt for summarization                                                                                   | No       | See [config.go](internal/config/config.go) |
-| `PROMPT_IMAGE_RECOGNITION`              | System prompt for image recognition                                                                               | No       | See [config.go](internal/config/config.go) |
+| `PERSISTENT_STORE_PATH`                 | Path to the SQLite database used for admin-managed config and chat catalog                                        | Yes      | -                                          |
 | `BOT_ADMIN_IDS`                         | Comma-separated list of admin user IDs                                                                            | No       | empty                                      |
 
-### Prompt placeholders
+### Prompt and persona management
 
-Prompt environment variables support Go's [`text/template`](https://pkg.go.dev/text/template) placeholders. The following
-placeholders are available:
+Prompt templates, response language, character name, tone mode, interactivity mode, whitelist rules, and per-chat
+overrides are now stored in SQLite and managed from Telegram admin DMs.
 
-- **`PROMPT_CHAT`** – `{{.Model}}`, `{{.Language}}`, `{{.Gender}}`, `{{.Context}}`
-- **`PROMPT_SUMMARIZE`** – `{{.Language}}`, `{{.MaxLength}}`
-- **`PROMPT_IMAGE_RECOGNITION`** – `{{.Language}}`
+Stored prompt templates use Go's [`text/template`](https://pkg.go.dev/text/template) placeholders:
 
-`{{.Model}}` is the model name, `{{.Language}}` is the response language, `{{.Gender}}` defines how the bot speaks about
-itself, `{{.Context}}` is the recent conversation history, and `{{.MaxLength}}` limits summary size.
+- `chat` – `{{.Model}}`, `{{.Language}}`, `{{.Gender}}`, `{{.CharacterName}}`, `{{.ToneMode}}`, `{{.AllowTeasing}}`, `{{.Context}}`
+- `summarize` – `{{.Language}}`, `{{.MaxLength}}`
+- `image_recognition` – `{{.Language}}`
 
 ## Usage
 
@@ -70,12 +64,38 @@ The bot supports the following commands:
 | `/summarize`, `/s` | Summarize text from the provided link     | `/summarize https://ex.co/article`, `/s https://ex.co/article concentrate on tech stuff` |
 | `/stats`           | Show bot statistics (admin only)          | `/stats`                                                                                 |
 | `/reset`           | Reset current chat history (admin only)   | `/reset`                                                                                 |
+| `/admin_help`      | Show DM admin commands                    | `/admin_help`                                                                            |
 
 You can also interact with the bot by:
 - Mentioning it in a message
 - Replying to its messages
-- Sending direct messages in private chat (if enabled)
+- Sending direct messages in private chat when interactivity is enabled for that chat
 - Sending images (the bot will describe what it sees in the image)
+
+By default, chat interactivity is `disabled`. Configure it from an admin DM before expecting the bot to answer normal
+chat messages.
+
+### Admin DM commands
+
+These commands work only in private chat with the bot and only for users listed in `BOT_ADMIN_IDS`. If `BOT_ADMIN_IDS`
+is empty, admin controls are disabled.
+
+- `/admin_help`
+- `/chat_list`
+- `/config_fields_global`
+- `/config_fields_chat`
+- `/prompt_features`
+- `/config_show [chat_id]`
+- `/config_set_global <field> <value>`
+- `/config_set_chat <chat_id> <field> <value>`
+- `/config_clear_chat <chat_id> <field|all>`
+- `/prompt_show <feature> [chat_id]`
+- `/prompt_set_global <feature> <template>`
+- `/prompt_set_chat <chat_id> <feature> <template>`
+- `/prompt_clear_chat <chat_id> <feature>`
+- `/whitelist_add <chat_id>`
+- `/whitelist_remove <chat_id>`
+- `/whitelist_list`
 
 ## Running
 
@@ -101,6 +121,7 @@ docker run \
   -e LLM_FEATURE_CHAT_MODEL=gemma3:27b \
   -e LLM_FEATURE_SUMMARIZE_MODEL=gemma3:12b \
   -e LLM_FEATURE_IMAGE_RECOGNITION_MODEL=gemma3:12b \
+  -e PERSISTENT_STORE_PATH=/var/lib/bot/config.sqlite \
   -e STATE_HISTORY_MESSAGES_PER_STREAM=150 \
   -e STATE_HISTORY_STREAMS_MAX=1024 \
   -e STATE_IMAGE_CACHE_TTL=24h \
@@ -108,6 +129,7 @@ docker run \
   -e LOG_LEVEL=info \
   -e SENTRY_DSN=https://your-sentry-dsn \
   -e BOT_ADMIN_IDS=123456789,987654321 \
+  -v bot-data:/var/lib/bot \
   skobkin/telegram-llm-bot
 ```
 

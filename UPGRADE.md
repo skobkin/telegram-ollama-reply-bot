@@ -1,5 +1,41 @@
 # Upgrade Notes
 
+## 2026-04-19 - SQLite-backed admin config and DM control introduced
+
+### Persistent Store Requirement
+
+The bot now requires a persistent SQLite path:
+
+- `PERSISTENT_STORE_PATH`
+
+Use a durable location outside the project directory. In containers, mount a volume for it.
+
+### Prompt And Persona Config Migration
+
+The following environment variables were removed:
+
+- `PROMPT_CHAT`
+- `PROMPT_SUMMARIZE`
+- `PROMPT_IMAGE_RECOGNITION`
+- `RESPONSE_LANGUAGE`
+- `RESPONSE_GENDER`
+- `MAX_SUMMARY_LENGTH`
+
+Their defaults are now seeded into SQLite on first boot and can be changed from Telegram admin DMs.
+
+### Admin Controls
+
+- `BOT_ADMIN_IDS` remains the trust root for admin access.
+- If `BOT_ADMIN_IDS` is empty, nobody can configure the bot.
+- Admin DMs bypass chat whitelist checks, but only for configured admin IDs.
+
+### Chat Behavior Default
+
+Chat interactivity is now `disabled` by default. Enable it explicitly with admin DM commands such as:
+
+- `/config_set_global default_interactivity_mode mentions_or_replies`
+- `/config_set_chat <chat_id> interactivity_mode mentions_only`
+
 ## 2026-04-19 - Privacy-first in-memory state layer introduced
 
 ### State Config Migration

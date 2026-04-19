@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/content/extractor"
 	"telegram-ollama-reply-bot/internal/llm"
@@ -43,6 +44,7 @@ type Bot struct {
 	imageCache state.ImageStore
 	replyCtx   *llmcontext.ReplyBuilder
 	logger     *slog.Logger
+	admin      *adminconfig.Service
 }
 
 func NewBot(
@@ -55,6 +57,7 @@ func NewBot(
 	imageCache state.ImageStore,
 	stats state.StatsStore,
 	cfg config.BotConfig,
+	admin *adminconfig.Service,
 	logger *slog.Logger,
 ) *Bot {
 	if history == nil {
@@ -79,6 +82,7 @@ func NewBot(
 		ctx:        ctx,
 		imageCache: imageCache,
 		logger:     logger,
+		admin:      admin,
 	}
 
 	bot.replyCtx = llmcontext.NewReplyBuilder(history, bot.hydrateMessagesWithImageDescriptions)
@@ -141,6 +145,8 @@ func (b *Bot) Run() error {
 
 	// Middlewares
 	bh.Use(b.requestLogger)
+	bh.Use(b.collectChatCatalog)
+	bh.Use(b.accessGate)
 	bh.Use(b.chatHistory)
 	bh.Use(b.chatTypeStatsCounter)
 
@@ -152,6 +158,22 @@ func (b *Bot) Run() error {
 	bh.HandleMessage(b.statsHandler, th.And(commandForMe, th.CommandEqual("stats")))
 	bh.HandleMessage(b.helpHandler, th.And(commandForMe, th.CommandEqual("help")))
 	bh.HandleMessage(b.resetHandler, th.And(commandForMe, th.CommandEqual("reset")))
+	bh.HandleMessage(b.adminHelpHandler, th.And(commandForMe, th.CommandEqual("admin_help")))
+	bh.HandleMessage(b.chatListHandler, th.And(commandForMe, th.CommandEqual("chat_list")))
+	bh.HandleMessage(b.configFieldsGlobalHandler, th.And(commandForMe, th.CommandEqual("config_fields_global")))
+	bh.HandleMessage(b.configFieldsChatHandler, th.And(commandForMe, th.CommandEqual("config_fields_chat")))
+	bh.HandleMessage(b.promptFeaturesHandler, th.And(commandForMe, th.CommandEqual("prompt_features")))
+	bh.HandleMessage(b.configShowHandler, th.And(commandForMe, th.CommandEqual("config_show")))
+	bh.HandleMessage(b.configSetGlobalHandler, th.And(commandForMe, th.CommandEqual("config_set_global")))
+	bh.HandleMessage(b.configSetChatHandler, th.And(commandForMe, th.CommandEqual("config_set_chat")))
+	bh.HandleMessage(b.configClearChatHandler, th.And(commandForMe, th.CommandEqual("config_clear_chat")))
+	bh.HandleMessage(b.promptShowHandler, th.And(commandForMe, th.CommandEqual("prompt_show")))
+	bh.HandleMessage(b.promptSetGlobalHandler, th.And(commandForMe, th.CommandEqual("prompt_set_global")))
+	bh.HandleMessage(b.promptSetChatHandler, th.And(commandForMe, th.CommandEqual("prompt_set_chat")))
+	bh.HandleMessage(b.promptClearChatHandler, th.And(commandForMe, th.CommandEqual("prompt_clear_chat")))
+	bh.HandleMessage(b.whitelistAddHandler, th.And(commandForMe, th.CommandEqual("whitelist_add")))
+	bh.HandleMessage(b.whitelistRemoveHandler, th.And(commandForMe, th.CommandEqual("whitelist_remove")))
+	bh.HandleMessage(b.whitelistListHandler, th.And(commandForMe, th.CommandEqual("whitelist_list")))
 	// Since we're need to process both text and photo messages, we need to use Update handler instead of Message handler
 	bh.Handle(b.textMessageHandler, th.Or(th.AnyMessageWithText(), AnyMessageWithPhoto()))
 	logger.Debug("message handlers registered")
@@ -173,6 +195,12 @@ func (b *Bot) textMessageHandler(ctx *th.Context, update t.Update) error {
 	}
 	message := *update.Message
 	logger := b.handlerLogger(ctx)
+
+	if !b.shouldProcessChatMessage(ctx.Context(), message) {
+		logger.Debug("skipping message", "reason", "interactivity mode")
+
+		return nil
+	}
 
 	if b.isMentionOfMe(message) || b.isReplyToMe(message) || b.isPrivateWithMe(message) {
 		messageType := "private"
@@ -234,7 +262,7 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 		defer cancel()
 
 		var llmErr error
-		llmReply, usage, llmErr = b.llm.HandleChatMessage(llmCtx, requestContext)
+		llmReply, usage, llmErr = b.llm.HandleChatMessage(llmCtx, llm.PromptScope{ChatID: message.Chat.ID}, requestContext)
 
 		return llmErr
 	})
@@ -371,7 +399,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 		defer cancel()
 
 		var llmErr error
-		summarizeReply, summarizeUsage, llmErr = b.llm.Summarize(llmCtx, article.Text, additionalInstructions)
+		summarizeReply, summarizeUsage, llmErr = b.llm.Summarize(llmCtx, llm.PromptScope{ChatID: message.Chat.ID}, article.Text, additionalInstructions)
 
 		return llmErr
 	})
@@ -448,6 +476,7 @@ Mention the bot, reply to it to chat; text and photos are supported.
 - /summarize <link> [extra notes] - Summarize a page (alias: /s)
 - /reset - Clear conversation history (admins only)
 - /stats - Show usage stats (admins only)
+- /admin_help - Show DM admin commands (admin DMs only)
 - /help - Show this help`,
 	)))
 	if err != nil {

@@ -102,3 +102,14 @@ func TestLoadUsesExplicitStateConfig(t *testing.T) {
 		t.Fatalf("unexpected image cache ttl: %s", cfg.State.ImageCacheTTL)
 	}
 }
+
+func TestLoadUsesPersistentStorePath(t *testing.T) {
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma3:27b")
+	t.Setenv("PERSISTENT_STORE_PATH", "/var/lib/bot/config.sqlite")
+
+	cfg := Load()
+
+	if cfg.Persistence.StorePath != "/var/lib/bot/config.sqlite" {
+		t.Fatalf("unexpected persistent store path: %q", cfg.Persistence.StorePath)
+	}
+}

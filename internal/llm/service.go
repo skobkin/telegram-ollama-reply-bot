@@ -13,13 +13,13 @@ import (
 )
 
 type Service struct {
-	cfg               config.LLMConfig
-	templateProcessor *TemplateProcessor
-	logger            *slog.Logger
-	backends          map[string]backend
+	cfg      config.LLMConfig
+	prompts  PromptRenderer
+	logger   *slog.Logger
+	backends map[string]backend
 }
 
-func NewService(cfg config.LLMConfig, templateProcessor *TemplateProcessor, logger *slog.Logger) (*Service, error) {
+func NewService(cfg config.LLMConfig, prompts PromptRenderer, logger *slog.Logger) (*Service, error) {
 	backends := make(map[string]backend, 2)
 
 	for _, backendName := range cfg.UsedBackends() {
@@ -46,10 +46,10 @@ func NewService(cfg config.LLMConfig, templateProcessor *TemplateProcessor, logg
 	}
 
 	return &Service{
-		cfg:               cfg,
-		templateProcessor: templateProcessor,
-		logger:            logger,
-		backends:          backends,
+		cfg:      cfg,
+		prompts:  prompts,
+		logger:   logger,
+		backends: backends,
 	}, nil
 }
 
@@ -98,14 +98,14 @@ func (s *Service) Generate(ctx context.Context, req Request) (Response, error) {
 	return resp, nil
 }
 
-func (s *Service) HandleChatMessage(ctx context.Context, requestContext ChatReplyContext) (string, *TokenUsage, error) {
+func (s *Service) HandleChatMessage(ctx context.Context, scope PromptScope, requestContext ChatReplyContext) (string, *TokenUsage, error) {
 	logger := logging.FromContext(ctx, s.logger)
 	route, err := s.cfg.RouteForFeature(string(FeatureChat))
 	if err != nil {
 		return "", nil, errors.Join(ErrFeatureRouteInvalid, err)
 	}
 
-	systemPrompt, err := s.templateProcessor.ProcessChatTemplate(route.Model, requestContext.SystemHint)
+	systemPrompt, err := s.prompts.RenderChatPrompt(ctx, scope, route.Model, requestContext.SystemHint)
 	if err != nil {
 		logger.Error("chat template processing failed", "error", err)
 		sentry.CaptureException(err)
@@ -142,10 +142,10 @@ func (s *Service) HandleChatMessage(ctx context.Context, requestContext ChatRepl
 	return resp.Message.Text(), &usage, nil
 }
 
-func (s *Service) Summarize(ctx context.Context, text string, instructions string) (string, *TokenUsage, error) {
+func (s *Service) Summarize(ctx context.Context, scope PromptScope, text string, instructions string) (string, *TokenUsage, error) {
 	logger := logging.FromContext(ctx, s.logger)
 
-	systemPrompt, err := s.templateProcessor.ProcessSummarizeTemplate()
+	systemPrompt, err := s.prompts.RenderSummarizePrompt(ctx, scope)
 	if err != nil {
 		logger.Error("summarize template processing failed", "error", err)
 		sentry.CaptureException(err)
@@ -180,10 +180,10 @@ func (s *Service) Summarize(ctx context.Context, text string, instructions strin
 	return resp.Message.Text(), &usage, nil
 }
 
-func (s *Service) RecognizeImage(ctx context.Context, imageData []byte) (string, *TokenUsage, error) {
+func (s *Service) RecognizeImage(ctx context.Context, scope PromptScope, imageData []byte) (string, *TokenUsage, error) {
 	logger := logging.FromContext(ctx, s.logger)
 
-	systemPrompt, err := s.templateProcessor.ProcessImageRecognitionTemplate()
+	systemPrompt, err := s.prompts.RenderImageRecognitionPrompt(ctx, scope)
 	if err != nil {
 		logger.Error("image recognition template processing failed", "error", err)
 		sentry.CaptureException(err)

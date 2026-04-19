@@ -1,6 +1,9 @@
 package bot
 
 import (
+	"time"
+
+	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/logging"
 
 	t "github.com/mymmrac/telego"
@@ -59,6 +62,47 @@ func (b *Bot) chatTypeStatsCounter(ctx *th.Context, update t.Update) error {
 	}
 
 	return ctx.Next(update)
+}
+
+func (b *Bot) collectChatCatalog(ctx *th.Context, update t.Update) error {
+	message := update.Message
+	if message == nil || b.admin == nil {
+		return ctx.Next(update)
+	}
+
+	entry := adminconfig.ChatCatalogEntry{
+		ChatID:      message.Chat.ID,
+		ChatType:    message.Chat.Type,
+		Title:       message.Chat.Title,
+		Username:    message.Chat.Username,
+		DisplayName: chatDisplayName(message.Chat),
+		FirstSeenAt: time.Now().UTC(),
+		LastSeenAt:  time.Now().UTC(),
+	}
+	if err := b.admin.Store().UpsertChatCatalog(ctx.Context(), entry); err != nil {
+		b.handlerLogger(ctx).Warn("failed to update chat catalog", "chat_id", message.Chat.ID, "error", err)
+	}
+
+	return ctx.Next(update)
+}
+
+func (b *Bot) accessGate(ctx *th.Context, update t.Update) error {
+	message := update.Message
+	if message == nil || b.admin == nil {
+		return ctx.Next(update)
+	}
+
+	allowed, err := b.admin.ShouldAllowChat(ctx.Context(), message.Chat.ID, b.isAdminDM(message))
+	if err != nil {
+		return err
+	}
+	if allowed {
+		return ctx.Next(update)
+	}
+
+	b.handlerLogger(ctx).Info("ignoring non-whitelisted chat", "chat_id", message.Chat.ID)
+
+	return nil
 }
 
 func (b *Bot) chatHistory(ctx *th.Context, update t.Update) error {

@@ -144,16 +144,9 @@ func TestServiceHandleChatMessageBuildsRequestFromCompactContext(t *testing.T) {
 		},
 	}
 
-	templateProcessor, err := NewTemplateProcessor(config.PromptConfig{
-		ChatSystemPrompt:       "Model={{.Model}}\n{{.Context}}",
-		SummarizePrompt:        "{{.Language}}",
-		ImageRecognitionPrompt: "{{.Language}}",
-		Language:               "English",
-		Gender:                 "neutral",
-		MaxSummaryLength:       100,
-	})
+	templateProcessor, err := NewStaticPromptRenderer()
 	if err != nil {
-		t.Fatalf("NewTemplateProcessor: %v", err)
+		t.Fatalf("NewStaticPromptRenderer: %v", err)
 	}
 
 	service := &Service{
@@ -162,14 +155,14 @@ func TestServiceHandleChatMessageBuildsRequestFromCompactContext(t *testing.T) {
 				Chat: config.FeatureRouteConfig{Backend: config.LLMBackendOpenAICompat, Model: "gpt"},
 			},
 		},
-		templateProcessor: templateProcessor,
-		logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		prompts: templateProcessor,
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		backends: map[string]backend{
 			config.LLMBackendOpenAICompat: backendStub,
 		},
 	}
 
-	reply, usage, err := service.HandleChatMessage(context.Background(), ChatReplyContext{
+	reply, usage, err := service.HandleChatMessage(context.Background(), PromptScope{}, ChatReplyContext{
 		SystemHint:     "compact context",
 		EarlierSummary: "earlier summary",
 		History: []Message{

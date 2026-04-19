@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"telegram-ollama-reply-bot/internal/adminconfig"
+	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/logging"
 	"telegram-ollama-reply-bot/internal/state"
 	"time"
@@ -322,6 +324,23 @@ func (b *Bot) isFromAdmin(message *t.Message) bool {
 	return slices.Contains(b.cfg.AdminIDs, message.From.ID)
 }
 
+func (b *Bot) isAdminDM(message *t.Message) bool {
+	return message != nil && message.Chat.Type == t.ChatTypePrivate && b.isFromAdmin(message)
+}
+
+func chatDisplayName(chat t.Chat) string {
+	switch {
+	case chat.Title != "":
+		return chat.Title
+	case chat.Username != "":
+		return chat.Username
+	case chat.FirstName != "" || chat.LastName != "":
+		return strings.TrimSpace(chat.FirstName + " " + chat.LastName)
+	default:
+		return ""
+	}
+}
+
 func (b *Bot) describeImage(ctx context.Context, imageMeta *state.ImageMeta) (string, error) {
 	if imageMeta == nil {
 		return "", ErrImageRecognition
@@ -341,7 +360,7 @@ func (b *Bot) describeImage(ctx context.Context, imageMeta *state.ImageMeta) (st
 		return "", errors.Join(ErrImageRecognition, err)
 	}
 
-	description, usage, err := b.llm.RecognizeImage(ctx, fileBytes)
+	description, usage, err := b.llm.RecognizeImage(ctx, llm.PromptScope{}, fileBytes)
 	if err != nil {
 		return "", errors.Join(ErrImageRecognition, err)
 	}
@@ -353,6 +372,49 @@ func (b *Bot) describeImage(ctx context.Context, imageMeta *state.ImageMeta) (st
 	b.loggerFromContext(ctx).Debug("image recognized", "file_id", imageMeta.FileID, "image_bytes", len(fileBytes), "description_length", len(description))
 
 	return description, nil
+}
+
+func (b *Bot) shouldProcessChatMessage(ctx context.Context, message t.Message) bool {
+	if b.admin == nil {
+		return true
+	}
+
+	resolved, err := b.admin.ResolveChatConfig(ctx, message.Chat.ID)
+	if err != nil {
+		b.loggerFromContext(ctx).Warn("failed to resolve chat config", "chat_id", message.Chat.ID, "error", err)
+
+		return false
+	}
+
+	switch resolved.InteractivityMode {
+	case adminconfig.InteractivityMentionsOnly:
+		return b.isMentionOfMe(message) || b.hasSoftTrigger(message, resolved)
+	case adminconfig.InteractivityMentionsReplies:
+		return b.isMentionOfMe(message) || b.isReplyToMe(message) || b.isPrivateWithMe(message) || b.hasSoftTrigger(message, resolved)
+	case adminconfig.InteractivityDisabled:
+		return b.isAdminDM(&message)
+	default:
+		return false
+	}
+}
+
+func (b *Bot) hasSoftTrigger(message t.Message, resolved adminconfig.ResolvedChatConfig) bool {
+	text := strings.ToLower(message.Text)
+	if text == "" {
+		text = strings.ToLower(message.Caption)
+	}
+	if text == "" {
+		return false
+	}
+
+	for _, candidate := range []string{resolved.CharacterName, resolved.Alias} {
+		candidate = strings.TrimSpace(strings.ToLower(candidate))
+		if candidate != "" && strings.Contains(text, candidate) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func downloadFileWithContext(ctx context.Context, url string) ([]byte, error) {
