@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"telegram-ollama-reply-bot/internal/logging"
 
-	goose "github.com/advancedlogic/GoOse"
+	goose "github.com/advancedlogic/GoOse/pkg/goose"
 	"github.com/getsentry/sentry-go"
 )
 

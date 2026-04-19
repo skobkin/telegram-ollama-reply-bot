@@ -1,12 +1,13 @@
 package extractor
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"telegram-ollama-reply-bot/internal/logging"
 
+	readability "codeberg.org/readeck/go-readability/v2"
 	"github.com/getsentry/sentry-go"
-	"github.com/go-shiori/go-readability"
 )
 
 type ReadabilityExtractor struct {
@@ -29,11 +30,19 @@ func (e *ReadabilityExtractor) GetArticleFromURL(ctx context.Context, url string
 		return Article{}, ErrExtractFailed
 	}
 
-	logger.Debug("article extracted", "url", url, "text_length", len(article.TextContent))
+	var text bytes.Buffer
+	if err := article.RenderText(&text); err != nil {
+		logger.Warn("extracted article text rendering failed", "url", url, "error", err)
+		sentry.CaptureException(err)
+
+		return Article{}, ErrExtractFailed
+	}
+
+	logger.Debug("article extracted", "url", url, "text_length", len(text.String()))
 
 	return Article{
-		Title: article.Title,
-		Text:  article.TextContent,
+		Title: article.Title(),
+		Text:  text.String(),
 		URL:   url,
 	}, nil
 }
