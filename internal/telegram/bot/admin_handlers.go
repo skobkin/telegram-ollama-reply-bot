@@ -144,8 +144,14 @@ func (b *Bot) configShowHandler(ctx *th.Context, message t.Message) error {
 	}
 
 	text := fmt.Sprintf(
-		"chat %d\nalias=%s\ntone_mode=%s\nallow_teasing=%s\ninteractivity_mode=%s",
-		chatID, emptyFallback(chat.Alias, "<empty>"), emptyFallback(chat.ToneMode, "<inherit>"), allowTeasing, mode,
+		"chat %d\nalias=%s\nlanguage=%s\ngender=%s\ntone_mode=%s\nallow_teasing=%s\ninteractivity_mode=%s",
+		chatID,
+		emptyFallback(chat.Alias, "<empty>"),
+		emptyFallback(chat.Language, "<inherit>"),
+		emptyFallback(chat.Gender, "<inherit>"),
+		emptyFallback(chat.ToneMode, "<inherit>"),
+		allowTeasing,
+		mode,
 	)
 
 	return b.sendAdminText(ctx.Context(), message, text)
@@ -400,12 +406,4 @@ func splitCommandArgs(text string, minArgs int) (string, string, bool) {
 	}
 
 	return args[1], strings.Join(args[2:], " "), true
-}
-
-func emptyFallback(value, fallback string) string {
-	if value == "" {
-		return fallback
-	}
-
-	return value
 }

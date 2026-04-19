@@ -1,14 +1,10 @@
 package adminconfig
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"sort"
 	"text/template"
-	"time"
-
-	"telegram-ollama-reply-bot/internal/llm"
 )
 
 type Service struct {
@@ -28,7 +24,7 @@ func (s *Service) GlobalFields() []string {
 }
 
 func (s *Service) ChatFields() []string {
-	return []string{"alias", "tone_mode", "allow_teasing", "interactivity_mode"}
+	return []string{"alias", "language", "gender", "tone_mode", "allow_teasing", "interactivity_mode"}
 }
 
 func (s *Service) PromptFeatures() []PromptFeature {
@@ -64,6 +60,12 @@ func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (Resolved
 	if chat.Alias != "" {
 		resolved.Alias = chat.Alias
 	}
+	if chat.Language != "" {
+		resolved.Language = chat.Language
+	}
+	if chat.Gender != "" {
+		resolved.Gender = chat.Gender
+	}
 	if chat.ToneMode != "" {
 		resolved.ToneMode = chat.ToneMode
 	}
@@ -75,95 +77,6 @@ func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (Resolved
 	}
 
 	return resolved, nil
-}
-
-func (s *Service) RenderChatPrompt(ctx context.Context, scope llm.PromptScope, model, compactContext string) (string, error) {
-	resolved, err := s.ResolveChatConfig(ctx, scope.ChatID)
-	if err != nil {
-		return "", err
-	}
-
-	body, err := s.promptBody(ctx, PromptFeatureChat, scope.ChatID, llm.DefaultChatPromptTemplate)
-	if err != nil {
-		return "", err
-	}
-
-	return executeTemplate("chat", body, struct {
-		Language      string
-		Model         string
-		Context       string
-		Gender        string
-		CharacterName string
-		ToneMode      string
-		AllowTeasing  bool
-	}{
-		Language:      resolved.Language,
-		Model:         model,
-		Context:       compactContext,
-		Gender:        resolved.Gender,
-		CharacterName: resolved.CharacterName,
-		ToneMode:      resolved.ToneMode,
-		AllowTeasing:  resolved.AllowTeasing,
-	})
-}
-
-func (s *Service) RenderSummarizePrompt(ctx context.Context, scope llm.PromptScope) (string, error) {
-	resolved, err := s.ResolveChatConfig(ctx, scope.ChatID)
-	if err != nil {
-		return "", err
-	}
-
-	body, err := s.promptBody(ctx, PromptFeatureSummarize, scope.ChatID, llm.DefaultSummarizePromptTemplate)
-	if err != nil {
-		return "", err
-	}
-
-	return executeTemplate("summarize", body, struct {
-		Language  string
-		MaxLength int
-	}{
-		Language:  resolved.Language,
-		MaxLength: llm.DefaultMaxSummaryLength,
-	})
-}
-
-func (s *Service) RenderImageRecognitionPrompt(ctx context.Context, scope llm.PromptScope) (string, error) {
-	resolved, err := s.ResolveChatConfig(ctx, scope.ChatID)
-	if err != nil {
-		return "", err
-	}
-
-	body, err := s.promptBody(ctx, PromptFeatureImageRecognition, scope.ChatID, llm.DefaultImageRecognitionPromptTemplate)
-	if err != nil {
-		return "", err
-	}
-
-	return executeTemplate("image_recognition", body, struct {
-		Language string
-	}{
-		Language: resolved.Language,
-	})
-}
-
-func (s *Service) promptBody(ctx context.Context, feature PromptFeature, chatID int64, fallback string) (string, error) {
-	body, ok, err := s.store.GetPromptTemplate(ctx, feature, chatID)
-	if err != nil {
-		return "", err
-	}
-	if ok {
-		return body, nil
-	}
-	if chatID != 0 {
-		body, ok, err = s.store.GetPromptTemplate(ctx, feature, 0)
-		if err != nil {
-			return "", err
-		}
-		if ok {
-			return body, nil
-		}
-	}
-
-	return fallback, nil
 }
 
 func (s *Service) HasAdmins(adminIDs []int64) bool {
@@ -201,33 +114,14 @@ func (s *Service) ShouldAllowChat(ctx context.Context, chatID int64, isAdminDM b
 
 	return s.store.IsChatWhitelisted(ctx, chatID)
 }
-
-func executeTemplate(name, body string, data any) (string, error) {
-	tmpl, err := template.New(name).Parse(body)
-	if err != nil {
-		return "", err
-	}
-
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return "", err
-	}
-
-	return buf.String(), nil
-}
-
 func BoolPointer(v bool) *bool {
 	return &v
 }
 
-func NowUTC() time.Time {
-	return time.Now().UTC()
-}
-
 func ValidatePrompt(feature PromptFeature, body string) error {
-	return llm.ValidatePromptTemplate(string(feature), body)
-}
+	if _, err := template.New(string(feature)).Parse(body); err != nil {
+		return fmt.Errorf("parse template %s: %w", feature, err)
+	}
 
-func FieldValueSummary(field, value string) string {
-	return fmt.Sprintf("%s=%s", field, value)
+	return nil
 }

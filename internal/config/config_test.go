@@ -105,11 +105,21 @@ func TestLoadUsesExplicitStateConfig(t *testing.T) {
 
 func TestLoadUsesPersistentStorePath(t *testing.T) {
 	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma3:27b")
-	t.Setenv("PERSISTENT_STORE_PATH", "/var/lib/bot/config.sqlite")
+	t.Setenv("PERSISTENT_STORE_PATH", "/data/db.sqlite")
 
 	cfg := Load()
 
-	if cfg.Persistence.StorePath != "/var/lib/bot/config.sqlite" {
+	if cfg.Persistence.StorePath != "/data/db.sqlite" {
 		t.Fatalf("unexpected persistent store path: %q", cfg.Persistence.StorePath)
+	}
+}
+
+func TestLoadUsesDefaultPersistentStorePath(t *testing.T) {
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma3:27b")
+
+	cfg := Load()
+
+	if cfg.Persistence.StorePath != "/data/db.sqlite" {
+		t.Fatalf("unexpected default persistent store path: %q", cfg.Persistence.StorePath)
 	}
 }

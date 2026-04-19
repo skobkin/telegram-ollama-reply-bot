@@ -57,10 +57,6 @@ func Run(ctx context.Context) error {
 		"tool_use_model", cfg.LLM.Features.ToolUse.Model,
 	)
 
-	if cfg.Persistence.StorePath == "" {
-		return fmt.Errorf("PERSISTENT_STORE_PATH is required")
-	}
-
 	persistentStore, err := psqlite.Open(ctx, cfg.Persistence.StorePath, logManager.Logger("persistence/sqlite"))
 	if err != nil {
 		logger.Error("failed to initialize persistent store", "error", err)
@@ -72,7 +68,7 @@ func Run(ctx context.Context) error {
 
 	adminService := adminconfig.NewService(persistentStore)
 
-	llmc, err := llm.NewService(cfg.LLM, adminService, logManager.Logger("llm"))
+	llmc, err := llm.NewService(cfg.LLM, llm.NewAdminPromptRenderer(adminService), logManager.Logger("llm"))
 	if err != nil {
 		logger.Error("failed to initialize llm service", "error", err)
 		sentry.CaptureException(err)

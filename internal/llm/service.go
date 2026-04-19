@@ -105,7 +105,7 @@ func (s *Service) HandleChatMessage(ctx context.Context, scope PromptScope, requ
 		return "", nil, errors.Join(ErrFeatureRouteInvalid, err)
 	}
 
-	systemPrompt, err := s.prompts.RenderChatPrompt(ctx, scope, route.Model, requestContext.SystemHint)
+	systemPrompt, err := s.prompts.RenderChatSystemPrompt(ctx, scope, route.Model, requestContext.SystemHint)
 	if err != nil {
 		logger.Error("chat template processing failed", "error", err)
 		sentry.CaptureException(err)
@@ -145,7 +145,7 @@ func (s *Service) HandleChatMessage(ctx context.Context, scope PromptScope, requ
 func (s *Service) Summarize(ctx context.Context, scope PromptScope, text string, instructions string) (string, *TokenUsage, error) {
 	logger := logging.FromContext(ctx, s.logger)
 
-	systemPrompt, err := s.prompts.RenderSummarizePrompt(ctx, scope)
+	systemPrompt, err := s.prompts.RenderSummarizeSystemPrompt(ctx, scope)
 	if err != nil {
 		logger.Error("summarize template processing failed", "error", err)
 		sentry.CaptureException(err)
@@ -183,7 +183,7 @@ func (s *Service) Summarize(ctx context.Context, scope PromptScope, text string,
 func (s *Service) RecognizeImage(ctx context.Context, scope PromptScope, imageData []byte) (string, *TokenUsage, error) {
 	logger := logging.FromContext(ctx, s.logger)
 
-	systemPrompt, err := s.prompts.RenderImageRecognitionPrompt(ctx, scope)
+	systemPrompt, err := s.prompts.RenderImageRecognitionSystemPrompt(ctx, scope)
 	if err != nil {
 		logger.Error("image recognition template processing failed", "error", err)
 		sentry.CaptureException(err)

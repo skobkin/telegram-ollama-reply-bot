@@ -2,13 +2,13 @@
 
 ## 2026-04-19 - SQLite-backed admin config and DM control introduced
 
-### Persistent Store Requirement
+### Persistent Store Path
 
-The bot now requires a persistent SQLite path:
+The bot now uses a persistent SQLite database path:
 
 - `PERSISTENT_STORE_PATH`
 
-Use a durable location outside the project directory. In containers, mount a volume for it.
+The default path is `/data/db.sqlite`. Use a durable location outside the project directory. In containers, mount a volume at `/data` or override the path explicitly.
 
 ### Prompt And Persona Config Migration
 
@@ -35,6 +35,11 @@ Chat interactivity is now `disabled` by default. Enable it explicitly with admin
 
 - `/config_set_global default_interactivity_mode mentions_or_replies`
 - `/config_set_chat <chat_id> interactivity_mode mentions_only`
+
+Per-chat overrides now also support:
+
+- `language`
+- `gender`
 
 ## 2026-04-19 - Privacy-first in-memory state layer introduced
 

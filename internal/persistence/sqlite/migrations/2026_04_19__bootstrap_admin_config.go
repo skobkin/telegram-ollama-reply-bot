@@ -4,11 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 
 	"telegram-ollama-reply-bot/internal/llm"
 )
 
-func migrateV1BootstrapAdminConfig(ctx context.Context, tx *sql.Tx) error {
+func migrateV1BootstrapAdminConfig(ctx context.Context, tx *sql.Tx, log *slog.Logger) error {
 	if err := applyStatements(ctx, tx, "bootstrap_admin_config", []string{
 		`CREATE TABLE IF NOT EXISTS global_settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -24,6 +25,8 @@ func migrateV1BootstrapAdminConfig(ctx context.Context, tx *sql.Tx) error {
 		`CREATE TABLE IF NOT EXISTS chat_settings (
   chat_id INTEGER PRIMARY KEY,
   alias TEXT NOT NULL DEFAULT '',
+  language TEXT NOT NULL DEFAULT '',
+  gender TEXT NOT NULL DEFAULT '',
   tone_mode TEXT NOT NULL DEFAULT '',
   allow_teasing INTEGER,
   interactivity_mode TEXT NOT NULL DEFAULT '',
@@ -54,7 +57,7 @@ func migrateV1BootstrapAdminConfig(ctx context.Context, tx *sql.Tx) error {
   added_by INTEGER NOT NULL
 );`,
 		`CREATE INDEX IF NOT EXISTS idx_chat_catalog_last_seen_at ON chat_catalog(last_seen_at DESC);`,
-	}); err != nil {
+	}, log); err != nil {
 		return err
 	}
 

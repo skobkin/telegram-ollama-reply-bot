@@ -56,6 +56,8 @@ func TestResolveChatConfigUsesChatOverrides(t *testing.T) {
 		chatFound: true,
 		chat: ChatSettings{
 			Alias:             "kitsune",
+			Language:          "English",
+			Gender:            "female",
 			ToneMode:          "chaotic",
 			AllowTeasing:      BoolPointer(true),
 			InteractivityMode: InteractivityMentionsReplies,
@@ -68,7 +70,7 @@ func TestResolveChatConfigUsesChatOverrides(t *testing.T) {
 		t.Fatalf("resolve chat config: %v", err)
 	}
 
-	if resolved.Alias != "kitsune" || resolved.ToneMode != "chaotic" || !resolved.AllowTeasing || resolved.InteractivityMode != InteractivityMentionsReplies {
+	if resolved.Alias != "kitsune" || resolved.Language != "English" || resolved.Gender != "female" || resolved.ToneMode != "chaotic" || !resolved.AllowTeasing || resolved.InteractivityMode != InteractivityMentionsReplies {
 		t.Fatalf("unexpected resolved config: %+v", resolved)
 	}
 }

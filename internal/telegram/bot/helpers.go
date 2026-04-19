@@ -341,6 +341,14 @@ func chatDisplayName(chat t.Chat) string {
 	}
 }
 
+func emptyFallback(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+
+	return value
+}
+
 func (b *Bot) describeImage(ctx context.Context, imageMeta *state.ImageMeta) (string, error) {
 	if imageMeta == nil {
 		return "", ErrImageRecognition

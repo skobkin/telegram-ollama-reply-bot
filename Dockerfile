@@ -13,11 +13,13 @@ WORKDIR /app
 
 COPY --from=builder /tmp/app .
 
+VOLUME ["/data"]
+
 ENV LLM_BACKEND_OPENAI_COMPAT_BASE_URL="" \
     LLM_BACKEND_OPENAI_COMPAT_API_TOKEN="" \
     LLM_BACKEND_OLLAMA_BASE_URL="http://ollama:11434" \
     TELEGRAM_TOKEN="" \
-    PERSISTENT_STORE_PATH="/var/lib/bot/config.sqlite" \
+    PERSISTENT_STORE_PATH="/data/db.sqlite" \
     LOG_LEVEL="info" \
     LLM_FEATURE_CHAT_BACKEND="openai_compat" \
     LLM_FEATURE_CHAT_MODEL="gemma3:12b" \

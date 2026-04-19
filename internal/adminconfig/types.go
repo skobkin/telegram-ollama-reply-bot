@@ -8,8 +8,14 @@ import (
 type InteractivityMode string
 
 const (
-	InteractivityDisabled        InteractivityMode = "disabled"
-	InteractivityMentionsOnly    InteractivityMode = "mentions_only"
+	// InteractivityDisabled means the bot ignores ordinary chat messages in that chat.
+	// It still answers explicit admin DM commands and other dedicated command handlers.
+	InteractivityDisabled InteractivityMode = "disabled"
+	// InteractivityMentionsOnly means the bot answers only when directly mentioned
+	// or when a configured soft trigger such as character name or alias is used.
+	InteractivityMentionsOnly InteractivityMode = "mentions_only"
+	// InteractivityMentionsReplies means the bot answers on mentions, replies to its
+	// own messages, private chats, and configured soft triggers.
 	InteractivityMentionsReplies InteractivityMode = "mentions_or_replies"
 )
 
@@ -35,6 +41,8 @@ type GlobalSettings struct {
 type ChatSettings struct {
 	ChatID            int64
 	Alias             string
+	Language          string
+	Gender            string
 	ToneMode          string
 	AllowTeasing      *bool
 	InteractivityMode InteractivityMode

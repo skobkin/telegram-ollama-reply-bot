@@ -14,33 +14,33 @@
 
 The bot can be configured using the following environment variables:
 
-| Variable                                | Description                                                                                                       | Required | Default                                    |
-|-----------------------------------------|-------------------------------------------------------------------------------------------------------------------|----------|--------------------------------------------|
-| `TELEGRAM_TOKEN`                        | Telegram Bot API token                                                                                            | Yes      | -                                          |
-| `LLM_BACKEND_OPENAI_COMPAT_BASE_URL`    | Base URL for OpenAI-compatible backend                                                                            | No       | empty                                      |
-| `LLM_BACKEND_OPENAI_COMPAT_API_TOKEN`   | API token for OpenAI-compatible backend                                                                           | No       | empty                                      |
-| `LLM_BACKEND_OLLAMA_BASE_URL`           | Base URL for Ollama native API                                                                                    | No       | `http://localhost:11434`                   |
-| `LLM_FEATURE_CHAT_BACKEND`              | Backend for normal chat requests: `openai_compat` or `ollama`                                                     | No       | `openai_compat`                            |
-| `LLM_FEATURE_CHAT_MODEL`                | Model name for normal chat requests                                                                               | Yes      | -                                          |
-| `LLM_FEATURE_SUMMARIZE_BACKEND`         | Backend for summarization                                                                                         | No       | chat backend                               |
-| `LLM_FEATURE_SUMMARIZE_MODEL`           | Model name for summarization                                                                                      | No       | chat model                                 |
-| `LLM_FEATURE_IMAGE_RECOGNITION_BACKEND` | Backend for image recognition                                                                                     | No       | chat backend                               |
-| `LLM_FEATURE_IMAGE_RECOGNITION_MODEL`   | Model name for image recognition                                                                                  | No       | chat model                                 |
-| `LLM_FEATURE_TOOL_USE_BACKEND`          | Backend reserved for future tool use                                                                              | No       | chat backend                               |
-| `LLM_FEATURE_TOOL_USE_MODEL`            | Model reserved for future tool use                                                                                | No       | chat model                                 |
-| `STATE_MAX_BYTES`                       | Soft total in-memory state budget in bytes                                                                        | No       | `268435456`                                |
-| `STATE_HISTORY_MAX_BYTES`               | Soft history bucket budget in bytes                                                                               | No       | `167772160`                                |
-| `STATE_HISTORY_STREAMS_MAX`             | Maximum number of active conversation scopes kept in RAM                                                          | No       | `1024`                                     |
-| `STATE_HISTORY_MESSAGES_PER_STREAM`     | Number of messages to keep per chat/topic history stream                                                          | No       | `150`                                      |
-| `STATE_IMAGE_CACHE_MAX_BYTES`           | Maximum image-description cache size in bytes                                                                     | No       | `67108864`                                 |
-| `STATE_IMAGE_CACHE_TTL`                 | TTL for cached image descriptions. Accepts Go duration strings (e.g. `1h`, `24h`).                                | No       | `24h`                                      |
-| `LLM_UNCOMPRESSED_HISTORY_LIMIT`        | Recent chat messages sent verbatim to LLM; older ones summarized. Set to `0` to disable summarization             | No       | 15                                         |
-| `LLM_HISTORY_SUMMARY_THRESHOLD`         | Extra messages beyond the limit before summarization triggers again                                               | No       | 5                                          |
-| `BOT_PROCESSING_TIMEOUT`                | Timeout for processing incoming requests (includes LLM calls). Accepts Go duration strings (e.g. `45s`, `1m30s`). | No       | `30s`                                      |
-| `LOG_LEVEL`                             | Structured log verbosity: `debug`, `info`, `warn`, or `error`                                                     | No       | `info`                                     |
-| `SENTRY_DSN`                            | Sentry DSN for error tracking                                                                                     | No       | empty                                      |
-| `PERSISTENT_STORE_PATH`                 | Path to the SQLite database used for admin-managed config and chat catalog                                        | Yes      | -                                          |
-| `BOT_ADMIN_IDS`                         | Comma-separated list of admin user IDs                                                                            | No       | empty                                      |
+| Variable                                | Description                                                                                                       | Required | Default                  |
+|-----------------------------------------|-------------------------------------------------------------------------------------------------------------------|----------|--------------------------|
+| `TELEGRAM_TOKEN`                        | Telegram Bot API token                                                                                            | Yes      | -                        |
+| `LLM_BACKEND_OPENAI_COMPAT_BASE_URL`    | Base URL for OpenAI-compatible backend                                                                            | No       | empty                    |
+| `LLM_BACKEND_OPENAI_COMPAT_API_TOKEN`   | API token for OpenAI-compatible backend                                                                           | No       | empty                    |
+| `LLM_BACKEND_OLLAMA_BASE_URL`           | Base URL for Ollama native API                                                                                    | No       | `http://localhost:11434` |
+| `LLM_FEATURE_CHAT_BACKEND`              | Backend for normal chat requests: `openai_compat` or `ollama`                                                     | No       | `openai_compat`          |
+| `LLM_FEATURE_CHAT_MODEL`                | Model name for normal chat requests                                                                               | Yes      | -                        |
+| `LLM_FEATURE_SUMMARIZE_BACKEND`         | Backend for summarization                                                                                         | No       | chat backend             |
+| `LLM_FEATURE_SUMMARIZE_MODEL`           | Model name for summarization                                                                                      | No       | chat model               |
+| `LLM_FEATURE_IMAGE_RECOGNITION_BACKEND` | Backend for image recognition                                                                                     | No       | chat backend             |
+| `LLM_FEATURE_IMAGE_RECOGNITION_MODEL`   | Model name for image recognition                                                                                  | No       | chat model               |
+| `LLM_FEATURE_TOOL_USE_BACKEND`          | Backend reserved for future tool use                                                                              | No       | chat backend             |
+| `LLM_FEATURE_TOOL_USE_MODEL`            | Model reserved for future tool use                                                                                | No       | chat model               |
+| `STATE_MAX_BYTES`                       | Soft total in-memory state budget in bytes                                                                        | No       | `268435456`              |
+| `STATE_HISTORY_MAX_BYTES`               | Soft history bucket budget in bytes                                                                               | No       | `167772160`              |
+| `STATE_HISTORY_STREAMS_MAX`             | Maximum number of active conversation scopes kept in RAM                                                          | No       | `1024`                   |
+| `STATE_HISTORY_MESSAGES_PER_STREAM`     | Number of messages to keep per chat/topic history stream                                                          | No       | `150`                    |
+| `STATE_IMAGE_CACHE_MAX_BYTES`           | Maximum image-description cache size in bytes                                                                     | No       | `67108864`               |
+| `STATE_IMAGE_CACHE_TTL`                 | TTL for cached image descriptions. Accepts Go duration strings (e.g. `1h`, `24h`).                                | No       | `24h`                    |
+| `LLM_UNCOMPRESSED_HISTORY_LIMIT`        | Recent chat messages sent verbatim to LLM; older ones summarized. Set to `0` to disable summarization             | No       | 15                       |
+| `LLM_HISTORY_SUMMARY_THRESHOLD`         | Extra messages beyond the limit before summarization triggers again                                               | No       | 5                        |
+| `BOT_PROCESSING_TIMEOUT`                | Timeout for processing incoming requests (includes LLM calls). Accepts Go duration strings (e.g. `45s`, `1m30s`). | No       | `30s`                    |
+| `LOG_LEVEL`                             | Structured log verbosity: `debug`, `info`, `warn`, or `error`                                                     | No       | `info`                   |
+| `SENTRY_DSN`                            | Sentry DSN for error tracking                                                                                     | No       | empty                    |
+| `PERSISTENT_STORE_PATH`                 | Path to the SQLite database used for durable bot data                                                             | No       | `/data/db.sqlite`        |
+| `BOT_ADMIN_IDS`                         | Comma-separated list of admin user IDs                                                                            | No       | empty                    |
 
 ### Prompt and persona management
 
@@ -121,7 +121,7 @@ docker run \
   -e LLM_FEATURE_CHAT_MODEL=gemma3:27b \
   -e LLM_FEATURE_SUMMARIZE_MODEL=gemma3:12b \
   -e LLM_FEATURE_IMAGE_RECOGNITION_MODEL=gemma3:12b \
-  -e PERSISTENT_STORE_PATH=/var/lib/bot/config.sqlite \
+  -e PERSISTENT_STORE_PATH=/data/db.sqlite \
   -e STATE_HISTORY_MESSAGES_PER_STREAM=150 \
   -e STATE_HISTORY_STREAMS_MAX=1024 \
   -e STATE_IMAGE_CACHE_TTL=24h \
@@ -129,8 +129,14 @@ docker run \
   -e LOG_LEVEL=info \
   -e SENTRY_DSN=https://your-sentry-dsn \
   -e BOT_ADMIN_IDS=123456789,987654321 \
-  -v bot-data:/var/lib/bot \
+  -v bot-data:/data \
   skobkin/telegram-llm-bot
 ```
 
 To keep the current OpenAI-compatible path, point `LLM_BACKEND_OPENAI_COMPAT_BASE_URL` and `LLM_BACKEND_OPENAI_COMPAT_API_TOKEN` at that backend and leave feature backends on the default `openai_compat`.
+
+### Docker Compose
+
+An example Compose-based deployment is maintained in the existing stack repository:
+
+https://git.skobk.in/skobkin/docker-stacks/src/branch/master/telegram-llm-bot

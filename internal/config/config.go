@@ -172,7 +172,7 @@ func Load() *Config {
 			Level: getEnvOrDefault("LOG_LEVEL", "info"),
 		},
 		Persistence: PersistenceConfig{
-			StorePath: os.Getenv("PERSISTENT_STORE_PATH"),
+			StorePath: getEnvOrDefault("PERSISTENT_STORE_PATH", "/data/db.sqlite"),
 		},
 	}
 }

@@ -57,6 +57,47 @@ func TestStoreGlobalFieldsAndPromptOverrides(t *testing.T) {
 	}
 }
 
+func TestStoreChatLanguageAndGenderOverrides(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	if err := store.SetChatField(ctx, 123, "language", "English", 42); err != nil {
+		t.Fatalf("set chat language: %v", err)
+	}
+	if err := store.SetChatField(ctx, 123, "gender", "female", 42); err != nil {
+		t.Fatalf("set chat gender: %v", err)
+	}
+
+	chat, ok, err := store.GetChatSettings(ctx, 123)
+	if err != nil {
+		t.Fatalf("get chat settings: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected chat settings to exist")
+	}
+	if chat.Language != "English" || chat.Gender != "female" {
+		t.Fatalf("unexpected chat language/gender: %+v", chat)
+	}
+
+	if err := store.ClearChatField(ctx, 123, "language", 42); err != nil {
+		t.Fatalf("clear chat language: %v", err)
+	}
+	if err := store.ClearChatField(ctx, 123, "gender", 42); err != nil {
+		t.Fatalf("clear chat gender: %v", err)
+	}
+
+	chat, ok, err = store.GetChatSettings(ctx, 123)
+	if err != nil {
+		t.Fatalf("get cleared chat settings: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected chat settings to remain")
+	}
+	if chat.Language != "" || chat.Gender != "" {
+		t.Fatalf("expected cleared language/gender, got %+v", chat)
+	}
+}
+
 func TestStoreChatCatalogAndWhitelist(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
