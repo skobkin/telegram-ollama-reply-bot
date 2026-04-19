@@ -36,6 +36,7 @@
 - When modifying existing functionality, add as much useful coverage as practical without large refactors.
 - Small refactors are acceptable when they materially improve testability, readability, or regression protection.
 - Avoid large refactors whose main outcome is a higher coverage number without meaningful engineering benefit.
+- When introducing backward-incompatible changes, update `UPGRADE.md` with concise instructions for migrating to the new version.
 - Before finishing normal tasks, format changed Go files, run `golangci-lint run ./cmd/bot/... ./internal/...`, and run `go test ./...`.
 - For larger tasks, also build the binary into `/tmp`, not the project directory.
 - Validate Docker only when the task changes Docker or build configuration.
