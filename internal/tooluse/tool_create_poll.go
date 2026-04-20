@@ -53,7 +53,7 @@ func (r *Runtime) createPoll(ctx context.Context, callCtx CallContext, args json
 		return toolResult{}, err
 	}
 
-	return toolResult{
+	result := toolResult{
 		Status:  "ok",
 		Summary: "Poll created",
 		Data: map[string]any{
@@ -63,5 +63,8 @@ func (r *Runtime) createPoll(ctx context.Context, callCtx CallContext, args json
 			"question":   payload.Question,
 			"options":    payload.Options,
 		},
-	}, nil
+	}
+	logToolResult(callCtx, result, "message_id", message.MessageID, "options_count", len(payload.Options))
+
+	return result, nil
 }

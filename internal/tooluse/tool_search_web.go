@@ -9,7 +9,7 @@ import (
 	"telegram-ollama-reply-bot/internal/content/search"
 )
 
-func (r *Runtime) searchWeb(ctx context.Context, _ CallContext, args json.RawMessage) (toolResult, error) {
+func (r *Runtime) searchWeb(ctx context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error) {
 	if r.searcher == nil {
 		return toolResult{}, fmt.Errorf("web search is unavailable")
 	}
@@ -27,7 +27,7 @@ func (r *Runtime) searchWeb(ctx context.Context, _ CallContext, args json.RawMes
 		return toolResult{}, fmt.Errorf("query is required")
 	}
 
-	result, err := r.searcher.Search(ctx, search.Request{
+	searchResult, err := r.searcher.Search(ctx, search.Request{
 		Query:      payload.Query,
 		MaxResults: payload.MaxResults,
 	})
@@ -35,9 +35,12 @@ func (r *Runtime) searchWeb(ctx context.Context, _ CallContext, args json.RawMes
 		return toolResult{}, err
 	}
 
-	return toolResult{
+	result := toolResult{
 		Status:  "ok",
 		Summary: "Web search completed",
-		Data:    result,
-	}, nil
+		Data:    searchResult,
+	}
+	logToolResult(callCtx, result, "results_count", len(searchResult.Results))
+
+	return result, nil
 }

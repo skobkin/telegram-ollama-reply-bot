@@ -54,17 +54,20 @@ func (r *Runtime) listRecentLinks(_ context.Context, callCtx CallContext, args j
 	}
 
 	if len(links) == 0 {
-		return toolResult{
+		result := toolResult{
 			Status:  "empty",
 			Summary: "No recent HTTP or HTTPS links were found in the current chat/topic history",
 			Data: map[string]any{
 				"chat_id":  callCtx.Scope.ChatID,
 				"topic_id": callCtx.Scope.TopicID,
 			},
-		}, nil
+		}
+		logToolResult(callCtx, result, "links_count", 0)
+
+		return result, nil
 	}
 
-	return toolResult{
+	result := toolResult{
 		Status:  "ok",
 		Summary: fmt.Sprintf("Found %d recent unique link(s)", len(links)),
 		Data: map[string]any{
@@ -72,5 +75,8 @@ func (r *Runtime) listRecentLinks(_ context.Context, callCtx CallContext, args j
 			"topic_id": callCtx.Scope.TopicID,
 			"links":    links,
 		},
-	}, nil
+	}
+	logToolResult(callCtx, result, "links_count", len(links))
+
+	return result, nil
 }

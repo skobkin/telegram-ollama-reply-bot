@@ -13,28 +13,41 @@ type datetimeFormatInput struct {
 	Locale         string `json:"locale"`
 }
 
-func datetimeFormatHandler(_ context.Context, _ CallContext, args json.RawMessage) (toolResult, error) {
+func datetimeFormatHandler(_ context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error) {
 	var input datetimeFormatInput
 	if !decodeToolJSON(args, &input) {
-		return datetimeErrorResult("internal_error", "failed to parse arguments"), nil
+		result := datetimeErrorResult("internal_error", "failed to parse arguments")
+		logToolResult(callCtx, result)
+
+		return result, nil
 	}
 
 	timestamp, invalid := parseRequiredRFC3339(input.Timestamp, "timestamp")
 	if invalid != nil {
+		logToolResult(callCtx, *invalid)
+
 		return *invalid, nil
 	}
 
 	if input.Style == "" {
-		return datetimeErrorResult("missing_required_field", "style is required"), nil
+		result := datetimeErrorResult("missing_required_field", "style is required")
+		logToolResult(callCtx, result)
+
+		return result, nil
 	}
 
 	if _, ok := datetimeFormatLayouts[input.Style]; !ok {
-		return datetimeErrorResult("invalid_style", "style must be one of short, long, date_only, time_only, weekday_date"), nil
+		result := datetimeErrorResult("invalid_style", "style must be one of short, long, date_only, time_only, weekday_date")
+		logToolResult(callCtx, result)
+
+		return result, nil
 	}
 
 	if input.TargetTimezone != "" {
 		location, invalid := loadRequiredTimezone(input.TargetTimezone, "target_timezone")
 		if invalid != nil {
+			logToolResult(callCtx, *invalid)
+
 			return *invalid, nil
 		}
 
@@ -52,11 +65,14 @@ func datetimeFormatHandler(_ context.Context, _ CallContext, args json.RawMessag
 		data["target_timezone"] = input.TargetTimezone
 	}
 
-	return toolResult{
+	result := toolResult{
 		Status:  "ok",
 		Summary: "Datetime formatted",
 		Data:    data,
-	}, nil
+	}
+	logToolResult(callCtx, result, "data", data)
+
+	return result, nil
 }
 
 var datetimeFormatLayouts = map[string]func(time.Time) string{

@@ -33,7 +33,7 @@ func (r *Runtime) listChatSchedule(ctx context.Context, callCtx CallContext, _ j
 		})
 	}
 
-	return toolResult{
+	toolResult := toolResult{
 		Status:  "ok",
 		Summary: fmt.Sprintf("Found %d active reminder(s)", len(result)),
 		Data: map[string]any{
@@ -41,7 +41,10 @@ func (r *Runtime) listChatSchedule(ctx context.Context, callCtx CallContext, _ j
 			"topic_id":  callCtx.Scope.TopicID,
 			"reminders": result,
 		},
-	}, nil
+	}
+	logToolResult(callCtx, toolResult, "reminders_count", len(result))
+
+	return toolResult, nil
 }
 
 func (r *Runtime) addScheduleItem(ctx context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error) {
@@ -59,7 +62,7 @@ func (r *Runtime) addScheduleItem(ctx context.Context, callCtx CallContext, args
 		return toolResult{}, err
 	}
 
-	return toolResult{
+	result := toolResult{
 		Status:  "ok",
 		Summary: "Reminder created",
 		Data: map[string]any{
@@ -70,7 +73,10 @@ func (r *Runtime) addScheduleItem(ctx context.Context, callCtx CallContext, args
 			"chat_id":     reminder.Scope.ChatID,
 			"topic_id":    reminder.Scope.TopicID,
 		},
-	}, nil
+	}
+	logToolResult(callCtx, result, "reminder_id", reminder.ID, "next_due_at", reminder.NextDueAt.Format(time.RFC3339))
+
+	return result, nil
 }
 
 func (r *Runtime) removeScheduleItem(ctx context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error) {
@@ -93,7 +99,7 @@ func (r *Runtime) removeScheduleItem(ctx context.Context, callCtx CallContext, a
 		return toolResult{}, err
 	}
 
-	return toolResult{
+	result := toolResult{
 		Status:  "ok",
 		Summary: "Reminder removed",
 		Data: map[string]any{
@@ -102,7 +108,10 @@ func (r *Runtime) removeScheduleItem(ctx context.Context, callCtx CallContext, a
 			"chat_id":  reminder.Scope.ChatID,
 			"topic_id": reminder.Scope.TopicID,
 		},
-	}, nil
+	}
+	logToolResult(callCtx, result, "reminder_id", reminder.ID)
+
+	return result, nil
 }
 
 func (r *Runtime) isAdmin(userID int64) bool {

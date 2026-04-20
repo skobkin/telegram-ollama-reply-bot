@@ -6,11 +6,11 @@ import (
 	"time"
 )
 
-func currentTimeHandler(_ context.Context, _ CallContext, _ json.RawMessage) (toolResult, error) {
+func currentTimeHandler(_ context.Context, callCtx CallContext, _ json.RawMessage) (toolResult, error) {
 	now := time.Now()
 	_, offset := now.Zone()
 
-	return toolResult{
+	result := toolResult{
 		Status:  "ok",
 		Summary: "Current time loaded",
 		Data: map[string]any{
@@ -19,5 +19,8 @@ func currentTimeHandler(_ context.Context, _ CallContext, _ json.RawMessage) (to
 			"server_timezone":      now.Location().String(),
 			"utc_offset_seconds":   offset,
 		},
-	}, nil
+	}
+	logToolResult(callCtx, result, "data", result.Data)
+
+	return result, nil
 }

@@ -90,3 +90,54 @@ func extractHTTPURLs(text string) []string {
 
 	return result
 }
+
+func logToolResult(callCtx CallContext, result toolResult, attrs ...any) {
+	if callCtx.Logger == nil {
+		return
+	}
+
+	fields := make([]any, 0, len(attrs)+10)
+	fields = append(fields,
+		"status", result.Status,
+		"topic_id", callCtx.Scope.TopicID,
+	)
+	if result.Summary != "" {
+		fields = append(fields, "summary", result.Summary)
+	}
+	if result.Error != "" {
+		fields = append(fields, "error", result.Error)
+	}
+	if errorCode, errorMessage, ok := toolErrorDetails(result); ok {
+		fields = append(fields, "error_code", errorCode, "error_message", errorMessage)
+	}
+	fields = append(fields, attrs...)
+
+	callCtx.Logger.Info("tool result", fields...)
+}
+
+func toolErrorDetails(result toolResult) (code, message string, ok bool) {
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		return "", "", false
+	}
+
+	rawError, ok := data["error"]
+	if !ok {
+		return "", "", false
+	}
+
+	switch value := rawError.(type) {
+	case toolErrorPayload:
+		return value.Code, value.Message, true
+	case map[string]any:
+		code, _ := value["code"].(string)
+		message, _ := value["message"].(string)
+		if code == "" && message == "" {
+			return "", "", false
+		}
+
+		return code, message, true
+	default:
+		return "", "", false
+	}
+}

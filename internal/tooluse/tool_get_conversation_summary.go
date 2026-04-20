@@ -9,17 +9,20 @@ import (
 func (r *Runtime) getConversationSummary(_ context.Context, callCtx CallContext, _ json.RawMessage) (toolResult, error) {
 	snapshot := r.history.Snapshot(callCtx.Scope)
 	if strings.TrimSpace(snapshot.EarlierSummary) == "" {
-		return toolResult{
+		result := toolResult{
 			Status:  "empty",
 			Summary: "No in-memory conversation summary is available for the current chat/topic",
 			Data: map[string]any{
 				"chat_id":  callCtx.Scope.ChatID,
 				"topic_id": callCtx.Scope.TopicID,
 			},
-		}, nil
+		}
+		logToolResult(callCtx, result, "summary_length", 0)
+
+		return result, nil
 	}
 
-	return toolResult{
+	result := toolResult{
 		Status:  "ok",
 		Summary: "Conversation summary retrieved",
 		Data: map[string]any{
@@ -27,5 +30,8 @@ func (r *Runtime) getConversationSummary(_ context.Context, callCtx CallContext,
 			"topic_id": callCtx.Scope.TopicID,
 			"summary":  truncateUTF8(snapshot.EarlierSummary, conversationSummaryTextCharLimit),
 		},
-	}, nil
+	}
+	logToolResult(callCtx, result, "summary_length", len(strings.TrimSpace(snapshot.EarlierSummary)))
+
+	return result, nil
 }

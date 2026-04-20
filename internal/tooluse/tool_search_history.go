@@ -19,14 +19,20 @@ func (r *Runtime) searchHistory(_ context.Context, callCtx CallContext, args jso
 		return toolResult{}, fmt.Errorf("parse arguments: invalid search_history payload")
 	}
 	if len(payload.Keywords) == 0 {
-		return searchHistoryErrorResult("missing_required_field", "keywords must contain at least one search keyword"), nil
+		result := searchHistoryErrorResult("missing_required_field", "keywords must contain at least one search keyword")
+		logToolResult(callCtx, result, "results_count", 0)
+
+		return result, nil
 	}
 	matchMode := state.HistorySearchMatchMode(payload.MatchMode)
 	if matchMode == "" {
 		matchMode = state.HistorySearchMatchModeAll
 	}
 	if matchMode != state.HistorySearchMatchModeAll && matchMode != state.HistorySearchMatchModeAny {
-		return searchHistoryErrorResult("invalid_match_mode", "match_mode must be one of all, any"), nil
+		result := searchHistoryErrorResult("invalid_match_mode", "match_mode must be one of all, any")
+		logToolResult(callCtx, result, "results_count", 0)
+
+		return result, nil
 	}
 	if payload.Limit <= 0 {
 		payload.Limit = defaultSearchHistoryResultLimit
@@ -57,7 +63,7 @@ func (r *Runtime) searchHistory(_ context.Context, callCtx CallContext, args jso
 		})
 	}
 
-	return toolResult{
+	result := toolResult{
 		Status:  "ok",
 		Summary: fmt.Sprintf("Found %d history matches", len(matches)),
 		Data: map[string]any{
@@ -67,7 +73,10 @@ func (r *Runtime) searchHistory(_ context.Context, callCtx CallContext, args jso
 			"matches":    matches,
 			"searched":   len(snapshot.Messages),
 		},
-	}, nil
+	}
+	logToolResult(callCtx, result, "results_count", len(matches), "searched_count", len(snapshot.Messages))
+
+	return result, nil
 }
 
 func searchHistoryErrorResult(code, message string) toolResult {

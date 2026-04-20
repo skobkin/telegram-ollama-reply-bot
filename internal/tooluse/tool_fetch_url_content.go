@@ -24,7 +24,7 @@ func (r *Runtime) fetchURLContent(ctx context.Context, callCtx CallContext, args
 		return toolResult{}, err
 	}
 
-	return toolResult{
+	result := toolResult{
 		Status:  "ok",
 		Summary: "URL content fetched",
 		Data: map[string]any{
@@ -35,5 +35,12 @@ func (r *Runtime) fetchURLContent(ctx context.Context, callCtx CallContext, args
 			"text":        truncateUTF8(strings.TrimSpace(article.Text), fetchURLContentTextCharLimit),
 			"extractedAt": time.Now().UTC().Format(time.RFC3339),
 		},
-	}, nil
+	}
+	logToolResult(callCtx, result,
+		"url", article.URL,
+		"title", article.Title,
+		"text_length", len(strings.TrimSpace(article.Text)),
+	)
+
+	return result, nil
 }

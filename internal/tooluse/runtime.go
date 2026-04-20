@@ -157,7 +157,6 @@ func (r *Runtime) executeToolCall(ctx context.Context, req ChatRequest, call llm
 		"tool_name", definition.Name,
 		"tool_call_id", call.ID,
 		"invocation_policy", definition.InvocationPolicy,
-		"request_id", logging.RequestIDFromContext(ctx),
 	)
 
 	result, err := definition.Handler(ctx, CallContext{

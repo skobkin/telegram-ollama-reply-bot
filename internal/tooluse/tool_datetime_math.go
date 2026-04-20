@@ -21,26 +21,34 @@ type datetimeMathInput struct {
 	Seconds        *int   `json:"seconds"`
 }
 
-func datetimeMathHandler(_ context.Context, _ CallContext, args json.RawMessage) (toolResult, error) {
+func datetimeMathHandler(_ context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error) {
 	var input datetimeMathInput
 	if !decodeToolJSON(args, &input) {
-		return datetimeErrorResult("internal_error", "failed to parse arguments"), nil
+		result := datetimeErrorResult("internal_error", "failed to parse arguments")
+		logToolResult(callCtx, result)
+
+		return result, nil
 	}
 
+	var result toolResult
 	switch input.Operation {
 	case "diff":
-		return datetimeMathDiff(input), nil
+		result = datetimeMathDiff(input)
 	case "shift":
-		return datetimeMathShift(input), nil
+		result = datetimeMathShift(input)
 	case "weekday":
-		return datetimeMathWeekday(input), nil
+		result = datetimeMathWeekday(input)
 	case "convert_timezone":
-		return datetimeMathConvertTimezone(input), nil
+		result = datetimeMathConvertTimezone(input)
 	case "":
-		return datetimeErrorResult("missing_required_field", "operation is required"), nil
+		result = datetimeErrorResult("missing_required_field", "operation is required")
 	default:
-		return datetimeErrorResult("invalid_operation", "operation must be one of diff, shift, weekday, convert_timezone"), nil
+		result = datetimeErrorResult("invalid_operation", "operation must be one of diff, shift, weekday, convert_timezone")
 	}
+
+	logToolResult(callCtx, result, "data", result.Data)
+
+	return result, nil
 }
 
 func datetimeMathDiff(input datetimeMathInput) toolResult {

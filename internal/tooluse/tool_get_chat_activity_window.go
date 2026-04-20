@@ -19,14 +19,17 @@ const (
 func (r *Runtime) getChatActivityWindow(_ context.Context, callCtx CallContext, _ json.RawMessage) (toolResult, error) {
 	snapshot := r.history.Snapshot(callCtx.Scope)
 	if len(snapshot.Messages) == 0 {
-		return toolResult{
+		result := toolResult{
 			Status:  "empty",
 			Summary: "No recent in-memory messages are available for the current chat/topic",
 			Data: map[string]any{
 				"chat_id":  callCtx.Scope.ChatID,
 				"topic_id": callCtx.Scope.TopicID,
 			},
-		}, nil
+		}
+		logToolResult(callCtx, result, "data", result.Data)
+
+		return result, nil
 	}
 
 	first := snapshot.Messages[0].CreatedAt.UTC()
@@ -52,11 +55,14 @@ func (r *Runtime) getChatActivityWindow(_ context.Context, callCtx CallContext, 
 	data["average_gap_seconds"] = averageGapSeconds
 	data["burstiness"] = burstiness
 
-	return toolResult{
+	result := toolResult{
 		Status:  "ok",
 		Summary: buildActivitySummary(len(snapshot.Messages), first, last, burstiness),
 		Data:    data,
-	}, nil
+	}
+	logToolResult(callCtx, result, "data", data)
+
+	return result, nil
 }
 
 func countMessagesSince(messages []state.Message, threshold time.Time) int {

@@ -18,21 +18,30 @@ const (
 func (r *Runtime) getMessageThreadContext(_ context.Context, callCtx CallContext, _ json.RawMessage) (toolResult, error) {
 	snapshot := r.history.Snapshot(callCtx.Scope)
 	if isEmptyThreadMessage(callCtx.Requester) {
-		return toolResult{
+		result := toolResult{
 			Status:  "empty",
 			Summary: "No current message context is available for thread lookup",
 			Data: map[string]any{
 				"chat_id":  callCtx.Scope.ChatID,
 				"topic_id": callCtx.Scope.TopicID,
 			},
-		}, nil
+		}
+		logToolResult(callCtx, result, "chain_count", 0, "adjacent_reply_groups_count", 0, "adjacent_replies_count", 0)
+
+		return result, nil
 	}
 
 	index := buildThreadMessageIndex(snapshot.Messages)
 	chain, anchorReason, chainTruncated := reconstructThreadChain(callCtx.Requester, index)
 	adjacentReplies, adjacentTruncated := collectAdjacentReplies(snapshot.Messages, chain)
 
-	return toolResult{
+	totalAdjacentReplies := 0
+	for _, group := range adjacentReplies {
+		replies, _ := group["replies"].([]map[string]any)
+		totalAdjacentReplies += len(replies)
+	}
+
+	result := toolResult{
 		Status:  "ok",
 		Summary: "Message thread context retrieved",
 		Data: map[string]any{
@@ -48,7 +57,15 @@ func (r *Runtime) getMessageThreadContext(_ context.Context, callCtx CallContext
 				"adjacent_replies": adjacentTruncated,
 			},
 		},
-	}, nil
+	}
+	logToolResult(callCtx, result,
+		"chain_count", len(chain),
+		"adjacent_reply_groups_count", len(adjacentReplies),
+		"adjacent_replies_count", totalAdjacentReplies,
+		"snapshot_message_count", len(snapshot.Messages),
+	)
+
+	return result, nil
 }
 
 func buildThreadMessageIndex(messages []state.Message) map[int]state.Message {

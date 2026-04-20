@@ -11,14 +11,17 @@ import (
 func (r *Runtime) getHistoryBounds(_ context.Context, callCtx CallContext, _ json.RawMessage) (toolResult, error) {
 	snapshot := r.history.Snapshot(callCtx.Scope)
 	if len(snapshot.Messages) == 0 {
-		return toolResult{
+		result := toolResult{
 			Status:  "empty",
 			Summary: "No in-memory history is available for the current chat/topic",
 			Data: map[string]any{
 				"chat_id":  callCtx.Scope.ChatID,
 				"topic_id": callCtx.Scope.TopicID,
 			},
-		}, nil
+		}
+		logToolResult(callCtx, result, "data", result.Data)
+
+		return result, nil
 	}
 
 	recent := snapshot.Messages
@@ -26,7 +29,7 @@ func (r *Runtime) getHistoryBounds(_ context.Context, callCtx CallContext, _ jso
 		recent = recent[len(recent)-limit:]
 	}
 
-	return toolResult{
+	result := toolResult{
 		Status:  "ok",
 		Summary: "History bounds retrieved",
 		Data: map[string]any{
@@ -35,7 +38,10 @@ func (r *Runtime) getHistoryBounds(_ context.Context, callCtx CallContext, _ jso
 			"full_history":   historyBoundsView(snapshot.Messages),
 			"recent_history": historyBoundsView(recent),
 		},
-	}, nil
+	}
+	logToolResult(callCtx, result, "data", result.Data)
+
+	return result, nil
 }
 
 func historyBoundsView(messages []state.Message) map[string]any {
