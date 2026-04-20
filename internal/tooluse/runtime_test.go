@@ -257,7 +257,7 @@ func TestNewToolsAreRegisteredByDefault(t *testing.T) {
 		names = append(names, definition.Name)
 	}
 
-	for _, required := range []string{"list_recent_links", "datetime_math", "datetime_format"} {
+	for _, required := range []string{"list_recent_links", "datetime_math", "datetime_format", "get_chat_activity_window"} {
 		if !slices.Contains(names, required) {
 			t.Fatalf("expected %s in default tool set, got %v", required, names)
 		}
@@ -363,6 +363,158 @@ func TestListRecentLinksReturnsEmptyWhenNoLinksFound(t *testing.T) {
 	}
 	if result.Status != "empty" {
 		t.Fatalf("expected empty status, got %+v", result)
+	}
+}
+
+func TestGetChatActivityWindowEmpty(t *testing.T) {
+	runtime := New(
+		&stubLLM{},
+		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
+		&stubExtractor{},
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, ok := runtime.registry.Lookup("get_chat_activity_window")
+	if !ok {
+		t.Fatal("get_chat_activity_window not registered")
+	}
+
+	result, err := definition.Handler(context.Background(), CallContext{Scope: state.ConversationScope{ChatID: 1, TopicID: 2}}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("get_chat_activity_window handler error = %v", err)
+	}
+	if result.Status != "empty" {
+		t.Fatalf("expected empty status, got %+v", result)
+	}
+}
+
+func TestGetChatActivityWindowInsufficientData(t *testing.T) {
+	store := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations()
+	scope := state.ConversationScope{ChatID: 1}
+	store.AppendMessage(scope, state.Message{
+		Name:      "alice",
+		Text:      "hello",
+		MessageID: 1,
+		CreatedAt: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+	})
+
+	runtime := New(
+		&stubLLM{},
+		store,
+		&stubExtractor{},
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, _ := runtime.registry.Lookup("get_chat_activity_window")
+	result, err := definition.Handler(context.Background(), CallContext{Scope: scope}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("get_chat_activity_window handler error = %v", err)
+	}
+	assertToolDataSubset(t, result, map[string]any{
+		"message_count":        1,
+		"window_span_seconds":  int64(0),
+		"average_gap_seconds":  0.0,
+		"messages_in_last_10m": 1,
+		"messages_in_last_1h":  1,
+		"burstiness":           "insufficient_data",
+	})
+}
+
+func TestGetChatActivityWindowSteady(t *testing.T) {
+	store := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations()
+	scope := state.ConversationScope{ChatID: 1, TopicID: 5}
+	base := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 4; i++ {
+		store.AppendMessage(scope, state.Message{
+			Name:      "alice",
+			Text:      "steady",
+			MessageID: i + 1,
+			CreatedAt: base.Add(time.Duration(i) * 5 * time.Minute),
+		})
+	}
+
+	runtime := New(
+		&stubLLM{},
+		store,
+		&stubExtractor{},
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, _ := runtime.registry.Lookup("get_chat_activity_window")
+	result, err := definition.Handler(context.Background(), CallContext{Scope: scope}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("get_chat_activity_window handler error = %v", err)
+	}
+	assertToolDataSubset(t, result, map[string]any{
+		"message_count":        4,
+		"window_span_seconds":  int64(900),
+		"average_gap_seconds":  300.0,
+		"messages_in_last_10m": 3,
+		"messages_in_last_1h":  4,
+		"burstiness":           "steady",
+	})
+}
+
+func TestGetChatActivityWindowBurstyAndScopeIsolated(t *testing.T) {
+	store := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations()
+	scope := state.ConversationScope{ChatID: 1, TopicID: 5}
+	otherScope := state.ConversationScope{ChatID: 1, TopicID: 6}
+	base := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	for i, ts := range []time.Time{
+		base,
+		base.Add(10 * time.Second),
+		base.Add(20 * time.Second),
+		base.Add(20 * time.Minute),
+	} {
+		store.AppendMessage(scope, state.Message{
+			Name:      "alice",
+			Text:      "bursty",
+			MessageID: i + 1,
+			CreatedAt: ts,
+		})
+	}
+	store.AppendMessage(otherScope, state.Message{
+		Name:      "mallory",
+		Text:      "ignore me",
+		MessageID: 99,
+		CreatedAt: base.Add(25 * time.Minute),
+	})
+
+	runtime := New(
+		&stubLLM{},
+		store,
+		&stubExtractor{},
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, _ := runtime.registry.Lookup("get_chat_activity_window")
+	result, err := definition.Handler(context.Background(), CallContext{Scope: scope}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("get_chat_activity_window handler error = %v", err)
+	}
+	assertToolDataSubset(t, result, map[string]any{
+		"message_count":        4,
+		"window_span_seconds":  int64(1200),
+		"messages_in_last_10m": 1,
+		"messages_in_last_1h":  4,
+		"burstiness":           "bursty",
+	})
+
+	data := result.Data.(map[string]any)
+	if got := data["last_message_at"]; got != base.Add(20*time.Minute).Format(time.RFC3339) {
+		t.Fatalf("unexpected last_message_at: %v", got)
 	}
 }
 

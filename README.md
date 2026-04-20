@@ -83,6 +83,7 @@ When `LLM_FEATURE_TOOL_USE_*` is configured, ordinary chat replies may use tools
 - `fetch_url_content` for explicit link-analysis requests in free-form chat
 - `search_recent_history` for in-memory recent-message lookup in the current chat/topic
 - `get_conversation_summary` for the current in-memory earlier summary
+- `get_chat_activity_window` for recent message cadence heuristics in the current chat/topic
 - `create_poll` for explicit vote/poll requests
 - `list_chat_schedule`, `add_schedule_item`, `remove_schedule_item` for durable chat reminders
 

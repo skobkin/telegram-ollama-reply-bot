@@ -23,6 +23,7 @@ const (
 	fetchURLContentResultCharBudget     = 3500
 	searchRecentHistoryResultCharBudget = 2200
 	conversationSummaryResultCharBudget = 1800
+	chatActivityResultCharBudget        = 1200
 	createPollResultCharBudget          = 1200
 	reminderResultCharBudget            = 1400
 	currentTimeResultCharBudget         = 600
@@ -124,6 +125,14 @@ func newRegistry(runtime *Runtime) *Registry {
 			InvocationPolicy: InvocationPolicyDiscretionary,
 			ResultCharBudget: conversationSummaryResultCharBudget,
 			Handler:          runtime.getConversationSummary,
+		},
+		{
+			Name:             "get_chat_activity_window",
+			Description:      "Summarize the current chat/topic recent message cadence with first and last message times, counts, and a rough burstiness label.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+			InvocationPolicy: InvocationPolicyDiscretionary,
+			ResultCharBudget: chatActivityResultCharBudget,
+			Handler:          runtime.getChatActivityWindow,
 		},
 		{
 			Name:             "create_poll",
