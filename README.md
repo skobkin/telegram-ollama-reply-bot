@@ -9,7 +9,14 @@
 - Context-dependent dialogue in chats
 - Summarization of articles by provided link
 - Image recognition and description
-- Tool-assisted free-form chat with URL retrieval, history lookup, summary lookup, current-time lookup, poll creation, and durable reminders
+- Tool-assisted free-form chat with
+  - URL retrieval
+  - Optional external web search
+  - History lookup
+  - Summary lookup
+  - Current-time lookup
+  - Poll creation
+  - Durable reminders
 
 ## Configuration
 
