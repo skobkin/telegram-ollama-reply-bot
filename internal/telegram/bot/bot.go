@@ -245,7 +245,7 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 	baseCtx := b.handlerContext(reqCtx)
 	b.maybeSummarizeHistory(baseCtx, message)
 	logger := b.loggerFromContext(baseCtx)
-	logger.Info("handling mention", "chat_id", message.Chat.ID)
+	logger.Debug("handling mention")
 
 	// Get MessageData from the request context if available, otherwise create it on the fly
 	userMessageData := b.getMessageDataFromRequestContextOrCreate(reqCtx, message, true)
