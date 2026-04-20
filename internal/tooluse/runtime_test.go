@@ -257,7 +257,7 @@ func TestNewToolsAreRegisteredByDefault(t *testing.T) {
 		names = append(names, definition.Name)
 	}
 
-	for _, required := range []string{"list_recent_links", "datetime_math", "datetime_format", "get_chat_activity_window", "get_history_bounds", "search_history"} {
+	for _, required := range []string{"list_recent_links", "datetime_math", "datetime_format", "get_chat_activity_window", "get_history_bounds", "get_message_thread_context", "search_history"} {
 		if !slices.Contains(names, required) {
 			t.Fatalf("expected %s in default tool set, got %v", required, names)
 		}
@@ -598,6 +598,299 @@ func TestGetHistoryBoundsReportsFullAndRecentHistory(t *testing.T) {
 	}
 	if got := recentHistory["oldest_message_at"]; got != base.Add(10*time.Minute).Format(time.RFC3339) {
 		t.Fatalf("unexpected recent oldest message time: %v", got)
+	}
+}
+
+func TestGetMessageThreadContextBuildsChainAndAdjacentReplies(t *testing.T) {
+	store := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations()
+	scope := state.ConversationScope{ChatID: 1, TopicID: 7}
+	base := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+
+	root := state.Message{Name: "alice", Username: "alice", Text: "root", MessageID: 1, FromID: 10, CreatedAt: base}
+	botReply := state.Message{
+		Name:      "bot",
+		Username:  "mybot",
+		Text:      "bot reply",
+		MessageID: 2,
+		FromID:    99,
+		IsMe:      true,
+		ReplyTo:   &root,
+		CreatedAt: base.Add(1 * time.Minute),
+	}
+	current := state.Message{
+		Name:          "alice",
+		Username:      "alice",
+		Text:          "current request",
+		MessageID:     3,
+		FromID:        10,
+		IsUserRequest: true,
+		ReplyTo:       &botReply,
+		CreatedAt:     base.Add(2 * time.Minute),
+	}
+	sideOnRoot := state.Message{
+		Name:      "bob",
+		Username:  "bob",
+		Text:      "side root",
+		MessageID: 4,
+		FromID:    11,
+		ReplyTo:   &root,
+		CreatedAt: base.Add(30 * time.Second),
+	}
+	sideOnBot := state.Message{
+		Name:      "carol",
+		Username:  "carol",
+		Text:      "side bot",
+		MessageID: 5,
+		FromID:    12,
+		ReplyTo:   &botReply,
+		CreatedAt: base.Add(90 * time.Second),
+	}
+
+	for _, msg := range []state.Message{root, botReply, current, sideOnRoot, sideOnBot} {
+		store.AppendMessage(scope, msg)
+	}
+
+	runtime := New(
+		&stubLLM{},
+		store,
+		&stubExtractor{},
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, ok := runtime.registry.Lookup("get_message_thread_context")
+	if !ok {
+		t.Fatal("get_message_thread_context not registered")
+	}
+
+	result, err := definition.Handler(context.Background(), CallContext{Scope: scope, Requester: current}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("get_message_thread_context handler error = %v", err)
+	}
+	if result.Status != "ok" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	data := result.Data.(map[string]any)
+	if got := data["anchor_reason"]; got != "request_reply_target" {
+		t.Fatalf("unexpected anchor_reason: %v", got)
+	}
+	if got := data["anchor_message_id"]; got != 2 {
+		t.Fatalf("unexpected anchor_message_id: %v", got)
+	}
+
+	chain := data["chain"].([]map[string]any)
+	if len(chain) != 3 {
+		t.Fatalf("expected 3 chain messages, got %d", len(chain))
+	}
+	if got := []any{chain[0]["message_id"], chain[1]["message_id"], chain[2]["message_id"]}; !slices.Equal(got, []any{1, 2, 3}) {
+		t.Fatalf("unexpected chain ids: %v", got)
+	}
+
+	adjacent := data["adjacent_replies"].([]map[string]any)
+	if len(adjacent) != 2 {
+		t.Fatalf("expected 2 adjacent groups, got %d", len(adjacent))
+	}
+	if got := adjacent[0]["parent_message_id"]; got != 1 {
+		t.Fatalf("unexpected first adjacent parent: %v", got)
+	}
+	if replies := adjacent[0]["replies"].([]map[string]any); len(replies) != 1 || replies[0]["message_id"] != 4 {
+		t.Fatalf("unexpected root adjacent replies: %#v", adjacent[0]["replies"])
+	}
+	if got := adjacent[1]["parent_message_id"]; got != 2 {
+		t.Fatalf("unexpected second adjacent parent: %v", got)
+	}
+	if replies := adjacent[1]["replies"].([]map[string]any); len(replies) != 1 || replies[0]["message_id"] != 5 {
+		t.Fatalf("unexpected bot adjacent replies: %#v", adjacent[1]["replies"])
+	}
+}
+
+func TestGetMessageThreadContextFallsBackToEmbeddedReplyChain(t *testing.T) {
+	store := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations()
+	scope := state.ConversationScope{ChatID: 1}
+	base := time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)
+
+	current := state.Message{
+		Name:          "alice",
+		Text:          "latest",
+		MessageID:     33,
+		FromID:        10,
+		IsUserRequest: true,
+		CreatedAt:     base,
+		ReplyTo: &state.Message{
+			Name:      "bot",
+			Text:      "missing parent in flat snapshot",
+			MessageID: 22,
+			IsMe:      true,
+			CreatedAt: base.Add(-1 * time.Minute),
+			ReplyTo: &state.Message{
+				Name:      "bob",
+				Text:      "older root",
+				MessageID: 11,
+				FromID:    20,
+				CreatedAt: base.Add(-2 * time.Minute),
+			},
+		},
+	}
+
+	store.AppendMessage(scope, state.Message{
+		Name:          current.Name,
+		Text:          current.Text,
+		MessageID:     current.MessageID,
+		FromID:        current.FromID,
+		IsUserRequest: true,
+		CreatedAt:     current.CreatedAt,
+	})
+
+	runtime := New(
+		&stubLLM{},
+		store,
+		&stubExtractor{},
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, _ := runtime.registry.Lookup("get_message_thread_context")
+	result, err := definition.Handler(context.Background(), CallContext{Scope: scope, Requester: current}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("get_message_thread_context handler error = %v", err)
+	}
+
+	data := result.Data.(map[string]any)
+	chain := data["chain"].([]map[string]any)
+	if got := []any{chain[0]["message_id"], chain[1]["message_id"], chain[2]["message_id"]}; !slices.Equal(got, []any{11, 22, 33}) {
+		t.Fatalf("unexpected chain ids: %v", got)
+	}
+}
+
+func TestGetMessageThreadContextFallsBackToCurrentMessageWhenNotReply(t *testing.T) {
+	store := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations()
+	scope := state.ConversationScope{ChatID: 1}
+	current := state.Message{
+		Name:          "alice",
+		Text:          "standalone",
+		MessageID:     7,
+		FromID:        10,
+		IsUserRequest: true,
+		CreatedAt:     time.Date(2026, 4, 20, 13, 0, 0, 0, time.UTC),
+	}
+	store.AppendMessage(scope, current)
+
+	runtime := New(
+		&stubLLM{},
+		store,
+		&stubExtractor{},
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, _ := runtime.registry.Lookup("get_message_thread_context")
+	result, err := definition.Handler(context.Background(), CallContext{Scope: scope, Requester: current}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("get_message_thread_context handler error = %v", err)
+	}
+
+	data := result.Data.(map[string]any)
+	if got := data["anchor_reason"]; got != "request_message" {
+		t.Fatalf("unexpected anchor_reason: %v", got)
+	}
+	if got := data["anchor_message_id"]; got != 7 {
+		t.Fatalf("unexpected anchor_message_id: %v", got)
+	}
+}
+
+func TestGetMessageThreadContextRespectsCapsAndTopicScope(t *testing.T) {
+	store := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations()
+	scope := state.ConversationScope{ChatID: 1, TopicID: 1}
+	otherScope := state.ConversationScope{ChatID: 1, TopicID: 2}
+	base := time.Date(2026, 4, 20, 14, 0, 0, 0, time.UTC)
+
+	var current state.Message
+	var parent *state.Message
+	for i := 1; i <= 9; i++ {
+		msg := state.Message{
+			Name:      "alice",
+			Text:      "chain",
+			MessageID: i,
+			FromID:    10,
+			CreatedAt: base.Add(time.Duration(i) * time.Minute),
+		}
+		if parent != nil {
+			replyCopy := *parent
+			msg.ReplyTo = &replyCopy
+		}
+		store.AppendMessage(scope, msg)
+		parent = &msg
+		current = msg
+	}
+
+	for i := 0; i < 4; i++ {
+		store.AppendMessage(scope, state.Message{
+			Name:      "side",
+			Text:      "adjacent",
+			MessageID: 100 + i,
+			FromID:    int64(20 + i),
+			ReplyTo:   &state.Message{MessageID: 2},
+			CreatedAt: base.Add(30*time.Second + time.Duration(i)*time.Second),
+		})
+	}
+	for i := 0; i < 10; i++ {
+		store.AppendMessage(otherScope, state.Message{
+			Name:      "mallory",
+			Text:      "ignore",
+			MessageID: 200 + i,
+			FromID:    99,
+			ReplyTo:   &state.Message{MessageID: 1},
+			CreatedAt: base.Add(time.Duration(i) * time.Second),
+		})
+	}
+
+	runtime := New(
+		&stubLLM{},
+		store,
+		&stubExtractor{},
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, _ := runtime.registry.Lookup("get_message_thread_context")
+	result, err := definition.Handler(context.Background(), CallContext{Scope: scope, Requester: current}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("get_message_thread_context handler error = %v", err)
+	}
+
+	data := result.Data.(map[string]any)
+	chain := data["chain"].([]map[string]any)
+	if len(chain) != messageThreadChainLimit {
+		t.Fatalf("expected chain cap %d, got %d", messageThreadChainLimit, len(chain))
+	}
+	if chain[0]["message_id"] != 2 || chain[len(chain)-1]["message_id"] != 9 {
+		t.Fatalf("unexpected capped chain range: %#v", chain)
+	}
+
+	truncated := data["truncated"].(map[string]any)
+	if got := truncated["chain_depth"]; got != true {
+		t.Fatalf("expected chain truncation, got %v", got)
+	}
+	if got := truncated["adjacent_replies"]; got != true {
+		t.Fatalf("expected adjacent truncation, got %v", got)
+	}
+
+	adjacent := data["adjacent_replies"].([]map[string]any)
+	if len(adjacent) != 1 {
+		t.Fatalf("expected one adjacent group in current topic, got %d", len(adjacent))
+	}
+	replies := adjacent[0]["replies"].([]map[string]any)
+	if len(replies) != messageThreadAdjacentPerNodeMax {
+		t.Fatalf("expected per-node adjacent cap %d, got %d", messageThreadAdjacentPerNodeMax, len(replies))
 	}
 }
 

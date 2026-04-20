@@ -14,6 +14,7 @@ const (
 	searchRecentHistorySnippetCharLimit = 280
 	conversationSummaryTextCharLimit    = 1400
 	recentLinksSnippetCharLimit         = 180
+	messageThreadSnippetCharLimit       = 220
 	defaultRecentHistoryResultLimit     = 5
 	maxRecentHistoryResultLimit         = 10
 )

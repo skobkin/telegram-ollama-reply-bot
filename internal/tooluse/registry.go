@@ -25,6 +25,7 @@ const (
 	conversationSummaryResultCharBudget = 1800
 	chatActivityResultCharBudget        = 1200
 	historyBoundsResultCharBudget       = 900
+	messageThreadResultCharBudget       = 2600
 	createPollResultCharBudget          = 1200
 	reminderResultCharBudget            = 1400
 	currentTimeResultCharBudget         = 600
@@ -142,6 +143,14 @@ func newRegistry(runtime *Runtime) *Registry {
 			InvocationPolicy: InvocationPolicyDiscretionary,
 			ResultCharBudget: historyBoundsResultCharBudget,
 			Handler:          runtime.getHistoryBounds,
+		},
+		{
+			Name:             "get_message_thread_context",
+			Description:      "Return a compact reply-thread view around the current message, including the linear reply chain and a few direct side replies still available in memory for the current chat/topic.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+			InvocationPolicy: InvocationPolicyDiscretionary,
+			ResultCharBudget: messageThreadResultCharBudget,
+			Handler:          runtime.getMessageThreadContext,
 		},
 		{
 			Name:             "create_poll",
