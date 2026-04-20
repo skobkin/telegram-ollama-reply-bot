@@ -27,11 +27,10 @@ func TestTavilySearcherSearch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	original := tavilySearchURL
-	tavilySearchURL = server.URL
-	defer func() { tavilySearchURL = original }()
+	searcher := NewTavilySearcher(server.Client(), "tavily-token", testLogger())
+	searcher.searchURL = server.URL
 
-	result, err := NewTavilySearcher(server.Client(), "tavily-token", testLogger()).Search(context.Background(), Request{Query: "golang", MaxResults: 3})
+	result, err := searcher.Search(context.Background(), Request{Query: "golang", MaxResults: 3})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -52,11 +51,10 @@ func TestTavilySearcherClassifiesCreditsExhausted(t *testing.T) {
 	}))
 	defer server.Close()
 
-	original := tavilySearchURL
-	tavilySearchURL = server.URL
-	defer func() { tavilySearchURL = original }()
+	searcher := NewTavilySearcher(server.Client(), "tavily-token", testLogger())
+	searcher.searchURL = server.URL
 
-	_, err := NewTavilySearcher(server.Client(), "tavily-token", testLogger()).Search(context.Background(), Request{Query: "golang"})
+	_, err := searcher.Search(context.Background(), Request{Query: "golang"})
 	if kind := provider.KindOf(err); kind != provider.ErrorKindCreditsExhausted {
 		t.Fatalf("unexpected error kind: %s", kind)
 	}
@@ -79,11 +77,10 @@ func TestKagiSearcherSearch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	original := kagiSearchURL
-	kagiSearchURL = server.URL
-	defer func() { kagiSearchURL = original }()
+	searcher := NewKagiSearcher(server.Client(), "kagi-token", testLogger())
+	searcher.searchURL = server.URL
 
-	result, err := NewKagiSearcher(server.Client(), "kagi-token", testLogger()).Search(context.Background(), Request{Query: "kagi", MaxResults: 4})
+	result, err := searcher.Search(context.Background(), Request{Query: "kagi", MaxResults: 4})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
 	}
@@ -104,11 +101,10 @@ func TestKagiSearcherClassifiesErrorCodes(t *testing.T) {
 	}))
 	defer server.Close()
 
-	original := kagiSearchURL
-	kagiSearchURL = server.URL
-	defer func() { kagiSearchURL = original }()
+	searcher := NewKagiSearcher(server.Client(), "kagi-token", testLogger())
+	searcher.searchURL = server.URL
 
-	_, err := NewKagiSearcher(server.Client(), "kagi-token", testLogger()).Search(context.Background(), Request{Query: "kagi"})
+	_, err := searcher.Search(context.Background(), Request{Query: "kagi"})
 	if kind := provider.KindOf(err); kind != provider.ErrorKindCreditsExhausted {
 		t.Fatalf("unexpected error kind: %s", kind)
 	}

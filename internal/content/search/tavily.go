@@ -12,12 +12,13 @@ import (
 	"telegram-ollama-reply-bot/internal/provider"
 )
 
-var tavilySearchURL = "https://api.tavily.com/search"
+const defaultTavilySearchURL = "https://api.tavily.com/search"
 
 type TavilySearcher struct {
-	client *http.Client
-	apiKey string
-	logger *slog.Logger
+	client    *http.Client
+	apiKey    string
+	searchURL string
+	logger    *slog.Logger
 }
 
 func NewTavilySearcher(client *http.Client, apiKey string, logger *slog.Logger) *TavilySearcher {
@@ -25,7 +26,12 @@ func NewTavilySearcher(client *http.Client, apiKey string, logger *slog.Logger) 
 		logger = slog.Default()
 	}
 
-	return &TavilySearcher{client: client, apiKey: apiKey, logger: logger}
+	return &TavilySearcher{
+		client:    client,
+		apiKey:    apiKey,
+		searchURL: defaultTavilySearchURL,
+		logger:    logger,
+	}
 }
 
 func (s *TavilySearcher) Search(ctx context.Context, req Request) (Result, error) {
@@ -40,7 +46,7 @@ func (s *TavilySearcher) Search(ctx context.Context, req Request) (Result, error
 		return Result{}, provider.NewError("tavily", provider.ErrorKindBadRequest)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, tavilySearchURL, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.searchURL, bytes.NewReader(body))
 	if err != nil {
 		return Result{}, provider.NewError("tavily", provider.ErrorKindBadRequest)
 	}

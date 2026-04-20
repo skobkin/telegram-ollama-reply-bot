@@ -13,12 +13,13 @@ import (
 	"telegram-ollama-reply-bot/internal/provider"
 )
 
-var kagiSearchURL = "https://kagi.com/api/v0/search"
+const defaultKagiSearchURL = "https://kagi.com/api/v0/search"
 
 type KagiSearcher struct {
-	client *http.Client
-	apiKey string
-	logger *slog.Logger
+	client    *http.Client
+	apiKey    string
+	searchURL string
+	logger    *slog.Logger
 }
 
 func NewKagiSearcher(client *http.Client, apiKey string, logger *slog.Logger) *KagiSearcher {
@@ -26,11 +27,16 @@ func NewKagiSearcher(client *http.Client, apiKey string, logger *slog.Logger) *K
 		logger = slog.Default()
 	}
 
-	return &KagiSearcher{client: client, apiKey: apiKey, logger: logger}
+	return &KagiSearcher{
+		client:    client,
+		apiKey:    apiKey,
+		searchURL: defaultKagiSearchURL,
+		logger:    logger,
+	}
 }
 
 func (s *KagiSearcher) Search(ctx context.Context, req Request) (Result, error) {
-	queryURL, err := url.Parse(kagiSearchURL)
+	queryURL, err := url.Parse(s.searchURL)
 	if err != nil {
 		return Result{}, provider.NewError("kagi", provider.ErrorKindBadRequest)
 	}
