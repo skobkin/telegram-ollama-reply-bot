@@ -14,6 +14,7 @@ import (
 	"telegram-ollama-reply-bot/internal/state/memory"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/telegram/bot"
+	tghttp "telegram-ollama-reply-bot/internal/telegram/transport"
 	"telegram-ollama-reply-bot/internal/tooluse"
 	"time"
 
@@ -59,6 +60,7 @@ func Run(ctx context.Context) error {
 		"tool_use_backend", cfg.LLM.Features.ToolUse.Backend,
 		"tool_use_model", cfg.LLM.Features.ToolUse.Model,
 	)
+	tghttp.LogNetworkRouting(logger, cfg)
 
 	persistentStore, err := psqlite.Open(ctx, cfg.Persistence.StorePath, logManager.Logger("persistence/sqlite"))
 	if err != nil {
@@ -103,7 +105,7 @@ func Run(ctx context.Context) error {
 	telegramAPI, err := tg.NewBot(cfg.Bot.Telegram.Token, tg.WithLogger(bot.NewLogger(
 		logManager.Logger("telegram/bot").With("source", "telego"),
 		cfg.Bot.Telegram.Token,
-	)))
+	)), tg.WithHTTPClient(tghttp.NewHTTPClient()))
 	if err != nil {
 		logger.Error("telegram api initialization failed", "error", err)
 		sentry.CaptureException(err)
