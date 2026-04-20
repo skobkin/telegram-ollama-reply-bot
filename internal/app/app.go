@@ -7,11 +7,13 @@ import (
 	"telegram-ollama-reply-bot/internal/chatreply"
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/content/extractor"
+	"telegram-ollama-reply-bot/internal/content/search"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/logging"
 	psqlite "telegram-ollama-reply-bot/internal/persistence/sqlite"
 	"telegram-ollama-reply-bot/internal/reminders"
 	"telegram-ollama-reply-bot/internal/state/memory"
+	"telegram-ollama-reply-bot/internal/support/httpclient"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/telegram/bot"
 	tghttp "telegram-ollama-reply-bot/internal/telegram/transport"
@@ -95,6 +97,13 @@ func Run(ctx context.Context) error {
 	logger.Info("all required models are available")
 
 	ext := extractor.NewExtractor(logManager.Logger("content/extractor"))
+	searcher, err := search.NewFromConfig(*cfg, httpclient.New(), logManager.Logger("content/search"))
+	if err != nil {
+		logger.Error("failed to initialize search capability", "error", err)
+		sentry.CaptureException(err)
+
+		return err
+	}
 	stores := memory.New(memory.Config{
 		MaxBytes:           cfg.State.MaxBytes,
 		HistoryMaxBytes:    cfg.State.HistoryMaxBytes,
@@ -126,6 +135,7 @@ func Run(ctx context.Context) error {
 		llmc,
 		stores.Conversations(),
 		ext,
+		searcher,
 		telegramAPI,
 		reminderService,
 		logManager.Logger("tooluse"),

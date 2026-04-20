@@ -16,11 +16,18 @@ type Config struct {
 	State       StateConfig
 	Logging     LoggingConfig
 	Persistence PersistenceConfig
+	Providers   ProvidersConfig
+	Search      SearchConfig
 }
 
 const (
 	LLMBackendOpenAICompat = "openai_compat"
 	LLMBackendOllama       = "ollama"
+
+	SearchBackendNone   = "none"
+	SearchBackendTavily = "tavily"
+	SearchBackendKagi   = "kagi"
+	SearchBackendChain  = "chain"
 )
 
 // LLMConfig contains configuration for the LLM service.
@@ -52,6 +59,28 @@ type BotConfig struct {
 // PersistenceConfig contains durable storage configuration.
 type PersistenceConfig struct {
 	StorePath string
+}
+
+// ProvidersConfig contains credentials for external providers that may support multiple capabilities.
+type ProvidersConfig struct {
+	Tavily TavilyProviderConfig
+	Kagi   KagiProviderConfig
+}
+
+// TavilyProviderConfig contains Tavily credentials.
+type TavilyProviderConfig struct {
+	APIKey string
+}
+
+// KagiProviderConfig contains Kagi credentials.
+type KagiProviderConfig struct {
+	APIKey string
+}
+
+// SearchConfig contains search capability routing.
+type SearchConfig struct {
+	Backend string
+	Chain   []string
 }
 
 type StateConfig struct {
@@ -119,6 +148,10 @@ func Load() *Config {
 	toolUseBackend := getEnvOrDefault("LLM_FEATURE_TOOL_USE_BACKEND", chatBackend)
 	toolUseModel := getEnvOrDefault("LLM_FEATURE_TOOL_USE_MODEL", chatModel)
 	toolLoopMaxIterations := intFromEnv("LLM_TOOL_LOOP_MAX_ITERATIONS", 6)
+	searchBackend := strings.TrimSpace(os.Getenv("SEARCH_BACKEND"))
+	if searchBackend == "" {
+		searchBackend = SearchBackendNone
+	}
 
 	return &Config{
 		LLM: LLMConfig{
@@ -173,6 +206,18 @@ func Load() *Config {
 		},
 		Persistence: PersistenceConfig{
 			StorePath: getEnvOrDefault("PERSISTENT_STORE_PATH", "/data/db.sqlite"),
+		},
+		Providers: ProvidersConfig{
+			Tavily: TavilyProviderConfig{
+				APIKey: os.Getenv("PROVIDER_TAVILY_API_KEY"),
+			},
+			Kagi: KagiProviderConfig{
+				APIKey: os.Getenv("PROVIDER_KAGI_API_KEY"),
+			},
+		},
+		Search: SearchConfig{
+			Backend: searchBackend,
+			Chain:   csvFromEnv("SEARCH_BACKEND_CHAIN"),
 		},
 	}
 }
@@ -258,6 +303,26 @@ func durationFromEnv(name string, fallback time.Duration) time.Duration {
 	}
 
 	return fallback
+}
+
+func csvFromEnv(name string) []string {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil
+	}
+
+	items := strings.Split(raw, ",")
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+
+		result = append(result, item)
+	}
+
+	return result
 }
 
 func getEnvOrDefault(key, defaultValue string) string {

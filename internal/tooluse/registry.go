@@ -189,6 +189,17 @@ func newRegistry(runtime *Runtime) *Registry {
 		},
 	}
 
+	if runtime.searcher != nil {
+		definitions = append(definitions, Definition{
+			Name:             "search_web",
+			Description:      "Search the public web when the user explicitly asks to look up external information beyond current chat history.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"Search query text"},"max_results":{"type":"integer","minimum":1,"maximum":10,"description":"Maximum number of results to return."}},"required":["query"],"additionalProperties":false}`),
+			InvocationPolicy: InvocationPolicyExplicitRequestOnly,
+			ResultCharBudget: fetchURLContentResultCharBudget,
+			Handler:          runtime.searchWeb,
+		})
+	}
+
 	result := &Registry{
 		definitions: make(map[string]Definition, len(definitions)),
 		defaults:    make([]string, 0, len(definitions)),

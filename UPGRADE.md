@@ -1,5 +1,31 @@
 # Upgrade Notes
 
+## 2026-04-21 - Optional external search providers introduced
+
+### Search Config
+
+New environment variables:
+
+- `SEARCH_BACKEND`
+- `SEARCH_BACKEND_CHAIN`
+- `PROVIDER_TAVILY_API_KEY`
+- `PROVIDER_KAGI_API_KEY`
+
+Set `SEARCH_BACKEND` to one of:
+
+- `none`
+- `tavily`
+- `kagi`
+- `chain`
+
+If `SEARCH_BACKEND` is unset or set to `none`, no external web search tool is exposed to the model.
+
+When using `SEARCH_BACKEND=chain`, set `SEARCH_BACKEND_CHAIN` to a comma-separated ordered list such as:
+
+- `tavily,kagi`
+
+Provider credentials are provider-scoped rather than search-scoped so the same keys can be reused by future provider-backed capabilities.
+
 ## 2026-04-20 - Full raw in-memory history replaces per-stream message cap
 
 ### State Config Migration

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"telegram-ollama-reply-bot/internal/content/extractor"
+	"telegram-ollama-reply-bot/internal/content/search"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/state"
 	"telegram-ollama-reply-bot/internal/state/memory"
@@ -78,11 +79,21 @@ func (s *stubPollSender) SendPoll(_ context.Context, params *tg.SendPollParams) 
 	return s.message, s.err
 }
 
+type stubSearcher struct {
+	result search.Result
+	err    error
+}
+
+func (s *stubSearcher) Search(context.Context, search.Request) (search.Result, error) {
+	return s.result, s.err
+}
+
 func TestRuntimeReturnsUnavailableWhenToolUseGenerateFailsImmediately(t *testing.T) {
 	runtime := New(
 		&stubLLM{generateErr: errors.New("boom")},
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -130,6 +141,7 @@ func TestRuntimeExecutesToolCallsAndReturnsFinalReply(t *testing.T) {
 		stub,
 		store,
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -173,6 +185,7 @@ func TestRuntimeRespectsConfiguredIterationLimit(t *testing.T) {
 		stub,
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -195,6 +208,7 @@ func TestCreatePollUsesCurrentTopic(t *testing.T) {
 		&stubLLM{},
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
+		nil,
 		sender,
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -223,6 +237,7 @@ func TestReminderToolsAreRegisteredByDefault(t *testing.T) {
 		&stubLLM{},
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -246,6 +261,7 @@ func TestNewToolsAreRegisteredByDefault(t *testing.T) {
 		&stubLLM{},
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -302,6 +318,7 @@ func TestListRecentLinksUsesScopeAndDeduplicates(t *testing.T) {
 		&stubLLM{},
 		store,
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -350,6 +367,7 @@ func TestListRecentLinksReturnsEmptyWhenNoLinksFound(t *testing.T) {
 		&stubLLM{},
 		store,
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -394,6 +412,7 @@ func TestSearchHistorySupportsAnyAllAndFuzzyMatching(t *testing.T) {
 		&stubLLM{},
 		store,
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -475,6 +494,7 @@ func TestSearchHistoryLargeLimitAndValidation(t *testing.T) {
 		&stubLLM{},
 		store,
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -514,6 +534,7 @@ func TestGetChatActivityWindowEmpty(t *testing.T) {
 		&stubLLM{},
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -548,6 +569,7 @@ func TestGetChatActivityWindowInsufficientData(t *testing.T) {
 		&stubLLM{},
 		store,
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -586,6 +608,7 @@ func TestGetChatActivityWindowSteady(t *testing.T) {
 		&stubLLM{},
 		store,
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -636,6 +659,7 @@ func TestGetChatActivityWindowBurstyAndScopeIsolated(t *testing.T) {
 		&stubLLM{},
 		store,
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -666,6 +690,7 @@ func TestGetHistoryBoundsEmpty(t *testing.T) {
 		&stubLLM{},
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -703,6 +728,7 @@ func TestGetHistoryBoundsReportsFullAndRecentHistory(t *testing.T) {
 		&stubLLM{},
 		store,
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -797,6 +823,7 @@ func TestGetMessageThreadContextBuildsChainAndAdjacentReplies(t *testing.T) {
 		&stubLLM{},
 		store,
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -891,6 +918,7 @@ func TestGetMessageThreadContextFallsBackToEmbeddedReplyChain(t *testing.T) {
 		&stubLLM{},
 		store,
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -927,6 +955,7 @@ func TestGetMessageThreadContextFallsBackToCurrentMessageWhenNotReply(t *testing
 		&stubLLM{},
 		store,
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -998,6 +1027,7 @@ func TestGetMessageThreadContextRespectsCapsAndTopicScope(t *testing.T) {
 		&stubLLM{},
 		store,
 		&stubExtractor{},
+		nil,
 		&stubPollSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -1061,6 +1091,57 @@ func TestCurrentTimeHandlerIncludesServerTimezone(t *testing.T) {
 	}
 	if _, ok := data["utc_offset_seconds"].(int); !ok {
 		t.Fatalf("unexpected utc_offset_seconds type: %T", data["utc_offset_seconds"])
+	}
+}
+
+func TestSearchWebToolIsConditionalAndReturnsProvider(t *testing.T) {
+	runtimeWithoutSearch := New(
+		&stubLLM{},
+		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
+		&stubExtractor{},
+		nil,
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+	if _, ok := runtimeWithoutSearch.registry.Lookup("search_web"); ok {
+		t.Fatal("did not expect search_web when search is unavailable")
+	}
+
+	runtimeWithSearch := New(
+		&stubLLM{},
+		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
+		&stubExtractor{},
+		&stubSearcher{result: search.Result{
+			Provider: "kagi",
+			Query:    "golang",
+			Results:  []search.ResultItem{{Title: "Go", URL: "https://go.dev"}},
+		}},
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+	definition, ok := runtimeWithSearch.registry.Lookup("search_web")
+	if !ok {
+		t.Fatal("expected search_web when search is configured")
+	}
+
+	result, err := definition.Handler(context.Background(), CallContext{}, json.RawMessage(`{"query":"golang","max_results":3}`))
+	if err != nil {
+		t.Fatalf("search_web handler error = %v", err)
+	}
+	if result.Status != "ok" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	data, ok := result.Data.(search.Result)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", result.Data)
+	}
+	if data.Provider != "kagi" {
+		t.Fatalf("unexpected provider: %q", data.Provider)
 	}
 }
 

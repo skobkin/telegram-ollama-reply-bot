@@ -125,3 +125,42 @@ func TestLoadUsesDefaultPersistentStorePath(t *testing.T) {
 		t.Fatalf("unexpected default persistent store path: %q", cfg.Persistence.StorePath)
 	}
 }
+
+func TestLoadDefaultsSearchBackendToNone(t *testing.T) {
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma3:27b")
+
+	cfg := Load()
+
+	if cfg.Search.Backend != SearchBackendNone {
+		t.Fatalf("unexpected search backend: %q", cfg.Search.Backend)
+	}
+	if len(cfg.Search.Chain) != 0 {
+		t.Fatalf("expected empty search chain, got %v", cfg.Search.Chain)
+	}
+}
+
+func TestLoadUsesProviderOrientedSearchConfig(t *testing.T) {
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma3:27b")
+	t.Setenv("SEARCH_BACKEND", SearchBackendChain)
+	t.Setenv("SEARCH_BACKEND_CHAIN", " tavily , kagi ")
+	t.Setenv("PROVIDER_TAVILY_API_KEY", "tavily-secret")
+	t.Setenv("PROVIDER_KAGI_API_KEY", "kagi-secret")
+
+	cfg := Load()
+
+	if cfg.Search.Backend != SearchBackendChain {
+		t.Fatalf("unexpected search backend: %q", cfg.Search.Backend)
+	}
+	if got, want := len(cfg.Search.Chain), 2; got != want {
+		t.Fatalf("unexpected search chain length: got %d want %d", got, want)
+	}
+	if cfg.Search.Chain[0] != SearchBackendTavily || cfg.Search.Chain[1] != SearchBackendKagi {
+		t.Fatalf("unexpected search chain: %v", cfg.Search.Chain)
+	}
+	if cfg.Providers.Tavily.APIKey != "tavily-secret" {
+		t.Fatalf("unexpected tavily api key")
+	}
+	if cfg.Providers.Kagi.APIKey != "kagi-secret" {
+		t.Fatalf("unexpected kagi api key")
+	}
+}

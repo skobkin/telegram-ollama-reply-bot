@@ -38,6 +38,10 @@ The bot can be configured using the following environment variables:
 | `LLM_UNCOMPRESSED_HISTORY_LIMIT`        | Recent chat messages sent verbatim to LLM; older ones summarized. Set to `0` to disable summarization             | No       | 15                       |
 | `LLM_HISTORY_SUMMARY_THRESHOLD`         | Extra messages beyond the limit before summarization triggers again                                               | No       | 5                        |
 | `BOT_PROCESSING_TIMEOUT`                | Timeout for processing incoming requests (includes LLM calls). Accepts Go duration strings (e.g. `45s`, `1m30s`). | No       | `30s`                    |
+| `SEARCH_BACKEND`                        | External search backend for the `search_web` tool: `none`, `tavily`, `kagi`, or `chain`                           | No       | `none`                   |
+| `SEARCH_BACKEND_CHAIN`                  | Comma-separated backend order used when `SEARCH_BACKEND=chain`                                                    | No       | empty                    |
+| `PROVIDER_TAVILY_API_KEY`               | Tavily provider API key                                                                                           | No       | empty                    |
+| `PROVIDER_KAGI_API_KEY`                 | Kagi provider API key                                                                                             | No       | empty                    |
 | `LOG_LEVEL`                             | Structured log verbosity: `debug`, `info`, `warn`, or `error`                                                     | No       | `info`                   |
 | `SENTRY_DSN`                            | Sentry DSN for error tracking                                                                                     | No       | empty                    |
 | `PERSISTENT_STORE_PATH`                 | Path to the SQLite database used for durable bot data                                                             | No       | `/data/db.sqlite`        |
@@ -76,6 +80,7 @@ You can also interact with the bot by:
 
 When `LLM_FEATURE_TOOL_USE_*` is configured, ordinary chat replies may use tools before answering. The current tool set is:
 
+- `search_web` for explicit internet lookups when `SEARCH_BACKEND` is configured to something other than `none`
 - `get_current_time` for time-sensitive reasoning and schedule anchoring
 - `datetime_math` for exact datetime diff, shift, weekday, and timezone conversion
 - `datetime_format` for compact user-facing timestamp formatting
@@ -97,6 +102,8 @@ Reminder behavior in the first implementation slice:
 - after downtime, recurring reminders emit only the latest missed occurrence and then continue on schedule
 
 `/summarize` still uses the direct extractor-plus-summary workflow and does not depend on the tool loop.
+
+If `SEARCH_BACKEND` is unset or set to `none`, the `search_web` tool is not exposed to the model.
 
 By default, chat interactivity is `disabled`. Configure it from an admin DM before expecting the bot to answer normal
 chat messages.

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"telegram-ollama-reply-bot/internal/content/extractor"
+	"telegram-ollama-reply-bot/internal/content/search"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/logging"
 	"telegram-ollama-reply-bot/internal/reminders"
@@ -45,6 +46,7 @@ type Runtime struct {
 	llm       llmService
 	history   state.ConversationStore
 	extractor extractor.Extractor
+	searcher  search.Searcher
 	polls     PollSender
 	reminders *reminders.Service
 	logger    *slog.Logger
@@ -52,7 +54,7 @@ type Runtime struct {
 	registry  *Registry
 }
 
-func New(llmService llmService, history state.ConversationStore, extractor extractor.Extractor, polls PollSender, reminderService *reminders.Service, logger *slog.Logger, cfg Config) *Runtime {
+func New(llmService llmService, history state.ConversationStore, extractor extractor.Extractor, searcher search.Searcher, polls PollSender, reminderService *reminders.Service, logger *slog.Logger, cfg Config) *Runtime {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -67,6 +69,7 @@ func New(llmService llmService, history state.ConversationStore, extractor extra
 		llm:       llmService,
 		history:   history,
 		extractor: extractor,
+		searcher:  searcher,
 		polls:     polls,
 		reminders: reminderService,
 		logger:    logger,
