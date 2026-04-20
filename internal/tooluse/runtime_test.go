@@ -202,6 +202,55 @@ func TestRuntimeRespectsConfiguredIterationLimit(t *testing.T) {
 	}
 }
 
+func TestGetConversationSummaryReturnsCachedSummaryWithFullHistoryPresent(t *testing.T) {
+	store := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations()
+	scope := state.ConversationScope{ChatID: 1, TopicID: 7}
+	for i, text := range []string{"one", "two", "three", "four"} {
+		store.AppendMessage(scope, state.Message{
+			Name:      "alice",
+			Text:      text,
+			MessageID: i + 1,
+			CreatedAt: time.Now().UTC(),
+		})
+	}
+	store.SetEarlierSummary(scope, "summary of one and two", 2)
+
+	runtime := New(
+		&stubLLM{},
+		store,
+		&stubExtractor{},
+		nil,
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, ok := runtime.registry.Lookup("get_conversation_summary")
+	if !ok {
+		t.Fatal("get_conversation_summary not registered")
+	}
+
+	result, err := definition.Handler(context.Background(), CallContext{Scope: scope}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("get_conversation_summary handler error = %v", err)
+	}
+	if result.Status != "ok" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", result.Data)
+	}
+	if got := data["summary"]; got != "summary of one and two" {
+		t.Fatalf("unexpected summary: %v", got)
+	}
+	if got := len(store.Snapshot(scope).Messages); got != 4 {
+		t.Fatalf("expected full raw history to remain available, got %d messages", got)
+	}
+}
+
 func TestCreatePollUsesCurrentTopic(t *testing.T) {
 	sender := &stubPollSender{message: &tg.Message{MessageID: 77}}
 	runtime := New(

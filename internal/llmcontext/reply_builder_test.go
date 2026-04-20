@@ -197,3 +197,41 @@ func TestReplyBuilderUsesRecentLimitWithoutSummary(t *testing.T) {
 		t.Fatalf("unexpected second recent message: %q", got)
 	}
 }
+
+func TestReplyBuilderUsesUnsummarizedTailWhenSummaryExists(t *testing.T) {
+	t.Parallel()
+
+	stores := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	builder := NewReplyBuilder(stores.Conversations(), func(_ context.Context, messages []state.Message) []state.Message {
+		return messages
+	}, 2)
+
+	scope := state.ConversationScope{ChatID: 10}
+	for _, text := range []string{"one", "two", "three", "four"} {
+		stores.Conversations().AppendMessage(scope, state.Message{
+			Name:      "Alice",
+			Text:      text,
+			CreatedAt: time.Now().UTC(),
+		})
+	}
+	stores.Conversations().SetEarlierSummary(scope, "summary of one and two", 2)
+
+	ctx := builder.BuildReplyContext(context.Background(), ReplyInput{
+		Chat:           ChatContext{Type: "group"},
+		Scope:          scope,
+		CurrentMessage: state.Message{Name: "Alice", Text: "current"},
+	})
+
+	if ctx.EarlierSummary != "summary of one and two" {
+		t.Fatalf("unexpected earlier summary: %q", ctx.EarlierSummary)
+	}
+	if len(ctx.History) != 2 {
+		t.Fatalf("expected unsummarized tail only, got %d messages", len(ctx.History))
+	}
+	if got := ctx.History[0].Text(); !strings.Contains(got, "three") {
+		t.Fatalf("unexpected first tail message: %q", got)
+	}
+	if got := ctx.History[1].Text(); !strings.Contains(got, "four") {
+		t.Fatalf("unexpected second tail message: %q", got)
+	}
+}
