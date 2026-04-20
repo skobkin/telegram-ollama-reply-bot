@@ -2,33 +2,30 @@ package transport
 
 import (
 	"log/slog"
-	"net/http"
 	"net/url"
-	"os"
-	"strings"
 
 	"telegram-ollama-reply-bot/internal/config"
+
+	"golang.org/x/net/http/httpproxy"
 )
 
 const telegramAPIURL = "https://api.telegram.org"
 
 func LogNetworkRouting(logger *slog.Logger, cfg *config.Config) {
-	logger.Debug(
+	proxyConfig := httpproxy.FromEnvironment()
+	proxyFunc := proxyConfig.ProxyFunc()
+
+	logger.Info(
 		"network routing snapshot",
 		"telegram_transport", "net/http",
+		"http_proxy_effective", redactProxyValue(proxyConfig.HTTPProxy),
+		"https_proxy_effective", redactProxyValue(proxyConfig.HTTPSProxy),
+		"no_proxy_effective", redactNoProxyValue(proxyConfig.NoProxy),
 		"telegram_api_url", telegramAPIURL,
-		"telegram_proxy", resolveProxyForURL(telegramAPIURL, http.ProxyFromEnvironment),
+		"telegram_proxy", resolveProxyForURL(telegramAPIURL, proxyFunc),
 		"llm_chat_backend", cfg.LLM.Features.Chat.Backend,
 		"llm_chat_base_url", activeLLMBaseURL(cfg),
-		"llm_chat_proxy", resolveProxyForURL(activeLLMBaseURL(cfg), http.ProxyFromEnvironment),
-		"http_proxy", redactProxyEnv("HTTP_PROXY"),
-		"https_proxy", redactProxyEnv("HTTPS_PROXY"),
-		"all_proxy", redactProxyEnv("ALL_PROXY"),
-		"no_proxy", redactNoProxyEnv("NO_PROXY"),
-		"http_proxy_lower", redactProxyEnv("http_proxy"),
-		"https_proxy_lower", redactProxyEnv("https_proxy"),
-		"all_proxy_lower", redactProxyEnv("all_proxy"),
-		"no_proxy_lower", redactNoProxyEnv("no_proxy"),
+		"llm_chat_proxy", resolveProxyForURL(activeLLMBaseURL(cfg), proxyFunc),
 	)
 }
 
@@ -43,17 +40,17 @@ func activeLLMBaseURL(cfg *config.Config) string {
 	}
 }
 
-func resolveProxyForURL(rawURL string, proxy func(*http.Request) (*url.URL, error)) string {
+func resolveProxyForURL(rawURL string, proxy func(*url.URL) (*url.URL, error)) string {
 	if rawURL == "" {
 		return "n/a"
 	}
 
-	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
 		return "request_error:" + err.Error()
 	}
 
-	proxyURL, err := proxy(req)
+	proxyURL, err := proxy(parsedURL)
 	if err != nil {
 		return "proxy_error:" + err.Error()
 	}
@@ -64,9 +61,8 @@ func resolveProxyForURL(rawURL string, proxy func(*http.Request) (*url.URL, erro
 	return redactURL(proxyURL)
 }
 
-func redactProxyEnv(key string) string {
-	value, ok := os.LookupEnv(key)
-	if !ok || strings.TrimSpace(value) == "" {
+func redactProxyValue(value string) string {
+	if value == "" {
 		return "unset"
 	}
 
@@ -78,9 +74,8 @@ func redactProxyEnv(key string) string {
 	return redactURL(parsed)
 }
 
-func redactNoProxyEnv(key string) string {
-	value, ok := os.LookupEnv(key)
-	if !ok || strings.TrimSpace(value) == "" {
+func redactNoProxyValue(value string) string {
+	if value == "" {
 		return "unset"
 	}
 

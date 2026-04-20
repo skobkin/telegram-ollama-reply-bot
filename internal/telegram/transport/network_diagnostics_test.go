@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"net/http"
 	"net/url"
 	"testing"
 )
@@ -9,7 +8,7 @@ import (
 func TestResolveProxyForURLReturnsDirectWhenProxyIsNotUsed(t *testing.T) {
 	t.Parallel()
 
-	got := resolveProxyForURL("https://api.telegram.org", func(*http.Request) (*url.URL, error) {
+	got := resolveProxyForURL("https://api.telegram.org", func(*url.URL) (*url.URL, error) {
 		return nil, nil
 	})
 
@@ -21,7 +20,7 @@ func TestResolveProxyForURLReturnsDirectWhenProxyIsNotUsed(t *testing.T) {
 func TestResolveProxyForURLRedactsCredentials(t *testing.T) {
 	t.Parallel()
 
-	got := resolveProxyForURL("https://api.telegram.org", func(*http.Request) (*url.URL, error) {
+	got := resolveProxyForURL("https://api.telegram.org", func(*url.URL) (*url.URL, error) {
 		return url.Parse("http://bot-user:secret@proxy.internal:8080")
 	})
 
@@ -30,19 +29,15 @@ func TestResolveProxyForURLRedactsCredentials(t *testing.T) {
 	}
 }
 
-func TestRedactProxyEnvReturnsSetForInvalidURL(t *testing.T) {
-	t.Setenv("HTTP_PROXY", "proxy.internal:8080")
-
-	got := redactProxyEnv("HTTP_PROXY")
+func TestRedactProxyValueReturnsSetForInvalidURL(t *testing.T) {
+	got := redactProxyValue("proxy.internal:8080")
 	if got != "set" {
 		t.Fatalf("expected generic set marker, got %q", got)
 	}
 }
 
-func TestRedactNoProxyEnvReturnsValue(t *testing.T) {
-	t.Setenv("NO_PROXY", "192.168.1.0/24,*.lan")
-
-	got := redactNoProxyEnv("NO_PROXY")
+func TestRedactNoProxyValueReturnsValue(t *testing.T) {
+	got := redactNoProxyValue("192.168.1.0/24,*.lan")
 	if got != "192.168.1.0/24,*.lan" {
 		t.Fatalf("unexpected no_proxy value: %q", got)
 	}
