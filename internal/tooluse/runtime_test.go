@@ -257,9 +257,14 @@ func TestNewToolsAreRegisteredByDefault(t *testing.T) {
 		names = append(names, definition.Name)
 	}
 
-	for _, required := range []string{"list_recent_links", "convert_timezone", "shift_datetime"} {
+	for _, required := range []string{"list_recent_links", "datetime_math", "datetime_format"} {
 		if !slices.Contains(names, required) {
 			t.Fatalf("expected %s in default tool set, got %v", required, names)
+		}
+	}
+	for _, obsolete := range []string{"convert_timezone", "shift_datetime"} {
+		if slices.Contains(names, obsolete) {
+			t.Fatalf("did not expect obsolete tool %s in default tool set, got %v", obsolete, names)
 		}
 	}
 }
@@ -361,16 +366,6 @@ func TestListRecentLinksReturnsEmptyWhenNoLinksFound(t *testing.T) {
 	}
 }
 
-func TestConvertTimezoneHandler(t *testing.T) {
-	result, err := convertTimezoneHandler(context.Background(), CallContext{}, json.RawMessage(`{"timestamp":"2026-04-20T12:00:00+03:00","target_timezones":["UTC","America/New_York"]}`))
-	if err != nil {
-		t.Fatalf("convertTimezoneHandler() error = %v", err)
-	}
-	if result.Status != "ok" {
-		t.Fatalf("unexpected result: %+v", result)
-	}
-}
-
 func TestCurrentTimeHandlerIncludesServerTimezone(t *testing.T) {
 	result, err := currentTimeHandler(context.Background(), CallContext{}, json.RawMessage(`{}`))
 	if err != nil {
@@ -398,34 +393,261 @@ func TestCurrentTimeHandlerIncludesServerTimezone(t *testing.T) {
 	}
 }
 
-func TestConvertTimezoneHandlerRejectsInvalidTimezone(t *testing.T) {
-	_, err := convertTimezoneHandler(context.Background(), CallContext{}, json.RawMessage(`{"timestamp":"2026-04-20T12:00:00+03:00","target_timezones":["Nope/Nowhere"]}`))
-	if err == nil {
-		t.Fatal("expected invalid timezone error")
+func TestDatetimeMathHandler(t *testing.T) {
+	tests := []struct {
+		name         string
+		args         string
+		wantStatus   string
+		wantData     map[string]any
+		wantError    string
+		wantErrorMsg string
+	}{
+		{
+			name:       "diff positive",
+			args:       `{"operation":"diff","left":"2026-04-20T10:00:00+03:00","right":"2026-04-22T15:30:00+03:00"}`,
+			wantStatus: "ok",
+			wantData: map[string]any{
+				"operation":        "diff",
+				"duration_seconds": int64(192600),
+				"duration_minutes": 3210.0,
+				"duration_hours":   53.5,
+				"duration_days":    2.2291666666666665,
+				"sign":             1,
+			},
+		},
+		{
+			name:       "diff negative",
+			args:       `{"operation":"diff","left":"2026-04-22T15:30:00+03:00","right":"2026-04-20T10:00:00+03:00"}`,
+			wantStatus: "ok",
+			wantData: map[string]any{
+				"operation":        "diff",
+				"duration_seconds": int64(-192600),
+				"duration_minutes": -3210.0,
+				"duration_hours":   -53.5,
+				"duration_days":    -2.2291666666666665,
+				"sign":             -1,
+			},
+		},
+		{
+			name:       "shift mixed units",
+			args:       `{"operation":"shift","timestamp":"2026-04-20T12:00:00+03:00","days":1,"hours":-2,"minutes":30,"seconds":15}`,
+			wantStatus: "ok",
+			wantData: map[string]any{
+				"operation": "shift",
+				"input":     "2026-04-20T12:00:00+03:00",
+				"result":    "2026-04-21T10:30:15+03:00",
+			},
+		},
+		{
+			name:       "shift zero delta stays stable",
+			args:       `{"operation":"shift","timestamp":"2026-04-20T12:00:00+03:00","days":0}`,
+			wantStatus: "ok",
+			wantData: map[string]any{
+				"operation": "shift",
+				"input":     "2026-04-20T12:00:00+03:00",
+				"result":    "2026-04-20T12:00:00+03:00",
+			},
+		},
+		{
+			name:       "weekday",
+			args:       `{"operation":"weekday","timestamp":"2026-04-20T12:00:00+03:00"}`,
+			wantStatus: "ok",
+			wantData: map[string]any{
+				"operation":     "weekday",
+				"timestamp":     "2026-04-20T12:00:00+03:00",
+				"weekday":       "Monday",
+				"weekday_index": 1,
+			},
+		},
+		{
+			name:       "convert timezone across dst",
+			args:       `{"operation":"convert_timezone","timestamp":"2026-03-29T01:30:00+00:00","target_timezone":"Europe/Oslo"}`,
+			wantStatus: "ok",
+			wantData: map[string]any{
+				"operation":       "convert_timezone",
+				"input":           "2026-03-29T01:30:00Z",
+				"target_timezone": "Europe/Oslo",
+				"result":          "2026-03-29T03:30:00+02:00",
+			},
+		},
+		{
+			name:         "missing shift fields",
+			args:         `{"operation":"shift","timestamp":"2026-04-20T12:00:00+03:00"}`,
+			wantStatus:   "error",
+			wantError:    "empty_shift",
+			wantErrorMsg: "shift requires at least one shift field",
+		},
+		{
+			name:         "invalid timestamp",
+			args:         `{"operation":"weekday","timestamp":"nope"}`,
+			wantStatus:   "error",
+			wantError:    "invalid_timestamp",
+			wantErrorMsg: "timestamp must be a valid RFC3339 timestamp",
+		},
+		{
+			name:         "invalid timezone",
+			args:         `{"operation":"convert_timezone","timestamp":"2026-04-20T12:00:00+03:00","target_timezone":"Nope/Nowhere"}`,
+			wantStatus:   "error",
+			wantError:    "invalid_timezone",
+			wantErrorMsg: "target_timezone must be a valid IANA timezone",
+		},
+		{
+			name:         "invalid operation",
+			args:         `{"operation":"warp","timestamp":"2026-04-20T12:00:00+03:00"}`,
+			wantStatus:   "error",
+			wantError:    "invalid_operation",
+			wantErrorMsg: "operation must be one of diff, shift, weekday, convert_timezone",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := datetimeMathHandler(context.Background(), CallContext{}, json.RawMessage(tc.args))
+			if err != nil {
+				t.Fatalf("datetimeMathHandler() error = %v", err)
+			}
+			if result.Status != tc.wantStatus {
+				t.Fatalf("unexpected result: %+v", result)
+			}
+
+			if tc.wantStatus == "error" {
+				assertToolError(t, result, tc.wantError, tc.wantErrorMsg)
+
+				return
+			}
+
+			assertToolDataSubset(t, result, tc.wantData)
+		})
 	}
 }
 
-func TestShiftDateTimeHandler(t *testing.T) {
-	result, err := shiftDateTimeHandler(context.Background(), CallContext{}, json.RawMessage(`{"timestamp":"2026-04-20T12:00:00+03:00","days":1,"hours":-2,"minutes":30}`))
-	if err != nil {
-		t.Fatalf("shiftDateTimeHandler() error = %v", err)
+func TestDatetimeFormatHandler(t *testing.T) {
+	tests := []struct {
+		name         string
+		args         string
+		wantStatus   string
+		wantData     map[string]any
+		wantError    string
+		wantErrorMsg string
+	}{
+		{
+			name:       "short",
+			args:       `{"timestamp":"2026-04-20T10:00:00+03:00","style":"short"}`,
+			wantStatus: "ok",
+			wantData: map[string]any{
+				"formatted":  "2026-04-20 10:00",
+				"style":      "short",
+				"utc_offset": "+03:00",
+			},
+		},
+		{
+			name:       "long with timezone conversion",
+			args:       `{"timestamp":"2026-03-29T01:30:00+00:00","style":"long","target_timezone":"Europe/Oslo"}`,
+			wantStatus: "ok",
+			wantData: map[string]any{
+				"formatted":       "2026-03-29 03:30 CEST",
+				"style":           "long",
+				"target_timezone": "Europe/Oslo",
+				"timezone":        "CEST",
+				"utc_offset":      "+02:00",
+			},
+		},
+		{
+			name:       "date only",
+			args:       `{"timestamp":"2026-04-20T10:00:00+03:00","style":"date_only"}`,
+			wantStatus: "ok",
+			wantData: map[string]any{
+				"formatted": "2026-04-20",
+			},
+		},
+		{
+			name:       "time only",
+			args:       `{"timestamp":"2026-04-20T10:00:00+03:00","style":"time_only"}`,
+			wantStatus: "ok",
+			wantData: map[string]any{
+				"formatted": "10:00",
+			},
+		},
+		{
+			name:       "weekday date",
+			args:       `{"timestamp":"2026-04-20T10:00:00+03:00","style":"weekday_date"}`,
+			wantStatus: "ok",
+			wantData: map[string]any{
+				"formatted": "Monday, 2026-04-20",
+			},
+		},
+		{
+			name:         "invalid style",
+			args:         `{"timestamp":"2026-04-20T10:00:00+03:00","style":"fancy"}`,
+			wantStatus:   "error",
+			wantError:    "invalid_style",
+			wantErrorMsg: "style must be one of short, long, date_only, time_only, weekday_date",
+		},
+		{
+			name:         "invalid timestamp",
+			args:         `{"timestamp":"bad","style":"short"}`,
+			wantStatus:   "error",
+			wantError:    "invalid_timestamp",
+			wantErrorMsg: "timestamp must be a valid RFC3339 timestamp",
+		},
+		{
+			name:         "invalid timezone",
+			args:         `{"timestamp":"2026-04-20T10:00:00+03:00","style":"short","target_timezone":"Mars/Base"}`,
+			wantStatus:   "error",
+			wantError:    "invalid_timezone",
+			wantErrorMsg: "target_timezone must be a valid IANA timezone",
+		},
 	}
-	if result.Status != "ok" {
-		t.Fatalf("unexpected result: %+v", result)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := datetimeFormatHandler(context.Background(), CallContext{}, json.RawMessage(tc.args))
+			if err != nil {
+				t.Fatalf("datetimeFormatHandler() error = %v", err)
+			}
+			if result.Status != tc.wantStatus {
+				t.Fatalf("unexpected result: %+v", result)
+			}
+
+			if tc.wantStatus == "error" {
+				assertToolError(t, result, tc.wantError, tc.wantErrorMsg)
+
+				return
+			}
+
+			assertToolDataSubset(t, result, tc.wantData)
+		})
 	}
+}
+
+func assertToolDataSubset(t *testing.T, result toolResult, want map[string]any) {
+	t.Helper()
 
 	data, ok := result.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("unexpected data type: %T", result.Data)
 	}
-	if got := data["shifted_timestamp_rfc3339"]; got != "2026-04-21T10:30:00+03:00" {
-		t.Fatalf("unexpected shifted timestamp: %v", got)
+
+	for key, expected := range want {
+		if got := data[key]; got != expected {
+			t.Fatalf("unexpected %s: got %v want %v", key, got, expected)
+		}
 	}
 }
 
-func TestShiftDateTimeHandlerRejectsZeroDelta(t *testing.T) {
-	_, err := shiftDateTimeHandler(context.Background(), CallContext{}, json.RawMessage(`{"timestamp":"2026-04-20T12:00:00+03:00"}`))
-	if err == nil {
-		t.Fatal("expected zero-delta error")
+func assertToolError(t *testing.T, result toolResult, wantCode, wantMessage string) {
+	t.Helper()
+
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", result.Data)
+	}
+
+	errPayload, ok := data["error"].(toolErrorPayload)
+	if !ok {
+		t.Fatalf("unexpected error payload type: %T", data["error"])
+	}
+	if errPayload.Code != wantCode || errPayload.Message != wantMessage {
+		t.Fatalf("unexpected error payload: %+v", errPayload)
 	}
 }

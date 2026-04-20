@@ -27,8 +27,8 @@ const (
 	reminderResultCharBudget            = 1400
 	currentTimeResultCharBudget         = 600
 	recentLinksResultCharBudget         = 1600
-	convertTimezoneResultCharBudget     = 1200
-	shiftDateTimeResultCharBudget       = 1000
+	datetimeMathResultCharBudget        = 1200
+	datetimeFormatResultCharBudget      = 700
 )
 
 type Handler func(ctx context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error)
@@ -86,20 +86,20 @@ func newRegistry(runtime *Runtime) *Registry {
 			Handler:          runtime.listRecentLinks,
 		},
 		{
-			Name:             "convert_timezone",
-			Description:      "Convert an RFC3339 timestamp into one or more target IANA timezones when timezone math must be exact.",
-			Parameters:       json.RawMessage(`{"type":"object","properties":{"timestamp":{"type":"string","description":"Source timestamp in RFC3339 format with timezone offset."},"target_timezones":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":4,"description":"Target IANA timezone names such as Europe/Moscow or America/New_York."}},"required":["timestamp","target_timezones"],"additionalProperties":false}`),
+			Name:             "datetime_math",
+			Description:      "Perform exact date/time calculations on RFC3339 timestamps, including diff, shift, weekday lookup, and timezone conversion.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"operation":{"type":"string","enum":["diff","shift","weekday","convert_timezone"],"description":"Datetime operation to perform."},"timestamp":{"type":"string","description":"RFC3339 timestamp used by shift, weekday, and convert_timezone."},"left":{"type":"string","description":"Left RFC3339 timestamp used by diff."},"right":{"type":"string","description":"Right RFC3339 timestamp used by diff."},"target_timezone":{"type":"string","description":"Target IANA timezone name used by convert_timezone."},"years":{"type":"integer","description":"Signed calendar year delta used by shift."},"months":{"type":"integer","description":"Signed calendar month delta used by shift."},"days":{"type":"integer","description":"Signed calendar day delta used by shift."},"hours":{"type":"integer","description":"Signed hour delta used by shift."},"minutes":{"type":"integer","description":"Signed minute delta used by shift."},"seconds":{"type":"integer","description":"Signed second delta used by shift."}},"required":["operation"],"additionalProperties":false}`),
 			InvocationPolicy: InvocationPolicyDiscretionary,
-			ResultCharBudget: convertTimezoneResultCharBudget,
-			Handler:          convertTimezoneHandler,
+			ResultCharBudget: datetimeMathResultCharBudget,
+			Handler:          datetimeMathHandler,
 		},
 		{
-			Name:             "shift_datetime",
-			Description:      "Shift an RFC3339 timestamp by explicit day, hour, or minute deltas when you need reliable date arithmetic.",
-			Parameters:       json.RawMessage(`{"type":"object","properties":{"timestamp":{"type":"string","description":"Source timestamp in RFC3339 format with timezone offset."},"days":{"type":"integer","description":"Signed calendar-day delta."},"hours":{"type":"integer","description":"Signed hour delta."},"minutes":{"type":"integer","description":"Signed minute delta."}},"required":["timestamp"],"additionalProperties":false}`),
+			Name:             "datetime_format",
+			Description:      "Format an RFC3339 timestamp into a compact user-facing string using a stable style, optionally after timezone conversion.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"timestamp":{"type":"string","description":"RFC3339 timestamp to format."},"style":{"type":"string","enum":["short","long","date_only","time_only","weekday_date"],"description":"Stable output style."},"target_timezone":{"type":"string","description":"Optional IANA timezone to convert into before formatting."},"locale":{"type":"string","description":"Optional future-safe locale hint. Currently English-only formatting is used."}},"required":["timestamp","style"],"additionalProperties":false}`),
 			InvocationPolicy: InvocationPolicyDiscretionary,
-			ResultCharBudget: shiftDateTimeResultCharBudget,
-			Handler:          shiftDateTimeHandler,
+			ResultCharBudget: datetimeFormatResultCharBudget,
+			Handler:          datetimeFormatHandler,
 		},
 		{
 			Name:             "fetch_url_content",

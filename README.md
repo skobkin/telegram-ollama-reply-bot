@@ -78,6 +78,8 @@ You can also interact with the bot by:
 When `LLM_FEATURE_TOOL_USE_*` is configured, ordinary chat replies may use tools before answering. The current tool set is:
 
 - `get_current_time` for time-sensitive reasoning and schedule anchoring
+- `datetime_math` for exact datetime diff, shift, weekday, and timezone conversion
+- `datetime_format` for compact user-facing timestamp formatting
 - `fetch_url_content` for explicit link-analysis requests in free-form chat
 - `search_recent_history` for in-memory recent-message lookup in the current chat/topic
 - `get_conversation_summary` for the current in-memory earlier summary
