@@ -1,5 +1,6 @@
 /.idea
 /.codex
+/data
 /*.iml
 /*.md
 !/README.md
