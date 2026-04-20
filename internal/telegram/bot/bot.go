@@ -109,7 +109,7 @@ func (b *Bot) Run() error {
 
 	b.me = botInfoFromUser(botUser)
 
-	logger.Info("telegram api initialized",
+	logger.Info("telegram api connected",
 		"id", b.me.ID,
 		"username", b.me.Username,
 		"first_name", b.me.FirstName,
@@ -154,7 +154,7 @@ func (b *Bot) Run() error {
 	b.registerMessageHandlers(bh)
 	logger.Debug("message handlers registered")
 
-	logger.Info("starting bot handler")
+	logger.Debug("starting bot handler")
 	if err := bh.Start(); err != nil {
 		logger.Error("cannot start bot handler", "error", err)
 		sentry.CaptureException(err)

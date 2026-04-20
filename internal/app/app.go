@@ -34,7 +34,7 @@ func Run(ctx context.Context) error {
 	logger := logManager.Logger("app")
 
 	if cfg.Sentry.DSN != "" {
-		logger.Info("initializing sentry")
+		logger.Debug("initializing sentry")
 
 		err = sentry.Init(sentry.ClientOptions{
 			Dsn:              cfg.Sentry.DSN,
@@ -43,6 +43,7 @@ func Run(ctx context.Context) error {
 		if err != nil {
 			logger.Error("sentry initialization failed", "error", err)
 		} else {
+			logger.Info("sentry enabled")
 			defer sentry.Flush(2 * time.Second)
 		}
 	} else {
@@ -81,7 +82,7 @@ func Run(ctx context.Context) error {
 		return err
 	}
 
-	logger.Info("checking models availability")
+	logger.Debug("checking models availability")
 
 	hasAll, searchResult := llmc.HasAllModels(ctx)
 	if !hasAll {
