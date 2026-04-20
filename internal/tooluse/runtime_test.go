@@ -1127,6 +1127,9 @@ func TestSearchWebToolIsConditionalAndReturnsProvider(t *testing.T) {
 	if !ok {
 		t.Fatal("expected search_web when search is configured")
 	}
+	if definition.InvocationPolicy != InvocationPolicyDiscretionaryPaid {
+		t.Fatalf("unexpected invocation policy: %q", definition.InvocationPolicy)
+	}
 
 	result, err := definition.Handler(context.Background(), CallContext{}, json.RawMessage(`{"query":"golang","max_results":3}`))
 	if err != nil {

@@ -202,6 +202,7 @@ func toLLMToolDefinitions(definitions []Definition) []llm.ToolDefinition {
 
 func buildToolPolicy(definitions []Definition) string {
 	discretionary := make([]string, 0, len(definitions))
+	discretionaryPaid := make([]string, 0, len(definitions))
 	explicitOnly := make([]string, 0, len(definitions))
 
 	for _, definition := range definitions {
@@ -209,6 +210,8 @@ func buildToolPolicy(definitions []Definition) string {
 		switch definition.InvocationPolicy {
 		case InvocationPolicyDiscretionary:
 			discretionary = append(discretionary, line)
+		case InvocationPolicyDiscretionaryPaid:
+			discretionaryPaid = append(discretionaryPaid, line)
 		default:
 			explicitOnly = append(explicitOnly, line)
 		}
@@ -217,6 +220,9 @@ func buildToolPolicy(definitions []Definition) string {
 	var sections []string
 	if len(discretionary) > 0 {
 		sections = append(sections, "Discretionary tools: use these whenever they help you answer more accurately.\n"+strings.Join(discretionary, "\n"))
+	}
+	if len(discretionaryPaid) > 0 {
+		sections = append(sections, "Discretionary paid tools: use these when they are needed for accuracy or freshness, but avoid casual, speculative, or repeated use because they consume paid external resources.\n"+strings.Join(discretionaryPaid, "\n"))
 	}
 	if len(explicitOnly) > 0 {
 		sections = append(sections, "Explicit-request-only tools: use these only when the user clearly asks for that action or lookup.\n"+strings.Join(explicitOnly, "\n"))

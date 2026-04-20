@@ -15,6 +15,7 @@ type InvocationPolicy string
 const (
 	InvocationPolicyExplicitRequestOnly InvocationPolicy = "explicit_request_only"
 	InvocationPolicyDiscretionary       InvocationPolicy = "discretionary"
+	InvocationPolicyDiscretionaryPaid   InvocationPolicy = "discretionary_paid"
 )
 
 const (
@@ -192,9 +193,9 @@ func newRegistry(runtime *Runtime) *Registry {
 	if runtime.searcher != nil {
 		definitions = append(definitions, Definition{
 			Name:             "search_web",
-			Description:      "Search the public web when the user explicitly asks to look up external information beyond current chat history.",
+			Description:      "Search the public web for external facts or fresh information when current chat history is insufficient.",
 			Parameters:       json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"Search query text"},"max_results":{"type":"integer","minimum":1,"maximum":10,"description":"Maximum number of results to return."}},"required":["query"],"additionalProperties":false}`),
-			InvocationPolicy: InvocationPolicyExplicitRequestOnly,
+			InvocationPolicy: InvocationPolicyDiscretionaryPaid,
 			ResultCharBudget: fetchURLContentResultCharBudget,
 			Handler:          runtime.searchWeb,
 		})
