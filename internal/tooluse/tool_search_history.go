@@ -29,10 +29,10 @@ func (r *Runtime) searchHistory(_ context.Context, callCtx CallContext, args jso
 		return searchHistoryErrorResult("invalid_match_mode", "match_mode must be one of all, any"), nil
 	}
 	if payload.Limit <= 0 {
-		payload.Limit = defaultRecentHistoryResultLimit
+		payload.Limit = defaultSearchHistoryResultLimit
 	}
-	if payload.Limit > maxRecentHistoryResultLimit {
-		payload.Limit = maxRecentHistoryResultLimit
+	if payload.Limit > maxSearchHistoryResultLimit {
+		payload.Limit = maxSearchHistoryResultLimit
 	}
 
 	snapshot := r.history.Snapshot(callCtx.Scope)
@@ -47,7 +47,7 @@ func (r *Runtime) searchHistory(_ context.Context, callCtx CallContext, args jso
 		matches = append(matches, map[string]any{
 			"name":             msg.Name,
 			"username":         msg.Username,
-			"text":             truncateUTF8(normalizeWhitespace(msg.Text), searchRecentHistorySnippetCharLimit),
+			"text":             truncateUTF8(normalizeWhitespace(msg.Text), searchHistorySnippetCharLimit),
 			"message_id":       msg.MessageID,
 			"from_id":          msg.FromID,
 			"created_at":       msg.CreatedAt.UTC().Format(time.RFC3339),

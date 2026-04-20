@@ -10,13 +10,15 @@ import (
 )
 
 const (
-	fetchURLContentTextCharLimit        = 2600
-	searchRecentHistorySnippetCharLimit = 280
-	conversationSummaryTextCharLimit    = 1400
-	recentLinksSnippetCharLimit         = 180
-	messageThreadSnippetCharLimit       = 220
-	defaultRecentHistoryResultLimit     = 5
-	maxRecentHistoryResultLimit         = 20
+	fetchURLContentTextCharLimit     = 2600
+	searchHistorySnippetCharLimit    = 280
+	conversationSummaryTextCharLimit = 1400
+	recentLinksSnippetCharLimit      = 180
+	messageThreadSnippetCharLimit    = 220
+	defaultSearchHistoryResultLimit  = 5
+	maxSearchHistoryResultLimit      = 20
+	defaultRecentLinksResultLimit    = 5
+	maxRecentLinksResultLimit        = 10
 )
 
 func marshalResult(result toolResult, charBudget int) string {

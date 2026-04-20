@@ -15,10 +15,10 @@ func (r *Runtime) listRecentLinks(_ context.Context, callCtx CallContext, args j
 		return toolResult{}, fmt.Errorf("parse arguments: %w", err)
 	}
 	if payload.Limit <= 0 {
-		payload.Limit = defaultRecentHistoryResultLimit
+		payload.Limit = defaultRecentLinksResultLimit
 	}
-	if payload.Limit > maxRecentHistoryResultLimit {
-		payload.Limit = maxRecentHistoryResultLimit
+	if payload.Limit > maxRecentLinksResultLimit {
+		payload.Limit = maxRecentLinksResultLimit
 	}
 
 	snapshot := r.history.Snapshot(callCtx.Scope)
