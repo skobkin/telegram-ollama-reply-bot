@@ -26,6 +26,9 @@ const (
 	createPollResultCharBudget          = 1200
 	reminderResultCharBudget            = 1400
 	currentTimeResultCharBudget         = 600
+	recentLinksResultCharBudget         = 1600
+	convertTimezoneResultCharBudget     = 1200
+	shiftDateTimeResultCharBudget       = 1000
 )
 
 type Handler func(ctx context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error)
@@ -73,6 +76,30 @@ func newRegistry(runtime *Runtime) *Registry {
 			InvocationPolicy: InvocationPolicyDiscretionary,
 			ResultCharBudget: currentTimeResultCharBudget,
 			Handler:          currentTimeHandler,
+		},
+		{
+			Name:             "list_recent_links",
+			Description:      "List recent HTTP or HTTPS links mentioned in the current chat/topic history so you can identify the right URL before fetching content.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":10,"description":"Maximum number of unique links to return."}},"additionalProperties":false}`),
+			InvocationPolicy: InvocationPolicyDiscretionary,
+			ResultCharBudget: recentLinksResultCharBudget,
+			Handler:          runtime.listRecentLinks,
+		},
+		{
+			Name:             "convert_timezone",
+			Description:      "Convert an RFC3339 timestamp into one or more target IANA timezones when timezone math must be exact.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"timestamp":{"type":"string","description":"Source timestamp in RFC3339 format with timezone offset."},"target_timezones":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":4,"description":"Target IANA timezone names such as Europe/Moscow or America/New_York."}},"required":["timestamp","target_timezones"],"additionalProperties":false}`),
+			InvocationPolicy: InvocationPolicyDiscretionary,
+			ResultCharBudget: convertTimezoneResultCharBudget,
+			Handler:          convertTimezoneHandler,
+		},
+		{
+			Name:             "shift_datetime",
+			Description:      "Shift an RFC3339 timestamp by explicit day, hour, or minute deltas when you need reliable date arithmetic.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"timestamp":{"type":"string","description":"Source timestamp in RFC3339 format with timezone offset."},"days":{"type":"integer","description":"Signed calendar-day delta."},"hours":{"type":"integer","description":"Signed hour delta."},"minutes":{"type":"integer","description":"Signed minute delta."}},"required":["timestamp"],"additionalProperties":false}`),
+			InvocationPolicy: InvocationPolicyDiscretionary,
+			ResultCharBudget: shiftDateTimeResultCharBudget,
+			Handler:          shiftDateTimeHandler,
 		},
 		{
 			Name:             "fetch_url_content",

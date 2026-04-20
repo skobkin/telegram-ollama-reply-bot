@@ -2,6 +2,8 @@ package tooluse
 
 import (
 	"encoding/json"
+	"net/url"
+	"strings"
 	"unicode/utf8"
 
 	"telegram-ollama-reply-bot/internal/llm"
@@ -11,6 +13,7 @@ const (
 	fetchURLContentTextCharLimit        = 2600
 	searchRecentHistorySnippetCharLimit = 280
 	conversationSummaryTextCharLimit    = 1400
+	recentLinksSnippetCharLimit         = 180
 	defaultRecentHistoryResultLimit     = 5
 	maxRecentHistoryResultLimit         = 10
 )
@@ -54,4 +57,33 @@ func usagePointer(usage llm.TokenUsage) *llm.TokenUsage {
 	}
 
 	return &usage
+}
+
+func normalizeWhitespace(text string) string {
+	return strings.Join(strings.Fields(text), " ")
+}
+
+func extractHTTPURLs(text string) []string {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return nil
+	}
+
+	result := make([]string, 0, len(fields))
+	for _, field := range fields {
+		candidate := strings.TrimSpace(field)
+		candidate = strings.Trim(candidate, `"'()[]{}<>.,;:!?`)
+		if !isValidToolURL(candidate) {
+			continue
+		}
+
+		parsed, err := url.ParseRequestURI(candidate)
+		if err != nil {
+			continue
+		}
+
+		result = append(result, parsed.String())
+	}
+
+	return result
 }

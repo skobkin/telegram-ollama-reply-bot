@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"telegram-ollama-reply-bot/internal/content/extractor"
 	"telegram-ollama-reply-bot/internal/llm"
@@ -237,5 +238,167 @@ func TestReminderToolsAreRegisteredByDefault(t *testing.T) {
 		if !slices.Contains(names, required) {
 			t.Fatalf("expected %s in default tool set, got %v", required, names)
 		}
+	}
+}
+
+func TestNewToolsAreRegisteredByDefault(t *testing.T) {
+	runtime := New(
+		&stubLLM{},
+		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
+		&stubExtractor{},
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	names := make([]string, 0, len(runtime.registry.DefaultDefinitions()))
+	for _, definition := range runtime.registry.DefaultDefinitions() {
+		names = append(names, definition.Name)
+	}
+
+	for _, required := range []string{"list_recent_links", "convert_timezone", "shift_datetime"} {
+		if !slices.Contains(names, required) {
+			t.Fatalf("expected %s in default tool set, got %v", required, names)
+		}
+	}
+}
+
+func TestListRecentLinksUsesScopeAndDeduplicates(t *testing.T) {
+	store := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations()
+	scope := state.ConversationScope{ChatID: 1, TopicID: 42}
+	otherScope := state.ConversationScope{ChatID: 1, TopicID: 99}
+
+	store.AppendMessage(scope, state.Message{
+		Name:      "alice",
+		Username:  "alice",
+		Text:      "first https://example.com/a",
+		MessageID: 1,
+		FromID:    10,
+		CreatedAt: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+	})
+	store.AppendMessage(scope, state.Message{
+		Name:      "bob",
+		Username:  "bob",
+		Text:      "again https://example.com/a and https://example.com/b",
+		MessageID: 2,
+		FromID:    11,
+		CreatedAt: time.Date(2026, 4, 20, 11, 0, 0, 0, time.UTC),
+	})
+	store.AppendMessage(otherScope, state.Message{
+		Name:      "mallory",
+		Text:      "ignore https://example.com/c",
+		MessageID: 3,
+		FromID:    12,
+		CreatedAt: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC),
+	})
+
+	runtime := New(
+		&stubLLM{},
+		store,
+		&stubExtractor{},
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, ok := runtime.registry.Lookup("list_recent_links")
+	if !ok {
+		t.Fatal("list_recent_links not registered")
+	}
+
+	result, err := definition.Handler(context.Background(), CallContext{Scope: scope}, json.RawMessage(`{"limit":5}`))
+	if err != nil {
+		t.Fatalf("list_recent_links handler error = %v", err)
+	}
+	if result.Status != "ok" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", result.Data)
+	}
+
+	links, ok := data["links"].([]map[string]any)
+	if !ok {
+		t.Fatalf("unexpected links type: %T", data["links"])
+	}
+	if len(links) != 2 {
+		t.Fatalf("expected 2 unique links, got %d", len(links))
+	}
+	if got := links[0]["url"]; got != "https://example.com/a" && got != "https://example.com/b" {
+		t.Fatalf("unexpected first link url: %v", got)
+	}
+	if got := links[0]["message_id"]; got != 2 {
+		t.Fatalf("expected newest scope message first, got %v", got)
+	}
+}
+
+func TestListRecentLinksReturnsEmptyWhenNoLinksFound(t *testing.T) {
+	store := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations()
+	scope := state.ConversationScope{ChatID: 1}
+	store.AppendMessage(scope, state.Message{Name: "alice", Text: "no url here"})
+
+	runtime := New(
+		&stubLLM{},
+		store,
+		&stubExtractor{},
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, _ := runtime.registry.Lookup("list_recent_links")
+	result, err := definition.Handler(context.Background(), CallContext{Scope: scope}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("list_recent_links handler error = %v", err)
+	}
+	if result.Status != "empty" {
+		t.Fatalf("expected empty status, got %+v", result)
+	}
+}
+
+func TestConvertTimezoneHandler(t *testing.T) {
+	result, err := convertTimezoneHandler(context.Background(), CallContext{}, json.RawMessage(`{"timestamp":"2026-04-20T12:00:00+03:00","target_timezones":["UTC","America/New_York"]}`))
+	if err != nil {
+		t.Fatalf("convertTimezoneHandler() error = %v", err)
+	}
+	if result.Status != "ok" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+func TestConvertTimezoneHandlerRejectsInvalidTimezone(t *testing.T) {
+	_, err := convertTimezoneHandler(context.Background(), CallContext{}, json.RawMessage(`{"timestamp":"2026-04-20T12:00:00+03:00","target_timezones":["Nope/Nowhere"]}`))
+	if err == nil {
+		t.Fatal("expected invalid timezone error")
+	}
+}
+
+func TestShiftDateTimeHandler(t *testing.T) {
+	result, err := shiftDateTimeHandler(context.Background(), CallContext{}, json.RawMessage(`{"timestamp":"2026-04-20T12:00:00+03:00","days":1,"hours":-2,"minutes":30}`))
+	if err != nil {
+		t.Fatalf("shiftDateTimeHandler() error = %v", err)
+	}
+	if result.Status != "ok" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", result.Data)
+	}
+	if got := data["shifted_timestamp_rfc3339"]; got != "2026-04-21T10:30:00+03:00" {
+		t.Fatalf("unexpected shifted timestamp: %v", got)
+	}
+}
+
+func TestShiftDateTimeHandlerRejectsZeroDelta(t *testing.T) {
+	_, err := shiftDateTimeHandler(context.Background(), CallContext{}, json.RawMessage(`{"timestamp":"2026-04-20T12:00:00+03:00"}`))
+	if err == nil {
+		t.Fatal("expected zero-delta error")
 	}
 }
