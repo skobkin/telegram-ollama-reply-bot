@@ -308,10 +308,11 @@ func (s *Service) buildConversationMessages(ctx context.Context, scope PromptSco
 		return nil, ErrTemplateProcessing
 	}
 
-	messages := []Message{TextMessage(RoleSystem, systemPrompt)}
 	if requestContext.EarlierSummary != "" {
-		messages = append(messages, TextMessage(RoleSystem, "[Earlier conversation summary: "+requestContext.EarlierSummary+"]"))
+		systemPrompt += "\n\n[Earlier conversation summary: " + requestContext.EarlierSummary + "]"
 	}
+
+	messages := []Message{TextMessage(RoleSystem, systemPrompt)}
 	messages = append(messages, requestContext.History...)
 	messages = append(messages, requestContext.UserMessage)
 

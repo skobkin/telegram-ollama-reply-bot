@@ -182,22 +182,22 @@ func TestServiceHandleChatMessageBuildsRequestFromCompactContext(t *testing.T) {
 	}
 
 	messages := backendStub.lastRequest.Messages
-	if len(messages) != 5 {
+	if len(messages) != 4 {
 		t.Fatalf("unexpected message count: %d", len(messages))
 	}
 	if got := messages[0].Text(); !strings.Contains(got, "compact context") {
 		t.Fatalf("expected compact system context, got %q", got)
 	}
-	if got := messages[1].Text(); got != "[Earlier conversation summary: earlier summary]" {
-		t.Fatalf("unexpected summary message: %q", got)
+	if got := messages[0].Text(); !strings.Contains(got, "[Earlier conversation summary: earlier summary]") {
+		t.Fatalf("expected embedded summary in system message, got %q", got)
 	}
-	if got := messages[2].Text(); got != "history 1" {
+	if got := messages[1].Text(); got != "history 1" {
 		t.Fatalf("unexpected first history message: %q", got)
 	}
-	if got := messages[3].Text(); got != "history 2" {
+	if got := messages[2].Text(); got != "history 2" {
 		t.Fatalf("unexpected second history message: %q", got)
 	}
-	if got := messages[4].Text(); got != "current" {
+	if got := messages[3].Text(); got != "current" {
 		t.Fatalf("unexpected current user message: %q", got)
 	}
 }
