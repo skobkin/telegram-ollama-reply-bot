@@ -65,7 +65,7 @@ func (b *Bot) tgUserMessageToMessageData(message t.Message, isUserRequest bool) 
 		TopicID:       message.MessageThreadID,
 		MessageID:     message.MessageID,
 		CreatedAt:     time.Now().UTC(),
-		Text:          message.Text,
+		Text:          extractMessageText(message),
 	}
 
 	if message.Date != 0 {
