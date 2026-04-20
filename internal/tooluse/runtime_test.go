@@ -115,7 +115,7 @@ func TestRuntimeExecutesToolCallsAndReturnsFinalReply(t *testing.T) {
 				Message: llm.Message{
 					Role: llm.RoleAssistant,
 					ToolCalls: []llm.ToolCall{
-						{ID: "call-1", Name: "search_history", Arguments: json.RawMessage(`{"query":"meeting","limit":1}`)},
+						{ID: "call-1", Name: "search_history", Arguments: json.RawMessage(`{"keywords":["meeting"],"match_mode":"all","limit":1}`)},
 					},
 				},
 				Usage: llm.TokenUsage{TotalTokens: 3},
@@ -364,6 +364,149 @@ func TestListRecentLinksReturnsEmptyWhenNoLinksFound(t *testing.T) {
 	if result.Status != "empty" {
 		t.Fatalf("expected empty status, got %+v", result)
 	}
+}
+
+func TestSearchHistorySupportsAnyAllAndFuzzyMatching(t *testing.T) {
+	store := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations()
+	scope := state.ConversationScope{ChatID: 1, TopicID: 9}
+	base := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+
+	store.AppendMessage(scope, state.Message{
+		Name:      "alice",
+		Text:      "Need to move my appointment to Friday",
+		MessageID: 1,
+		CreatedAt: base,
+	})
+	store.AppendMessage(scope, state.Message{
+		Name:      "bob",
+		Text:      "I wrote down the appaintments backlog typo on purpose",
+		MessageID: 2,
+		CreatedAt: base.Add(1 * time.Minute),
+	})
+	store.AppendMessage(scope, state.Message{
+		Name:      "carol",
+		Text:      "Friday groceries only",
+		MessageID: 3,
+		CreatedAt: base.Add(2 * time.Minute),
+	})
+
+	runtime := New(
+		&stubLLM{},
+		store,
+		&stubExtractor{},
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, _ := runtime.registry.Lookup("search_history")
+
+	allResult, err := definition.Handler(context.Background(), CallContext{Scope: scope}, json.RawMessage(`{"keywords":["appointment","Friday"],"match_mode":"all","limit":20}`))
+	if err != nil {
+		t.Fatalf("search_history all handler error = %v", err)
+	}
+	if allResult.Status != "ok" {
+		t.Fatalf("unexpected all result: %+v", allResult)
+	}
+
+	allData := allResult.Data.(map[string]any)
+	allMatches, ok := allData["matches"].([]map[string]any)
+	if !ok {
+		t.Fatalf("unexpected all matches type: %T", allData["matches"])
+	}
+	if len(allMatches) != 1 {
+		t.Fatalf("expected one all-match, got %d", len(allMatches))
+	}
+	if got := allMatches[0]["message_id"]; got != 1 {
+		t.Fatalf("unexpected all-match message: %v", got)
+	}
+	if got := allMatches[0]["match_kind"]; got != "exact" {
+		t.Fatalf("unexpected all-match kind: %v", got)
+	}
+
+	anyResult, err := definition.Handler(context.Background(), CallContext{Scope: scope}, json.RawMessage(`{"keywords":["appointment","Friday"],"match_mode":"any","limit":20}`))
+	if err != nil {
+		t.Fatalf("search_history any handler error = %v", err)
+	}
+	if anyResult.Status != "ok" {
+		t.Fatalf("unexpected any result: %+v", anyResult)
+	}
+
+	anyData := anyResult.Data.(map[string]any)
+	anyMatches, ok := anyData["matches"].([]map[string]any)
+	if !ok {
+		t.Fatalf("unexpected any matches type: %T", anyData["matches"])
+	}
+	if len(anyMatches) != 3 {
+		t.Fatalf("expected three any-matches, got %d", len(anyMatches))
+	}
+	if got := anyMatches[0]["message_id"]; got != 1 {
+		t.Fatalf("expected stronger exact match first, got %v", got)
+	}
+	if got := anyMatches[1]["message_id"]; got != 3 {
+		t.Fatalf("expected newer exact single-keyword match second, got %v", got)
+	}
+	if got := anyMatches[2]["message_id"]; got != 2 {
+		t.Fatalf("expected fuzzy typo match last, got %v", got)
+	}
+	if got := anyMatches[2]["match_kind"]; got != "fuzzy" {
+		t.Fatalf("unexpected fuzzy match kind: %v", got)
+	}
+	if got := anyMatches[2]["score"]; got != 105 {
+		t.Fatalf("unexpected fuzzy score: %v", got)
+	}
+}
+
+func TestSearchHistoryLargeLimitAndValidation(t *testing.T) {
+	store := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations()
+	scope := state.ConversationScope{ChatID: 1}
+	base := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 25; i++ {
+		store.AppendMessage(scope, state.Message{
+			Name:      "alice",
+			Text:      "reminder item",
+			MessageID: i + 1,
+			CreatedAt: base.Add(time.Duration(i) * time.Minute),
+		})
+	}
+
+	runtime := New(
+		&stubLLM{},
+		store,
+		&stubExtractor{},
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, _ := runtime.registry.Lookup("search_history")
+
+	result, err := definition.Handler(context.Background(), CallContext{Scope: scope}, json.RawMessage(`{"keywords":["reminder"],"match_mode":"all","limit":20}`))
+	if err != nil {
+		t.Fatalf("search_history large limit handler error = %v", err)
+	}
+	if result.Status != "ok" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	data := result.Data.(map[string]any)
+	matches, ok := data["matches"].([]map[string]any)
+	if !ok {
+		t.Fatalf("unexpected matches type: %T", data["matches"])
+	}
+	if len(matches) != 20 {
+		t.Fatalf("expected 20 matches, got %d", len(matches))
+	}
+	if got := matches[0]["message_id"]; got != 25 {
+		t.Fatalf("expected newest result first on equal score, got %v", got)
+	}
+
+	invalidResult, err := definition.Handler(context.Background(), CallContext{Scope: scope}, json.RawMessage(`{"keywords":["reminder"],"match_mode":"nope"}`))
+	if err != nil {
+		t.Fatalf("search_history invalid mode handler error = %v", err)
+	}
+	assertToolError(t, invalidResult, "invalid_match_mode", "match_mode must be one of all, any")
 }
 
 func TestGetChatActivityWindowEmpty(t *testing.T) {

@@ -62,7 +62,7 @@ func TestOpenAICompatBackendGenerateWithToolsAndImage(t *testing.T) {
 								"type":"function",
 								"function":{
 									"name":"search_history",
-									"arguments":"{\"query\":\"reminder\"}"
+									"arguments":"{\"keywords\":[\"reminder\"],\"match_mode\":\"all\"}"
 								}
 							}
 						]

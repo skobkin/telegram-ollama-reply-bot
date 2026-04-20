@@ -47,7 +47,7 @@ func TestOllamaBackendGenerateWithToolsAndImage(t *testing.T) {
 					{
 						"function":{
 							"name":"search_history",
-							"arguments":{"query":"reminder"}
+							"arguments":{"keywords":["reminder"],"match_mode":"all"}
 						}
 					}
 				]

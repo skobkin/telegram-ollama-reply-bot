@@ -16,7 +16,7 @@ const (
 	recentLinksSnippetCharLimit         = 180
 	messageThreadSnippetCharLimit       = 220
 	defaultRecentHistoryResultLimit     = 5
-	maxRecentHistoryResultLimit         = 10
+	maxRecentHistoryResultLimit         = 20
 )
 
 func marshalResult(result toolResult, charBudget int) string {

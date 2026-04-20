@@ -83,6 +83,7 @@ func (s *Stores) Stats() state.StatsStore {
 type conversationBucket struct {
 	scope               state.ConversationScope
 	messages            []state.Message
+	searchIndex         *conversationSearchIndex
 	earlierSummary      string
 	summaryMessageCount int
 	bytes               int64
@@ -142,6 +143,12 @@ func (s *ConversationStore) AppendMessage(scope state.ConversationScope, msg sta
 	cloned := cloneMessage(msg)
 	bucket.messages = append(bucket.messages, cloned)
 	size := messageApproxBytes(cloned)
+	if bucket.searchIndex == nil {
+		bucket.searchIndex = buildSearchIndex(nil)
+	}
+	beforeSearchBytes := bucket.searchIndex.bytes
+	bucket.searchIndex.appendMessage(len(bucket.messages)-1, cloned)
+	size += bucket.searchIndex.bytes - beforeSearchBytes
 	bucket.bytes += size
 	bucket.lastUpdatedAt = time.Now().UTC()
 	s.totalBytes += size
@@ -336,6 +343,11 @@ func (s *ConversationStore) trimBucketHead(key string, bucket *conversationBucke
 	removed := bucket.messages[0]
 	bucket.messages = bucket.messages[1:]
 	size := messageApproxBytes(removed)
+	if bucket.searchIndex != nil {
+		beforeSearchBytes := bucket.searchIndex.bytes
+		bucket.searchIndex = buildSearchIndex(bucket.messages)
+		size += beforeSearchBytes - bucket.searchIndex.bytes
+	}
 	bucket.bytes -= size
 	s.totalBytes -= size
 	bucket.lastUpdatedAt = time.Now().UTC()

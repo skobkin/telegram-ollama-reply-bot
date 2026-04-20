@@ -21,7 +21,7 @@ const (
 	defaultToolResultCharBudget = 1800
 
 	fetchURLContentResultCharBudget     = 3500
-	searchRecentHistoryResultCharBudget = 2200
+	searchRecentHistoryResultCharBudget = 6000
 	conversationSummaryResultCharBudget = 1800
 	chatActivityResultCharBudget        = 1200
 	historyBoundsResultCharBudget       = 900
@@ -114,8 +114,8 @@ func newRegistry(runtime *Runtime) *Registry {
 		},
 		{
 			Name:             "search_history",
-			Description:      "Search the full current chat and current topic in-memory history for evidence snippets that help answer recall questions.",
-			Parameters:       json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"Optional search query. If empty, return the most recent messages instead."},"limit":{"type":"integer","minimum":1,"maximum":10,"description":"Maximum number of snippets to return."}},"additionalProperties":false}`),
+			Description:      "Search the full current chat and current topic in-memory history for evidence snippets that help answer recall questions. Provide a short list of content-word keywords and choose match_mode='all' for narrow recall or 'any' for broader discovery.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8,"description":"Short list of search keywords or short phrases. Words are normalized and matched token-by-token."},"match_mode":{"type":"string","enum":["all","any"],"description":"Whether all keywords must match or any keyword is enough."},"limit":{"type":"integer","minimum":1,"maximum":20,"description":"Maximum number of snippets to return."}},"required":["keywords"],"additionalProperties":false}`),
 			InvocationPolicy: InvocationPolicyDiscretionary,
 			ResultCharBudget: searchRecentHistoryResultCharBudget,
 			Handler:          runtime.searchHistory,

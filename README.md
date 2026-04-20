@@ -80,7 +80,7 @@ When `LLM_FEATURE_TOOL_USE_*` is configured, ordinary chat replies may use tools
 - `datetime_math` for exact datetime diff, shift, weekday, and timezone conversion
 - `datetime_format` for compact user-facing timestamp formatting
 - `fetch_url_content` for explicit link-analysis requests in free-form chat
-- `search_history` for full in-memory history lookup in the current chat/topic
+- `search_history` for indexed keyword and fuzzy full in-memory history lookup in the current chat/topic
 - `get_conversation_summary` for the current in-memory earlier summary
 - `get_chat_activity_window` for in-memory message cadence heuristics in the current chat/topic
 - `get_history_bounds` for exact full-history and recent-history coverage in the current chat/topic

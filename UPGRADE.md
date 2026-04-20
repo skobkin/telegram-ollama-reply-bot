@@ -20,6 +20,7 @@ Keep using:
 ### Tooling Changes
 
 - `search_recent_history` was renamed to `search_history`
+- `search_history` now accepts `keywords` plus `match_mode` (`all` or `any`) instead of the old single `query` string
 - `get_history_bounds` was added
 
 ## 2026-04-19 - Conversational tool calling introduced for ordinary chat

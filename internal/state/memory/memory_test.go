@@ -60,7 +60,7 @@ func TestConversationStoreTrimsOversizedSingleScopeAndClearsSummary(t *testing.T
 	t.Parallel()
 
 	stores := New(Config{
-		HistoryMaxBytes:    200,
+		HistoryMaxBytes:    700,
 		HistoryStreamsMax:  8,
 		ImageCacheMaxBytes: 1 << 20,
 	}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
@@ -81,6 +81,25 @@ func TestConversationStoreTrimsOversizedSingleScopeAndClearsSummary(t *testing.T
 	}
 	if snapshot.EarlierSummary != "" || snapshot.SummaryMessageCount != 0 {
 		t.Fatalf("expected summary cache reset after head trim, got %#v", snapshot)
+	}
+}
+
+func TestConversationStoreSearchIndexCountsTowardApproxBytes(t *testing.T) {
+	t.Parallel()
+
+	stores := New(Config{
+		HistoryStreamsMax:  8,
+		HistoryMaxBytes:    1 << 20,
+		ImageCacheMaxBytes: 1 << 20,
+	}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	scope := state.ConversationScope{ChatID: 10}
+	store := stores.Conversations()
+	msg := state.Message{Text: "Appointments are listed here", FromID: 1}
+	store.AppendMessage(scope, msg)
+
+	snapshot := store.Snapshot(scope)
+	if snapshot.ApproxBytes <= messageApproxBytes(msg) {
+		t.Fatalf("expected search index overhead in approx bytes, got %d", snapshot.ApproxBytes)
 	}
 }
 
