@@ -371,6 +371,33 @@ func TestConvertTimezoneHandler(t *testing.T) {
 	}
 }
 
+func TestCurrentTimeHandlerIncludesServerTimezone(t *testing.T) {
+	result, err := currentTimeHandler(context.Background(), CallContext{}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("currentTimeHandler() error = %v", err)
+	}
+	if result.Status != "ok" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", result.Data)
+	}
+	if got, ok := data["current_time_rfc3339"].(string); !ok || got == "" {
+		t.Fatalf("missing current_time_rfc3339: %#v", data["current_time_rfc3339"])
+	}
+	if got, ok := data["current_time_utc"].(string); !ok || got == "" {
+		t.Fatalf("missing current_time_utc: %#v", data["current_time_utc"])
+	}
+	if got, ok := data["server_timezone"].(string); !ok || got == "" {
+		t.Fatalf("missing server_timezone: %#v", data["server_timezone"])
+	}
+	if _, ok := data["utc_offset_seconds"].(int); !ok {
+		t.Fatalf("unexpected utc_offset_seconds type: %T", data["utc_offset_seconds"])
+	}
+}
+
 func TestConvertTimezoneHandlerRejectsInvalidTimezone(t *testing.T) {
 	_, err := convertTimezoneHandler(context.Background(), CallContext{}, json.RawMessage(`{"timestamp":"2026-04-20T12:00:00+03:00","target_timezones":["Nope/Nowhere"]}`))
 	if err == nil {
