@@ -93,12 +93,11 @@ func Run(ctx context.Context) error {
 
 	ext := extractor.NewExtractor(logManager.Logger("content/extractor"))
 	stores := memory.New(memory.Config{
-		MaxBytes:                 cfg.State.MaxBytes,
-		HistoryMaxBytes:          cfg.State.HistoryMaxBytes,
-		HistoryStreamsMax:        cfg.State.HistoryStreamsMax,
-		HistoryMessagesPerStream: cfg.State.HistoryMessagesPerStream,
-		ImageCacheMaxBytes:       cfg.State.ImageCacheMaxBytes,
-		ImageCacheTTL:            cfg.State.ImageCacheTTL,
+		MaxBytes:           cfg.State.MaxBytes,
+		HistoryMaxBytes:    cfg.State.HistoryMaxBytes,
+		HistoryStreamsMax:  cfg.State.HistoryStreamsMax,
+		ImageCacheMaxBytes: cfg.State.ImageCacheMaxBytes,
+		ImageCacheTTL:      cfg.State.ImageCacheTTL,
 	}, logManager.Logger("state/memory"))
 
 	telegramAPI, err := tg.NewBot(cfg.Bot.Telegram.Token, tg.WithLogger(bot.NewLogger(
@@ -127,7 +126,7 @@ func Run(ctx context.Context) error {
 		telegramAPI,
 		reminderService,
 		logManager.Logger("tooluse"),
-		tooluse.Config{MaxIterations: cfg.LLM.ToolLoopMaxIterations, AdminIDs: cfg.Bot.AdminIDs},
+		tooluse.Config{MaxIterations: cfg.LLM.ToolLoopMaxIterations, AdminIDs: cfg.Bot.AdminIDs, RecentHistoryLimit: cfg.Bot.UncompressedHistoryLimit},
 	)
 	replier := chatreply.New(llmc, tools)
 	botService := bot.NewBot(

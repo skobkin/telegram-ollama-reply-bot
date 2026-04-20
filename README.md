@@ -33,7 +33,6 @@ The bot can be configured using the following environment variables:
 | `STATE_MAX_BYTES`                       | Soft total in-memory state budget in bytes                                                                        | No       | `268435456`              |
 | `STATE_HISTORY_MAX_BYTES`               | Soft history bucket budget in bytes                                                                               | No       | `167772160`              |
 | `STATE_HISTORY_STREAMS_MAX`             | Maximum number of active conversation scopes kept in RAM                                                          | No       | `1024`                   |
-| `STATE_HISTORY_MESSAGES_PER_STREAM`     | Number of messages to keep per chat/topic history stream                                                          | No       | `150`                    |
 | `STATE_IMAGE_CACHE_MAX_BYTES`           | Maximum image-description cache size in bytes                                                                     | No       | `67108864`               |
 | `STATE_IMAGE_CACHE_TTL`                 | TTL for cached image descriptions. Accepts Go duration strings (e.g. `1h`, `24h`).                                | No       | `24h`                    |
 | `LLM_UNCOMPRESSED_HISTORY_LIMIT`        | Recent chat messages sent verbatim to LLM; older ones summarized. Set to `0` to disable summarization             | No       | 15                       |
@@ -81,9 +80,10 @@ When `LLM_FEATURE_TOOL_USE_*` is configured, ordinary chat replies may use tools
 - `datetime_math` for exact datetime diff, shift, weekday, and timezone conversion
 - `datetime_format` for compact user-facing timestamp formatting
 - `fetch_url_content` for explicit link-analysis requests in free-form chat
-- `search_recent_history` for in-memory recent-message lookup in the current chat/topic
+- `search_history` for full in-memory history lookup in the current chat/topic
 - `get_conversation_summary` for the current in-memory earlier summary
-- `get_chat_activity_window` for recent message cadence heuristics in the current chat/topic
+- `get_chat_activity_window` for in-memory message cadence heuristics in the current chat/topic
+- `get_history_bounds` for exact full-history and recent-history coverage in the current chat/topic
 - `create_poll` for explicit vote/poll requests
 - `list_chat_schedule`, `add_schedule_item`, `remove_schedule_item` for durable chat reminders
 
@@ -147,7 +147,6 @@ docker run \
   -e LLM_FEATURE_SUMMARIZE_MODEL=gemma3:12b \
   -e LLM_FEATURE_IMAGE_RECOGNITION_MODEL=gemma3:12b \
   -e PERSISTENT_STORE_PATH=/data/db.sqlite \
-  -e STATE_HISTORY_MESSAGES_PER_STREAM=150 \
   -e STATE_HISTORY_STREAMS_MAX=1024 \
   -e STATE_IMAGE_CACHE_TTL=24h \
   -e LLM_UNCOMPRESSED_HISTORY_LIMIT=15 \

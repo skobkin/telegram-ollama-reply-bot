@@ -118,13 +118,13 @@ func (b *Bot) maybeSummarizeHistory(ctx context.Context, message t.Message) {
 	}
 
 	historyLen := len(snapshot.Messages)
-	unsummarized := historyLen - snapshot.SummarizedUntil
+	unsummarized := historyLen - snapshot.SummaryMessageCount
 	if unsummarized <= limit+threshold {
 		return
 	}
 
 	end := historyLen - limit
-	start := snapshot.SummarizedUntil
+	start := snapshot.SummaryMessageCount
 	if start >= end {
 		return
 	}

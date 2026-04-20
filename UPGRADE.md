@@ -1,5 +1,27 @@
 # Upgrade Notes
 
+## 2026-04-20 - Full raw in-memory history replaces per-stream message cap
+
+### State Config Migration
+
+The in-memory history store now keeps full raw per-scope history until the global history RAM limits force trimming or stream eviction.
+
+Removed environment variable:
+
+- `STATE_HISTORY_MESSAGES_PER_STREAM`
+
+Keep using:
+
+- `STATE_HISTORY_MAX_BYTES`
+- `STATE_HISTORY_STREAMS_MAX`
+
+`LLM_UNCOMPRESSED_HISTORY_LIMIT` still controls how many newest messages are sent verbatim to the model, while history tools operate on the full raw in-memory scope.
+
+### Tooling Changes
+
+- `search_recent_history` was renamed to `search_history`
+- `get_history_bounds` was added
+
 ## 2026-04-19 - Conversational tool calling introduced for ordinary chat
 
 ### Tool-Use Route
@@ -33,7 +55,7 @@ It is stored in SQLite alongside the existing prompt templates and can be manage
 The first conversational tool set includes:
 
 - `fetch_url_content`
-- `search_recent_history`
+- `search_history`
 - `get_conversation_summary`
 - `create_poll`
 
@@ -92,10 +114,6 @@ Per-chat overrides now also support:
 
 The old history size variable was removed.
 
-Replace:
-
-- `BOT_HISTORY_LENGTH` -> `STATE_HISTORY_MESSAGES_PER_STREAM`
-
 Add explicit state limits as needed:
 
 - `STATE_MAX_BYTES`
@@ -103,23 +121,6 @@ Add explicit state limits as needed:
 - `STATE_HISTORY_STREAMS_MAX`
 - `STATE_IMAGE_CACHE_MAX_BYTES`
 - `STATE_IMAGE_CACHE_TTL`
-
-### Example
-
-Old:
-
-```env
-BOT_HISTORY_LENGTH=150
-```
-
-New:
-
-```env
-STATE_HISTORY_MESSAGES_PER_STREAM=150
-STATE_HISTORY_STREAMS_MAX=1024
-STATE_HISTORY_MAX_BYTES=167772160
-STATE_IMAGE_CACHE_TTL=24h
-```
 
 
 ## 2026-04-18 - Backend abstractions and Ollama backend introduced

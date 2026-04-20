@@ -115,7 +115,7 @@ func TestRuntimeExecutesToolCallsAndReturnsFinalReply(t *testing.T) {
 				Message: llm.Message{
 					Role: llm.RoleAssistant,
 					ToolCalls: []llm.ToolCall{
-						{ID: "call-1", Name: "search_recent_history", Arguments: json.RawMessage(`{"query":"meeting","limit":1}`)},
+						{ID: "call-1", Name: "search_history", Arguments: json.RawMessage(`{"query":"meeting","limit":1}`)},
 					},
 				},
 				Usage: llm.TokenUsage{TotalTokens: 3},
@@ -257,7 +257,7 @@ func TestNewToolsAreRegisteredByDefault(t *testing.T) {
 		names = append(names, definition.Name)
 	}
 
-	for _, required := range []string{"list_recent_links", "datetime_math", "datetime_format", "get_chat_activity_window"} {
+	for _, required := range []string{"list_recent_links", "datetime_math", "datetime_format", "get_chat_activity_window", "get_history_bounds", "search_history"} {
 		if !slices.Contains(names, required) {
 			t.Fatalf("expected %s in default tool set, got %v", required, names)
 		}
@@ -515,6 +515,89 @@ func TestGetChatActivityWindowBurstyAndScopeIsolated(t *testing.T) {
 	data := result.Data.(map[string]any)
 	if got := data["last_message_at"]; got != base.Add(20*time.Minute).Format(time.RFC3339) {
 		t.Fatalf("unexpected last_message_at: %v", got)
+	}
+}
+
+func TestGetHistoryBoundsEmpty(t *testing.T) {
+	runtime := New(
+		&stubLLM{},
+		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
+		&stubExtractor{},
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6, RecentHistoryLimit: 2},
+	)
+
+	definition, ok := runtime.registry.Lookup("get_history_bounds")
+	if !ok {
+		t.Fatal("get_history_bounds not registered")
+	}
+
+	result, err := definition.Handler(context.Background(), CallContext{Scope: state.ConversationScope{ChatID: 1}}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("get_history_bounds handler error = %v", err)
+	}
+	if result.Status != "empty" {
+		t.Fatalf("expected empty status, got %+v", result)
+	}
+}
+
+func TestGetHistoryBoundsReportsFullAndRecentHistory(t *testing.T) {
+	store := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations()
+	scope := state.ConversationScope{ChatID: 1, TopicID: 5}
+	base := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 4; i++ {
+		store.AppendMessage(scope, state.Message{
+			Name:      "alice",
+			Text:      "message",
+			MessageID: i + 1,
+			CreatedAt: base.Add(time.Duration(i) * 5 * time.Minute),
+		})
+	}
+
+	runtime := New(
+		&stubLLM{},
+		store,
+		&stubExtractor{},
+		&stubPollSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6, RecentHistoryLimit: 2},
+	)
+
+	definition, _ := runtime.registry.Lookup("get_history_bounds")
+	result, err := definition.Handler(context.Background(), CallContext{Scope: scope}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("get_history_bounds handler error = %v", err)
+	}
+	if result.Status != "ok" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected data type: %T", result.Data)
+	}
+	fullHistory, ok := data["full_history"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected full_history type: %T", data["full_history"])
+	}
+	recentHistory, ok := data["recent_history"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected recent_history type: %T", data["recent_history"])
+	}
+	if got := fullHistory["message_count"]; got != 4 {
+		t.Fatalf("unexpected full history count: %v", got)
+	}
+	if got := fullHistory["oldest_message_at"]; got != base.Format(time.RFC3339) {
+		t.Fatalf("unexpected full oldest message time: %v", got)
+	}
+	if got := recentHistory["message_count"]; got != 2 {
+		t.Fatalf("unexpected recent history count: %v", got)
+	}
+	if got := recentHistory["oldest_message_at"]; got != base.Add(10*time.Minute).Format(time.RFC3339) {
+		t.Fatalf("unexpected recent oldest message time: %v", got)
 	}
 }
 

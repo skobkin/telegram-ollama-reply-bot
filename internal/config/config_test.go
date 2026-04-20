@@ -70,9 +70,6 @@ func TestLoadUsesStateDefaults(t *testing.T) {
 
 	cfg := Load()
 
-	if cfg.State.HistoryMessagesPerStream != 150 {
-		t.Fatalf("unexpected history messages per stream: %d", cfg.State.HistoryMessagesPerStream)
-	}
 	if cfg.State.HistoryStreamsMax != 1024 {
 		t.Fatalf("unexpected history streams max: %d", cfg.State.HistoryStreamsMax)
 	}
@@ -86,7 +83,6 @@ func TestLoadUsesExplicitStateConfig(t *testing.T) {
 	t.Setenv("STATE_MAX_BYTES", "123456")
 	t.Setenv("STATE_HISTORY_MAX_BYTES", "45678")
 	t.Setenv("STATE_HISTORY_STREAMS_MAX", "32")
-	t.Setenv("STATE_HISTORY_MESSAGES_PER_STREAM", "24")
 	t.Setenv("STATE_IMAGE_CACHE_MAX_BYTES", "8192")
 	t.Setenv("STATE_IMAGE_CACHE_TTL", "45m")
 
@@ -100,9 +96,6 @@ func TestLoadUsesExplicitStateConfig(t *testing.T) {
 	}
 	if cfg.State.HistoryStreamsMax != 32 {
 		t.Fatalf("unexpected history streams max: %d", cfg.State.HistoryStreamsMax)
-	}
-	if cfg.State.HistoryMessagesPerStream != 24 {
-		t.Fatalf("unexpected history messages per stream: %d", cfg.State.HistoryMessagesPerStream)
 	}
 	if cfg.State.ImageCacheMaxBytes != 8192 {
 		t.Fatalf("unexpected image cache max bytes: %d", cfg.State.ImageCacheMaxBytes)

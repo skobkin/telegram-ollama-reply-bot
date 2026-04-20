@@ -24,6 +24,7 @@ const (
 	searchRecentHistoryResultCharBudget = 2200
 	conversationSummaryResultCharBudget = 1800
 	chatActivityResultCharBudget        = 1200
+	historyBoundsResultCharBudget       = 900
 	createPollResultCharBudget          = 1200
 	reminderResultCharBudget            = 1400
 	currentTimeResultCharBudget         = 600
@@ -111,12 +112,12 @@ func newRegistry(runtime *Runtime) *Registry {
 			Handler:          runtime.fetchURLContent,
 		},
 		{
-			Name:             "search_recent_history",
-			Description:      "Search the current chat and current topic recent in-memory history for evidence snippets that help answer recall questions.",
+			Name:             "search_history",
+			Description:      "Search the full current chat and current topic in-memory history for evidence snippets that help answer recall questions.",
 			Parameters:       json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"Optional search query. If empty, return the most recent messages instead."},"limit":{"type":"integer","minimum":1,"maximum":10,"description":"Maximum number of snippets to return."}},"additionalProperties":false}`),
 			InvocationPolicy: InvocationPolicyDiscretionary,
 			ResultCharBudget: searchRecentHistoryResultCharBudget,
-			Handler:          runtime.searchRecentHistory,
+			Handler:          runtime.searchHistory,
 		},
 		{
 			Name:             "get_conversation_summary",
@@ -128,11 +129,19 @@ func newRegistry(runtime *Runtime) *Registry {
 		},
 		{
 			Name:             "get_chat_activity_window",
-			Description:      "Summarize the current chat/topic recent message cadence with first and last message times, counts, and a rough burstiness label.",
+			Description:      "Summarize the current chat/topic in-memory message cadence with first and last message times, counts, and a rough burstiness label.",
 			Parameters:       json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 			InvocationPolicy: InvocationPolicyDiscretionary,
 			ResultCharBudget: chatActivityResultCharBudget,
 			Handler:          runtime.getChatActivityWindow,
+		},
+		{
+			Name:             "get_history_bounds",
+			Description:      "Report exact full-history and recent-history time bounds for the current chat/topic in-memory message scope.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+			InvocationPolicy: InvocationPolicyDiscretionary,
+			ResultCharBudget: historyBoundsResultCharBudget,
+			Handler:          runtime.getHistoryBounds,
 		},
 		{
 			Name:             "create_poll",

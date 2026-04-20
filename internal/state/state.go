@@ -47,18 +47,18 @@ type Message struct {
 }
 
 type ConversationSnapshot struct {
-	Messages         []Message
-	EarlierSummary   string
-	SummarizedUntil  int
-	MessageCount     int
-	ApproxBytes      int64
-	LastUpdatedAtUTC time.Time
+	Messages            []Message
+	EarlierSummary      string
+	SummaryMessageCount int
+	MessageCount        int
+	ApproxBytes         int64
+	LastUpdatedAtUTC    time.Time
 }
 
 type ConversationStore interface {
 	AppendMessage(scope ConversationScope, msg Message)
 	Snapshot(scope ConversationScope) ConversationSnapshot
-	SetEarlierSummary(scope ConversationScope, text string, summarizedUntil int)
+	SetEarlierSummary(scope ConversationScope, text string, summaryMessageCount int)
 	Reset(scope ConversationScope)
 	ResetChat(chatID int64)
 }

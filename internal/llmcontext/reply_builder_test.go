@@ -18,7 +18,7 @@ func TestReplyBuilderUsesSameTopicHistoryOnly(t *testing.T) {
 	stores := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	builder := NewReplyBuilder(stores.Conversations(), func(_ context.Context, messages []state.Message) []state.Message {
 		return messages
-	})
+	}, 15)
 
 	topicScope := state.ConversationScope{ChatID: 10, TopicID: 1}
 	otherScope := state.ConversationScope{ChatID: 10, TopicID: 2}
@@ -63,14 +63,8 @@ func TestReplyBuilderUsesSameTopicHistoryOnly(t *testing.T) {
 		Trigger: TriggerMention,
 	})
 
-	if len(ctx.History) != 1 {
-		t.Fatalf("unexpected history length: %d", len(ctx.History))
-	}
-	if text := ctx.History[0].Text(); !strings.Contains(text, "topic one") {
-		t.Fatalf("expected same-topic history, got %q", text)
-	}
-	if text := ctx.History[0].Text(); strings.Contains(text, "topic two") {
-		t.Fatalf("did not expect other topic history, got %q", text)
+	if len(ctx.History) != 0 {
+		t.Fatalf("expected summarized history to be omitted from verbatim prompt, got %d messages", len(ctx.History))
 	}
 	if ctx.EarlierSummary != "same topic summary" {
 		t.Fatalf("unexpected earlier summary: %q", ctx.EarlierSummary)
@@ -94,7 +88,7 @@ func TestReplyBuilderRendersCompactHistoryAndHydratesImages(t *testing.T) {
 		}
 
 		return result
-	})
+	}, 15)
 
 	scope := state.ConversationScope{ChatID: 10}
 	stores.Conversations().AppendMessage(scope, state.Message{
@@ -167,5 +161,39 @@ func TestRenderMessagesPlainTextUsesCompactFormat(t *testing.T) {
 	}
 	if !strings.Contains(text, "Alice (@alice): main") {
 		t.Fatalf("expected compact user text, got %q", text)
+	}
+}
+
+func TestReplyBuilderUsesRecentLimitWithoutSummary(t *testing.T) {
+	t.Parallel()
+
+	stores := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	builder := NewReplyBuilder(stores.Conversations(), func(_ context.Context, messages []state.Message) []state.Message {
+		return messages
+	}, 2)
+
+	scope := state.ConversationScope{ChatID: 10}
+	for _, text := range []string{"one", "two", "three"} {
+		stores.Conversations().AppendMessage(scope, state.Message{
+			Name:      "Alice",
+			Text:      text,
+			CreatedAt: time.Now().UTC(),
+		})
+	}
+
+	ctx := builder.BuildReplyContext(context.Background(), ReplyInput{
+		Chat:           ChatContext{Type: "group"},
+		Scope:          scope,
+		CurrentMessage: state.Message{Name: "Alice", Text: "current"},
+	})
+
+	if len(ctx.History) != 2 {
+		t.Fatalf("expected 2 recent history messages, got %d", len(ctx.History))
+	}
+	if got := ctx.History[0].Text(); !strings.Contains(got, "two") {
+		t.Fatalf("unexpected first recent message: %q", got)
+	}
+	if got := ctx.History[1].Text(); !strings.Contains(got, "three") {
+		t.Fatalf("unexpected second recent message: %q", got)
 	}
 }

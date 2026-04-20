@@ -9,14 +9,13 @@ import (
 	"telegram-ollama-reply-bot/internal/state"
 )
 
-func TestConversationStoreKeepsBoundedHistoryPerScope(t *testing.T) {
+func TestConversationStoreKeepsFullRawHistoryUntilGlobalLimits(t *testing.T) {
 	t.Parallel()
 
 	stores := New(Config{
-		HistoryMessagesPerStream: 2,
-		HistoryStreamsMax:        8,
-		HistoryMaxBytes:          1 << 20,
-		ImageCacheMaxBytes:       1 << 20,
+		HistoryStreamsMax:  8,
+		HistoryMaxBytes:    1 << 20,
+		ImageCacheMaxBytes: 1 << 20,
 	}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 
 	scope := state.ConversationScope{ChatID: 10}
@@ -26,11 +25,8 @@ func TestConversationStoreKeepsBoundedHistoryPerScope(t *testing.T) {
 	store.AppendMessage(scope, state.Message{Text: "three", FromID: 3})
 
 	snapshot := store.Snapshot(scope)
-	if len(snapshot.Messages) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(snapshot.Messages))
-	}
-	if snapshot.Messages[0].Text != "two" || snapshot.Messages[1].Text != "three" {
-		t.Fatalf("unexpected retained messages: %#v", snapshot.Messages)
+	if len(snapshot.Messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(snapshot.Messages))
 	}
 }
 
@@ -55,8 +51,36 @@ func TestConversationStoreSeparatesTopics(t *testing.T) {
 	if len(topicSnapshot.Messages) != 1 || topicSnapshot.Messages[0].Text != "topic-only" {
 		t.Fatalf("unexpected topic scope snapshot: %#v", topicSnapshot.Messages)
 	}
-	if topicSnapshot.EarlierSummary != "topic-summary" || topicSnapshot.SummarizedUntil != 1 {
+	if topicSnapshot.EarlierSummary != "topic-summary" || topicSnapshot.SummaryMessageCount != 1 {
 		t.Fatalf("unexpected topic summary state: %#v", topicSnapshot)
+	}
+}
+
+func TestConversationStoreTrimsOversizedSingleScopeAndClearsSummary(t *testing.T) {
+	t.Parallel()
+
+	stores := New(Config{
+		HistoryMaxBytes:    200,
+		HistoryStreamsMax:  8,
+		ImageCacheMaxBytes: 1 << 20,
+	}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	store := stores.Conversations()
+	scope := state.ConversationScope{ChatID: 10}
+
+	store.AppendMessage(scope, state.Message{Text: "first message that is long enough", FromID: 1})
+	store.AppendMessage(scope, state.Message{Text: "second message that is also long enough", FromID: 2})
+	store.SetEarlierSummary(scope, "cached summary", 1)
+	store.AppendMessage(scope, state.Message{Text: "third message that forces trimming by bytes", FromID: 3})
+
+	snapshot := store.Snapshot(scope)
+	if len(snapshot.Messages) == 0 {
+		t.Fatal("expected some raw history to remain after trimming")
+	}
+	if snapshot.Messages[0].Text == "first message that is long enough" {
+		t.Fatalf("expected oldest message to be trimmed, got %#v", snapshot.Messages)
+	}
+	if snapshot.EarlierSummary != "" || snapshot.SummaryMessageCount != 0 {
+		t.Fatalf("expected summary cache reset after head trim, got %#v", snapshot)
 	}
 }
 

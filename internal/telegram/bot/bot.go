@@ -91,7 +91,7 @@ func NewBot(
 		replier:    replier,
 	}
 
-	bot.replyCtx = llmcontext.NewReplyBuilder(history, bot.hydrateMessagesWithImageDescriptions)
+	bot.replyCtx = llmcontext.NewReplyBuilder(history, bot.hydrateMessagesWithImageDescriptions, cfg.UncompressedHistoryLimit)
 
 	return bot
 }

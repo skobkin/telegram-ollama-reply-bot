@@ -46,7 +46,7 @@ func TestOllamaBackendGenerateWithToolsAndImage(t *testing.T) {
 				"tool_calls":[
 					{
 						"function":{
-							"name":"search_recent_history",
+							"name":"search_history",
 							"arguments":{"query":"reminder"}
 						}
 					}
@@ -77,8 +77,8 @@ func TestOllamaBackendGenerateWithToolsAndImage(t *testing.T) {
 		},
 		Tools: []ToolDefinition{
 			{
-				Name:        "search_recent_history",
-				Description: "Search recent history",
+				Name:        "search_history",
+				Description: "Search history",
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},

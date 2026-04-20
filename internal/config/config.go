@@ -55,12 +55,11 @@ type PersistenceConfig struct {
 }
 
 type StateConfig struct {
-	MaxBytes                 int64
-	HistoryMaxBytes          int64
-	HistoryStreamsMax        int
-	HistoryMessagesPerStream int
-	ImageCacheMaxBytes       int64
-	ImageCacheTTL            time.Duration
+	MaxBytes           int64
+	HistoryMaxBytes    int64
+	HistoryStreamsMax  int
+	ImageCacheMaxBytes int64
+	ImageCacheTTL      time.Duration
 }
 
 // BackendConfig contains configuration for all supported LLM backends.
@@ -108,7 +107,6 @@ func Load() *Config {
 	stateMaxBytes := int64FromEnv("STATE_MAX_BYTES", int64(256<<20))
 	stateHistoryMaxBytes := int64FromEnv("STATE_HISTORY_MAX_BYTES", int64(160<<20))
 	stateHistoryStreamsMax := intFromEnv("STATE_HISTORY_STREAMS_MAX", 1024)
-	stateHistoryMessagesPerStream := intFromEnv("STATE_HISTORY_MESSAGES_PER_STREAM", 150)
 	stateImageCacheMaxBytes := int64FromEnv("STATE_IMAGE_CACHE_MAX_BYTES", int64(64<<20))
 	stateImageCacheTTL := durationFromEnv("STATE_IMAGE_CACHE_TTL", 24*time.Hour)
 
@@ -164,12 +162,11 @@ func Load() *Config {
 			ProcessingTimeout:        processingTimeout,
 		},
 		State: StateConfig{
-			MaxBytes:                 stateMaxBytes,
-			HistoryMaxBytes:          stateHistoryMaxBytes,
-			HistoryStreamsMax:        stateHistoryStreamsMax,
-			HistoryMessagesPerStream: stateHistoryMessagesPerStream,
-			ImageCacheMaxBytes:       stateImageCacheMaxBytes,
-			ImageCacheTTL:            stateImageCacheTTL,
+			MaxBytes:           stateMaxBytes,
+			HistoryMaxBytes:    stateHistoryMaxBytes,
+			HistoryStreamsMax:  stateHistoryStreamsMax,
+			ImageCacheMaxBytes: stateImageCacheMaxBytes,
+			ImageCacheTTL:      stateImageCacheTTL,
 		},
 		Logging: LoggingConfig{
 			Level: getEnvOrDefault("LOG_LEVEL", "info"),

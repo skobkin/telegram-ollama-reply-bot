@@ -29,8 +29,9 @@ type PollSender interface {
 }
 
 type Config struct {
-	MaxIterations int
-	AdminIDs      []int64
+	MaxIterations      int
+	AdminIDs           []int64
+	RecentHistoryLimit int
 }
 
 type ChatRequest struct {
@@ -57,6 +58,9 @@ func New(llmService llmService, history state.ConversationStore, extractor extra
 	}
 	if cfg.MaxIterations <= 0 {
 		cfg.MaxIterations = 6
+	}
+	if cfg.RecentHistoryLimit < 0 {
+		cfg.RecentHistoryLimit = 15
 	}
 
 	runtime := &Runtime{

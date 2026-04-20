@@ -13,21 +13,19 @@ import (
 )
 
 const (
-	defaultMaxBytes                 int64         = 256 << 20 // 256 MiB
-	defaultHistoryMaxBytes          int64         = 160 << 20 // 160 MiB
-	defaultHistoryStreamsMax                      = 1024
-	defaultHistoryMessagesPerStream               = 150
-	defaultImageCacheMaxBytes       int64         = 64 << 20 // 64 MiB
-	defaultImageCacheTTL            time.Duration = 24 * time.Hour
+	defaultMaxBytes           int64         = 256 << 20 // 256 MiB
+	defaultHistoryMaxBytes    int64         = 160 << 20 // 160 MiB
+	defaultHistoryStreamsMax                = 1024
+	defaultImageCacheMaxBytes int64         = 64 << 20 // 64 MiB
+	defaultImageCacheTTL      time.Duration = 24 * time.Hour
 )
 
 type Config struct {
-	MaxBytes                 int64
-	HistoryMaxBytes          int64
-	HistoryStreamsMax        int
-	HistoryMessagesPerStream int
-	ImageCacheMaxBytes       int64
-	ImageCacheTTL            time.Duration
+	MaxBytes           int64
+	HistoryMaxBytes    int64
+	HistoryStreamsMax  int
+	ImageCacheMaxBytes int64
+	ImageCacheTTL      time.Duration
 }
 
 func (c Config) withDefaults() Config {
@@ -39,9 +37,6 @@ func (c Config) withDefaults() Config {
 	}
 	if c.HistoryStreamsMax <= 0 {
 		c.HistoryStreamsMax = defaultHistoryStreamsMax
-	}
-	if c.HistoryMessagesPerStream <= 0 {
-		c.HistoryMessagesPerStream = defaultHistoryMessagesPerStream
 	}
 	if c.ImageCacheMaxBytes <= 0 {
 		c.ImageCacheMaxBytes = defaultImageCacheMaxBytes
@@ -86,12 +81,12 @@ func (s *Stores) Stats() state.StatsStore {
 }
 
 type conversationBucket struct {
-	scope           state.ConversationScope
-	messages        []state.Message
-	earlierSummary  string
-	summarizedUntil int
-	bytes           int64
-	lastUpdatedAt   time.Time
+	scope               state.ConversationScope
+	messages            []state.Message
+	earlierSummary      string
+	summaryMessageCount int
+	bytes               int64
+	lastUpdatedAt       time.Time
 }
 
 type ConversationStore struct {
@@ -101,7 +96,6 @@ type ConversationStore struct {
 	budget           *budgetTracker
 	maxBytes         int64
 	maxStreams       int
-	maxMessages      int
 	totalBytes       int64
 	streams          map[string]*conversationBucket
 	streamOrder      []string
@@ -117,7 +111,6 @@ func newConversationStore(cfg Config, logger *slog.Logger, budget *budgetTracker
 		budget:           budget,
 		maxBytes:         cfg.HistoryMaxBytes,
 		maxStreams:       cfg.HistoryStreamsMax,
-		maxMessages:      cfg.HistoryMessagesPerStream,
 		streams:          make(map[string]*conversationBucket),
 		streamOrder:      make([]string, 0, cfg.HistoryStreamsMax),
 		chatIndex:        make(map[int64]map[string]struct{}),
@@ -146,18 +139,6 @@ func (s *ConversationStore) AppendMessage(scope state.ConversationScope, msg sta
 		msg.CreatedAt = time.Now().UTC()
 	}
 
-	if len(bucket.messages) >= s.maxMessages {
-		removed := bucket.messages[0]
-		bucket.messages = bucket.messages[1:]
-		size := messageApproxBytes(removed)
-		bucket.bytes -= size
-		s.totalBytes -= size
-		if bucket.summarizedUntil > 0 {
-			bucket.summarizedUntil--
-		}
-		s.dropUserIndex(key, removed)
-	}
-
 	cloned := cloneMessage(msg)
 	bucket.messages = append(bucket.messages, cloned)
 	size := messageApproxBytes(cloned)
@@ -180,18 +161,18 @@ func (s *ConversationStore) Snapshot(scope state.ConversationScope) state.Conver
 	}
 
 	result := state.ConversationSnapshot{
-		Messages:         cloneMessages(bucket.messages),
-		EarlierSummary:   bucket.earlierSummary,
-		SummarizedUntil:  bucket.summarizedUntil,
-		MessageCount:     len(bucket.messages),
-		ApproxBytes:      bucket.bytes,
-		LastUpdatedAtUTC: bucket.lastUpdatedAt,
+		Messages:            cloneMessages(bucket.messages),
+		EarlierSummary:      bucket.earlierSummary,
+		SummaryMessageCount: bucket.summaryMessageCount,
+		MessageCount:        len(bucket.messages),
+		ApproxBytes:         bucket.bytes,
+		LastUpdatedAtUTC:    bucket.lastUpdatedAt,
 	}
 
 	return result
 }
 
-func (s *ConversationStore) SetEarlierSummary(scope state.ConversationScope, text string, summarizedUntil int) {
+func (s *ConversationStore) SetEarlierSummary(scope state.ConversationScope, text string, summaryMessageCount int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -206,8 +187,14 @@ func (s *ConversationStore) SetEarlierSummary(scope state.ConversationScope, tex
 
 	oldSize := int64(len(bucket.earlierSummary))
 	newSize := int64(len(text))
+	if summaryMessageCount < 0 {
+		summaryMessageCount = 0
+	}
+	if summaryMessageCount > len(bucket.messages) {
+		summaryMessageCount = len(bucket.messages)
+	}
 	bucket.earlierSummary = text
-	bucket.summarizedUntil = summarizedUntil
+	bucket.summaryMessageCount = summaryMessageCount
 	bucket.lastUpdatedAt = time.Now().UTC()
 	bucket.bytes += newSize - oldSize
 	s.totalBytes += newSize - oldSize
@@ -296,8 +283,81 @@ func (s *ConversationStore) evictIfNeeded() {
 	}
 
 	for s.totalBytes > s.maxBytes && len(s.streamOrder) > 0 {
+		oldest := s.streamOrder[0]
+		bucket := s.streams[oldest]
+		if bucket == nil {
+			s.removeFromOrder(oldest)
+
+			continue
+		}
+		if s.tryTrimOversizedStream(oldest, bucket) {
+			continue
+		}
+
 		s.evictOldestStream("history_byte_limit")
 	}
+}
+
+func (s *ConversationStore) tryTrimOversizedStream(key string, bucket *conversationBucket) bool {
+	if len(bucket.messages) == 0 {
+		return false
+	}
+	if len(s.streams) > 1 && bucket.bytes <= s.maxBytes {
+		return false
+	}
+
+	beforeBytes := bucket.bytes
+	trimmed := 0
+	for s.totalBytes > s.maxBytes && len(bucket.messages) > 0 {
+		s.trimBucketHead(key, bucket)
+		trimmed++
+	}
+	if trimmed == 0 {
+		return false
+	}
+
+	s.logger.Warn(
+		"trimming conversation stream head",
+		"chat_id", bucket.scope.ChatID,
+		"topic_id", bucket.scope.TopicID,
+		"trimmed_messages", trimmed,
+		"bytes_before", beforeBytes,
+		"bytes_after", bucket.bytes,
+	)
+
+	return s.totalBytes <= s.maxBytes
+}
+
+func (s *ConversationStore) trimBucketHead(key string, bucket *conversationBucket) {
+	if len(bucket.messages) == 0 {
+		return
+	}
+
+	removed := bucket.messages[0]
+	bucket.messages = bucket.messages[1:]
+	size := messageApproxBytes(removed)
+	bucket.bytes -= size
+	s.totalBytes -= size
+	bucket.lastUpdatedAt = time.Now().UTC()
+	s.dropUserIndex(key, removed)
+
+	// Once the raw prefix is trimmed, the cached summary no longer aligns with the
+	// available message sequence, so reset it and rebuild on future summarization.
+	if bucket.summaryMessageCount > 0 || bucket.earlierSummary != "" {
+		s.clearBucketSummary(bucket)
+	}
+}
+
+func (s *ConversationStore) clearBucketSummary(bucket *conversationBucket) {
+	if bucket.earlierSummary == "" && bucket.summaryMessageCount == 0 {
+		return
+	}
+
+	oldSize := int64(len(bucket.earlierSummary))
+	bucket.earlierSummary = ""
+	bucket.summaryMessageCount = 0
+	bucket.bytes -= oldSize
+	s.totalBytes -= oldSize
 }
 
 func (s *ConversationStore) evictOldestStream(reason string) {

@@ -40,27 +40,46 @@ type UserContext struct {
 }
 
 type ReplyBuilder struct {
-	history state.ConversationStore
-	hydrate HydrateFunc
+	history     state.ConversationStore
+	hydrate     HydrateFunc
+	recentLimit int
 }
 
-func NewReplyBuilder(history state.ConversationStore, hydrate HydrateFunc) *ReplyBuilder {
+func NewReplyBuilder(history state.ConversationStore, hydrate HydrateFunc, recentLimit int) *ReplyBuilder {
 	if history == nil {
 		panic("history store is required")
 	}
 	if hydrate == nil {
 		panic("hydrate function is required")
 	}
+	if recentLimit < 0 {
+		panic("recent history limit must not be negative")
+	}
 
 	return &ReplyBuilder{
-		history: history,
-		hydrate: hydrate,
+		history:     history,
+		hydrate:     hydrate,
+		recentLimit: recentLimit,
 	}
 }
 
 func (b *ReplyBuilder) BuildReplyContext(ctx context.Context, input ReplyInput) llm.ChatReplyContext {
 	snapshot := b.history.Snapshot(input.Scope)
-	history := b.hydrate(ctx, snapshot.Messages)
+	start := snapshot.SummaryMessageCount
+	if start < 0 {
+		start = 0
+	}
+	if start > len(snapshot.Messages) {
+		start = len(snapshot.Messages)
+	}
+	if snapshot.EarlierSummary == "" && b.recentLimit > 0 {
+		start = len(snapshot.Messages) - b.recentLimit
+		if start < 0 {
+			start = 0
+		}
+	}
+
+	history := b.hydrate(ctx, snapshot.Messages[start:])
 	current := hydrateOne(ctx, input.CurrentMessage, b.hydrate)
 
 	result := llm.ChatReplyContext{

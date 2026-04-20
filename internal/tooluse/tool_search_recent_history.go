@@ -11,7 +11,7 @@ import (
 	"telegram-ollama-reply-bot/internal/state"
 )
 
-func (r *Runtime) searchRecentHistory(_ context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error) {
+func (r *Runtime) searchHistory(_ context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error) {
 	var payload struct {
 		Query string `json:"query"`
 		Limit int    `json:"limit"`

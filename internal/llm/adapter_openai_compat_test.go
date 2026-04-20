@@ -61,7 +61,7 @@ func TestOpenAICompatBackendGenerateWithToolsAndImage(t *testing.T) {
 								"id":"call_1",
 								"type":"function",
 								"function":{
-									"name":"search_recent_history",
+									"name":"search_history",
 									"arguments":"{\"query\":\"reminder\"}"
 								}
 							}
@@ -103,8 +103,8 @@ func TestOpenAICompatBackendGenerateWithToolsAndImage(t *testing.T) {
 		},
 		Tools: []ToolDefinition{
 			{
-				Name:        "search_recent_history",
-				Description: "Search recent history",
+				Name:        "search_history",
+				Description: "Search history",
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},
@@ -121,7 +121,7 @@ func TestOpenAICompatBackendGenerateWithToolsAndImage(t *testing.T) {
 		t.Fatalf("unexpected tool call count: %d", len(resp.Message.ToolCalls))
 	}
 
-	if resp.Message.ToolCalls[0].Name != "search_recent_history" {
+	if resp.Message.ToolCalls[0].Name != "search_history" {
 		t.Fatalf("unexpected tool call name: %s", resp.Message.ToolCalls[0].Name)
 	}
 }
