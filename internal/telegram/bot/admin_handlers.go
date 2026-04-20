@@ -76,7 +76,7 @@ func (b *Bot) configFieldsGlobalHandler(ctx *th.Context, message t.Message) erro
 		return nil
 	}
 
-	return b.sendAdminText(ctx.Context(), message, strings.Join(b.admin.GlobalFields(), "\n"))
+	return b.sendAdminText(ctx.Context(), message, formatConfigFields(b.admin.GlobalFields()))
 }
 
 func (b *Bot) configFieldsChatHandler(ctx *th.Context, message t.Message) error {
@@ -84,7 +84,7 @@ func (b *Bot) configFieldsChatHandler(ctx *th.Context, message t.Message) error 
 		return nil
 	}
 
-	return b.sendAdminText(ctx.Context(), message, strings.Join(b.admin.ChatFields(), "\n"))
+	return b.sendAdminText(ctx.Context(), message, formatConfigFields(b.admin.ChatFields()))
 }
 
 func (b *Bot) promptFeaturesHandler(ctx *th.Context, message t.Message) error {
@@ -376,7 +376,7 @@ func (b *Bot) whitelistListHandler(ctx *th.Context, message t.Message) error {
 
 func (b *Bot) requireAdminDM(ctx *th.Context, message t.Message) bool {
 	if len(b.cfg.AdminIDs) == 0 {
-		_ = b.sendAdminText(ctx.Context(), message, "Admin controls are disabled: BOT_ADMIN_IDS is empty.")
+		_ = b.sendAdminText(ctx.Context(), message, adminControlsDisabledText(message.From))
 
 		return false
 	}
@@ -397,6 +397,40 @@ func (b *Bot) sendAdminText(ctx context.Context, message t.Message, text string)
 
 func (b *Bot) sendAdminError(ctx context.Context, message t.Message, err error) error {
 	return b.sendAdminText(ctx, message, "Admin command error: "+err.Error())
+}
+
+func adminControlsDisabledText(user *t.User) string {
+	text := "Admin controls are disabled: BOT_ADMIN_IDS is empty."
+	if user == nil {
+		return text
+	}
+
+	userID := strconv.FormatInt(user.ID, 10)
+
+	return text + "\nYour Telegram user ID: " + userID + "\nSet BOT_ADMIN_IDS=" + userID
+}
+
+func formatConfigFields(fields []string) string {
+	lines := make([]string, 0, len(fields))
+	for _, field := range fields {
+		line := field
+		if field == "default_interactivity_mode" || field == "interactivity_mode" {
+			line += " (" + formatInteractivityModeList() + ")"
+		}
+		lines = append(lines, line)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func formatInteractivityModeList() string {
+	modes := adminconfig.InteractivityModes()
+	values := make([]string, 0, len(modes))
+	for _, mode := range modes {
+		values = append(values, string(mode))
+	}
+
+	return strings.Join(values, ", ")
 }
 
 func splitCommandArgs(text string, minArgs int) (string, string, bool) {

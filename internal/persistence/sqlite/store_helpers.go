@@ -26,7 +26,7 @@ func globalFieldAssignment(field, value string) (string, any, error) {
 	case "default_interactivity_mode":
 		mode := adminconfig.InteractivityMode(value)
 		if !isValidInteractivityMode(mode) {
-			return "", nil, fmt.Errorf("unsupported interactivity mode %q", value)
+			return "", nil, fmt.Errorf("unsupported interactivity mode %q; supported values: %s", value, formatInteractivityModes())
 		}
 
 		return "default_interactivity_mode", string(mode), nil
@@ -52,7 +52,7 @@ func chatFieldAssignment(field, value string) (string, any, error) {
 	case "interactivity_mode":
 		mode := adminconfig.InteractivityMode(value)
 		if !isValidInteractivityMode(mode) {
-			return "", nil, fmt.Errorf("unsupported interactivity mode %q", value)
+			return "", nil, fmt.Errorf("unsupported interactivity mode %q; supported values: %s", value, formatInteractivityModes())
 		}
 
 		return "interactivity_mode", string(mode), nil
@@ -98,12 +98,22 @@ func boolToSQLite(v bool) int {
 }
 
 func isValidInteractivityMode(mode adminconfig.InteractivityMode) bool {
-	switch mode {
-	case adminconfig.InteractivityDisabled, adminconfig.InteractivityMentionsOnly, adminconfig.InteractivityMentionsReplies:
-		return true
-	default:
-		return false
+	for _, supported := range adminconfig.InteractivityModes() {
+		if mode == supported {
+			return true
+		}
 	}
+
+	return false
+}
+
+func formatInteractivityModes() string {
+	modes := make([]string, 0, len(adminconfig.InteractivityModes()))
+	for _, mode := range adminconfig.InteractivityModes() {
+		modes = append(modes, string(mode))
+	}
+
+	return strings.Join(modes, ", ")
 }
 
 func globalFieldUpdateQuery(column string) (string, error) {

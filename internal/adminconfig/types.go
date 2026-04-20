@@ -19,6 +19,14 @@ const (
 	InteractivityMentionsReplies InteractivityMode = "mentions_or_replies"
 )
 
+func InteractivityModes() []InteractivityMode {
+	return []InteractivityMode{
+		InteractivityDisabled,
+		InteractivityMentionsOnly,
+		InteractivityMentionsReplies,
+	}
+}
+
 type PromptFeature string
 
 const (

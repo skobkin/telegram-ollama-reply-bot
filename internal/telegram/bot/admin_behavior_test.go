@@ -104,3 +104,36 @@ func TestShouldProcessChatMessageUsesAliasTrigger(t *testing.T) {
 		t.Fatalf("expected alias soft trigger to allow processing")
 	}
 }
+
+func TestAdminControlsDisabledTextIncludesUserID(t *testing.T) {
+	t.Parallel()
+
+	text := adminControlsDisabledText(&tg.User{ID: 123456789})
+	expected := "Admin controls are disabled: BOT_ADMIN_IDS is empty.\nYour Telegram user ID: 123456789\nSet BOT_ADMIN_IDS=123456789"
+
+	if text != expected {
+		t.Fatalf("unexpected text: expected %q, got %q", expected, text)
+	}
+}
+
+func TestAdminControlsDisabledTextWithoutUser(t *testing.T) {
+	t.Parallel()
+
+	text := adminControlsDisabledText(nil)
+	expected := "Admin controls are disabled: BOT_ADMIN_IDS is empty."
+
+	if text != expected {
+		t.Fatalf("unexpected text: expected %q, got %q", expected, text)
+	}
+}
+
+func TestFormatConfigFieldsIncludesInteractivityModes(t *testing.T) {
+	t.Parallel()
+
+	text := formatConfigFields([]string{"language", "interactivity_mode"})
+	expected := "language\ninteractivity_mode (disabled, mentions_only, mentions_or_replies)"
+
+	if text != expected {
+		t.Fatalf("unexpected text: expected %q, got %q", expected, text)
+	}
+}
