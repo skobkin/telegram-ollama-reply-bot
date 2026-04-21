@@ -375,7 +375,7 @@ func isFuzzyMatch(left, right string, maxDistance int) bool {
 			insertCost := current[j-1] + 1
 			deleteCost := previous[j] + 1
 			replaceCost := previous[j-1] + cost
-			current[j] = min(insertCost, deleteCost, replaceCost)
+			current[j] = minInt(insertCost, deleteCost, replaceCost)
 			if current[j] < rowMin {
 				rowMin = current[j]
 			}
@@ -389,7 +389,7 @@ func isFuzzyMatch(left, right string, maxDistance int) bool {
 	return previous[len(rightRunes)] <= maxDistance
 }
 
-func min(values ...int) int {
+func minInt(values ...int) int {
 	best := values[0]
 	for _, value := range values[1:] {
 		if value < best {
