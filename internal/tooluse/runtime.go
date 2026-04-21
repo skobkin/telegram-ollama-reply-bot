@@ -108,6 +108,10 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (string, 
 
 		resp, err := r.llm.Generate(ctx, request)
 		if err != nil {
+			if started && allowEmptyReplyCompletion && errors.Is(err, llm.ErrNoChoices) {
+				return "", usagePointer(totalUsage), nil
+			}
+
 			if !started {
 				logger.Warn("tool-use backend failed", "error", err)
 
