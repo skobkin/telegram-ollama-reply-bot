@@ -97,7 +97,9 @@ When `LLM_FEATURE_TOOL_USE_*` is configured, ordinary chat replies may use tools
 - `get_chat_activity_window` for in-memory message cadence heuristics in the current chat/topic
 - `get_history_bounds` for exact full-history and recent-history coverage in the current chat/topic
 - `get_message_thread_context` for compact reply-chain reconstruction when an older replied-to message has scrolled out of the recent verbatim context
-- `create_poll` for explicit vote/poll requests
+- `send_poll` for explicit vote/poll requests
+- `send_quiz` for explicit quiz and trivia requests
+- `send_dice` for explicit dice-roll and mini-game requests
 - `list_chat_schedule`, `add_schedule_item`, `remove_schedule_item` for durable chat reminders
 
 Reminder behavior in the first implementation slice:

@@ -67,14 +67,25 @@ func (s *stubExtractor) GetArticleFromURL(context.Context, string) (extractor.Ar
 	return s.article, s.err
 }
 
-type stubPollSender struct {
-	lastParams *tg.SendPollParams
-	message    *tg.Message
-	err        error
+type stubActionSender struct {
+	lastPollParams *tg.SendPollParams
+	lastDiceParams *tg.SendDiceParams
+	message        *tg.Message
+	diceMessage    *tg.Message
+	err            error
 }
 
-func (s *stubPollSender) SendPoll(_ context.Context, params *tg.SendPollParams) (*tg.Message, error) {
-	s.lastParams = params
+func (s *stubActionSender) SendPoll(_ context.Context, params *tg.SendPollParams) (*tg.Message, error) {
+	s.lastPollParams = params
+
+	return s.message, s.err
+}
+
+func (s *stubActionSender) SendDice(_ context.Context, params *tg.SendDiceParams) (*tg.Message, error) {
+	s.lastDiceParams = params
+	if s.diceMessage != nil {
+		return s.diceMessage, s.err
+	}
 
 	return s.message, s.err
 }
@@ -94,7 +105,7 @@ func TestRuntimeReturnsUnavailableWhenToolUseGenerateFailsImmediately(t *testing
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -142,7 +153,7 @@ func TestRuntimeExecutesToolCallsAndReturnsFinalReply(t *testing.T) {
 		store,
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -186,7 +197,7 @@ func TestRuntimeRespectsConfiguredIterationLimit(t *testing.T) {
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 1},
@@ -220,7 +231,7 @@ func TestGetConversationSummaryReturnsCachedSummaryWithFullHistoryPresent(t *tes
 		store,
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -251,8 +262,8 @@ func TestGetConversationSummaryReturnsCachedSummaryWithFullHistoryPresent(t *tes
 	}
 }
 
-func TestCreatePollUsesCurrentTopic(t *testing.T) {
-	sender := &stubPollSender{message: &tg.Message{MessageID: 77}}
+func TestSendPollUsesCurrentTopic(t *testing.T) {
+	sender := &stubActionSender{message: &tg.Message{MessageID: 77}}
 	runtime := New(
 		&stubLLM{},
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
@@ -264,20 +275,157 @@ func TestCreatePollUsesCurrentTopic(t *testing.T) {
 		Config{MaxIterations: 6},
 	)
 
-	definition, ok := runtime.registry.Lookup("create_poll")
+	definition, ok := runtime.registry.Lookup("send_poll")
 	if !ok {
-		t.Fatal("create_poll not registered")
+		t.Fatal("send_poll not registered")
 	}
 
 	result, err := definition.Handler(context.Background(), CallContext{Scope: state.ConversationScope{ChatID: 1, TopicID: 42}}, json.RawMessage(`{"question":"Q?","options":["A","B"]}`))
 	if err != nil {
-		t.Fatalf("create_poll handler error = %v", err)
+		t.Fatalf("send_poll handler error = %v", err)
 	}
 	if result.Status != "ok" {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	if sender.lastParams == nil || sender.lastParams.MessageThreadID != 42 {
-		t.Fatalf("expected poll to target topic 42, got %+v", sender.lastParams)
+	if sender.lastPollParams == nil || sender.lastPollParams.MessageThreadID != 42 {
+		t.Fatalf("expected poll to target topic 42, got %+v", sender.lastPollParams)
+	}
+}
+
+func TestSendQuizUsesCurrentTopicAndCorrectOption(t *testing.T) {
+	sender := &stubActionSender{message: &tg.Message{MessageID: 88}}
+	runtime := New(
+		&stubLLM{},
+		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
+		&stubExtractor{},
+		nil,
+		sender,
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, ok := runtime.registry.Lookup("send_quiz")
+	if !ok {
+		t.Fatal("send_quiz not registered")
+	}
+
+	result, err := definition.Handler(context.Background(), CallContext{Scope: state.ConversationScope{ChatID: 1, TopicID: 42}}, json.RawMessage(`{"question":"Q?","options":["A","B","C"],"correct_option_index":1,"explanation":"Because."}`))
+	if err != nil {
+		t.Fatalf("send_quiz handler error = %v", err)
+	}
+	if result.Status != "ok" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if sender.lastPollParams == nil {
+		t.Fatal("expected poll params to be captured")
+	}
+	if sender.lastPollParams.MessageThreadID != 42 {
+		t.Fatalf("expected quiz to target topic 42, got %+v", sender.lastPollParams)
+	}
+	if sender.lastPollParams.Type != "quiz" {
+		t.Fatalf("expected quiz poll type, got %q", sender.lastPollParams.Type)
+	}
+	if !slices.Equal(sender.lastPollParams.CorrectOptionIDs, []int{1}) {
+		t.Fatalf("unexpected correct option ids: %v", sender.lastPollParams.CorrectOptionIDs)
+	}
+	if sender.lastPollParams.Explanation != "Because." {
+		t.Fatalf("unexpected explanation: %q", sender.lastPollParams.Explanation)
+	}
+}
+
+func TestSendQuizRejectsInvalidCorrectOptionIndex(t *testing.T) {
+	runtime := New(
+		&stubLLM{},
+		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
+		&stubExtractor{},
+		nil,
+		&stubActionSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, _ := runtime.registry.Lookup("send_quiz")
+	_, err := definition.Handler(context.Background(), CallContext{Scope: state.ConversationScope{ChatID: 1}}, json.RawMessage(`{"question":"Q?","options":["A","B"],"correct_option_index":2}`))
+	if err == nil || err.Error() != "correct_option_index must reference an existing option" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSendDiceUsesCurrentTopicAndReturnsValue(t *testing.T) {
+	sender := &stubActionSender{diceMessage: &tg.Message{MessageID: 91, Dice: &tg.Dice{Emoji: "🎯", Value: 6}}}
+	runtime := New(
+		&stubLLM{},
+		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
+		&stubExtractor{},
+		nil,
+		sender,
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, ok := runtime.registry.Lookup("send_dice")
+	if !ok {
+		t.Fatal("send_dice not registered")
+	}
+
+	result, err := definition.Handler(context.Background(), CallContext{Scope: state.ConversationScope{ChatID: 1, TopicID: 42}}, json.RawMessage(`{"emoji":"🎯"}`))
+	if err != nil {
+		t.Fatalf("send_dice handler error = %v", err)
+	}
+	if result.Status != "ok" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if sender.lastDiceParams == nil || sender.lastDiceParams.MessageThreadID != 42 {
+		t.Fatalf("expected dice to target topic 42, got %+v", sender.lastDiceParams)
+	}
+	if sender.lastDiceParams.Emoji != "🎯" {
+		t.Fatalf("unexpected dice emoji: %q", sender.lastDiceParams.Emoji)
+	}
+
+	data := result.Data.(map[string]any)
+	if got := data["emoji"]; got != "🎯" {
+		t.Fatalf("unexpected result emoji: %v", got)
+	}
+	if got := data["value"]; got != 6 {
+		t.Fatalf("unexpected result value: %v", got)
+	}
+}
+
+func TestSendDiceDefaultsAndRejectsUnsupportedEmoji(t *testing.T) {
+	sender := &stubActionSender{diceMessage: &tg.Message{MessageID: 92}}
+	runtime := New(
+		&stubLLM{},
+		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
+		&stubExtractor{},
+		nil,
+		sender,
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	definition, _ := runtime.registry.Lookup("send_dice")
+
+	result, err := definition.Handler(context.Background(), CallContext{Scope: state.ConversationScope{ChatID: 1}}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("send_dice default handler error = %v", err)
+	}
+	if result.Status != "ok" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if sender.lastDiceParams == nil {
+		t.Fatal("expected dice params to be captured")
+	}
+	if sender.lastDiceParams.Emoji != "" {
+		t.Fatalf("expected empty emoji to rely on Telegram default, got %q", sender.lastDiceParams.Emoji)
+	}
+
+	_, err = definition.Handler(context.Background(), CallContext{Scope: state.ConversationScope{ChatID: 1}}, json.RawMessage(`{"emoji":"🎮"}`))
+	if err == nil || err.Error() != "emoji must be one of 🎲, 🎯, 🏀, ⚽, 🎳, or 🎰" {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -287,7 +435,7 @@ func TestReminderToolsAreRegisteredByDefault(t *testing.T) {
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -311,7 +459,7 @@ func TestNewToolsAreRegisteredByDefault(t *testing.T) {
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -322,7 +470,7 @@ func TestNewToolsAreRegisteredByDefault(t *testing.T) {
 		names = append(names, definition.Name)
 	}
 
-	for _, required := range []string{"list_recent_links", "datetime_math", "datetime_format", "get_chat_activity_window", "get_history_bounds", "get_message_thread_context", "search_history"} {
+	for _, required := range []string{"list_recent_links", "datetime_math", "datetime_format", "get_chat_activity_window", "get_history_bounds", "get_message_thread_context", "search_history", "send_poll", "send_quiz", "send_dice"} {
 		if !slices.Contains(names, required) {
 			t.Fatalf("expected %s in default tool set, got %v", required, names)
 		}
@@ -331,6 +479,9 @@ func TestNewToolsAreRegisteredByDefault(t *testing.T) {
 		if slices.Contains(names, obsolete) {
 			t.Fatalf("did not expect obsolete tool %s in default tool set, got %v", obsolete, names)
 		}
+	}
+	if slices.Contains(names, "create_poll") {
+		t.Fatalf("did not expect obsolete tool create_poll in default tool set, got %v", names)
 	}
 }
 
@@ -368,7 +519,7 @@ func TestListRecentLinksUsesScopeAndDeduplicates(t *testing.T) {
 		store,
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -417,7 +568,7 @@ func TestListRecentLinksReturnsEmptyWhenNoLinksFound(t *testing.T) {
 		store,
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -462,7 +613,7 @@ func TestSearchHistorySupportsAnyAllAndFuzzyMatching(t *testing.T) {
 		store,
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -544,7 +695,7 @@ func TestSearchHistoryLargeLimitAndValidation(t *testing.T) {
 		store,
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -584,7 +735,7 @@ func TestGetChatActivityWindowEmpty(t *testing.T) {
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -619,7 +770,7 @@ func TestGetChatActivityWindowInsufficientData(t *testing.T) {
 		store,
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -658,7 +809,7 @@ func TestGetChatActivityWindowSteady(t *testing.T) {
 		store,
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -709,7 +860,7 @@ func TestGetChatActivityWindowBurstyAndScopeIsolated(t *testing.T) {
 		store,
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -740,7 +891,7 @@ func TestGetHistoryBoundsEmpty(t *testing.T) {
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6, RecentHistoryLimit: 2},
@@ -778,7 +929,7 @@ func TestGetHistoryBoundsReportsFullAndRecentHistory(t *testing.T) {
 		store,
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6, RecentHistoryLimit: 2},
@@ -873,7 +1024,7 @@ func TestGetMessageThreadContextBuildsChainAndAdjacentReplies(t *testing.T) {
 		store,
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -968,7 +1119,7 @@ func TestGetMessageThreadContextFallsBackToEmbeddedReplyChain(t *testing.T) {
 		store,
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -1005,7 +1156,7 @@ func TestGetMessageThreadContextFallsBackToCurrentMessageWhenNotReply(t *testing
 		store,
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -1077,7 +1228,7 @@ func TestGetMessageThreadContextRespectsCapsAndTopicScope(t *testing.T) {
 		store,
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -1149,7 +1300,7 @@ func TestSearchWebToolIsConditionalAndReturnsProvider(t *testing.T) {
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
 		nil,
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},
@@ -1167,7 +1318,7 @@ func TestSearchWebToolIsConditionalAndReturnsProvider(t *testing.T) {
 			Query:    "golang",
 			Results:  []search.ResultItem{{Title: "Go", URL: "https://go.dev"}},
 		}},
-		&stubPollSender{},
+		&stubActionSender{},
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Config{MaxIterations: 6},

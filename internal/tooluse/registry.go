@@ -27,7 +27,9 @@ const (
 	chatActivityResultCharBudget        = 1200
 	historyBoundsResultCharBudget       = 900
 	messageThreadResultCharBudget       = 2600
-	createPollResultCharBudget          = 1200
+	sendPollResultCharBudget            = 1200
+	sendQuizResultCharBudget            = 1200
+	sendDiceResultCharBudget            = 800
 	reminderResultCharBudget            = 1400
 	currentTimeResultCharBudget         = 600
 	recentLinksResultCharBudget         = 1600
@@ -154,13 +156,31 @@ func newRegistry(runtime *Runtime) *Registry {
 			Handler:          runtime.getMessageThreadContext,
 		},
 		{
-			Name:             "create_poll",
-			Description:      "Create a regular Telegram poll in the current chat when the user explicitly asks to make a vote or poll.",
+			Name:             "send_poll",
+			Description:      "Send a regular Telegram poll in the current chat when the user explicitly asks to make a vote or poll.",
 			Parameters:       json.RawMessage(`{"type":"object","properties":{"question":{"type":"string","description":"Poll question text"},"options":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":10,"description":"Poll answer options"},"allows_multiple_answers":{"type":"boolean","description":"Whether voters may choose more than one option"}},"required":["question","options"],"additionalProperties":false}`),
 			InvocationPolicy: InvocationPolicyExplicitRequestOnly,
-			ResultCharBudget: createPollResultCharBudget,
+			ResultCharBudget: sendPollResultCharBudget,
 			SideEffecting:    true,
-			Handler:          runtime.createPoll,
+			Handler:          runtime.sendPoll,
+		},
+		{
+			Name:             "send_quiz",
+			Description:      "Send a Telegram quiz poll in the current chat when the user explicitly asks for a quiz, trivia, or guess-the-answer poll.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"question":{"type":"string","description":"Quiz question text"},"options":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":10,"description":"Quiz answer options"},"correct_option_index":{"type":"integer","minimum":0,"description":"0-based index of the correct answer option"},"explanation":{"type":"string","description":"Optional explanation shown after an incorrect answer"}},"required":["question","options","correct_option_index"],"additionalProperties":false}`),
+			InvocationPolicy: InvocationPolicyExplicitRequestOnly,
+			ResultCharBudget: sendQuizResultCharBudget,
+			SideEffecting:    true,
+			Handler:          runtime.sendQuiz,
+		},
+		{
+			Name:             "send_dice",
+			Description:      "Send a Telegram dice-style animated emoji in the current chat when the user explicitly asks for a dice roll or a small random mini-game.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"emoji":{"type":"string","description":"Optional Telegram dice emoji: 🎲, 🎯, 🏀, ⚽, 🎳, or 🎰"}},"additionalProperties":false}`),
+			InvocationPolicy: InvocationPolicyExplicitRequestOnly,
+			ResultCharBudget: sendDiceResultCharBudget,
+			SideEffecting:    true,
+			Handler:          runtime.sendDice,
 		},
 		{
 			Name:             "list_chat_schedule",

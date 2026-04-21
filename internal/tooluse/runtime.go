@@ -25,8 +25,9 @@ type llmService interface {
 	Generate(ctx context.Context, req llm.Request) (llm.Response, error)
 }
 
-type PollSender interface {
+type TelegramActionSender interface {
 	SendPoll(ctx context.Context, params *t.SendPollParams) (*t.Message, error)
+	SendDice(ctx context.Context, params *t.SendDiceParams) (*t.Message, error)
 }
 
 type Config struct {
@@ -47,14 +48,14 @@ type Runtime struct {
 	history   state.ConversationStore
 	extractor extractor.Extractor
 	searcher  search.Searcher
-	polls     PollSender
+	actions   TelegramActionSender
 	reminders *reminders.Service
 	logger    *slog.Logger
 	config    Config
 	registry  *Registry
 }
 
-func New(llmService llmService, history state.ConversationStore, extractor extractor.Extractor, searcher search.Searcher, polls PollSender, reminderService *reminders.Service, logger *slog.Logger, cfg Config) *Runtime {
+func New(llmService llmService, history state.ConversationStore, extractor extractor.Extractor, searcher search.Searcher, actions TelegramActionSender, reminderService *reminders.Service, logger *slog.Logger, cfg Config) *Runtime {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -70,7 +71,7 @@ func New(llmService llmService, history state.ConversationStore, extractor extra
 		history:   history,
 		extractor: extractor,
 		searcher:  searcher,
-		polls:     polls,
+		actions:   actions,
 		reminders: reminderService,
 		logger:    logger,
 		config:    cfg,

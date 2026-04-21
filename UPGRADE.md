@@ -84,7 +84,9 @@ The first conversational tool set includes:
 - `fetch_url_content`
 - `search_history`
 - `get_conversation_summary`
-- `create_poll`
+- `send_poll`
+- `send_quiz`
+- `send_dice`
 
 Reminder tools are also exposed to the model:
 
