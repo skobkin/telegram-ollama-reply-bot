@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/chatreply"
@@ -317,6 +318,12 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 	}
 
 	logger.Debug("sending llm reply", "reply_length", len(llmReply))
+
+	if strings.TrimSpace(llmReply) == "" {
+		logger.Debug("llm interaction completed without final text reply")
+
+		return
+	}
 
 	sanitizedReply := b.sanitizer.Sanitize(llmReply)
 

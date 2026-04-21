@@ -88,9 +88,10 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (string, 
 	toolPolicy := buildToolPolicy(definitions)
 
 	var (
-		extraMessages []llm.Message
-		totalUsage    llm.TokenUsage
-		started       bool
+		extraMessages             []llm.Message
+		totalUsage                llm.TokenUsage
+		started                   bool
+		allowEmptyReplyCompletion bool
 	)
 
 	for i := 0; i < r.config.MaxIterations; i++ {
@@ -121,6 +122,10 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (string, 
 
 		if len(resp.Message.ToolCalls) == 0 {
 			if resp.Message.Text() == "" {
+				if allowEmptyReplyCompletion {
+					return "", usagePointer(totalUsage), nil
+				}
+
 				return "", usagePointer(totalUsage), llm.ErrNoChoices
 			}
 
@@ -131,17 +136,19 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (string, 
 		// Backends such as OpenAI-style APIs use that pairing to associate tool results
 		// with specific tool call IDs on subsequent turns.
 		extraMessages = append(extraMessages, resp.Message)
+		allowEmptyReplyCompletion = false
 
 		for _, call := range resp.Message.ToolCalls {
-			toolMessage := r.executeToolCall(ctx, req, call)
+			toolMessage, allowsEmptyReply := r.executeToolCall(ctx, req, call)
 			extraMessages = append(extraMessages, toolMessage)
+			allowEmptyReplyCompletion = allowEmptyReplyCompletion || allowsEmptyReply
 		}
 	}
 
 	return "", usagePointer(totalUsage), ErrToolLoopLimitReached
 }
 
-func (r *Runtime) executeToolCall(ctx context.Context, req ChatRequest, call llm.ToolCall) llm.Message {
+func (r *Runtime) executeToolCall(ctx context.Context, req ChatRequest, call llm.ToolCall) (llm.Message, bool) {
 	logger := logging.FromContext(ctx, r.logger)
 	definition, ok := r.registry.Lookup(call.Name)
 	if !ok {
@@ -150,7 +157,7 @@ func (r *Runtime) executeToolCall(ctx context.Context, req ChatRequest, call llm
 		return toolResponseMessage(call.ID, marshalResult(toolResult{
 			Status: "error",
 			Error:  fmt.Sprintf("unknown tool %q", call.Name),
-		}, defaultToolResultCharBudget))
+		}, defaultToolResultCharBudget)), false
 	}
 
 	logger.Info(
@@ -174,7 +181,8 @@ func (r *Runtime) executeToolCall(ctx context.Context, req ChatRequest, call llm
 		}
 	}
 
-	return toolResponseMessage(call.ID, marshalResult(result, definition.ResultCharBudget))
+	return toolResponseMessage(call.ID, marshalResult(result, definition.ResultCharBudget)),
+		definition.SideEffecting && result.Status == "ok"
 }
 
 func toolResponseMessage(toolCallID, text string) llm.Message {

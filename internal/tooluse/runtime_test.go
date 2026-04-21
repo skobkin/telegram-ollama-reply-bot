@@ -185,6 +185,100 @@ func TestRuntimeExecutesToolCallsAndReturnsFinalReply(t *testing.T) {
 	}
 }
 
+func TestRuntimeAllowsEmptyFinalReplyAfterSuccessfulSideEffectTool(t *testing.T) {
+	stub := &stubLLM{
+		responses: []llm.Response{
+			{
+				Message: llm.Message{
+					Role: llm.RoleAssistant,
+					ToolCalls: []llm.ToolCall{
+						{ID: "call-1", Name: "send_dice", Arguments: json.RawMessage(`{}`)},
+					},
+				},
+				Usage: llm.TokenUsage{TotalTokens: 3},
+			},
+			{
+				Message: llm.Message{Role: llm.RoleAssistant},
+				Usage:   llm.TokenUsage{TotalTokens: 4},
+			},
+		},
+	}
+	runtime := New(
+		stub,
+		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
+		&stubExtractor{},
+		nil,
+		&stubActionSender{diceMessage: &tg.Message{MessageID: 55, Dice: &tg.Dice{Emoji: "🎲", Value: 6}}},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	reply, usage, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
+		Scope:        state.ConversationScope{ChatID: 1},
+		PromptScope:  llm.PromptScope{ChatID: 1},
+		ReplyContext: llm.ChatReplyContext{UserMessage: llm.TextMessage(llm.RoleUser, "roll a dice")},
+	})
+	if err != nil {
+		t.Fatalf("ReplyWithTools() error = %v", err)
+	}
+	if reply != "" {
+		t.Fatalf("expected empty reply, got %q", reply)
+	}
+	if usage == nil || usage.TotalTokens != 7 {
+		t.Fatalf("unexpected usage: %+v", usage)
+	}
+}
+
+func TestRuntimeRejectsEmptyFinalReplyAfterNonSideEffectTool(t *testing.T) {
+	store := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations()
+	store.AppendMessage(state.ConversationScope{ChatID: 1}, state.Message{Name: "alice", Text: "meeting tomorrow", MessageID: 10})
+
+	stub := &stubLLM{
+		responses: []llm.Response{
+			{
+				Message: llm.Message{
+					Role: llm.RoleAssistant,
+					ToolCalls: []llm.ToolCall{
+						{ID: "call-1", Name: "search_history", Arguments: json.RawMessage(`{"keywords":["meeting"],"match_mode":"all","limit":1}`)},
+					},
+				},
+				Usage: llm.TokenUsage{TotalTokens: 3},
+			},
+			{
+				Message: llm.Message{Role: llm.RoleAssistant},
+				Usage:   llm.TokenUsage{TotalTokens: 4},
+			},
+		},
+	}
+	runtime := New(
+		stub,
+		store,
+		&stubExtractor{},
+		nil,
+		&stubActionSender{},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config{MaxIterations: 6},
+	)
+
+	reply, usage, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
+		Scope:          state.ConversationScope{ChatID: 1},
+		PromptScope:    llm.PromptScope{ChatID: 1},
+		ReplyContext:   llm.ChatReplyContext{UserMessage: llm.TextMessage(llm.RoleUser, "what was planned?")},
+		RequestMessage: state.Message{FromID: 11},
+	})
+	if !errors.Is(err, llm.ErrNoChoices) {
+		t.Fatalf("expected ErrNoChoices, got %v", err)
+	}
+	if reply != "" {
+		t.Fatalf("expected empty reply, got %q", reply)
+	}
+	if usage == nil || usage.TotalTokens != 7 {
+		t.Fatalf("unexpected usage: %+v", usage)
+	}
+}
+
 func TestRuntimeRespectsConfiguredIterationLimit(t *testing.T) {
 	stub := &stubLLM{
 		responses: []llm.Response{
