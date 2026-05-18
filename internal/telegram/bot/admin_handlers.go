@@ -144,12 +144,12 @@ func (b *Bot) configShowHandler(ctx *th.Context, message t.Message) error {
 	}
 
 	text := fmt.Sprintf(
-		"chat %d\nalias=%s\nlanguage=%s\ngender=%s\ntone_mode=%s\nallow_teasing=%s\ninteractivity_mode=%s",
+		"chat %d\ncharacter_name=%s\nlanguage=%s\ngender=%s\ntone_mode=%s\nallow_teasing=%s\ninteractivity_mode=%s",
 		chatID,
-		emptyFallback(chat.Alias, "<empty>"),
-		emptyFallback(chat.Language, "<inherit>"),
-		emptyFallback(chat.Gender, "<inherit>"),
-		emptyFallback(chat.ToneMode, "<inherit>"),
+		emptyFallback(chat.CharacterName),
+		emptyFallback(chat.Language),
+		emptyFallback(chat.Gender),
+		emptyFallback(chat.ToneMode),
 		allowTeasing,
 		mode,
 	)

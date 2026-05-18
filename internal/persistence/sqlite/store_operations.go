@@ -60,7 +60,7 @@ func (s *Store) SetGlobalField(ctx context.Context, field, value string, actorID
 
 func (s *Store) GetChatSettings(ctx context.Context, chatID int64) (adminconfig.ChatSettings, bool, error) {
 	var settings adminconfig.ChatSettings
-	var alias string
+	var characterName string
 	var language string
 	var gender string
 	var toneMode string
@@ -69,12 +69,12 @@ func (s *Store) GetChatSettings(ctx context.Context, chatID int64) (adminconfig.
 	var updatedAt string
 
 	err := s.db.QueryRowContext(ctx, `
-SELECT chat_id, alias, language, gender, tone_mode, allow_teasing, interactivity_mode, updated_at, updated_by
+SELECT chat_id, character_name, language, gender, tone_mode, allow_teasing, interactivity_mode, updated_at, updated_by
 FROM chat_settings
 WHERE chat_id = ?
 `, chatID).Scan(
 		&settings.ChatID,
-		&alias,
+		&characterName,
 		&language,
 		&gender,
 		&toneMode,
@@ -91,7 +91,7 @@ WHERE chat_id = ?
 		return adminconfig.ChatSettings{}, false, fmt.Errorf("get chat settings: %w", err)
 	}
 
-	settings.Alias = alias
+	settings.CharacterName = characterName
 	settings.Language = language
 	settings.Gender = gender
 	settings.ToneMode = toneMode
@@ -113,7 +113,7 @@ func (s *Store) SetChatField(ctx context.Context, chatID int64, field, value str
 	}
 
 	if _, err := s.db.ExecContext(ctx, `
-INSERT INTO chat_settings(chat_id, alias, language, gender, tone_mode, allow_teasing, interactivity_mode, updated_at, updated_by)
+INSERT INTO chat_settings(chat_id, character_name, language, gender, tone_mode, allow_teasing, interactivity_mode, updated_at, updated_by)
 VALUES(?, '', '', '', '', NULL, '', CURRENT_TIMESTAMP, ?)
 ON CONFLICT(chat_id) DO NOTHING
 `, chatID, actorID); err != nil {

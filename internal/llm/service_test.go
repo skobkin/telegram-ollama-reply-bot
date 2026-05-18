@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/config"
 )
 
@@ -179,5 +180,70 @@ func TestServiceBuildChatToolRequestBuildsFeatureChatFromCompactContext(t *testi
 	}
 	if got := messages[4].Text(); got != "tool result" {
 		t.Fatalf("unexpected extra message: %q", got)
+	}
+}
+
+func TestServiceBuildChatToolRequestUsesChatScopedPromptAndResolvedPersona(t *testing.T) {
+	store := &promptStoreStub{
+		global: adminconfig.GlobalSettings{
+			CharacterName:            "global",
+			Language:                 "Russian",
+			Gender:                   "neutral",
+			ToneMode:                 "default",
+			AllowTeasing:             false,
+			DefaultInteractivityMode: adminconfig.InteractivityDisabled,
+		},
+		chatFound: true,
+		chat: adminconfig.ChatSettings{
+			CharacterName: "kitsune",
+			Language:      "English",
+			Gender:        "female",
+			ToneMode:      "sharp",
+			AllowTeasing:  adminconfig.BoolPointer(true),
+		},
+		prompts: map[string]string{
+			"chat:0": "global name={{.CharacterName}}",
+			"chat:5": "chat name={{.CharacterName}} lang={{.Language}} gender={{.Gender}} tone={{.ToneMode}} tease={{.AllowTeasing}} model={{.Model}} context={{.Context}} policy={{.ToolPolicy}}",
+		},
+	}
+
+	service := &Service{
+		cfg: config.LLMConfig{
+			Features: config.FeatureConfig{
+				Chat: config.FeatureRouteConfig{Model: "gpt"},
+			},
+		},
+		prompts: NewAdminPromptRenderer(adminconfig.NewService(store)),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	request, err := service.BuildChatToolRequest(context.Background(), PromptScope{ChatID: 5}, ChatReplyContext{
+		SystemHint:  "compact context",
+		UserMessage: TextMessage(RoleUser, "current"),
+	}, nil, "tool policy", nil)
+	if err != nil {
+		t.Fatalf("BuildChatToolRequest: %v", err)
+	}
+
+	if len(request.Messages) != 2 {
+		t.Fatalf("unexpected message count: %d", len(request.Messages))
+	}
+	system := request.Messages[0].Text()
+	for _, want := range []string{
+		"chat name=kitsune",
+		"lang=English",
+		"gender=female",
+		"tone=sharp",
+		"tease=true",
+		"model=gpt",
+		"context=compact context",
+		"policy=tool policy",
+	} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("expected system prompt to contain %q, got %q", want, system)
+		}
+	}
+	if strings.Contains(system, "global name=global") {
+		t.Fatalf("expected chat-scoped prompt, got %q", system)
 	}
 }

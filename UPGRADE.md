@@ -66,6 +66,14 @@ Chat interactivity is disabled by default. Enable it from an admin DM, for examp
 - `/config_set_global default_interactivity_mode mentions_or_replies`
 - `/config_set_chat <chat_id> interactivity_mode mentions_only`
 
+Per-chat persona overrides now use `character_name` instead of `alias`:
+
+- old: `/config_set_chat <chat_id> alias <name>`
+- new: `/config_set_chat <chat_id> character_name <name>`
+
+Existing SQLite `chat_settings.alias` values migrate automatically to `chat_settings.character_name`. Custom chat
+prompt templates should keep using `{{.CharacterName}}`; `{{.Alias}}` is not exposed.
+
 ### State And History
 
 The bot now keeps privacy-bounded in-memory chat state, image cache data, summaries, and history indexes.

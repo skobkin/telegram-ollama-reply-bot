@@ -60,11 +60,12 @@ func TestAdminPromptRendererUsesPerChatLanguageAndGender(t *testing.T) {
 		},
 		chatFound: true,
 		chat: adminconfig.ChatSettings{
-			Language: "English",
-			Gender:   "female",
+			CharacterName: "kitsune",
+			Language:      "English",
+			Gender:        "female",
 		},
 		prompts: map[string]string{
-			"chat:5": "lang={{.Language}} gender={{.Gender}} model={{.Model}}",
+			"chat:5": "name={{.CharacterName}} lang={{.Language}} gender={{.Gender}} model={{.Model}}",
 		},
 	})
 
@@ -74,7 +75,7 @@ func TestAdminPromptRendererUsesPerChatLanguageAndGender(t *testing.T) {
 		t.Fatalf("render chat prompt: %v", err)
 	}
 
-	if !strings.Contains(rendered, "lang=English") || !strings.Contains(rendered, "gender=female") {
+	if !strings.Contains(rendered, "name=kitsune") || !strings.Contains(rendered, "lang=English") || !strings.Contains(rendered, "gender=female") {
 		t.Fatalf("unexpected rendered prompt: %q", rendered)
 	}
 }

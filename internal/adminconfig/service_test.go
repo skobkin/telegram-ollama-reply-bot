@@ -55,7 +55,7 @@ func TestResolveChatConfigUsesChatOverrides(t *testing.T) {
 		},
 		chatFound: true,
 		chat: ChatSettings{
-			Alias:             "kitsune",
+			CharacterName:     "kitsune",
 			Language:          "English",
 			Gender:            "female",
 			ToneMode:          "chaotic",
@@ -70,8 +70,34 @@ func TestResolveChatConfigUsesChatOverrides(t *testing.T) {
 		t.Fatalf("resolve chat config: %v", err)
 	}
 
-	if resolved.Alias != "kitsune" || resolved.Language != "English" || resolved.Gender != "female" || resolved.ToneMode != "chaotic" || !resolved.AllowTeasing || resolved.InteractivityMode != InteractivityMentionsReplies {
+	if resolved.CharacterName != "kitsune" || resolved.Language != "English" || resolved.Gender != "female" || resolved.ToneMode != "chaotic" || !resolved.AllowTeasing || resolved.InteractivityMode != InteractivityMentionsReplies {
 		t.Fatalf("unexpected resolved config: %+v", resolved)
+	}
+}
+
+func TestResolveChatConfigFallsBackToGlobalCharacterName(t *testing.T) {
+	svc := NewService(&stubStore{
+		global: GlobalSettings{
+			CharacterName:            "global",
+			Language:                 "Russian",
+			Gender:                   "neutral",
+			ToneMode:                 "default",
+			AllowTeasing:             false,
+			DefaultInteractivityMode: InteractivityDisabled,
+		},
+		chatFound: true,
+		chat: ChatSettings{
+			Language: "English",
+		},
+	})
+
+	resolved, err := svc.ResolveChatConfig(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("resolve chat config: %v", err)
+	}
+
+	if resolved.CharacterName != "global" {
+		t.Fatalf("expected global character name fallback, got %q", resolved.CharacterName)
 	}
 }
 

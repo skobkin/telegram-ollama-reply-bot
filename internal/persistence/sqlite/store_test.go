@@ -127,6 +127,9 @@ func TestStoreChatLanguageAndGenderOverrides(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
 
+	if err := store.SetChatField(ctx, 123, "character_name", "kitsune", 42); err != nil {
+		t.Fatalf("set chat character_name: %v", err)
+	}
 	if err := store.SetChatField(ctx, 123, "language", "English", 42); err != nil {
 		t.Fatalf("set chat language: %v", err)
 	}
@@ -141,10 +144,13 @@ func TestStoreChatLanguageAndGenderOverrides(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected chat settings to exist")
 	}
-	if chat.Language != "English" || chat.Gender != "female" {
-		t.Fatalf("unexpected chat language/gender: %+v", chat)
+	if chat.CharacterName != "kitsune" || chat.Language != "English" || chat.Gender != "female" {
+		t.Fatalf("unexpected chat persona overrides: %+v", chat)
 	}
 
+	if err := store.ClearChatField(ctx, 123, "character_name", 42); err != nil {
+		t.Fatalf("clear chat character_name: %v", err)
+	}
 	if err := store.ClearChatField(ctx, 123, "language", 42); err != nil {
 		t.Fatalf("clear chat language: %v", err)
 	}
@@ -159,8 +165,8 @@ func TestStoreChatLanguageAndGenderOverrides(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected chat settings to remain")
 	}
-	if chat.Language != "" || chat.Gender != "" {
-		t.Fatalf("expected cleared language/gender, got %+v", chat)
+	if chat.CharacterName != "" || chat.Language != "" || chat.Gender != "" {
+		t.Fatalf("expected cleared persona overrides, got %+v", chat)
 	}
 }
 

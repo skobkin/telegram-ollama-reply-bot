@@ -35,14 +35,21 @@ func TestApplyBootstrapsAdminConfigSchema(t *testing.T) {
 		}
 	}
 
-	for _, column := range []string{"language", "gender"} {
-		exists, err := columnExists(ctx, mustBeginTx(t, db), "chat_settings", column)
+	for _, column := range []string{"character_name", "language", "gender"} {
+		exists, err := chatSettingsColumnExists(ctx, mustBeginTx(t, db), column)
 		if err != nil {
 			t.Fatalf("check column %s: %v", column, err)
 		}
 		if !exists {
 			t.Fatalf("expected chat_settings.%s column", column)
 		}
+	}
+	aliasExists, err := chatSettingsColumnExists(ctx, mustBeginTx(t, db), "alias")
+	if err != nil {
+		t.Fatalf("check alias column: %v", err)
+	}
+	if aliasExists {
+		t.Fatalf("did not expect chat_settings.alias column")
 	}
 }
 
@@ -83,7 +90,7 @@ func TestApplyLogsEachMigrationAtInfo(t *testing.T) {
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "msg=\"applying sqlite migration\"") || !strings.Contains(output, "name=bootstrap_admin_config") || !strings.Contains(output, "name=add_chat_language_and_gender") || !strings.Contains(output, "name=add_reminders") || !strings.Contains(output, "name=make_tools_mandatory_for_chat") {
+	if !strings.Contains(output, "msg=\"applying sqlite migration\"") || !strings.Contains(output, "name=bootstrap_admin_config") || !strings.Contains(output, "name=add_chat_language_and_gender") || !strings.Contains(output, "name=add_reminders") || !strings.Contains(output, "name=make_tools_mandatory_for_chat") || !strings.Contains(output, "name=rename_chat_alias_to_character_name") {
 		t.Fatalf("expected migration log output, got %q", output)
 	}
 }
@@ -160,6 +167,54 @@ WHERE scope_type = 'global' AND scope_id = 0 AND feature = 'chat'
 	}
 	if body != customPrompt {
 		t.Fatalf("expected custom chat prompt to be preserved, got %q", body)
+	}
+}
+
+func TestApplyRenamesChatAliasToCharacterName(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", "file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE chat_settings (
+  chat_id INTEGER PRIMARY KEY,
+  alias TEXT NOT NULL DEFAULT '',
+  language TEXT NOT NULL DEFAULT '',
+  gender TEXT NOT NULL DEFAULT '',
+  tone_mode TEXT NOT NULL DEFAULT '',
+  allow_teasing INTEGER,
+  interactivity_mode TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  updated_by INTEGER NOT NULL
+);
+INSERT INTO chat_settings(chat_id, alias, language, gender, tone_mode, allow_teasing, interactivity_mode, updated_at, updated_by)
+VALUES(123, 'kitsune', 'English', 'female', 'sharp', 1, 'mentions_only', CURRENT_TIMESTAMP, 42);
+PRAGMA user_version = 4;
+`); err != nil {
+		t.Fatalf("prepare old schema: %v", err)
+	}
+
+	if err := Apply(ctx, db, nil); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	var characterName string
+	if err := db.QueryRowContext(ctx, `SELECT character_name FROM chat_settings WHERE chat_id = 123`).Scan(&characterName); err != nil {
+		t.Fatalf("read character_name: %v", err)
+	}
+	if characterName != "kitsune" {
+		t.Fatalf("expected migrated character_name, got %q", characterName)
+	}
+
+	aliasExists, err := chatSettingsColumnExists(ctx, mustBeginTx(t, db), "alias")
+	if err != nil {
+		t.Fatalf("check alias column: %v", err)
+	}
+	if aliasExists {
+		t.Fatalf("did not expect old alias column after migration")
 	}
 }
 

@@ -24,7 +24,7 @@ func migrateV1BootstrapAdminConfig(ctx context.Context, tx *sql.Tx, log *slog.Lo
 );`,
 		`CREATE TABLE IF NOT EXISTS chat_settings (
   chat_id INTEGER PRIMARY KEY,
-  alias TEXT NOT NULL DEFAULT '',
+  character_name TEXT NOT NULL DEFAULT '',
   language TEXT NOT NULL DEFAULT '',
   gender TEXT NOT NULL DEFAULT '',
   tone_mode TEXT NOT NULL DEFAULT '',

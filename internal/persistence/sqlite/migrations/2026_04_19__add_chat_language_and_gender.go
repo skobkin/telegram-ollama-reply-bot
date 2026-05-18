@@ -9,7 +9,7 @@ import (
 
 func migrateV2AddChatLanguageAndGender(ctx context.Context, tx *sql.Tx, log *slog.Logger) error {
 	for _, column := range []string{"language", "gender"} {
-		exists, err := columnExists(ctx, tx, "chat_settings", column)
+		exists, err := chatSettingsColumnExists(ctx, tx, column)
 		if err != nil {
 			return fmt.Errorf("check chat_settings.%s: %w", column, err)
 		}
@@ -32,8 +32,8 @@ func migrateV2AddChatLanguageAndGender(ctx context.Context, tx *sql.Tx, log *slo
 	return nil
 }
 
-func columnExists(ctx context.Context, tx *sql.Tx, tableName, columnName string) (bool, error) {
-	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, tableName))
+func chatSettingsColumnExists(ctx context.Context, tx *sql.Tx, columnName string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(chat_settings)`)
 	if err != nil {
 		return false, err
 	}

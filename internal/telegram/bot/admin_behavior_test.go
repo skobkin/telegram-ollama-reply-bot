@@ -75,7 +75,7 @@ func TestShouldProcessChatMessageDisabledByDefault(t *testing.T) {
 	}
 }
 
-func TestShouldProcessChatMessageUsesAliasTrigger(t *testing.T) {
+func TestShouldProcessChatMessageUsesCharacterNameTrigger(t *testing.T) {
 	b := &Bot{
 		cfg: config.BotConfig{AdminIDs: []int64{1}},
 		admin: adminconfig.NewService(&adminStoreStub{
@@ -88,7 +88,7 @@ func TestShouldProcessChatMessageUsesAliasTrigger(t *testing.T) {
 			},
 			chatFound: true,
 			chatSettings: adminconfig.ChatSettings{
-				Alias: "kitsune",
+				CharacterName: "kitsune",
 			},
 		}),
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -101,7 +101,7 @@ func TestShouldProcessChatMessageUsesAliasTrigger(t *testing.T) {
 	}
 
 	if !b.shouldProcessChatMessage(context.Background(), message) {
-		t.Fatalf("expected alias soft trigger to allow processing")
+		t.Fatalf("expected character name soft trigger to allow processing")
 	}
 }
 

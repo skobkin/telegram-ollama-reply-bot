@@ -12,7 +12,7 @@ const (
 	// It still answers explicit admin DM commands and other dedicated command handlers.
 	InteractivityDisabled InteractivityMode = "disabled"
 	// InteractivityMentionsOnly means the bot answers only when directly mentioned
-	// or when a configured soft trigger such as character name or alias is used.
+	// or when a configured soft trigger such as the character name is used.
 	InteractivityMentionsOnly InteractivityMode = "mentions_only"
 	// InteractivityMentionsReplies means the bot answers on mentions, replies to its
 	// own messages, private chats, and configured soft triggers.
@@ -48,7 +48,7 @@ type GlobalSettings struct {
 
 type ChatSettings struct {
 	ChatID            int64
-	Alias             string
+	CharacterName     string
 	Language          string
 	Gender            string
 	ToneMode          string
@@ -85,7 +85,6 @@ type ResolvedChatConfig struct {
 	ToneMode          string
 	AllowTeasing      bool
 	InteractivityMode InteractivityMode
-	Alias             string
 }
 
 type Store interface {

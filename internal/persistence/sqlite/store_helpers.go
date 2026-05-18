@@ -37,8 +37,8 @@ func globalFieldAssignment(field, value string) (string, any, error) {
 
 func chatFieldAssignment(field, value string) (string, any, error) {
 	switch field {
-	case "alias":
-		return "alias", value, nil
+	case "character_name":
+		return "character_name", value, nil
 	case "language":
 		return "language", value, nil
 	case "gender":
@@ -63,8 +63,8 @@ func chatFieldAssignment(field, value string) (string, any, error) {
 
 func chatFieldClearValue(field string) (string, any, error) {
 	switch field {
-	case "alias":
-		return "alias", "", nil
+	case "character_name":
+		return "character_name", "", nil
 	case "language":
 		return "language", "", nil
 	case "gender":
@@ -137,8 +137,8 @@ func globalFieldUpdateQuery(column string) (string, error) {
 
 func chatFieldUpdateQuery(column string) (string, error) {
 	switch column {
-	case "alias":
-		return `UPDATE chat_settings SET alias = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
+	case "character_name":
+		return `UPDATE chat_settings SET character_name = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
 	case "language":
 		return `UPDATE chat_settings SET language = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
 	case "gender":

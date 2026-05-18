@@ -341,9 +341,9 @@ func chatDisplayName(chat t.Chat) string {
 	}
 }
 
-func emptyFallback(value, fallback string) string {
+func emptyFallback(value string) string {
 	if value == "" {
-		return fallback
+		return "<inherit>"
 	}
 
 	return value
@@ -415,11 +415,9 @@ func (b *Bot) hasSoftTrigger(message t.Message, resolved adminconfig.ResolvedCha
 		return false
 	}
 
-	for _, candidate := range []string{resolved.CharacterName, resolved.Alias} {
-		candidate = strings.TrimSpace(strings.ToLower(candidate))
-		if candidate != "" && strings.Contains(text, candidate) {
-			return true
-		}
+	candidate := strings.TrimSpace(strings.ToLower(resolved.CharacterName))
+	if candidate != "" && strings.Contains(text, candidate) {
+		return true
 	}
 
 	return false

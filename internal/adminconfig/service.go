@@ -24,7 +24,7 @@ func (s *Service) GlobalFields() []string {
 }
 
 func (s *Service) ChatFields() []string {
-	return []string{"alias", "language", "gender", "tone_mode", "allow_teasing", "interactivity_mode"}
+	return []string{"character_name", "language", "gender", "tone_mode", "allow_teasing", "interactivity_mode"}
 }
 
 func (s *Service) PromptFeatures() []PromptFeature {
@@ -66,8 +66,8 @@ func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (Resolved
 	if !ok {
 		return resolved, nil
 	}
-	if chat.Alias != "" {
-		resolved.Alias = chat.Alias
+	if chat.CharacterName != "" {
+		resolved.CharacterName = chat.CharacterName
 	}
 	if chat.Language != "" {
 		resolved.Language = chat.Language
