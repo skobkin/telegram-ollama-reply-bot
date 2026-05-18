@@ -24,8 +24,16 @@ func TestResolveProxyForURLRedactsCredentials(t *testing.T) {
 		return url.Parse("http://bot-user:secret@proxy.internal:8080")
 	})
 
-	if got != "http://bot-user:redacted@proxy.internal:8080" {
+	proxyURL, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("unexpected invalid proxy url: %q", got)
+	}
+	if proxyURL.Scheme != "http" || proxyURL.Host != "proxy.internal:8080" || proxyURL.User.Username() != "bot-user" {
 		t.Fatalf("unexpected proxy url: %q", got)
+	}
+	password, _ := proxyURL.User.Password()
+	if password != "redacted" {
+		t.Fatalf("expected redacted proxy password, got %q", password)
 	}
 }
 

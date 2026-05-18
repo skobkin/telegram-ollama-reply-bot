@@ -1,13 +1,13 @@
-FROM golang:1-alpine as builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /build
 
 COPY . .
 
-RUN go build -o /tmp/app ./cmd/bot
+RUN go build -trimpath -o /tmp/app ./cmd/bot
 
 
-FROM alpine:latest
+FROM alpine:3.23
 
 WORKDIR /app
 

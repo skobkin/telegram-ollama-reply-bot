@@ -49,9 +49,9 @@ func buildSearchIndex(messages []state.Message) *conversationSearchIndex {
 	return index
 }
 
-func (i *conversationSearchIndex) appendMessage(position int, msg state.Message) int64 {
+func (i *conversationSearchIndex) appendMessage(position int, msg state.Message) {
 	if i == nil {
-		return 0
+		return
 	}
 
 	tokenIDs := make([]int, 0)
@@ -73,8 +73,6 @@ func (i *conversationSearchIndex) appendMessage(position int, msg state.Message)
 		bytes:    entryBytes,
 	})
 	i.bytes += entryBytes
-
-	return i.bytes
 }
 
 func (i *conversationSearchIndex) ensureTokenID(token string) int {
@@ -289,6 +287,7 @@ func normalizeSearchTokens(text string) []string {
 	for _, r := range normalized {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			current = append(current, r)
+
 			continue
 		}
 		flush()

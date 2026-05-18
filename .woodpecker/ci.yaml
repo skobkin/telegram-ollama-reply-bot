@@ -1,0 +1,89 @@
+when:
+  - event: [push, pull_request, tag]
+
+clone:
+  git:
+    image: woodpeckerci/plugin-git
+    settings:
+      depth: 0
+
+steps:
+  fmt:
+    image: golangci/golangci-lint:v2.12-alpine
+    commands:
+      - golangci-lint fmt --diff ./cmd/bot ./internal
+
+  lint:
+    image: golangci/golangci-lint:v2.12-alpine
+    environment:
+      XDG_CACHE_HOME: /tmp/.cache
+    commands:
+      - golangci-lint run ./cmd/bot/... ./internal/...
+
+  vet:
+    image: golang:1.26-alpine
+    environment:
+      GOCACHE: /tmp/.gocache
+    commands:
+      - go vet ./cmd/bot/... ./internal/...
+
+  test:
+    image: golang:1.26-alpine
+    environment:
+      GOCACHE: /tmp/.gocache
+    commands:
+      - go test ./...
+
+  build:
+    image: golang:1.26-alpine
+    depends_on:
+      - fmt
+      - lint
+      - vet
+      - test
+    environment:
+      GOCACHE: /tmp/.gocache
+    commands:
+      - go build -trimpath -o /tmp/telegram-ollama-reply-bot ./cmd/bot
+    when:
+      - event: [push, pull_request]
+
+  release-forgejo:
+    image: goreleaser/goreleaser:v2.15.4
+    depends_on:
+      - fmt
+      - lint
+      - vet
+      - test
+    environment:
+      GITEA_TOKEN:
+        from_secret: GITEA_TOKEN
+      GORELEASER_FORCE_TOKEN: gitea
+    commands:
+      - test -n "$CI_FORGE_URL" || (echo "CI_FORGE_URL is empty. Cannot derive Forgejo URLs for GoReleaser." && exit 1)
+      - goreleaser release --clean
+    when:
+      - event: tag
+
+  release-docker:
+    image: woodpeckerci/plugin-docker-buildx:6
+    depends_on:
+      - fmt
+      - lint
+      - vet
+      - test
+    settings:
+      repo:
+        from_secret: DOCKER_REPO
+      username:
+        from_secret: DOCKER_LOGIN
+      password:
+        from_secret: DOCKER_TOKEN
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+      tags:
+        - ${CI_COMMIT_TAG}
+        - latest
+    when:
+      - event: tag
