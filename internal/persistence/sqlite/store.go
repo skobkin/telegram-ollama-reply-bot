@@ -34,6 +34,11 @@ func Open(ctx context.Context, path string, logger *slog.Logger) (*Store, error)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite store: %w", err)
 	}
+	// SQLite has a single writer. Keep database/sql from opening extra
+	// connections without the connection-scoped PRAGMAs below and serialize
+	// in-process writes instead of surfacing SQLITE_BUSY during update bursts.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	for _, stmt := range []string{
 		`PRAGMA foreign_keys = ON;`,

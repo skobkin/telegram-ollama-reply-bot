@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +24,68 @@ func openTestStore(t *testing.T) *Store {
 	t.Cleanup(func() { _ = store.Close() })
 
 	return store
+}
+
+func TestOpenConfiguresSingleSQLiteConnection(t *testing.T) {
+	store := openTestStore(t)
+
+	stats := store.db.Stats()
+	if stats.MaxOpenConnections != 1 {
+		t.Fatalf("expected single sqlite connection, got max open connections %d", stats.MaxOpenConnections)
+	}
+
+	var foreignKeys int
+	if err := store.db.QueryRowContext(context.Background(), `PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		t.Fatalf("read foreign_keys pragma: %v", err)
+	}
+	if foreignKeys != 1 {
+		t.Fatalf("expected foreign_keys pragma enabled, got %d", foreignKeys)
+	}
+
+	var busyTimeout int
+	if err := store.db.QueryRowContext(context.Background(), `PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
+		t.Fatalf("read busy_timeout pragma: %v", err)
+	}
+	if busyTimeout != 5000 {
+		t.Fatalf("expected busy_timeout pragma 5000, got %d", busyTimeout)
+	}
+}
+
+func TestStoreConcurrentChatCatalogUpserts(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	const workers = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for i := range workers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs <- store.UpsertChatCatalog(ctx, adminconfig.ChatCatalogEntry{
+				ChatID:      int64(100 + i%4),
+				ChatType:    "supergroup",
+				Title:       "Test chat",
+				DisplayName: "Test chat",
+			})
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent upsert chat catalog: %v", err)
+		}
+	}
+
+	chats, err := store.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("list chats: %v", err)
+	}
+	if len(chats) != 4 {
+		t.Fatalf("expected 4 catalog entries, got %d: %+v", len(chats), chats)
+	}
 }
 
 func TestStoreGlobalFieldsAndPromptOverrides(t *testing.T) {
