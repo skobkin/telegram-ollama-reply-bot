@@ -23,21 +23,14 @@ func LogNetworkRouting(logger *slog.Logger, cfg *config.Config) {
 		"no_proxy_effective", redactNoProxyValue(proxyConfig.NoProxy),
 		"telegram_api_url", telegramAPIURL,
 		"telegram_proxy", resolveProxyForURL(telegramAPIURL, proxyFunc),
-		"llm_chat_backend", cfg.LLM.Features.Chat.Backend,
+		"llm_backend", config.LLMBackendOpenAICompat,
 		"llm_chat_base_url", activeLLMBaseURL(cfg),
 		"llm_chat_proxy", resolveProxyForURL(activeLLMBaseURL(cfg), proxyFunc),
 	)
 }
 
 func activeLLMBaseURL(cfg *config.Config) string {
-	switch cfg.LLM.Features.Chat.Backend {
-	case config.LLMBackendOllama:
-		return cfg.LLM.Backends.Ollama.BaseURL
-	case config.LLMBackendOpenAICompat:
-		return cfg.LLM.Backends.OpenAICompat.BaseURL
-	default:
-		return ""
-	}
+	return cfg.LLM.Backends.OpenAICompat.BaseURL
 }
 
 func resolveProxyForURL(rawURL string, proxy func(*url.URL) (*url.URL, error)) string {

@@ -22,7 +22,6 @@ type Config struct {
 
 const (
 	LLMBackendOpenAICompat = "openai_compat"
-	LLMBackendOllama       = "ollama"
 
 	SearchBackendNone   = "none"
 	SearchBackendTavily = "tavily"
@@ -94,7 +93,6 @@ type StateConfig struct {
 // BackendConfig contains configuration for all supported LLM backends.
 type BackendConfig struct {
 	OpenAICompat OpenAICompatBackendConfig
-	Ollama       OllamaBackendConfig
 }
 
 // OpenAICompatBackendConfig contains configuration for OpenAI-compatible backends.
@@ -103,12 +101,7 @@ type OpenAICompatBackendConfig struct {
 	APIToken string
 }
 
-// OllamaBackendConfig contains configuration for the Ollama native API.
-type OllamaBackendConfig struct {
-	BaseURL string
-}
-
-// FeatureConfig contains per-feature backend routing and model selection.
+// FeatureConfig contains per-feature model selection.
 type FeatureConfig struct {
 	Chat             FeatureRouteConfig
 	Summarize        FeatureRouteConfig
@@ -116,10 +109,9 @@ type FeatureConfig struct {
 	ToolUse          FeatureRouteConfig
 }
 
-// FeatureRouteConfig contains backend and model selection for one feature.
+// FeatureRouteConfig contains model selection for one feature.
 type FeatureRouteConfig struct {
-	Backend string
-	Model   string
+	Model string
 }
 
 // TelegramConfig contains configuration for Telegram bot.
@@ -139,13 +131,9 @@ func Load() *Config {
 	stateImageCacheMaxBytes := int64FromEnv("STATE_IMAGE_CACHE_MAX_BYTES", int64(64<<20))
 	stateImageCacheTTL := durationFromEnv("STATE_IMAGE_CACHE_TTL", 24*time.Hour)
 
-	chatBackend := getEnvOrDefault("LLM_FEATURE_CHAT_BACKEND", LLMBackendOpenAICompat)
 	chatModel := os.Getenv("LLM_FEATURE_CHAT_MODEL")
-	summarizeBackend := getEnvOrDefault("LLM_FEATURE_SUMMARIZE_BACKEND", chatBackend)
 	summarizeModel := getEnvOrDefault("LLM_FEATURE_SUMMARIZE_MODEL", chatModel)
-	imageRecognitionBackend := getEnvOrDefault("LLM_FEATURE_IMAGE_RECOGNITION_BACKEND", chatBackend)
 	imageRecognitionModel := getEnvOrDefault("LLM_FEATURE_IMAGE_RECOGNITION_MODEL", chatModel)
-	toolUseBackend := getEnvOrDefault("LLM_FEATURE_TOOL_USE_BACKEND", chatBackend)
 	toolUseModel := getEnvOrDefault("LLM_FEATURE_TOOL_USE_MODEL", chatModel)
 	toolLoopMaxIterations := intFromEnv("LLM_TOOL_LOOP_MAX_ITERATIONS", 6)
 	searchBackend := strings.TrimSpace(os.Getenv("SEARCH_BACKEND"))
@@ -160,26 +148,19 @@ func Load() *Config {
 					BaseURL:  os.Getenv("LLM_BACKEND_OPENAI_COMPAT_BASE_URL"),
 					APIToken: os.Getenv("LLM_BACKEND_OPENAI_COMPAT_API_TOKEN"),
 				},
-				Ollama: OllamaBackendConfig{
-					BaseURL: getEnvOrDefault("LLM_BACKEND_OLLAMA_BASE_URL", "http://localhost:11434"),
-				},
 			},
 			Features: FeatureConfig{
 				Chat: FeatureRouteConfig{
-					Backend: chatBackend,
-					Model:   chatModel,
+					Model: chatModel,
 				},
 				Summarize: FeatureRouteConfig{
-					Backend: summarizeBackend,
-					Model:   summarizeModel,
+					Model: summarizeModel,
 				},
 				ImageRecognition: FeatureRouteConfig{
-					Backend: imageRecognitionBackend,
-					Model:   imageRecognitionModel,
+					Model: imageRecognitionModel,
 				},
 				ToolUse: FeatureRouteConfig{
-					Backend: toolUseBackend,
-					Model:   toolUseModel,
+					Model: toolUseModel,
 				},
 			},
 			ToolLoopMaxIterations: toolLoopMaxIterations,
@@ -220,24 +201,6 @@ func Load() *Config {
 			Chain:   csvFromEnv("SEARCH_BACKEND_CHAIN"),
 		},
 	}
-}
-
-func (c LLMConfig) UsedBackends() []string {
-	seen := map[string]struct{}{}
-	result := make([]string, 0, 2)
-
-	for _, route := range []FeatureRouteConfig{c.Features.Chat, c.Features.Summarize, c.Features.ImageRecognition, c.Features.ToolUse} {
-		if route.Backend == "" {
-			continue
-		}
-		if _, ok := seen[route.Backend]; ok {
-			continue
-		}
-		seen[route.Backend] = struct{}{}
-		result = append(result, route.Backend)
-	}
-
-	return result
 }
 
 func (c LLMConfig) RouteForFeature(feature string) (FeatureRouteConfig, error) {

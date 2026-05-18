@@ -13,43 +13,22 @@ import (
 )
 
 type Service struct {
-	cfg      config.LLMConfig
-	prompts  PromptRenderer
-	logger   *slog.Logger
-	backends map[string]backend
+	cfg     config.LLMConfig
+	prompts PromptRenderer
+	logger  *slog.Logger
+	backend backend
 }
 
 func NewService(cfg config.LLMConfig, prompts PromptRenderer, logger *slog.Logger) (*Service, error) {
-	backends := make(map[string]backend, 2)
-
-	for _, backendName := range cfg.UsedBackends() {
-		var impl backend
-
-		switch backendName {
-		case config.LLMBackendOpenAICompat:
-			if cfg.Backends.OpenAICompat.BaseURL == "" {
-				return nil, errors.Join(ErrBackendNotConfigured, fmt.Errorf("%s base url is empty", backendName))
-			}
-
-			impl = newOpenAICompatBackend(cfg.Backends.OpenAICompat, logger.With("backend", backendName))
-		case config.LLMBackendOllama:
-			if cfg.Backends.Ollama.BaseURL == "" {
-				return nil, errors.Join(ErrBackendNotConfigured, fmt.Errorf("%s base url is empty", backendName))
-			}
-
-			impl = newOllamaBackend(cfg.Backends.Ollama, logger.With("backend", backendName))
-		default:
-			return nil, errors.Join(ErrUnknownBackend, fmt.Errorf("backend=%s", backendName))
-		}
-
-		backends[backendName] = impl
+	if cfg.Backends.OpenAICompat.BaseURL == "" {
+		return nil, errors.Join(ErrBackendNotConfigured, fmt.Errorf("%s base url is empty", config.LLMBackendOpenAICompat))
 	}
 
 	return &Service{
-		cfg:      cfg,
-		prompts:  prompts,
-		logger:   logger,
-		backends: backends,
+		cfg:     cfg,
+		prompts: prompts,
+		logger:  logger,
+		backend: newOpenAICompatBackend(cfg.Backends.OpenAICompat, logger.With("backend", config.LLMBackendOpenAICompat)),
 	}, nil
 }
 
@@ -67,25 +46,20 @@ func (s *Service) Generate(ctx context.Context, req Request) (Response, error) {
 		req.Model = route.Model
 	}
 
-	impl, ok := s.backends[route.Backend]
-	if !ok {
-		return Response{}, errors.Join(ErrBackendNotConfigured, fmt.Errorf("backend=%s", route.Backend))
-	}
-
-	caps := impl.Capabilities()
+	caps := s.backend.Capabilities()
 	if len(req.Tools) > 0 && !caps.ToolCalls {
-		return Response{}, errors.Join(ErrUnsupportedCapability, fmt.Errorf("backend=%s capability=tool_calls", impl.Name()))
+		return Response{}, errors.Join(ErrUnsupportedCapability, fmt.Errorf("backend=%s capability=tool_calls", s.backend.Name()))
 	}
 
 	if requestHasImage(req) && !caps.ImageInput {
-		return Response{}, errors.Join(ErrUnsupportedCapability, fmt.Errorf("backend=%s capability=image_input", impl.Name()))
+		return Response{}, errors.Join(ErrUnsupportedCapability, fmt.Errorf("backend=%s capability=image_input", s.backend.Name()))
 	}
 
-	resp, err := impl.Generate(ctx, req)
+	resp, err := s.backend.Generate(ctx, req)
 	if err != nil {
 		logger.Error(
 			"backend request failed",
-			"backend", route.Backend,
+			"backend", s.backend.Name(),
 			"feature", req.Feature,
 			"model", req.Model,
 			"error", err,
@@ -251,16 +225,9 @@ func (s *Service) HasAllModels(ctx context.Context) (bool, map[string]bool) {
 			continue
 		}
 
-		impl, ok := s.backends[route.Backend]
-		if !ok {
-			result[string(feature)] = false
-
-			continue
-		}
-
-		models, err := impl.ListModels(ctx)
+		models, err := s.backend.ListModels(ctx)
 		if err != nil {
-			logger.Error("model list request failed", "backend", route.Backend, "feature", feature, "error", err)
+			logger.Error("model list request failed", "backend", s.backend.Name(), "feature", feature, "error", err)
 			sentry.CaptureException(err)
 			result[string(feature)] = false
 

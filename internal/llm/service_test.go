@@ -32,10 +32,10 @@ func (b *stubBackend) ListModels(context.Context) ([]string, error) {
 	return b.models, b.listModelsErr
 }
 
-func TestServiceRoutesFeaturesToConfiguredBackends(t *testing.T) {
+func TestServiceAppliesConfiguredFeatureModels(t *testing.T) {
 	t.Parallel()
 
-	openaiBackend := &stubBackend{
+	backendStub := &stubBackend{
 		name: config.LLMBackendOpenAICompat,
 		caps: Capabilities{ToolCalls: true, ImageInput: true, ModelListing: true},
 		response: Response{
@@ -44,27 +44,18 @@ func TestServiceRoutesFeaturesToConfiguredBackends(t *testing.T) {
 			Message: TextMessage(RoleAssistant, "summary"),
 		},
 	}
-	ollamaBackend := &stubBackend{
-		name: config.LLMBackendOllama,
-		caps: Capabilities{ToolCalls: true, ImageInput: true, ModelListing: true},
-		response: Response{
-			Backend: config.LLMBackendOllama,
-			Model:   "gemma3:27b",
-			Message: TextMessage(RoleAssistant, "chat"),
-		},
-	}
 
 	service := &Service{
 		cfg: config.LLMConfig{
 			Features: config.FeatureConfig{
-				Chat:             config.FeatureRouteConfig{Backend: config.LLMBackendOllama, Model: "gemma3:27b"},
-				Summarize:        config.FeatureRouteConfig{Backend: config.LLMBackendOpenAICompat, Model: "gpt-4.1-mini"},
-				ImageRecognition: config.FeatureRouteConfig{Backend: config.LLMBackendOllama, Model: "gemma3:27b"},
-				ToolUse:          config.FeatureRouteConfig{Backend: config.LLMBackendOllama, Model: "gemma3:27b"},
+				Chat:             config.FeatureRouteConfig{Model: "gemma3:27b"},
+				Summarize:        config.FeatureRouteConfig{Model: "gpt-4.1-mini"},
+				ImageRecognition: config.FeatureRouteConfig{Model: "gemma3:27b"},
+				ToolUse:          config.FeatureRouteConfig{Model: "gemma3:27b"},
 			},
 		},
-		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		backends: map[string]backend{config.LLMBackendOpenAICompat: openaiBackend, config.LLMBackendOllama: ollamaBackend},
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		backend: backendStub,
 	}
 
 	resp, err := service.Generate(context.Background(), Request{
@@ -79,8 +70,8 @@ func TestServiceRoutesFeaturesToConfiguredBackends(t *testing.T) {
 		t.Fatalf("unexpected summarize backend: %s", resp.Backend)
 	}
 
-	if openaiBackend.lastRequest.Model != "gpt-4.1-mini" {
-		t.Fatalf("unexpected summarize model: %s", openaiBackend.lastRequest.Model)
+	if backendStub.lastRequest.Model != "gpt-4.1-mini" {
+		t.Fatalf("unexpected summarize model: %s", backendStub.lastRequest.Model)
 	}
 
 	_, err = service.Generate(context.Background(), Request{
@@ -93,8 +84,8 @@ func TestServiceRoutesFeaturesToConfiguredBackends(t *testing.T) {
 		t.Fatalf("generate chat: %v", err)
 	}
 
-	if ollamaBackend.lastRequest.Model != "gemma3:27b" {
-		t.Fatalf("unexpected chat model: %s", ollamaBackend.lastRequest.Model)
+	if backendStub.lastRequest.Model != "gemma3:27b" {
+		t.Fatalf("unexpected chat model: %s", backendStub.lastRequest.Model)
 	}
 }
 
@@ -104,18 +95,16 @@ func TestServiceRejectsUnsupportedCapability(t *testing.T) {
 	service := &Service{
 		cfg: config.LLMConfig{
 			Features: config.FeatureConfig{
-				Chat:             config.FeatureRouteConfig{Backend: config.LLMBackendOpenAICompat, Model: "gpt"},
-				Summarize:        config.FeatureRouteConfig{Backend: config.LLMBackendOpenAICompat, Model: "gpt"},
-				ImageRecognition: config.FeatureRouteConfig{Backend: config.LLMBackendOpenAICompat, Model: "gpt"},
-				ToolUse:          config.FeatureRouteConfig{Backend: config.LLMBackendOpenAICompat, Model: "gpt"},
+				Chat:             config.FeatureRouteConfig{Model: "gpt"},
+				Summarize:        config.FeatureRouteConfig{Model: "gpt"},
+				ImageRecognition: config.FeatureRouteConfig{Model: "gpt"},
+				ToolUse:          config.FeatureRouteConfig{Model: "gpt"},
 			},
 		},
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		backends: map[string]backend{
-			config.LLMBackendOpenAICompat: &stubBackend{
-				name: config.LLMBackendOpenAICompat,
-				caps: Capabilities{ToolCalls: false, ImageInput: false, ModelListing: true},
-			},
+		backend: &stubBackend{
+			name: config.LLMBackendOpenAICompat,
+			caps: Capabilities{ToolCalls: false, ImageInput: false, ModelListing: true},
 		},
 	}
 
@@ -152,14 +141,12 @@ func TestServiceHandleChatMessageBuildsRequestFromCompactContext(t *testing.T) {
 	service := &Service{
 		cfg: config.LLMConfig{
 			Features: config.FeatureConfig{
-				Chat: config.FeatureRouteConfig{Backend: config.LLMBackendOpenAICompat, Model: "gpt"},
+				Chat: config.FeatureRouteConfig{Model: "gpt"},
 			},
 		},
 		prompts: templateProcessor,
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
-		backends: map[string]backend{
-			config.LLMBackendOpenAICompat: backendStub,
-		},
+		backend: backendStub,
 	}
 
 	reply, usage, err := service.HandleChatMessage(context.Background(), PromptScope{}, ChatReplyContext{

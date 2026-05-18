@@ -1,4 +1,4 @@
-# Telegram Ollama Bot
+# Telegram LLM Bot
 
 [![Build Status](https://ci.skobk.in/api/badges/skobkin/telegram-ollama-reply-bot/status.svg)](https://ci.skobk.in/skobkin/telegram-ollama-reply-bot)
 
@@ -27,14 +27,9 @@ The bot can be configured using the following environment variables:
 | `TELEGRAM_TOKEN`                        | Telegram Bot API token                                                                                            | Yes      | -                        |
 | `LLM_BACKEND_OPENAI_COMPAT_BASE_URL`    | Base URL for OpenAI-compatible backend                                                                            | No       | empty                    |
 | `LLM_BACKEND_OPENAI_COMPAT_API_TOKEN`   | API token for OpenAI-compatible backend                                                                           | No       | empty                    |
-| `LLM_BACKEND_OLLAMA_BASE_URL`           | Base URL for Ollama native API                                                                                    | No       | `http://localhost:11434` |
-| `LLM_FEATURE_CHAT_BACKEND`              | Backend for normal chat requests: `openai_compat` or `ollama`                                                     | No       | `openai_compat`          |
 | `LLM_FEATURE_CHAT_MODEL`                | Model name for normal chat requests                                                                               | Yes      | -                        |
-| `LLM_FEATURE_SUMMARIZE_BACKEND`         | Backend for summarization                                                                                         | No       | chat backend             |
 | `LLM_FEATURE_SUMMARIZE_MODEL`           | Model name for summarization                                                                                      | No       | chat model               |
-| `LLM_FEATURE_IMAGE_RECOGNITION_BACKEND` | Backend for image recognition                                                                                     | No       | chat backend             |
 | `LLM_FEATURE_IMAGE_RECOGNITION_MODEL`   | Model name for image recognition                                                                                  | No       | chat model               |
-| `LLM_FEATURE_TOOL_USE_BACKEND`          | Backend used for conversational tool calling in ordinary chat replies                                             | No       | chat backend             |
 | `LLM_FEATURE_TOOL_USE_MODEL`            | Model used for conversational tool calling in ordinary chat replies                                               | No       | chat model               |
 | `LLM_TOOL_LOOP_MAX_ITERATIONS`          | Maximum tool-use loop iterations for one conversational reply                                                     | No       | `6`                      |
 | `STATE_MAX_BYTES`                       | Soft total in-memory state budget in bytes                                                                        | No       | `268435456`              |
@@ -85,7 +80,7 @@ You can also interact with the bot by:
 - Sending direct messages in private chat when interactivity is enabled for that chat
 - Sending images (the bot will describe what it sees in the image)
 
-When `LLM_FEATURE_TOOL_USE_*` is configured, ordinary chat replies may use tools before answering. The current tool set is:
+When `LLM_FEATURE_TOOL_USE_MODEL` is configured, ordinary chat replies may use tools before answering. The current tool set is:
 
 - `search_web` for explicit internet lookups when `SEARCH_BACKEND` is configured to something other than `none`
 - `get_current_time` for time-sensitive reasoning and schedule anchoring
@@ -158,8 +153,8 @@ golangci-lint run ./cmd/bot/... ./internal/...
 ```shell
 docker run \
   -e TELEGRAM_TOKEN=12345 \
-  -e LLM_BACKEND_OLLAMA_BASE_URL=http://ollama.localhost:11434 \
-  -e LLM_FEATURE_CHAT_BACKEND=ollama \
+  -e LLM_BACKEND_OPENAI_COMPAT_BASE_URL=http://ollama.localhost:11434/v1 \
+  -e LLM_BACKEND_OPENAI_COMPAT_API_TOKEN=dummy \
   -e LLM_FEATURE_CHAT_MODEL=gemma3:27b \
   -e LLM_FEATURE_SUMMARIZE_MODEL=gemma3:12b \
   -e LLM_FEATURE_IMAGE_RECOGNITION_MODEL=gemma3:12b \
@@ -174,7 +169,7 @@ docker run \
   skobkin/telegram-llm-bot
 ```
 
-To keep the current OpenAI-compatible path, point `LLM_BACKEND_OPENAI_COMPAT_BASE_URL` and `LLM_BACKEND_OPENAI_COMPAT_API_TOKEN` at that backend and leave feature backends on the default `openai_compat`.
+The bot uses only the OpenAI-compatible LLM API. For Ollama deployments, use Ollama's `/v1` OpenAI-compatible endpoint rather than the native Ollama API.
 
 ### Docker Compose
 

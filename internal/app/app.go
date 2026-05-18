@@ -53,14 +53,11 @@ func Run(ctx context.Context) error {
 	}
 
 	logger.Info(
-		"selected llm routes",
-		"chat_backend", cfg.LLM.Features.Chat.Backend,
+		"selected llm models",
+		"backend", config.LLMBackendOpenAICompat,
 		"chat_model", cfg.LLM.Features.Chat.Model,
-		"summarize_backend", cfg.LLM.Features.Summarize.Backend,
 		"summarize_model", cfg.LLM.Features.Summarize.Model,
-		"image_backend", cfg.LLM.Features.ImageRecognition.Backend,
 		"image_model", cfg.LLM.Features.ImageRecognition.Model,
-		"tool_use_backend", cfg.LLM.Features.ToolUse.Backend,
 		"tool_use_model", cfg.LLM.Features.ToolUse.Model,
 	)
 	transport.LogNetworkRouting(logger, cfg)
