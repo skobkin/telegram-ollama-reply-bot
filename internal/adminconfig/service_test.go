@@ -86,3 +86,13 @@ func TestShouldAllowChatBypassesWhitelistForAdminDM(t *testing.T) {
 		t.Fatalf("expected admin DM to bypass whitelist")
 	}
 }
+
+func TestPromptFeaturesExcludesToolUse(t *testing.T) {
+	svc := NewService(&stubStore{})
+
+	features := svc.PromptFeatures()
+	expected := []PromptFeature{PromptFeatureChat, PromptFeatureSummarize, PromptFeatureImageRecognition}
+	if fmt.Sprint(features) != fmt.Sprint(expected) {
+		t.Fatalf("unexpected prompt features: got %v want %v", features, expected)
+	}
+}

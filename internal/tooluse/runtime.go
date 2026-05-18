@@ -18,10 +18,9 @@ import (
 )
 
 var ErrToolLoopLimitReached = errors.New("tool loop iteration limit reached")
-var ErrToolUseUnavailable = errors.New("tool use is unavailable")
 
 type llmService interface {
-	BuildToolUseRequest(ctx context.Context, scope llm.PromptScope, requestContext llm.ChatReplyContext, tools []llm.ToolDefinition, toolPolicy string, extraMessages []llm.Message) (llm.Request, error)
+	BuildChatToolRequest(ctx context.Context, scope llm.PromptScope, requestContext llm.ChatReplyContext, tools []llm.ToolDefinition, toolPolicy string, extraMessages []llm.Message) (llm.Request, error)
 	Generate(ctx context.Context, req llm.Request) (llm.Response, error)
 }
 
@@ -95,12 +94,12 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (string, 
 	)
 
 	for i := 0; i < r.config.MaxIterations; i++ {
-		request, err := r.llm.BuildToolUseRequest(ctx, req.PromptScope, req.ReplyContext, modelTools, toolPolicy, extraMessages)
+		request, err := r.llm.BuildChatToolRequest(ctx, req.PromptScope, req.ReplyContext, modelTools, toolPolicy, extraMessages)
 		if err != nil {
 			if !started {
-				logger.Warn("tool-use request preparation failed", "error", err)
+				logger.Warn("chat request preparation failed", "error", err)
 
-				return "", nil, errors.Join(ErrToolUseUnavailable, err)
+				return "", nil, err
 			}
 
 			return "", usagePointer(totalUsage), err
@@ -113,9 +112,9 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (string, 
 			}
 
 			if !started {
-				logger.Warn("tool-use backend failed", "error", err)
+				logger.Warn("chat backend failed", "error", err)
 
-				return "", nil, errors.Join(ErrToolUseUnavailable, err)
+				return "", nil, err
 			}
 
 			return "", usagePointer(totalUsage), err

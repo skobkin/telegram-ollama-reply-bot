@@ -1,18 +1,27 @@
 package llm
 
 const (
-	DefaultCharacterName      = "bot"
-	DefaultLanguage           = "Russian"
-	DefaultGender             = "neutral"
-	DefaultToneMode           = "default"
-	DefaultMaxSummaryLength   = 2000
-	DefaultAllowTeasing       = false
+	DefaultCharacterName         = "bot"
+	DefaultLanguage              = "Russian"
+	DefaultGender                = "neutral"
+	DefaultToneMode              = "default"
+	DefaultMaxSummaryLength      = 2000
+	DefaultAllowTeasing          = false
+	OldDefaultChatPromptTemplate = "Ты Telegram-бот по имени {{.CharacterName}}.\n" +
+		"Ты используешь модель под названием \"{{.Model}}\".\n" +
+		"Ты должен отвечать на следующем языке: {{.Language}}.\n" +
+		"Ты должен использовать {{.Gender}} род, когда говоришь о себе, и нейтральный род, когда говоришь о других.\n" +
+		"Твой режим тона: {{.ToneMode}}.\n" +
+		"Шутливые поддразнивания {{if .AllowTeasing}}разрешены{{else}}отключены{{end}}.\n\n" +
+		"{{.Context}}"
 	DefaultChatPromptTemplate = "Ты Telegram-бот по имени {{.CharacterName}}.\n" +
 		"Ты используешь модель под названием \"{{.Model}}\".\n" +
 		"Ты должен отвечать на следующем языке: {{.Language}}.\n" +
 		"Ты должен использовать {{.Gender}} род, когда говоришь о себе, и нейтральный род, когда говоришь о других.\n" +
 		"Твой режим тона: {{.ToneMode}}.\n" +
 		"Шутливые поддразнивания {{if .AllowTeasing}}разрешены{{else}}отключены{{end}}.\n\n" +
+		"Если доступный инструмент помогает ответить точнее, используй его вместо догадок.\n" +
+		"Следуй политике вызова инструментов:\n{{.ToolPolicy}}\n\n" +
 		"{{.Context}}"
 	DefaultSummarizePromptTemplate = "Ты сокращатель текста. Дай ОЧЕНЬ КОРОТКОЕ summary в виде списка фактов.\n" +
 		"Форматируй это так:\n" +
@@ -30,13 +39,4 @@ const (
 		"Если ты можешь понять смысл изображения, опиши его подробно. Если не можешь понять смысл, в целом опиши то, что видишь.\n" +
 		"Ты должен отвечать на следующем языке: {{.Language}}.\n" +
 		"Будь кратким, но информативным."
-	DefaultToolUsePromptTemplate = "Ты Telegram-бот по имени {{.CharacterName}}.\n" +
-		"Ты используешь модель под названием \"{{.Model}}\".\n" +
-		"Ты должен отвечать на следующем языке: {{.Language}}.\n" +
-		"Ты должен использовать {{.Gender}} род, когда говоришь о себе, и нейтральный род, когда говоришь о других.\n" +
-		"Твой режим тона: {{.ToneMode}}.\n" +
-		"Шутливые поддразнивания {{if .AllowTeasing}}разрешены{{else}}отключены{{end}}.\n\n" +
-		"Если доступный инструмент помогает ответить точнее, используй его вместо догадок.\n" +
-		"Следуй политике вызова инструментов:\n{{.ToolPolicy}}\n\n" +
-		"{{.Context}}"
 )

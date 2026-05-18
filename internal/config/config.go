@@ -106,7 +106,6 @@ type FeatureConfig struct {
 	Chat             FeatureRouteConfig
 	Summarize        FeatureRouteConfig
 	ImageRecognition FeatureRouteConfig
-	ToolUse          FeatureRouteConfig
 }
 
 // FeatureRouteConfig contains model selection for one feature.
@@ -134,7 +133,6 @@ func Load() *Config {
 	chatModel := os.Getenv("LLM_FEATURE_CHAT_MODEL")
 	summarizeModel := getEnvOrDefault("LLM_FEATURE_SUMMARIZE_MODEL", chatModel)
 	imageRecognitionModel := getEnvOrDefault("LLM_FEATURE_IMAGE_RECOGNITION_MODEL", chatModel)
-	toolUseModel := getEnvOrDefault("LLM_FEATURE_TOOL_USE_MODEL", chatModel)
 	toolLoopMaxIterations := intFromEnv("LLM_TOOL_LOOP_MAX_ITERATIONS", 6)
 	searchBackend := strings.TrimSpace(os.Getenv("SEARCH_BACKEND"))
 	if searchBackend == "" {
@@ -158,9 +156,6 @@ func Load() *Config {
 				},
 				ImageRecognition: FeatureRouteConfig{
 					Model: imageRecognitionModel,
-				},
-				ToolUse: FeatureRouteConfig{
-					Model: toolUseModel,
 				},
 			},
 			ToolLoopMaxIterations: toolLoopMaxIterations,
@@ -211,8 +206,6 @@ func (c LLMConfig) RouteForFeature(feature string) (FeatureRouteConfig, error) {
 		return c.Features.Summarize, nil
 	case "image_recognition":
 		return c.Features.ImageRecognition, nil
-	case "tool_use":
-		return c.Features.ToolUse, nil
 	default:
 		return FeatureRouteConfig{}, fmt.Errorf("unknown feature %q", feature)
 	}

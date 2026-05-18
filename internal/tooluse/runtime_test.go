@@ -32,7 +32,7 @@ type stubLLM struct {
 	lastGenerateReq llm.Request
 }
 
-func (s *stubLLM) BuildToolUseRequest(_ context.Context, _ llm.PromptScope, _ llm.ChatReplyContext, tools []llm.ToolDefinition, toolPolicy string, extraMessages []llm.Message) (llm.Request, error) {
+func (s *stubLLM) BuildChatToolRequest(_ context.Context, _ llm.PromptScope, _ llm.ChatReplyContext, tools []llm.ToolDefinition, toolPolicy string, extraMessages []llm.Message) (llm.Request, error) {
 	s.buildCount++
 	s.lastBuildPolicy = toolPolicy
 	s.lastBuildTools = append([]llm.ToolDefinition(nil), tools...)
@@ -41,7 +41,7 @@ func (s *stubLLM) BuildToolUseRequest(_ context.Context, _ llm.PromptScope, _ ll
 		return llm.Request{}, s.buildErr
 	}
 
-	return llm.Request{Feature: llm.FeatureToolUse, Tools: tools, Messages: extraMessages}, nil
+	return llm.Request{Feature: llm.FeatureChat, Tools: tools, Messages: extraMessages}, nil
 }
 
 func (s *stubLLM) Generate(_ context.Context, req llm.Request) (llm.Response, error) {
@@ -107,9 +107,10 @@ func (s *stubSearcher) Search(context.Context, search.Request) (search.Result, e
 	return s.result, s.err
 }
 
-func TestRuntimeReturnsUnavailableWhenToolUseGenerateFailsImmediately(t *testing.T) {
+func TestRuntimeReturnsGenerateErrorWhenChatToolGenerateFailsImmediately(t *testing.T) {
+	generateErr := errors.New("boom")
 	runtime := New(
-		&stubLLM{generateErr: errors.New("boom")},
+		&stubLLM{generateErr: generateErr},
 		memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations(),
 		&stubExtractor{},
 		nil,
@@ -124,8 +125,8 @@ func TestRuntimeReturnsUnavailableWhenToolUseGenerateFailsImmediately(t *testing
 		PromptScope:  llm.PromptScope{ChatID: 1},
 		ReplyContext: llm.ChatReplyContext{UserMessage: llm.TextMessage(llm.RoleUser, "hi")},
 	})
-	if !errors.Is(err, ErrToolUseUnavailable) {
-		t.Fatalf("expected ErrToolUseUnavailable, got %v", err)
+	if !errors.Is(err, generateErr) {
+		t.Fatalf("expected generate error, got %v", err)
 	}
 	if reply != "" {
 		t.Fatalf("unexpected reply: %q", reply)

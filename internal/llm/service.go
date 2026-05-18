@@ -72,35 +72,7 @@ func (s *Service) Generate(ctx context.Context, req Request) (Response, error) {
 	return resp, nil
 }
 
-func (s *Service) HandleChatMessage(ctx context.Context, scope PromptScope, requestContext ChatReplyContext) (string, *TokenUsage, error) {
-	logger := logging.FromContext(ctx, s.logger)
-
-	messages, err := s.buildConversationMessages(ctx, scope, FeatureChat, requestContext, "")
-	if err != nil {
-		return "", nil, err
-	}
-
-	resp, err := s.Generate(ctx, Request{
-		Feature:  FeatureChat,
-		Messages: messages,
-	})
-	if err != nil {
-		return "", nil, err
-	}
-
-	if resp.Message.Text() == "" && len(resp.Message.ToolCalls) == 0 {
-		logger.Error("chat completion has no choices", "model", resp.Model, "backend", resp.Backend)
-		sentry.CaptureMessage("LLM back-end reply has no choices")
-
-		return "", nil, ErrNoChoices
-	}
-
-	usage := resp.Usage
-
-	return resp.Message.Text(), &usage, nil
-}
-
-func (s *Service) BuildToolUseRequest(
+func (s *Service) BuildChatToolRequest(
 	ctx context.Context,
 	scope PromptScope,
 	requestContext ChatReplyContext,
@@ -108,7 +80,7 @@ func (s *Service) BuildToolUseRequest(
 	toolPolicy string,
 	extraMessages []Message,
 ) (Request, error) {
-	messages, err := s.buildConversationMessages(ctx, scope, FeatureToolUse, requestContext, toolPolicy)
+	messages, err := s.buildConversationMessages(ctx, scope, requestContext, toolPolicy)
 	if err != nil {
 		return Request{}, err
 	}
@@ -116,7 +88,7 @@ func (s *Service) BuildToolUseRequest(
 	messages = append(messages, extraMessages...)
 
 	return Request{
-		Feature:  FeatureToolUse,
+		Feature:  FeatureChat,
 		Messages: messages,
 		Tools:    tools,
 	}, nil
@@ -207,7 +179,7 @@ func (s *Service) HasAllModels(ctx context.Context) (bool, map[string]bool) {
 	logger := logging.FromContext(ctx, s.logger)
 	result := make(map[string]bool)
 
-	for _, feature := range []Feature{FeatureChat, FeatureSummarize, FeatureImageRecognition, FeatureToolUse} {
+	for _, feature := range []Feature{FeatureChat, FeatureSummarize, FeatureImageRecognition} {
 		route, err := s.cfg.RouteForFeature(string(feature))
 		if err != nil {
 			result[string(feature)] = false
@@ -216,10 +188,6 @@ func (s *Service) HasAllModels(ctx context.Context) (bool, map[string]bool) {
 		}
 
 		if route.Model == "" {
-			if feature == FeatureToolUse {
-				continue
-			}
-
 			result[string(feature)] = false
 
 			continue
@@ -246,30 +214,16 @@ func (s *Service) HasAllModels(ctx context.Context) (bool, map[string]bool) {
 	return true, result
 }
 
-func (s *Service) buildConversationMessages(ctx context.Context, scope PromptScope, feature Feature, requestContext ChatReplyContext, toolPolicy string) ([]Message, error) {
+func (s *Service) buildConversationMessages(ctx context.Context, scope PromptScope, requestContext ChatReplyContext, toolPolicy string) ([]Message, error) {
 	logger := logging.FromContext(ctx, s.logger)
-	route, err := s.cfg.RouteForFeature(string(feature))
+	route, err := s.cfg.RouteForFeature(string(FeatureChat))
 	if err != nil {
 		return nil, errors.Join(ErrFeatureRouteInvalid, err)
 	}
 
-	var systemPrompt string
-
-	switch feature {
-	case FeatureChat:
-		systemPrompt, err = s.prompts.RenderChatSystemPrompt(ctx, scope, route.Model, requestContext.SystemHint)
-		if err != nil {
-			logger.Error("chat template processing failed", "error", err)
-		}
-	case FeatureToolUse:
-		systemPrompt, err = s.prompts.RenderToolUseSystemPrompt(ctx, scope, route.Model, requestContext.SystemHint, toolPolicy)
-		if err != nil {
-			logger.Error("tool-use template processing failed", "error", err)
-		}
-	default:
-		return nil, errors.Join(ErrFeatureRouteInvalid, fmt.Errorf("feature=%s cannot build chat messages", feature))
-	}
+	systemPrompt, err := s.prompts.RenderChatSystemPrompt(ctx, scope, route.Model, requestContext.SystemHint, toolPolicy)
 	if err != nil {
+		logger.Error("chat template processing failed", "error", err)
 		sentry.CaptureException(err)
 
 		return nil, ErrTemplateProcessing

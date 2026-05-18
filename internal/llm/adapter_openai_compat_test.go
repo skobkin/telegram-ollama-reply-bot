@@ -79,7 +79,7 @@ func TestOpenAICompatBackendGenerateWithToolsAndImage(t *testing.T) {
 	}
 
 	resp, err := impl.Generate(context.Background(), Request{
-		Feature: FeatureToolUse,
+		Feature: FeatureChat,
 		Model:   "gemma3:27b",
 		Messages: []Message{
 			TextMessage(RoleSystem, "system"),

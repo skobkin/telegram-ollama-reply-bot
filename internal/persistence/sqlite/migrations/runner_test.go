@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"telegram-ollama-reply-bot/internal/llm"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -60,8 +62,8 @@ func TestApplySeedsGlobalDefaults(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM prompt_templates WHERE scope_type='global' AND scope_id=0`).Scan(&count); err != nil {
 		t.Fatalf("count prompt templates: %v", err)
 	}
-	if count != 4 {
-		t.Fatalf("expected 4 prompt templates, got %d", count)
+	if count != 3 {
+		t.Fatalf("expected 3 prompt templates, got %d", count)
 	}
 }
 
@@ -81,8 +83,83 @@ func TestApplyLogsEachMigrationAtInfo(t *testing.T) {
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "msg=\"applying sqlite migration\"") || !strings.Contains(output, "name=bootstrap_admin_config") || !strings.Contains(output, "name=add_chat_language_and_gender") || !strings.Contains(output, "name=add_reminders") {
+	if !strings.Contains(output, "msg=\"applying sqlite migration\"") || !strings.Contains(output, "name=bootstrap_admin_config") || !strings.Contains(output, "name=add_chat_language_and_gender") || !strings.Contains(output, "name=add_reminders") || !strings.Contains(output, "name=make_tools_mandatory_for_chat") {
 		t.Fatalf("expected migration log output, got %q", output)
+	}
+}
+
+func TestApplyUpgradesOnlyOldDefaultChatPrompt(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", "file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	for _, migration := range schemaMigrations[:3] {
+		if err := applyMigration(ctx, db, migration, nil); err != nil {
+			t.Fatalf("apply migration %s: %v", migration.name, err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+UPDATE prompt_templates
+SET template_text = ?
+WHERE scope_type = 'global' AND scope_id = 0 AND feature = 'chat'
+`, llm.OldDefaultChatPromptTemplate); err != nil {
+		t.Fatalf("set old default chat prompt: %v", err)
+	}
+
+	if err := Apply(ctx, db, nil); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	var body string
+	if err := db.QueryRowContext(ctx, `
+SELECT template_text FROM prompt_templates
+WHERE scope_type = 'global' AND scope_id = 0 AND feature = 'chat'
+`).Scan(&body); err != nil {
+		t.Fatalf("read chat prompt: %v", err)
+	}
+	if body != llm.DefaultChatPromptTemplate {
+		t.Fatalf("expected upgraded default chat prompt")
+	}
+}
+
+func TestApplyPreservesCustomChatPrompt(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", "file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	for _, migration := range schemaMigrations[:3] {
+		if err := applyMigration(ctx, db, migration, nil); err != nil {
+			t.Fatalf("apply migration %s: %v", migration.name, err)
+		}
+	}
+	const customPrompt = "custom chat {{.CharacterName}}"
+	if _, err := db.ExecContext(ctx, `
+UPDATE prompt_templates
+SET template_text = ?
+WHERE scope_type = 'global' AND scope_id = 0 AND feature = 'chat'
+`, customPrompt); err != nil {
+		t.Fatalf("set custom chat prompt: %v", err)
+	}
+
+	if err := Apply(ctx, db, nil); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	var body string
+	if err := db.QueryRowContext(ctx, `
+SELECT template_text FROM prompt_templates
+WHERE scope_type = 'global' AND scope_id = 0 AND feature = 'chat'
+`).Scan(&body); err != nil {
+		t.Fatalf("read chat prompt: %v", err)
+	}
+	if body != customPrompt {
+		t.Fatalf("expected custom chat prompt to be preserved, got %q", body)
 	}
 }
 

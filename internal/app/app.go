@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"telegram-ollama-reply-bot/internal/adminconfig"
-	"telegram-ollama-reply-bot/internal/chatreply"
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/content/extractor"
 	"telegram-ollama-reply-bot/internal/content/search"
@@ -58,7 +57,6 @@ func Run(ctx context.Context) error {
 		"chat_model", cfg.LLM.Features.Chat.Model,
 		"summarize_model", cfg.LLM.Features.Summarize.Model,
 		"image_model", cfg.LLM.Features.ImageRecognition.Model,
-		"tool_use_model", cfg.LLM.Features.ToolUse.Model,
 	)
 	transport.LogNetworkRouting(logger, cfg)
 
@@ -138,7 +136,6 @@ func Run(ctx context.Context) error {
 		logManager.Logger("tooluse"),
 		tooluse.Config{MaxIterations: cfg.LLM.ToolLoopMaxIterations, AdminIDs: cfg.Bot.AdminIDs, RecentHistoryLimit: cfg.Bot.UncompressedHistoryLimit},
 	)
-	replier := chatreply.New(llmc, tools)
 	botService := bot.NewBot(
 		ctx,
 		telegramAPI,
@@ -150,7 +147,7 @@ func Run(ctx context.Context) error {
 		stores.Stats(),
 		cfg.Bot,
 		adminService,
-		replier,
+		tools,
 		logManager.Logger("telegram/bot"),
 	)
 

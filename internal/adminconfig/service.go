@@ -28,7 +28,16 @@ func (s *Service) ChatFields() []string {
 }
 
 func (s *Service) PromptFeatures() []PromptFeature {
-	return []PromptFeature{PromptFeatureChat, PromptFeatureSummarize, PromptFeatureImageRecognition, PromptFeatureToolUse}
+	return []PromptFeature{PromptFeatureChat, PromptFeatureSummarize, PromptFeatureImageRecognition}
+}
+
+func IsPromptFeature(feature PromptFeature) bool {
+	switch feature {
+	case PromptFeatureChat, PromptFeatureSummarize, PromptFeatureImageRecognition:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (ResolvedChatConfig, error) {
@@ -119,6 +128,10 @@ func BoolPointer(v bool) *bool {
 }
 
 func ValidatePrompt(feature PromptFeature, body string) error {
+	if !IsPromptFeature(feature) {
+		return fmt.Errorf("unknown prompt feature %q", feature)
+	}
+
 	if _, err := template.New(string(feature)).Parse(body); err != nil {
 		return fmt.Errorf("parse template %s: %w", feature, err)
 	}

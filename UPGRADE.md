@@ -32,10 +32,9 @@ LLM_BACKEND_OPENAI_COMPAT_API_TOKEN=dummy
 LLM_FEATURE_CHAT_MODEL=gemma4:e4b
 LLM_FEATURE_SUMMARIZE_MODEL=gemma4:e4b
 LLM_FEATURE_IMAGE_RECOGNITION_MODEL=gemma4:e4b
-LLM_FEATURE_TOOL_USE_MODEL=gemma4:e4b
 ```
 
-`LLM_FEATURE_SUMMARIZE_MODEL`, `LLM_FEATURE_IMAGE_RECOGNITION_MODEL`, and `LLM_FEATURE_TOOL_USE_MODEL` inherit `LLM_FEATURE_CHAT_MODEL` when unset.
+`LLM_FEATURE_SUMMARIZE_MODEL` and `LLM_FEATURE_IMAGE_RECOGNITION_MODEL` inherit `LLM_FEATURE_CHAT_MODEL` when unset.
 
 ### Persistent Store And Admin Configuration
 
@@ -87,15 +86,19 @@ The in-memory history store keeps full raw per-scope history until the configure
 
 ### Tool-Assisted Chat
 
-Ordinary chat replies may now use tools before answering when `LLM_FEATURE_TOOL_USE_MODEL` is configured and the OpenAI-compatible backend supports tool calls.
+Ordinary chat replies now always use the tool-capable chat workflow. This is a breaking change: `LLM_FEATURE_CHAT_MODEL` must support OpenAI-compatible tool calls, or ordinary chat requests will fail at runtime.
+
+Removed variable:
+
+- `LLM_FEATURE_TOOL_USE_MODEL`
+
+If you customized the old `tool_use` prompt template, move the relevant content manually into the `chat` prompt template. Existing custom `tool_use` rows are not copied or used. Existing `chat` prompt templates are upgraded automatically only when they exactly match the previous built-in default.
 
 New variable:
 
 - `LLM_TOOL_LOOP_MAX_ITERATIONS`
 
 Default: `6`
-
-The `tool_use` prompt template is stored in SQLite with the other prompt templates and can be managed through admin DM prompt commands.
 
 The current tool set includes:
 

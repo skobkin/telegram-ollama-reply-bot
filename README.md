@@ -30,7 +30,6 @@ The bot can be configured using the following environment variables:
 | `LLM_FEATURE_CHAT_MODEL`                | Model name for normal chat requests                                                                               | Yes      | -                        |
 | `LLM_FEATURE_SUMMARIZE_MODEL`           | Model name for summarization                                                                                      | No       | chat model               |
 | `LLM_FEATURE_IMAGE_RECOGNITION_MODEL`   | Model name for image recognition                                                                                  | No       | chat model               |
-| `LLM_FEATURE_TOOL_USE_MODEL`            | Model used for conversational tool calling in ordinary chat replies                                               | No       | chat model               |
 | `LLM_TOOL_LOOP_MAX_ITERATIONS`          | Maximum tool-use loop iterations for one conversational reply                                                     | No       | `6`                      |
 | `STATE_MAX_BYTES`                       | Soft total in-memory state budget in bytes                                                                        | No       | `268435456`              |
 | `STATE_HISTORY_MAX_BYTES`               | Soft history bucket budget in bytes                                                                               | No       | `167772160`              |
@@ -56,10 +55,9 @@ overrides are now stored in SQLite and managed from Telegram admin DMs.
 
 Stored prompt templates use Go's [`text/template`](https://pkg.go.dev/text/template) placeholders:
 
-- `chat` – `{{.Model}}`, `{{.Language}}`, `{{.Gender}}`, `{{.CharacterName}}`, `{{.ToneMode}}`, `{{.AllowTeasing}}`, `{{.Context}}`
+- `chat` – `{{.Model}}`, `{{.Language}}`, `{{.Gender}}`, `{{.CharacterName}}`, `{{.ToneMode}}`, `{{.AllowTeasing}}`, `{{.Context}}`, `{{.ToolPolicy}}`
 - `summarize` – `{{.Language}}`, `{{.MaxLength}}`
 - `image_recognition` – `{{.Language}}`
-- `tool_use` – `{{.Model}}`, `{{.Language}}`, `{{.Gender}}`, `{{.CharacterName}}`, `{{.ToneMode}}`, `{{.AllowTeasing}}`, `{{.Context}}`, `{{.ToolPolicy}}`
 
 ## Usage
 
@@ -80,7 +78,7 @@ You can also interact with the bot by:
 - Sending direct messages in private chat when interactivity is enabled for that chat
 - Sending images (the bot will describe what it sees in the image)
 
-When `LLM_FEATURE_TOOL_USE_MODEL` is configured, ordinary chat replies may use tools before answering. The current tool set is:
+Ordinary chat replies always use the tool-capable chat workflow. `LLM_FEATURE_CHAT_MODEL` must point to a model and backend combination that supports OpenAI-compatible tool calls. The current tool set is:
 
 - `search_web` for explicit internet lookups when `SEARCH_BACKEND` is configured to something other than `none`
 - `get_current_time` for time-sensitive reasoning and schedule anchoring

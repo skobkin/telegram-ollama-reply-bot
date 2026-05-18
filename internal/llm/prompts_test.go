@@ -69,7 +69,7 @@ func TestAdminPromptRendererUsesPerChatLanguageAndGender(t *testing.T) {
 	})
 
 	renderer := NewAdminPromptRenderer(svc)
-	rendered, err := renderer.RenderChatSystemPrompt(context.Background(), PromptScope{ChatID: 5}, "gemma", "")
+	rendered, err := renderer.RenderChatSystemPrompt(context.Background(), PromptScope{ChatID: 5}, "gemma", "", "policy")
 	if err != nil {
 		t.Fatalf("render chat prompt: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestAdminPromptRendererUsesPerChatLanguageAndGender(t *testing.T) {
 	}
 }
 
-func TestAdminPromptRendererUsesToolUsePromptTemplate(t *testing.T) {
+func TestAdminPromptRendererRendersToolPolicyInChatPrompt(t *testing.T) {
 	svc := adminconfig.NewService(&promptStoreStub{
 		global: adminconfig.GlobalSettings{
 			CharacterName:            "bot",
@@ -89,14 +89,14 @@ func TestAdminPromptRendererUsesToolUsePromptTemplate(t *testing.T) {
 			DefaultInteractivityMode: adminconfig.InteractivityDisabled,
 		},
 		prompts: map[string]string{
-			"tool_use:0": "policy={{.ToolPolicy}} lang={{.Language}} model={{.Model}}",
+			"chat:0": "policy={{.ToolPolicy}} lang={{.Language}} model={{.Model}}",
 		},
 	})
 
 	renderer := NewAdminPromptRenderer(svc)
-	rendered, err := renderer.RenderToolUseSystemPrompt(context.Background(), PromptScope{}, "gemma", "ctx", "line one")
+	rendered, err := renderer.RenderChatSystemPrompt(context.Background(), PromptScope{}, "gemma", "ctx", "line one")
 	if err != nil {
-		t.Fatalf("render tool use prompt: %v", err)
+		t.Fatalf("render chat prompt: %v", err)
 	}
 
 	if !strings.Contains(rendered, "policy=line one") || !strings.Contains(rendered, "lang=Russian") || !strings.Contains(rendered, "model=gemma") {

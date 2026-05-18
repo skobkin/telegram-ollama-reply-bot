@@ -11,10 +11,6 @@ func TestLoadUsesFeatureDefaults(t *testing.T) {
 		t.Fatalf("expected summarize model to inherit chat model, got %q", cfg.LLM.Features.Summarize.Model)
 	}
 
-	if cfg.LLM.Features.ToolUse.Model != "gemma3:27b" {
-		t.Fatalf("expected tool use model to inherit chat model, got %q", cfg.LLM.Features.ToolUse.Model)
-	}
-
 	if cfg.LLM.ToolLoopMaxIterations != 6 {
 		t.Fatalf("expected tool loop max iterations default to be 6, got %d", cfg.LLM.ToolLoopMaxIterations)
 	}

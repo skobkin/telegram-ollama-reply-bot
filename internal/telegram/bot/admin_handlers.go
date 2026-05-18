@@ -227,6 +227,9 @@ func (b *Bot) promptShowHandler(ctx *th.Context, message t.Message) error {
 	}
 
 	feature := adminconfig.PromptFeature(args[1])
+	if !adminconfig.IsPromptFeature(feature) {
+		return b.sendAdminText(ctx.Context(), message, "Unknown prompt feature.")
+	}
 	chatID := int64(0)
 	if len(args) == 3 {
 		parsed, err := strconv.ParseInt(args[2], 10, 64)
@@ -306,7 +309,11 @@ func (b *Bot) promptClearChatHandler(ctx *th.Context, message t.Message) error {
 	if err != nil {
 		return b.sendAdminText(ctx.Context(), message, "Invalid chat_id.")
 	}
-	if err := b.admin.Store().ClearPromptTemplate(ctx.Context(), adminconfig.PromptFeature(args[2]), chatID); err != nil {
+	feature := adminconfig.PromptFeature(args[2])
+	if !adminconfig.IsPromptFeature(feature) {
+		return b.sendAdminText(ctx.Context(), message, "Unknown prompt feature.")
+	}
+	if err := b.admin.Store().ClearPromptTemplate(ctx.Context(), feature, chatID); err != nil {
 		return b.sendAdminError(ctx.Context(), message, err)
 	}
 

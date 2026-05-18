@@ -51,7 +51,6 @@ func TestServiceAppliesConfiguredFeatureModels(t *testing.T) {
 				Chat:             config.FeatureRouteConfig{Model: "gemma3:27b"},
 				Summarize:        config.FeatureRouteConfig{Model: "gpt-4.1-mini"},
 				ImageRecognition: config.FeatureRouteConfig{Model: "gemma3:27b"},
-				ToolUse:          config.FeatureRouteConfig{Model: "gemma3:27b"},
 			},
 		},
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -98,7 +97,6 @@ func TestServiceRejectsUnsupportedCapability(t *testing.T) {
 				Chat:             config.FeatureRouteConfig{Model: "gpt"},
 				Summarize:        config.FeatureRouteConfig{Model: "gpt"},
 				ImageRecognition: config.FeatureRouteConfig{Model: "gpt"},
-				ToolUse:          config.FeatureRouteConfig{Model: "gpt"},
 			},
 		},
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -109,7 +107,7 @@ func TestServiceRejectsUnsupportedCapability(t *testing.T) {
 	}
 
 	_, err := service.Generate(context.Background(), Request{
-		Feature: FeatureToolUse,
+		Feature: FeatureChat,
 		Messages: []Message{
 			TextMessage(RoleUser, "hi"),
 		},
@@ -120,18 +118,8 @@ func TestServiceRejectsUnsupportedCapability(t *testing.T) {
 	}
 }
 
-func TestServiceHandleChatMessageBuildsRequestFromCompactContext(t *testing.T) {
+func TestServiceBuildChatToolRequestBuildsFeatureChatFromCompactContext(t *testing.T) {
 	t.Parallel()
-
-	backendStub := &stubBackend{
-		name: config.LLMBackendOpenAICompat,
-		caps: Capabilities{ToolCalls: true, ImageInput: true, ModelListing: true},
-		response: Response{
-			Backend: config.LLMBackendOpenAICompat,
-			Model:   "gpt",
-			Message: TextMessage(RoleAssistant, "reply"),
-		},
-	}
 
 	templateProcessor, err := NewStaticPromptRenderer()
 	if err != nil {
@@ -146,10 +134,9 @@ func TestServiceHandleChatMessageBuildsRequestFromCompactContext(t *testing.T) {
 		},
 		prompts: templateProcessor,
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
-		backend: backendStub,
 	}
 
-	reply, usage, err := service.HandleChatMessage(context.Background(), PromptScope{}, ChatReplyContext{
+	request, err := service.BuildChatToolRequest(context.Background(), PromptScope{}, ChatReplyContext{
 		SystemHint:     "compact context",
 		EarlierSummary: "earlier summary",
 		History: []Message{
@@ -157,19 +144,19 @@ func TestServiceHandleChatMessageBuildsRequestFromCompactContext(t *testing.T) {
 			TextMessage(RoleAssistant, "history 2"),
 		},
 		UserMessage: TextMessage(RoleUser, "current"),
-	})
+	}, []ToolDefinition{{Name: "search_history"}}, "tool policy", []Message{TextMessage(RoleTool, "tool result")})
 	if err != nil {
-		t.Fatalf("HandleChatMessage: %v", err)
-	}
-	if reply != "reply" {
-		t.Fatalf("unexpected reply: %q", reply)
-	}
-	if usage == nil {
-		t.Fatal("expected usage")
+		t.Fatalf("BuildChatToolRequest: %v", err)
 	}
 
-	messages := backendStub.lastRequest.Messages
-	if len(messages) != 4 {
+	if request.Feature != FeatureChat {
+		t.Fatalf("unexpected feature: %s", request.Feature)
+	}
+	if len(request.Tools) != 1 || request.Tools[0].Name != "search_history" {
+		t.Fatalf("unexpected tools: %+v", request.Tools)
+	}
+	messages := request.Messages
+	if len(messages) != 5 {
 		t.Fatalf("unexpected message count: %d", len(messages))
 	}
 	if got := messages[0].Text(); !strings.Contains(got, "compact context") {
@@ -177,6 +164,9 @@ func TestServiceHandleChatMessageBuildsRequestFromCompactContext(t *testing.T) {
 	}
 	if got := messages[0].Text(); !strings.Contains(got, "[Earlier conversation summary: earlier summary]") {
 		t.Fatalf("expected embedded summary in system message, got %q", got)
+	}
+	if got := messages[0].Text(); !strings.Contains(got, "tool policy") {
+		t.Fatalf("expected tool policy in system message, got %q", got)
 	}
 	if got := messages[1].Text(); got != "history 1" {
 		t.Fatalf("unexpected first history message: %q", got)
@@ -186,5 +176,8 @@ func TestServiceHandleChatMessageBuildsRequestFromCompactContext(t *testing.T) {
 	}
 	if got := messages[3].Text(); got != "current" {
 		t.Fatalf("unexpected current user message: %q", got)
+	}
+	if got := messages[4].Text(); got != "tool result" {
+		t.Fatalf("unexpected extra message: %q", got)
 	}
 }

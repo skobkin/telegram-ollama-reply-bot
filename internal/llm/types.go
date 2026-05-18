@@ -22,7 +22,6 @@ const (
 	FeatureChat             Feature = "chat"
 	FeatureSummarize        Feature = "summarize"
 	FeatureImageRecognition Feature = "image_recognition"
-	FeatureToolUse          Feature = "tool_use"
 )
 
 type Role string
