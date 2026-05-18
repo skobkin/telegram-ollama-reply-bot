@@ -1,23 +1,27 @@
-FROM golang:1-alpine as builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /build
 
 COPY . .
 
-RUN go build -o app
+RUN go build -trimpath -o /tmp/app ./cmd/bot
 
 
-FROM alpine:latest
+FROM alpine:3.23
 
 WORKDIR /app
 
-COPY --from=builder /build/app .
+COPY --from=builder /tmp/app .
 
-# Do not forget "/v1" in the end
-ENV OPENAI_API_BASE_URL="" \
-    OPENAI_API_TOKEN="" \
+VOLUME ["/data"]
+
+ENV LLM_BACKEND_OPENAI_COMPAT_BASE_URL="" \
+    LLM_BACKEND_OPENAI_COMPAT_API_TOKEN="" \
     TELEGRAM_TOKEN="" \
-    MODEL_TEXT_REQUEST="llama3.1:8b-instruct-q6_K" \
-    MODEL_SUMMARIZE_REQUEST="llama3.1:8b-instruct-q6_K"
+    PERSISTENT_STORE_PATH="/data/db.sqlite" \
+    LOG_LEVEL="info" \
+    LLM_FEATURE_CHAT_MODEL="gemma3:12b" \
+    LLM_FEATURE_SUMMARIZE_MODEL="gemma3:12b" \
+    LLM_FEATURE_IMAGE_RECOGNITION_MODEL="gemma3:12b"
 
 CMD ["/app/app"]

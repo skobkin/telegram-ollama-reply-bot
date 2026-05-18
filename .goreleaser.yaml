@@ -1,0 +1,37 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/goreleaser/goreleaser/v2.15.4/www/docs/static/schema.json
+version: 2
+
+project_name: telegram-llm-bot
+
+builds:
+  - id: telegram-llm-bot
+    main: ./cmd/bot
+    binary: telegram-llm-bot
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+    flags:
+      - -trimpath
+
+archives:
+  - id: telegram-llm-bot
+    ids:
+      - telegram-llm-bot
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  gitea:
+    owner: "{{ .Env.CI_REPO_OWNER }}"
+    name: "{{ .Env.CI_REPO_NAME }}"
+
+gitea_urls:
+  api: "{{ .Env.CI_FORGE_URL }}/api/v1"
+  download: "{{ .Env.CI_FORGE_URL }}"
