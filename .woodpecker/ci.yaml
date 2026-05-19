@@ -44,7 +44,7 @@ steps:
     environment:
       GOCACHE: /tmp/.gocache
     commands:
-      - go build -trimpath -o /tmp/telegram-ollama-reply-bot ./cmd/bot
+      - go build -trimpath -ldflags="-s -w -X 'telegram-ollama-reply-bot/internal/buildinfo.Version=${CI_COMMIT_SHA}'" -o /tmp/telegram-ollama-reply-bot ./cmd/bot
     when:
       - event: [push, pull_request]
 
@@ -80,6 +80,8 @@ steps:
       password:
         from_secret: DOCKER_TOKEN
       dockerfile: Dockerfile
+      build_args:
+        VERSION: ${CI_COMMIT_TAG}
       platforms:
         - linux/amd64
       tags:

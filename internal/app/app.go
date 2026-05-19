@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"telegram-ollama-reply-bot/internal/adminconfig"
+	"telegram-ollama-reply-bot/internal/buildinfo"
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/content/extractor"
 	"telegram-ollama-reply-bot/internal/content/search"
@@ -33,6 +34,7 @@ func Run(ctx context.Context) error {
 		return fmt.Errorf("configure logging: %w", err)
 	}
 	logger := logManager.Logger("app")
+	logger.Info("starting app", "app", buildinfo.AppName, "version", buildinfo.Version)
 
 	if cfg.Sentry.DSN != "" {
 		logger.Debug("initializing sentry")

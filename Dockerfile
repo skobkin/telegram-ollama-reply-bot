@@ -4,7 +4,9 @@ WORKDIR /build
 
 COPY . .
 
-RUN go build -trimpath -o /tmp/app ./cmd/bot
+ARG VERSION=dev
+
+RUN go build -trimpath -ldflags="-s -w -X 'telegram-ollama-reply-bot/internal/buildinfo.Version=${VERSION}'" -o /tmp/app ./cmd/bot
 
 
 FROM alpine:3.23
