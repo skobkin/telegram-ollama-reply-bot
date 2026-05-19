@@ -30,11 +30,11 @@ If you run Ollama, point the bot at Ollama's OpenAI-compatible endpoint:
 LLM_BACKEND_OPENAI_COMPAT_BASE_URL=http://ollama.localhost:11434/v1
 LLM_BACKEND_OPENAI_COMPAT_API_TOKEN=dummy
 LLM_FEATURE_CHAT_MODEL=gemma4:e4b
-LLM_FEATURE_SUMMARIZE_MODEL=gemma4:e4b
-LLM_FEATURE_IMAGE_RECOGNITION_MODEL=gemma4:e4b
 ```
 
-`LLM_FEATURE_SUMMARIZE_MODEL` and `LLM_FEATURE_IMAGE_RECOGNITION_MODEL` inherit `LLM_FEATURE_CHAT_MODEL` when unset.
+`LLM_FEATURE_CHAT_MODEL` is required and must be set explicitly, including in Docker deployments. The container image no longer provides baked-in model defaults.
+
+`LLM_FEATURE_SUMMARIZE_MODEL` and `LLM_FEATURE_IMAGE_RECOGNITION_MODEL` inherit `LLM_FEATURE_CHAT_MODEL` when unset or empty. Set them only when you intentionally want summarization or image recognition to use different models.
 
 ### Persistent Store And Admin Configuration
 

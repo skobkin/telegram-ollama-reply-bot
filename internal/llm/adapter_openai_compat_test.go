@@ -28,7 +28,7 @@ func TestOpenAICompatBackendGenerateWithToolsAndImage(t *testing.T) {
 		}
 
 		payload := string(body)
-		if !strings.Contains(payload, `"model":"gemma3:27b"`) {
+		if !strings.Contains(payload, `"model":"chat-model"`) {
 			t.Fatalf("request missing model: %s", payload)
 		}
 
@@ -48,7 +48,7 @@ func TestOpenAICompatBackendGenerateWithToolsAndImage(t *testing.T) {
 			"id":"chatcmpl-1",
 			"object":"chat.completion",
 			"created":1,
-			"model":"gemma3:27b",
+			"model":"chat-model",
 			"choices":[
 				{
 					"index":0,
@@ -80,7 +80,7 @@ func TestOpenAICompatBackendGenerateWithToolsAndImage(t *testing.T) {
 
 	resp, err := impl.Generate(context.Background(), Request{
 		Feature: FeatureChat,
-		Model:   "gemma3:27b",
+		Model:   "chat-model",
 		Messages: []Message{
 			TextMessage(RoleSystem, "system"),
 			{

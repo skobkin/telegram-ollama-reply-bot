@@ -156,9 +156,7 @@ docker run \
   -e TELEGRAM_TOKEN=12345 \
   -e LLM_BACKEND_OPENAI_COMPAT_BASE_URL=http://ollama.localhost:11434/v1 \
   -e LLM_BACKEND_OPENAI_COMPAT_API_TOKEN=dummy \
-  -e LLM_FEATURE_CHAT_MODEL=gemma3:27b \
-  -e LLM_FEATURE_SUMMARIZE_MODEL=gemma3:12b \
-  -e LLM_FEATURE_IMAGE_RECOGNITION_MODEL=gemma3:12b \
+  -e LLM_FEATURE_CHAT_MODEL=gemma4:e4b \
   -e PERSISTENT_STORE_PATH=/data/db.sqlite \
   -e STATE_HISTORY_STREAMS_MAX=1024 \
   -e STATE_IMAGE_CACHE_TTL=24h \
@@ -171,6 +169,9 @@ docker run \
 ```
 
 The bot uses only the OpenAI-compatible LLM API. For Ollama deployments, use Ollama's `/v1` OpenAI-compatible endpoint rather than the native Ollama API.
+
+`LLM_FEATURE_SUMMARIZE_MODEL` and `LLM_FEATURE_IMAGE_RECOGNITION_MODEL` normally inherit `LLM_FEATURE_CHAT_MODEL`.
+Set them only when you intentionally want summarization or image recognition to use different models.
 
 ### Docker Compose
 

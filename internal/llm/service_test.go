@@ -49,9 +49,9 @@ func TestServiceAppliesConfiguredFeatureModels(t *testing.T) {
 	service := &Service{
 		cfg: config.LLMConfig{
 			Features: config.FeatureConfig{
-				Chat:             config.FeatureRouteConfig{Model: "gemma3:27b"},
-				Summarize:        config.FeatureRouteConfig{Model: "gpt-4.1-mini"},
-				ImageRecognition: config.FeatureRouteConfig{Model: "gemma3:27b"},
+				Chat:             config.FeatureRouteConfig{Model: "chat-model"},
+				Summarize:        config.FeatureRouteConfig{Model: "summary-model"},
+				ImageRecognition: config.FeatureRouteConfig{Model: "vision-model"},
 			},
 		},
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -70,7 +70,7 @@ func TestServiceAppliesConfiguredFeatureModels(t *testing.T) {
 		t.Fatalf("unexpected summarize backend: %s", resp.Backend)
 	}
 
-	if backendStub.lastRequest.Model != "gpt-4.1-mini" {
+	if backendStub.lastRequest.Model != "summary-model" {
 		t.Fatalf("unexpected summarize model: %s", backendStub.lastRequest.Model)
 	}
 
@@ -84,7 +84,7 @@ func TestServiceAppliesConfiguredFeatureModels(t *testing.T) {
 		t.Fatalf("generate chat: %v", err)
 	}
 
-	if backendStub.lastRequest.Model != "gemma3:27b" {
+	if backendStub.lastRequest.Model != "chat-model" {
 		t.Fatalf("unexpected chat model: %s", backendStub.lastRequest.Model)
 	}
 }

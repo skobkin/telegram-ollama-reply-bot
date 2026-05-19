@@ -1,14 +1,24 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestLoadUsesFeatureDefaults(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma3:27b")
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
 
 	cfg := Load()
 
-	if cfg.LLM.Features.Summarize.Model != "gemma3:27b" {
+	if cfg.LLM.Features.Chat.Model != "gemma4:e4b" {
+		t.Fatalf("unexpected chat model: %q", cfg.LLM.Features.Chat.Model)
+	}
+	if cfg.LLM.Features.Summarize.Model != "gemma4:e4b" {
 		t.Fatalf("expected summarize model to inherit chat model, got %q", cfg.LLM.Features.Summarize.Model)
+	}
+	if cfg.LLM.Features.ImageRecognition.Model != "gemma4:e4b" {
+		t.Fatalf("expected image recognition model to inherit chat model, got %q", cfg.LLM.Features.ImageRecognition.Model)
 	}
 
 	if cfg.LLM.ToolLoopMaxIterations != 6 {
@@ -16,9 +26,25 @@ func TestLoadUsesFeatureDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadUsesFeatureDefaultsForEmptyOptionalModels(t *testing.T) {
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
+	t.Setenv("LLM_FEATURE_SUMMARIZE_MODEL", "")
+	t.Setenv("LLM_FEATURE_IMAGE_RECOGNITION_MODEL", "")
+
+	cfg := Load()
+
+	if cfg.LLM.Features.Summarize.Model != "gemma4:e4b" {
+		t.Fatalf("expected empty summarize model to inherit chat model, got %q", cfg.LLM.Features.Summarize.Model)
+	}
+	if cfg.LLM.Features.ImageRecognition.Model != "gemma4:e4b" {
+		t.Fatalf("expected empty image recognition model to inherit chat model, got %q", cfg.LLM.Features.ImageRecognition.Model)
+	}
+}
+
 func TestLoadUsesExplicitFeatureModels(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma3:12b")
-	t.Setenv("LLM_FEATURE_SUMMARIZE_MODEL", "gpt-4.1-mini")
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "chat-model")
+	t.Setenv("LLM_FEATURE_SUMMARIZE_MODEL", "summary-model")
+	t.Setenv("LLM_FEATURE_IMAGE_RECOGNITION_MODEL", "vision-model")
 	t.Setenv("LLM_BACKEND_OPENAI_COMPAT_BASE_URL", "http://openai-compat.internal/v1")
 	t.Setenv("LLM_BACKEND_OPENAI_COMPAT_API_TOKEN", "secret")
 	t.Setenv("LLM_TOOL_LOOP_MAX_ITERATIONS", "9")
@@ -29,8 +55,14 @@ func TestLoadUsesExplicitFeatureModels(t *testing.T) {
 		t.Fatalf("unexpected openai-compatible base url: %q", cfg.LLM.Backends.OpenAICompat.BaseURL)
 	}
 
-	if cfg.LLM.Features.Summarize.Model != "gpt-4.1-mini" {
+	if cfg.LLM.Features.Chat.Model != "chat-model" {
+		t.Fatalf("unexpected chat model: %q", cfg.LLM.Features.Chat.Model)
+	}
+	if cfg.LLM.Features.Summarize.Model != "summary-model" {
 		t.Fatalf("unexpected summarize model: %q", cfg.LLM.Features.Summarize.Model)
+	}
+	if cfg.LLM.Features.ImageRecognition.Model != "vision-model" {
+		t.Fatalf("unexpected image recognition model: %q", cfg.LLM.Features.ImageRecognition.Model)
 	}
 
 	if cfg.LLM.ToolLoopMaxIterations != 9 {
@@ -38,8 +70,25 @@ func TestLoadUsesExplicitFeatureModels(t *testing.T) {
 	}
 }
 
+func TestDockerfileDoesNotBakeFeatureModelDefaults(t *testing.T) {
+	data, err := os.ReadFile("../../Dockerfile")
+	if err != nil {
+		t.Fatalf("read Dockerfile: %v", err)
+	}
+
+	for _, name := range []string{
+		"LLM_FEATURE_CHAT_MODEL",
+		"LLM_FEATURE_SUMMARIZE_MODEL",
+		"LLM_FEATURE_IMAGE_RECOGNITION_MODEL",
+	} {
+		if strings.Contains(string(data), name+"=") {
+			t.Fatalf("Dockerfile must not define %s default", name)
+		}
+	}
+}
+
 func TestLoadUsesStateDefaults(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma3:27b")
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
 
 	cfg := Load()
 
@@ -52,7 +101,7 @@ func TestLoadUsesStateDefaults(t *testing.T) {
 }
 
 func TestLoadUsesExplicitStateConfig(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma3:27b")
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
 	t.Setenv("STATE_MAX_BYTES", "123456")
 	t.Setenv("STATE_HISTORY_MAX_BYTES", "45678")
 	t.Setenv("STATE_HISTORY_STREAMS_MAX", "32")
@@ -79,7 +128,7 @@ func TestLoadUsesExplicitStateConfig(t *testing.T) {
 }
 
 func TestLoadUsesPersistentStorePath(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma3:27b")
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
 	t.Setenv("PERSISTENT_STORE_PATH", "/data/db.sqlite")
 
 	cfg := Load()
@@ -90,7 +139,7 @@ func TestLoadUsesPersistentStorePath(t *testing.T) {
 }
 
 func TestLoadUsesDefaultPersistentStorePath(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma3:27b")
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
 
 	cfg := Load()
 
@@ -100,7 +149,7 @@ func TestLoadUsesDefaultPersistentStorePath(t *testing.T) {
 }
 
 func TestLoadDefaultsSearchBackendToNone(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma3:27b")
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
 
 	cfg := Load()
 
@@ -113,7 +162,7 @@ func TestLoadDefaultsSearchBackendToNone(t *testing.T) {
 }
 
 func TestLoadUsesProviderOrientedSearchConfig(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma3:27b")
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
 	t.Setenv("SEARCH_BACKEND", SearchBackendChain)
 	t.Setenv("SEARCH_BACKEND_CHAIN", " tavily , kagi ")
 	t.Setenv("PROVIDER_TAVILY_API_KEY", "tavily-secret")
