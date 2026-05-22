@@ -69,7 +69,7 @@ func TestAdminPromptRendererUsesPerChatLanguageAndGender(t *testing.T) {
 		},
 	})
 
-	renderer := NewAdminPromptRenderer(svc)
+	renderer := NewAdminPromptRenderer(svc, true)
 	rendered, err := renderer.RenderChatSystemPrompt(context.Background(), PromptScope{ChatID: 5}, "gemma", "", "policy")
 	if err != nil {
 		t.Fatalf("render chat prompt: %v", err)
@@ -94,7 +94,7 @@ func TestAdminPromptRendererRendersToolPolicyInChatPrompt(t *testing.T) {
 		},
 	})
 
-	renderer := NewAdminPromptRenderer(svc)
+	renderer := NewAdminPromptRenderer(svc, true)
 	rendered, err := renderer.RenderChatSystemPrompt(context.Background(), PromptScope{}, "gemma", "ctx", "line one")
 	if err != nil {
 		t.Fatalf("render chat prompt: %v", err)

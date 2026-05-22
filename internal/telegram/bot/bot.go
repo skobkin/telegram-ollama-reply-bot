@@ -33,20 +33,21 @@ var (
 const TelegramCharLimit = 4000
 
 type Bot struct {
-	api        *t.Bot
-	llm        *llm.Service
-	extractor  extractor.Extractor
-	sanitizer  markdown.Sanitizer
-	stats      state.StatsStore
-	history    state.ConversationStore
-	me         botInfo
-	cfg        config.BotConfig
-	ctx        context.Context
-	imageCache state.ImageStore
-	replyCtx   *llmcontext.ReplyBuilder
-	logger     *slog.Logger
-	admin      *adminconfig.Service
-	tools      *tooluse.Runtime
+	api                     *t.Bot
+	llm                     *llm.Service
+	extractor               extractor.Extractor
+	sanitizer               markdown.Sanitizer
+	stats                   state.StatsStore
+	history                 state.ConversationStore
+	me                      botInfo
+	cfg                     config.BotConfig
+	ctx                     context.Context
+	imageCache              state.ImageStore
+	replyCtx                *llmcontext.ReplyBuilder
+	logger                  *slog.Logger
+	admin                   *adminconfig.Service
+	tools                   *tooluse.Runtime
+	imageRecognitionEnabled bool
 }
 
 func NewBot(
@@ -62,6 +63,7 @@ func NewBot(
 	admin *adminconfig.Service,
 	tools *tooluse.Runtime,
 	logger *slog.Logger,
+	imageRecognitionEnabled bool,
 ) *Bot {
 	if history == nil {
 		panic("history store is required")
@@ -77,19 +79,20 @@ func NewBot(
 	}
 
 	bot := &Bot{
-		api:        api,
-		llm:        llm,
-		extractor:  extractor,
-		sanitizer:  sanitizer,
-		stats:      stats,
-		history:    history,
-		me:         botInfo{},
-		cfg:        cfg,
-		ctx:        ctx,
-		imageCache: imageCache,
-		logger:     logger,
-		admin:      admin,
-		tools:      tools,
+		api:                     api,
+		llm:                     llm,
+		extractor:               extractor,
+		sanitizer:               sanitizer,
+		stats:                   stats,
+		history:                 history,
+		me:                      botInfo{},
+		cfg:                     cfg,
+		ctx:                     ctx,
+		imageCache:              imageCache,
+		logger:                  logger,
+		admin:                   admin,
+		tools:                   tools,
+		imageRecognitionEnabled: imageRecognitionEnabled,
 	}
 
 	bot.replyCtx = llmcontext.NewReplyBuilder(history, bot.hydrateMessagesWithImageDescriptions, cfg.UncompressedHistoryLimit)

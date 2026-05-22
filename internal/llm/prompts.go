@@ -28,14 +28,16 @@ type StaticPromptRenderer struct {
 	characterName            string
 	toneMode                 string
 	allowTeasing             bool
+	imageRecognitionEnabled  bool
 	maxSummaryLength         int
 }
 
 type AdminPromptRenderer struct {
-	config *adminconfig.Service
+	config                  *adminconfig.Service
+	imageRecognitionEnabled bool
 }
 
-func NewStaticPromptRenderer() (*StaticPromptRenderer, error) {
+func NewStaticPromptRenderer(imageRecognitionEnabled bool) (*StaticPromptRenderer, error) {
 	chatTmpl, err := template.New("chat").Parse(DefaultChatPromptTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("parse chat template: %w", err)
@@ -60,33 +62,36 @@ func NewStaticPromptRenderer() (*StaticPromptRenderer, error) {
 		characterName:            DefaultCharacterName,
 		toneMode:                 DefaultToneMode,
 		allowTeasing:             DefaultAllowTeasing,
+		imageRecognitionEnabled:  imageRecognitionEnabled,
 		maxSummaryLength:         DefaultMaxSummaryLength,
 	}, nil
 }
 
-func NewAdminPromptRenderer(config *adminconfig.Service) *AdminPromptRenderer {
-	return &AdminPromptRenderer{config: config}
+func NewAdminPromptRenderer(config *adminconfig.Service, imageRecognitionEnabled bool) *AdminPromptRenderer {
+	return &AdminPromptRenderer{config: config, imageRecognitionEnabled: imageRecognitionEnabled}
 }
 
 func (p *StaticPromptRenderer) RenderChatSystemPrompt(_ context.Context, _ PromptScope, model, compactContext, toolPolicy string) (string, error) {
 	return executeTemplate("chat", p.chatTemplate, struct {
-		Language      string
-		Model         string
-		Context       string
-		Gender        string
-		CharacterName string
-		ToneMode      string
-		AllowTeasing  bool
-		ToolPolicy    string
+		Language                string
+		Model                   string
+		Context                 string
+		Gender                  string
+		CharacterName           string
+		ToneMode                string
+		AllowTeasing            bool
+		ImageRecognitionEnabled bool
+		ToolPolicy              string
 	}{
-		Language:      p.language,
-		Model:         model,
-		Context:       compactContext,
-		Gender:        p.gender,
-		CharacterName: p.characterName,
-		ToneMode:      p.toneMode,
-		AllowTeasing:  p.allowTeasing,
-		ToolPolicy:    toolPolicy,
+		Language:                p.language,
+		Model:                   model,
+		Context:                 compactContext,
+		Gender:                  p.gender,
+		CharacterName:           p.characterName,
+		ToneMode:                p.toneMode,
+		AllowTeasing:            p.allowTeasing,
+		ImageRecognitionEnabled: p.imageRecognitionEnabled,
+		ToolPolicy:              toolPolicy,
 	})
 }
 
@@ -125,23 +130,25 @@ func (p *AdminPromptRenderer) RenderChatSystemPrompt(ctx context.Context, scope 
 	}
 
 	return executeTemplate("chat", tmpl, struct {
-		Language      string
-		Model         string
-		Context       string
-		Gender        string
-		CharacterName string
-		ToneMode      string
-		AllowTeasing  bool
-		ToolPolicy    string
+		Language                string
+		Model                   string
+		Context                 string
+		Gender                  string
+		CharacterName           string
+		ToneMode                string
+		AllowTeasing            bool
+		ImageRecognitionEnabled bool
+		ToolPolicy              string
 	}{
-		Language:      resolved.Language,
-		Model:         model,
-		Context:       compactContext,
-		Gender:        resolved.Gender,
-		CharacterName: resolved.CharacterName,
-		ToneMode:      resolved.ToneMode,
-		AllowTeasing:  resolved.AllowTeasing,
-		ToolPolicy:    toolPolicy,
+		Language:                resolved.Language,
+		Model:                   model,
+		Context:                 compactContext,
+		Gender:                  resolved.Gender,
+		CharacterName:           resolved.CharacterName,
+		ToneMode:                resolved.ToneMode,
+		AllowTeasing:            resolved.AllowTeasing,
+		ImageRecognitionEnabled: p.imageRecognitionEnabled,
+		ToolPolicy:              toolPolicy,
 	})
 }
 

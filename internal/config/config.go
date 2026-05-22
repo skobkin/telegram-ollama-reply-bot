@@ -31,9 +31,10 @@ const (
 
 // LLMConfig contains configuration for the LLM service.
 type LLMConfig struct {
-	Backends              BackendConfig
-	Features              FeatureConfig
-	ToolLoopMaxIterations int
+	Backends                BackendConfig
+	Features                FeatureConfig
+	ToolLoopMaxIterations   int
+	ImageRecognitionEnabled bool
 }
 
 // SentryConfig contains configuration for Sentry error tracking.
@@ -50,7 +51,6 @@ type LoggingConfig struct {
 type BotConfig struct {
 	AdminIDs                 []int64
 	Telegram                 TelegramConfig
-	ImageRecognitionEnabled  bool
 	UncompressedHistoryLimit int
 	HistorySummaryThreshold  int
 	ProcessingTimeout        time.Duration
@@ -121,7 +121,7 @@ type TelegramConfig struct {
 
 // Load creates a new Config instance populated from environment variables.
 func Load() *Config {
-	imageRecognitionEnabled := getEnvOrDefault("BOT_IMAGE_RECOGNITION_ENABLED", "true") == "true"
+	llmImageRecognitionEnabled := getEnvOrDefault("LLM_IMAGE_RECOGNITION_ENABLED", "true") == "true"
 	uncompressedHistoryLimit := intFromEnv("LLM_UNCOMPRESSED_HISTORY_LIMIT", 15)
 	historySummaryThreshold := intFromEnv("LLM_HISTORY_SUMMARY_THRESHOLD", 5)
 	processingTimeout := durationFromEnv("BOT_PROCESSING_TIMEOUT", 30*time.Second)
@@ -160,7 +160,8 @@ func Load() *Config {
 					Model: imageRecognitionModel,
 				},
 			},
-			ToolLoopMaxIterations: toolLoopMaxIterations,
+			ToolLoopMaxIterations:   toolLoopMaxIterations,
+			ImageRecognitionEnabled: llmImageRecognitionEnabled,
 		},
 		Sentry: SentryConfig{
 			DSN: os.Getenv("SENTRY_DSN"),
@@ -168,7 +169,6 @@ func Load() *Config {
 		Bot: BotConfig{
 			AdminIDs:                 adminIDsFromEnv("BOT_ADMIN_IDS"),
 			Telegram:                 TelegramConfig{Token: os.Getenv("TELEGRAM_TOKEN")},
-			ImageRecognitionEnabled:  imageRecognitionEnabled,
 			UncompressedHistoryLimit: uncompressedHistoryLimit,
 			HistorySummaryThreshold:  historySummaryThreshold,
 			ProcessingTimeout:        processingTimeout,

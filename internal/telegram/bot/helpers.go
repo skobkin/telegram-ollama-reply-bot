@@ -146,7 +146,7 @@ func (b *Bot) ensureMessageImageDescription(ctx context.Context, msg *state.Mess
 	}
 
 	if msg.HasImage && msg.ImageMeta != nil && msg.Image == "" {
-		if b.cfg.ImageRecognitionEnabled {
+		if b.imageRecognitionEnabled {
 			if desc, ok := b.imageCache.Get(msg.ImageMeta); ok {
 				msg.Image = desc
 			} else {

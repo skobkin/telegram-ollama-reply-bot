@@ -122,7 +122,7 @@ func TestServiceRejectsUnsupportedCapability(t *testing.T) {
 func TestServiceBuildChatToolRequestBuildsFeatureChatFromCompactContext(t *testing.T) {
 	t.Parallel()
 
-	templateProcessor, err := NewStaticPromptRenderer()
+	templateProcessor, err := NewStaticPromptRenderer(true)
 	if err != nil {
 		t.Fatalf("NewStaticPromptRenderer: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestServiceBuildChatToolRequestUsesChatScopedPromptAndResolvedPersona(t *te
 				Chat: config.FeatureRouteConfig{Model: "gpt"},
 			},
 		},
-		prompts: NewAdminPromptRenderer(adminconfig.NewService(store)),
+		prompts: NewAdminPromptRenderer(adminconfig.NewService(store), true),
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 

@@ -73,7 +73,7 @@ func Run(ctx context.Context) error {
 
 	adminService := adminconfig.NewService(persistentStore)
 
-	llmc, err := llm.NewService(cfg.LLM, llm.NewAdminPromptRenderer(adminService), logManager.Logger("llm"))
+	llmc, err := llm.NewService(cfg.LLM, llm.NewAdminPromptRenderer(adminService, cfg.LLM.ImageRecognitionEnabled), logManager.Logger("llm"))
 	if err != nil {
 		logger.Error("failed to initialize llm service", "error", err)
 		sentry.CaptureException(err)
@@ -151,6 +151,7 @@ func Run(ctx context.Context) error {
 		adminService,
 		tools,
 		logManager.Logger("telegram/bot"),
+		cfg.LLM.ImageRecognitionEnabled,
 	)
 
 	if err := botService.Run(); err != nil {

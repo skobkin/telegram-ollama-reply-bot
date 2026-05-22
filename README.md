@@ -38,8 +38,8 @@ The bot can be configured using the following environment variables:
 | `STATE_IMAGE_CACHE_TTL`                 | TTL for cached image descriptions. Accepts Go duration strings (e.g. `1h`, `24h`).                                | No       | `24h`                    |
 | `LLM_UNCOMPRESSED_HISTORY_LIMIT`        | Recent chat messages sent verbatim to LLM; older ones summarized. Set to `0` to disable summarization             | No       | 15                       |
 | `LLM_HISTORY_SUMMARY_THRESHOLD`         | Extra messages beyond the limit before summarization triggers again                                               | No       | 5                        |
+| `LLM_IMAGE_RECOGNITION_ENABLED`         | Toggle image recognition. Set to `false` to treat images as placeholders without making vision model calls.       | No       | `true`                   |
 | `BOT_PROCESSING_TIMEOUT`                | Timeout for processing incoming requests (includes LLM calls). Accepts Go duration strings (e.g. `45s`, `1m30s`). | No       | `30s`                    |
-| `BOT_IMAGE_RECOGNITION_ENABLED`         | Toggle image recognition. Set to `false` to treat images as placeholders without making vision model calls.       | No       | `true`                   |
 | `SEARCH_BACKEND`                        | External search backend for the `search_web` tool: `none`, `tavily`, `kagi`, or `chain`                           | No       | `none`                   |
 | `SEARCH_BACKEND_CHAIN`                  | Comma-separated backend order used when `SEARCH_BACKEND=chain`                                                    | No       | empty                    |
 | `PROVIDER_TAVILY_API_KEY`               | Tavily provider API key                                                                                           | No       | empty                    |
