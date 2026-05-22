@@ -146,18 +146,22 @@ func (b *Bot) ensureMessageImageDescription(ctx context.Context, msg *state.Mess
 	}
 
 	if msg.HasImage && msg.ImageMeta != nil && msg.Image == "" {
-		if desc, ok := b.imageCache.Get(msg.ImageMeta); ok {
-			msg.Image = desc
-		} else {
-			description, err := b.describeImage(ctx, msg.ImageMeta)
-			if err != nil {
-				b.loggerFromContext(ctx).Error("failed to describe image", "error", err, "file_id", msg.ImageMeta.FileID)
-				sentry.CaptureException(err)
+		if b.cfg.ImageRecognitionEnabled {
+			if desc, ok := b.imageCache.Get(msg.ImageMeta); ok {
+				msg.Image = desc
 			} else {
-				b.imageCache.Set(msg.ImageMeta, description)
-				msg.Image = description
-				b.loggerFromContext(ctx).Debug("image described", "file_id", msg.ImageMeta.FileID, "description_length", len(description))
+				description, err := b.describeImage(ctx, msg.ImageMeta)
+				if err != nil {
+					b.loggerFromContext(ctx).Error("failed to describe image", "error", err, "file_id", msg.ImageMeta.FileID)
+					sentry.CaptureException(err)
+				} else {
+					b.imageCache.Set(msg.ImageMeta, description)
+					msg.Image = description
+					b.loggerFromContext(ctx).Debug("image described", "file_id", msg.ImageMeta.FileID, "description_length", len(description))
+				}
 			}
+		} else {
+			msg.Image = "🖼️ Image attached (recognition disabled)"
 		}
 	}
 

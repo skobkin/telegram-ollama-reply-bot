@@ -50,6 +50,7 @@ type LoggingConfig struct {
 type BotConfig struct {
 	AdminIDs                 []int64
 	Telegram                 TelegramConfig
+	ImageRecognitionEnabled  bool
 	UncompressedHistoryLimit int
 	HistorySummaryThreshold  int
 	ProcessingTimeout        time.Duration
@@ -120,6 +121,7 @@ type TelegramConfig struct {
 
 // Load creates a new Config instance populated from environment variables.
 func Load() *Config {
+	imageRecognitionEnabled := getEnvOrDefault("BOT_IMAGE_RECOGNITION_ENABLED", "true") == "true"
 	uncompressedHistoryLimit := intFromEnv("LLM_UNCOMPRESSED_HISTORY_LIMIT", 15)
 	historySummaryThreshold := intFromEnv("LLM_HISTORY_SUMMARY_THRESHOLD", 5)
 	processingTimeout := durationFromEnv("BOT_PROCESSING_TIMEOUT", 30*time.Second)
@@ -166,6 +168,7 @@ func Load() *Config {
 		Bot: BotConfig{
 			AdminIDs:                 adminIDsFromEnv("BOT_ADMIN_IDS"),
 			Telegram:                 TelegramConfig{Token: os.Getenv("TELEGRAM_TOKEN")},
+			ImageRecognitionEnabled:  imageRecognitionEnabled,
 			UncompressedHistoryLimit: uncompressedHistoryLimit,
 			HistorySummaryThreshold:  historySummaryThreshold,
 			ProcessingTimeout:        processingTimeout,

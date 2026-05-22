@@ -186,3 +186,24 @@ func TestLoadUsesProviderOrientedSearchConfig(t *testing.T) {
 		t.Fatalf("unexpected kagi api key")
 	}
 }
+
+func TestLoadImageRecognitionEnabledDefaultsToTrue(t *testing.T) {
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
+
+	cfg := Load()
+
+	if !cfg.Bot.ImageRecognitionEnabled {
+		t.Fatalf("expected image recognition to be enabled by default")
+	}
+}
+
+func TestLoadImageRecognitionEnabledCanBeDisabled(t *testing.T) {
+	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
+	t.Setenv("BOT_IMAGE_RECOGNITION_ENABLED", "false")
+
+	cfg := Load()
+
+	if cfg.Bot.ImageRecognitionEnabled {
+		t.Fatalf("expected image recognition to be disabled")
+	}
+}
