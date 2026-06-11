@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadUsesFeatureDefaults(t *testing.T) {
@@ -215,9 +216,12 @@ func TestLoadUsesProviderOrientedSearchConfig(t *testing.T) {
 }
 
 func TestLoadImageRecognitionEnabledDefaultsToTrue(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
 
 	if !cfg.LLM.ImageRecognitionEnabled {
 		t.Fatalf("expected image recognition to be enabled by default")
@@ -225,12 +229,308 @@ func TestLoadImageRecognitionEnabledDefaultsToTrue(t *testing.T) {
 }
 
 func TestLoadImageRecognitionEnabledCanBeDisabled(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
-	t.Setenv("LLM_IMAGE_RECOGNITION_ENABLED", "false")
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("LLM__IMAGE_RECOGNITION_ENABLED", "false")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
 
 	if cfg.LLM.ImageRecognitionEnabled {
 		t.Fatalf("expected image recognition to be disabled")
+	}
+}
+
+func TestMCPConfigValidateAcceptsHTTPSServer(t *testing.T) {
+	c := MCPConfig{
+		Enabled: true,
+		Servers: map[string]MCPServerConfig{
+			"browser": {
+				URL: "https://mcp.example.com",
+			},
+		},
+	}
+
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMCPConfigValidateRejectsEmptyServerName(t *testing.T) {
+	c := MCPConfig{
+		Servers: map[string]MCPServerConfig{
+			"": {URL: "https://mcp.example.com"},
+		},
+	}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("expected error for empty server name")
+	}
+	if !strings.Contains(err.Error(), "server name must not be empty") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMCPConfigValidateRejectsEmptyURL(t *testing.T) {
+	c := MCPConfig{
+		Servers: map[string]MCPServerConfig{
+			"browser": {},
+		},
+	}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("expected error for empty URL")
+	}
+	if !strings.Contains(err.Error(), `mcp.servers.browser.url is required`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMCPConfigValidateRejectsHTTPWithoutInsecure(t *testing.T) {
+	c := MCPConfig{
+		Servers: map[string]MCPServerConfig{
+			"local": {URL: "http://localhost:8765/mcp"},
+		},
+	}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("expected error for http:// without insecure=true")
+	}
+	if !strings.Contains(err.Error(), "insecure=true") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMCPConfigValidateAllowsHTTPWithInsecure(t *testing.T) {
+	c := MCPConfig{
+		Servers: map[string]MCPServerConfig{
+			"local": {URL: "http://localhost:8765/mcp", Insecure: true},
+		},
+	}
+
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMCPConfigValidateRejectsUnsupportedScheme(t *testing.T) {
+	c := MCPConfig{
+		Servers: map[string]MCPServerConfig{
+			"weird": {URL: "ftp://mcp.example.com"},
+		},
+	}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("expected error for unsupported scheme")
+	}
+	if !strings.Contains(err.Error(), "unsupported scheme") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMCPConfigValidateRejectsInvalidURL(t *testing.T) {
+	c := MCPConfig{
+		Servers: map[string]MCPServerConfig{
+			"bad": {URL: "ht!tp://broken"},
+		},
+	}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("expected error for malformed URL")
+	}
+	if !strings.Contains(err.Error(), "is not a valid URL") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMCPConfigValidateRejectsOutOfRangeTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		timeout time.Duration
+	}{
+		{"too short", 500 * time.Millisecond},
+		{"too long", 2 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := MCPConfig{
+				Servers: map[string]MCPServerConfig{
+					"slow": {URL: "https://mcp.example.com", Timeout: tc.timeout},
+				},
+			}
+
+			err := c.Validate()
+			if err == nil {
+				t.Fatalf("expected error for timeout %s", tc.timeout)
+			}
+			if !strings.Contains(err.Error(), "out of range") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestMCPConfigValidateRejectsUnknownInvocationPolicy(t *testing.T) {
+	c := MCPConfig{
+		Servers: map[string]MCPServerConfig{
+			"browser": {URL: "https://mcp.example.com", InvocationPolicy: "sometimes"},
+		},
+	}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("expected error for unknown invocation policy")
+	}
+	if !strings.Contains(err.Error(), "invocation_policy") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMCPConfigValidateAcceptsKnownInvocationPolicies(t *testing.T) {
+	for _, policy := range []string{
+		InvocationPolicyExplicitRequestOnly,
+		InvocationPolicyDiscretionary,
+		InvocationPolicyDiscretionaryPaid,
+		"  " + InvocationPolicyDiscretionary + "  ",
+	} {
+		t.Run(policy, func(t *testing.T) {
+			c := MCPConfig{
+				Servers: map[string]MCPServerConfig{
+					"browser": {URL: "https://mcp.example.com", InvocationPolicy: policy},
+				},
+			}
+
+			if err := c.Validate(); err != nil {
+				t.Fatalf("unexpected error for policy %q: %v", policy, err)
+			}
+		})
+	}
+}
+
+func TestMCPConfigValidateRejectsEmptyHeaderName(t *testing.T) {
+	c := MCPConfig{
+		Servers: map[string]MCPServerConfig{
+			"browser": {
+				URL:     "https://mcp.example.com",
+				Headers: map[string]string{"": "value"},
+			},
+		},
+	}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("expected error for empty header name")
+	}
+	if !strings.Contains(err.Error(), "empty header name") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMCPConfigValidateHappyPath(t *testing.T) {
+	sideEffecting := false
+	c := MCPConfig{
+		Enabled: true,
+		Servers: map[string]MCPServerConfig{
+			"browser": {
+				URL:              "https://mcp.example.com",
+				Headers:          map[string]string{"Authorization": "Bearer secret"},
+				Timeout:          15 * time.Second,
+				InvocationPolicy: InvocationPolicyDiscretionary,
+				SideEffecting:    &sideEffecting,
+				AllowedTools:     []string{"fetch", " Summarize ", "fetch"},
+				RestrictedTools:  []string{"delete_history"},
+				Optional:         true,
+			},
+			"local": {
+				URL:      "http://localhost:8765/mcp",
+				Insecure: true,
+			},
+		},
+	}
+
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestInvocationPolicyFor(t *testing.T) {	cases := map[string]string{
+		"":                                       "",
+		"  ":                                     "",
+		"unknown":                                "",
+		InvocationPolicyExplicitRequestOnly:     InvocationPolicyExplicitRequestOnly,
+		"  " + InvocationPolicyDiscretionary:     InvocationPolicyDiscretionary,
+		InvocationPolicyDiscretionaryPaid:        InvocationPolicyDiscretionaryPaid,
+	}
+
+	for in, want := range cases {
+		t.Run(in, func(t *testing.T) {
+			if got := InvocationPolicyFor(in); got != want {
+				t.Fatalf("InvocationPolicyFor(%q) = %q, want %q", in, got, want)
+			}
+		})
+	}
+}
+
+func TestLoadUsesMCPConfigFromEnv(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("MCP__ENABLED", "true")
+	t.Setenv("MCP__SERVERS__BROWSER__URL", "https://mcp.example.com")
+	t.Setenv("MCP__SERVERS__BROWSER__TIMEOUT", "20s")
+	t.Setenv("MCP__SERVERS__BROWSER__INVOCATION_POLICY", InvocationPolicyDiscretionary)
+	t.Setenv("MCP__SERVERS__BROWSER__ALLOWED_TOOLS", "fetch, summarize , fetch")
+	t.Setenv("MCP__SERVERS__BROWSER__HEADERS__AUTHORIZATION", "Bearer secret")
+	t.Setenv("MCP__SERVERS__LOCAL__URL", "http://localhost:8765/mcp")
+	t.Setenv("MCP__SERVERS__LOCAL__INSECURE", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if !cfg.MCP.Enabled {
+		t.Fatalf("expected mcp.enabled=true")
+	}
+
+	browser, ok := cfg.MCP.Servers["browser"]
+	if !ok {
+		t.Fatalf("missing browser server")
+	}
+	if browser.URL != "https://mcp.example.com" {
+		t.Fatalf("unexpected browser url: %q", browser.URL)
+	}
+	if browser.Timeout != 20*time.Second {
+		t.Fatalf("unexpected timeout: %s", browser.Timeout)
+	}
+	if browser.InvocationPolicy != InvocationPolicyDiscretionary {
+		t.Fatalf("unexpected invocation policy: %q", browser.InvocationPolicy)
+	}
+	if got, want := browser.Headers["authorization"], "Bearer secret"; got != want {
+		t.Fatalf("unexpected header: %q", got)
+	}
+
+	local, ok := cfg.MCP.Servers["local"]
+	if !ok {
+		t.Fatalf("missing local server")
+	}
+	if !local.Insecure {
+		t.Fatalf("expected local server to be insecure")
+	}
+}
+
+func TestLoadRejectsInvalidMCPFromEnv(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("MCP__SERVERS__BROWSER__URL", "ftp://mcp.example.com")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatalf("expected load to fail on invalid MCP URL scheme")
+	}
+	if !strings.Contains(err.Error(), "unsupported scheme") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

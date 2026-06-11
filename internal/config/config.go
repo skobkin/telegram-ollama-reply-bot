@@ -9,6 +9,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -29,6 +30,7 @@ type Config struct {
 	Persistence PersistenceConfig `koanf:"persistent"`
 	Providers   ProvidersConfig   `koanf:"providers"`
 	Search      SearchConfig      `koanf:"search"`
+	MCP         MCPConfig         `koanf:"mcp"`
 }
 
 const (
@@ -97,6 +99,63 @@ type KagiProviderConfig struct {
 type SearchConfig struct {
 	Backend string   `koanf:"backend"`
 	Chain   []string `koanf:"chain"`
+}
+
+// MCPConfig contains configuration for Model Context Protocol (MCP) tool servers.
+//
+// Operators declare any number of MCP servers in `mcp.servers.<name>`. The bot
+// connects to each over Streamable HTTP at startup, discovers its tools, and
+// registers them on the existing tool registry. Each server's tools are scoped
+// to the server: per-server `allowed_tools` and `restricted_tools` only filter
+// tools advertised by that server, never the built-in tooluse tools.
+type MCPConfig struct {
+	Enabled bool                       `koanf:"enabled"`
+	Servers map[string]MCPServerConfig `koanf:"servers"`
+}
+
+// Invocation policy values accepted by `MCPServerConfig.InvocationPolicy` and
+// used by the bot when translating MCP tool annotations into the existing
+// tooluse package policy constants.
+const (
+	InvocationPolicyExplicitRequestOnly = "explicit_request_only"
+	InvocationPolicyDiscretionary       = "discretionary"
+	InvocationPolicyDiscretionaryPaid   = "discretionary_paid"
+)
+
+// InvocationPolicyFor returns the canonical string form of an invocation
+// policy, trimming surrounding whitespace. Unknown values return "" so callers
+// can distinguish "valid" from "unset / unrecognized".
+func InvocationPolicyFor(s string) string {
+	s = strings.TrimSpace(s)
+	switch s {
+	case InvocationPolicyExplicitRequestOnly, InvocationPolicyDiscretionary, InvocationPolicyDiscretionaryPaid:
+		return s
+	default:
+		return ""
+	}
+}
+
+// MCPServerConfig contains configuration for one MCP server.
+//
+// `URL` is required and must be HTTPS unless `Insecure` is true. `Headers` are
+// sent on every request; their values are never logged. `Timeout` is clamped to
+// `[1s, 60s]`. `InvocationPolicy` and `SideEffecting` are operator overrides for
+// the per-tool defaults derived from the MCP tool annotations (`readOnlyHint`
+// and `destructiveHint` respectively). `AllowedTools` is a whitelist; setting
+// it when none of the named tools exist on the server is a startup error
+// (catches typos early). `RestrictedTools` is a deny-list applied after
+// `AllowedTools`. `Optional` makes a server best-effort: on connection failure
+// the bot logs a warning and registers zero tools from that server.
+type MCPServerConfig struct {
+	URL              string            `koanf:"url"`
+	Headers          map[string]string `koanf:"headers"`
+	Timeout          time.Duration     `koanf:"timeout"`
+	Insecure         bool              `koanf:"insecure"`
+	InvocationPolicy string            `koanf:"invocation_policy"`
+	SideEffecting    *bool             `koanf:"side_effecting"`
+	AllowedTools     []string          `koanf:"allowed_tools"`
+	RestrictedTools  []string          `koanf:"restricted_tools"`
+	Optional         bool              `koanf:"optional"`
 }
 
 // StateConfig contains limits for the in-memory state store.
@@ -185,6 +244,10 @@ func Load() (*Config, error) {
 		cfg.LLM.Features.ImageRecognition.Model = cfg.LLM.Features.Chat.Model
 	}
 
+	if err := cfg.MCP.Validate(); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+
 	return &cfg, nil
 }
 
@@ -230,6 +293,79 @@ func (c LLMConfig) RouteForFeature(feature string) (FeatureRouteConfig, error) {
 	default:
 		return FeatureRouteConfig{}, fmt.Errorf("unknown feature %q", feature)
 	}
+}
+
+// Validate checks the MCP configuration for semantic problems. It is run
+// unconditionally on every boot, even when MCP is disabled, so that obvious
+// typos and URL-scheme mistakes are surfaced before the bot ever tries to
+// start. The checks are:
+//
+//   - `URL` is a valid HTTP or HTTPS URL; HTTPS is required unless `Insecure` is true.
+//   - `Timeout`, if set, is in `[1s, 60s]`. Zero means "use the package default".
+//   - `InvocationPolicy`, if non-empty, matches a known policy value.
+//   - `SideEffecting` nil is allowed (the bot derives it from `destructiveHint`).
+//   - `Headers` keys are non-empty (values are never validated; they are
+//     secrets and must not be logged at startup).
+func (c MCPConfig) Validate() error {
+	for name, server := range c.Servers {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("mcp.servers: server name must not be empty")
+		}
+		if err := server.validate(name); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s MCPServerConfig) validate(name string) error {
+	rawURL := strings.TrimSpace(s.URL)
+	if rawURL == "" {
+		return fmt.Errorf("mcp.servers.%s.url is required", name)
+	}
+
+	parsed, err := url.ParseRequestURI(rawURL)
+	if err != nil {
+		return fmt.Errorf("mcp.servers.%s.url %q is not a valid URL: %w", name, rawURL, err)
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+	switch scheme {
+	case "https":
+		// always allowed
+	case "http":
+		if !s.Insecure {
+			return fmt.Errorf("mcp.servers.%s.url %q uses http://; set mcp.servers.%s.insecure=true to allow it", name, rawURL, name)
+		}
+	default:
+		return fmt.Errorf("mcp.servers.%s.url %q has unsupported scheme %q (use https or http with insecure=true)", name, rawURL, parsed.Scheme)
+	}
+
+	if s.Timeout < 0 {
+		return fmt.Errorf("mcp.servers.%s.timeout must be >= 0, got %s", name, s.Timeout)
+	}
+
+	if s.Timeout > 0 && (s.Timeout < time.Second || s.Timeout > 60*time.Second) {
+		return fmt.Errorf("mcp.servers.%s.timeout %s is out of range [1s, 60s]", name, s.Timeout)
+	}
+
+	if s.InvocationPolicy != "" {
+		switch InvocationPolicyFor(s.InvocationPolicy) {
+		case InvocationPolicyExplicitRequestOnly, InvocationPolicyDiscretionary, InvocationPolicyDiscretionaryPaid:
+			// ok
+		default:
+			return fmt.Errorf("mcp.servers.%s.invocation_policy %q is not a known value (use explicit_request_only, discretionary, or discretionary_paid)", name, s.InvocationPolicy)
+		}
+	}
+
+	for headerName := range s.Headers {
+		if strings.TrimSpace(headerName) == "" {
+			return fmt.Errorf("mcp.servers.%s.headers contains an empty header name", name)
+		}
+	}
+
+	return nil
 }
 
 // csvInt64SliceHook parses a comma-separated string of decimal integers into a
