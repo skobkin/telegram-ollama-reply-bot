@@ -17,10 +17,10 @@ COPY --from=builder /tmp/app .
 
 VOLUME ["/data"]
 
-ENV LLM_BACKEND_OPENAI_COMPAT_BASE_URL="" \
-    LLM_BACKEND_OPENAI_COMPAT_API_TOKEN="" \
-    TELEGRAM_TOKEN="" \
-    PERSISTENT_STORE_PATH="/data/db.sqlite" \
-    LOG_LEVEL="info"
+ENV LLM__BACKENDS__OPENAI_COMPAT__BASE_URL="" \
+    LLM__BACKENDS__OPENAI_COMPAT__API_TOKEN="" \
+    BOT__TELEGRAM__TOKEN="" \
+    PERSISTENT__STORE_PATH="/data/db.sqlite" \
+    LOG__LEVEL="info"
 
 CMD ["/app/app"]

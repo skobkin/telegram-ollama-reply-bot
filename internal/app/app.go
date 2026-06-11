@@ -25,7 +25,10 @@ import (
 )
 
 func Run(ctx context.Context) error {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
 	logManager, err := logging.NewManager(logging.Options{
 		Level:      cfg.Logging.Level,
 		SetDefault: true,

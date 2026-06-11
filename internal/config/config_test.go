@@ -7,9 +7,12 @@ import (
 )
 
 func TestLoadUsesFeatureDefaults(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
 
 	if cfg.LLM.Features.Chat.Model != "gemma4:e4b" {
 		t.Fatalf("unexpected chat model: %q", cfg.LLM.Features.Chat.Model)
@@ -27,11 +30,14 @@ func TestLoadUsesFeatureDefaults(t *testing.T) {
 }
 
 func TestLoadUsesFeatureDefaultsForEmptyOptionalModels(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
-	t.Setenv("LLM_FEATURE_SUMMARIZE_MODEL", "")
-	t.Setenv("LLM_FEATURE_IMAGE_RECOGNITION_MODEL", "")
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("LLM__FEATURES__SUMMARIZE__MODEL", "")
+	t.Setenv("LLM__FEATURES__IMAGE_RECOGNITION__MODEL", "")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
 
 	if cfg.LLM.Features.Summarize.Model != "gemma4:e4b" {
 		t.Fatalf("expected empty summarize model to inherit chat model, got %q", cfg.LLM.Features.Summarize.Model)
@@ -42,14 +48,17 @@ func TestLoadUsesFeatureDefaultsForEmptyOptionalModels(t *testing.T) {
 }
 
 func TestLoadUsesExplicitFeatureModels(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "chat-model")
-	t.Setenv("LLM_FEATURE_SUMMARIZE_MODEL", "summary-model")
-	t.Setenv("LLM_FEATURE_IMAGE_RECOGNITION_MODEL", "vision-model")
-	t.Setenv("LLM_BACKEND_OPENAI_COMPAT_BASE_URL", "http://openai-compat.internal/v1")
-	t.Setenv("LLM_BACKEND_OPENAI_COMPAT_API_TOKEN", "secret")
-	t.Setenv("LLM_TOOL_LOOP_MAX_ITERATIONS", "9")
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "chat-model")
+	t.Setenv("LLM__FEATURES__SUMMARIZE__MODEL", "summary-model")
+	t.Setenv("LLM__FEATURES__IMAGE_RECOGNITION__MODEL", "vision-model")
+	t.Setenv("LLM__BACKENDS__OPENAI_COMPAT__BASE_URL", "http://openai-compat.internal/v1")
+	t.Setenv("LLM__BACKENDS__OPENAI_COMPAT__API_TOKEN", "secret")
+	t.Setenv("LLM__TOOL_LOOP_MAX_ITERATIONS", "9")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
 
 	if cfg.LLM.Backends.OpenAICompat.BaseURL != "http://openai-compat.internal/v1" {
 		t.Fatalf("unexpected openai-compatible base url: %q", cfg.LLM.Backends.OpenAICompat.BaseURL)
@@ -77,9 +86,9 @@ func TestDockerfileDoesNotBakeFeatureModelDefaults(t *testing.T) {
 	}
 
 	for _, name := range []string{
-		"LLM_FEATURE_CHAT_MODEL",
-		"LLM_FEATURE_SUMMARIZE_MODEL",
-		"LLM_FEATURE_IMAGE_RECOGNITION_MODEL",
+		"LLM__FEATURES__CHAT__MODEL",
+		"LLM__FEATURES__SUMMARIZE__MODEL",
+		"LLM__FEATURES__IMAGE_RECOGNITION__MODEL",
 	} {
 		if strings.Contains(string(data), name+"=") {
 			t.Fatalf("Dockerfile must not define %s default", name)
@@ -88,9 +97,12 @@ func TestDockerfileDoesNotBakeFeatureModelDefaults(t *testing.T) {
 }
 
 func TestLoadUsesStateDefaults(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
 
 	if cfg.State.HistoryStreamsMax != 1024 {
 		t.Fatalf("unexpected history streams max: %d", cfg.State.HistoryStreamsMax)
@@ -101,14 +113,17 @@ func TestLoadUsesStateDefaults(t *testing.T) {
 }
 
 func TestLoadUsesExplicitStateConfig(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
-	t.Setenv("STATE_MAX_BYTES", "123456")
-	t.Setenv("STATE_HISTORY_MAX_BYTES", "45678")
-	t.Setenv("STATE_HISTORY_STREAMS_MAX", "32")
-	t.Setenv("STATE_IMAGE_CACHE_MAX_BYTES", "8192")
-	t.Setenv("STATE_IMAGE_CACHE_TTL", "45m")
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("STATE__MAX_BYTES", "123456")
+	t.Setenv("STATE__HISTORY_MAX_BYTES", "45678")
+	t.Setenv("STATE__HISTORY_STREAMS_MAX", "32")
+	t.Setenv("STATE__IMAGE_CACHE_MAX_BYTES", "8192")
+	t.Setenv("STATE__IMAGE_CACHE_TTL", "45m")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
 
 	if cfg.State.MaxBytes != 123456 {
 		t.Fatalf("unexpected state max bytes: %d", cfg.State.MaxBytes)
@@ -128,10 +143,13 @@ func TestLoadUsesExplicitStateConfig(t *testing.T) {
 }
 
 func TestLoadUsesPersistentStorePath(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
-	t.Setenv("PERSISTENT_STORE_PATH", "/data/db.sqlite")
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("PERSISTENT__STORE_PATH", "/data/db.sqlite")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
 
 	if cfg.Persistence.StorePath != "/data/db.sqlite" {
 		t.Fatalf("unexpected persistent store path: %q", cfg.Persistence.StorePath)
@@ -139,9 +157,12 @@ func TestLoadUsesPersistentStorePath(t *testing.T) {
 }
 
 func TestLoadUsesDefaultPersistentStorePath(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
 
 	if cfg.Persistence.StorePath != "/data/db.sqlite" {
 		t.Fatalf("unexpected default persistent store path: %q", cfg.Persistence.StorePath)
@@ -149,9 +170,12 @@ func TestLoadUsesDefaultPersistentStorePath(t *testing.T) {
 }
 
 func TestLoadDefaultsSearchBackendToNone(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
 
 	if cfg.Search.Backend != SearchBackendNone {
 		t.Fatalf("unexpected search backend: %q", cfg.Search.Backend)
@@ -162,13 +186,16 @@ func TestLoadDefaultsSearchBackendToNone(t *testing.T) {
 }
 
 func TestLoadUsesProviderOrientedSearchConfig(t *testing.T) {
-	t.Setenv("LLM_FEATURE_CHAT_MODEL", "gemma4:e4b")
-	t.Setenv("SEARCH_BACKEND", SearchBackendChain)
-	t.Setenv("SEARCH_BACKEND_CHAIN", " tavily , kagi ")
-	t.Setenv("PROVIDER_TAVILY_API_KEY", "tavily-secret")
-	t.Setenv("PROVIDER_KAGI_API_KEY", "kagi-secret")
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("SEARCH__BACKEND", SearchBackendChain)
+	t.Setenv("SEARCH__CHAIN", " tavily , kagi ")
+	t.Setenv("PROVIDERS__TAVILY__API_KEY", "tavily-secret")
+	t.Setenv("PROVIDERS__KAGI__API_KEY", "kagi-secret")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
 
 	if cfg.Search.Backend != SearchBackendChain {
 		t.Fatalf("unexpected search backend: %q", cfg.Search.Backend)

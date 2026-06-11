@@ -1,5 +1,60 @@
 # Upgrade Notes
 
+## Configuration loader migrated to Koanf (env var path delimiter changed to `__`)
+
+The hand-rolled environment loader was replaced with
+[`knadh/koanf`](https://github.com/knadh/koanf) v2 using its
+[`env/v2`](https://pkg.go.dev/github.com/knadh/koanf/providers/env/v2) provider.
+The provider splits env var names on a `__` delimiter to build a config path
+through the `Config` struct; snake_case `_` inside a single path segment is
+preserved as-is. As a result, every bot env var has been renamed.
+
+This is a breaking change. Containers started with the old env var names will
+silently fall back to defaults (or fail to boot when a required value is
+missing). Rename every variable in your deployment before pulling the new
+image.
+
+The full mapping:
+
+| Old (single underscore)                          | New (double underscore)                              |
+|--------------------------------------------------|------------------------------------------------------|
+| `TELEGRAM_TOKEN`                                 | `BOT__TELEGRAM__TOKEN`                               |
+| `LLM_BACKEND_OPENAI_COMPAT_BASE_URL`             | `LLM__BACKENDS__OPENAI_COMPAT__BASE_URL`             |
+| `LLM_BACKEND_OPENAI_COMPAT_API_TOKEN`            | `LLM__BACKENDS__OPENAI_COMPAT__API_TOKEN`            |
+| `LLM_FEATURE_CHAT_MODEL`                         | `LLM__FEATURES__CHAT__MODEL`                         |
+| `LLM_FEATURE_SUMMARIZE_MODEL`                    | `LLM__FEATURES__SUMMARIZE__MODEL`                    |
+| `LLM_FEATURE_IMAGE_RECOGNITION_MODEL`            | `LLM__FEATURES__IMAGE_RECOGNITION__MODEL`            |
+| `LLM_TOOL_LOOP_MAX_ITERATIONS`                   | `LLM__TOOL_LOOP_MAX_ITERATIONS`                     |
+| `LLM_UNCOMPRESSED_HISTORY_LIMIT`                 | `LLM__UNCOMPRESSED_HISTORY_LIMIT`                   |
+| `LLM_HISTORY_SUMMARY_THRESHOLD`                  | `LLM__HISTORY_SUMMARY_THRESHOLD`                    |
+| `BOT_ADMIN_IDS`                                  | `BOT__ADMIN_IDS`                                    |
+| `BOT_PROCESSING_TIMEOUT`                         | `BOT__PROCESSING_TIMEOUT`                           |
+| `STATE_MAX_BYTES`                                | `STATE__MAX_BYTES`                                  |
+| `STATE_HISTORY_MAX_BYTES`                        | `STATE__HISTORY_MAX_BYTES`                          |
+| `STATE_HISTORY_STREAMS_MAX`                      | `STATE__HISTORY_STREAMS_MAX`                        |
+| `STATE_IMAGE_CACHE_MAX_BYTES`                    | `STATE__IMAGE_CACHE_MAX_BYTES`                      |
+| `STATE_IMAGE_CACHE_TTL`                          | `STATE__IMAGE_CACHE_TTL`                            |
+| `SENTRY_DSN`                                     | `SENTRY__DSN`                                       |
+| `LOG_LEVEL`                                      | `LOG__LEVEL`                                        |
+| `PERSISTENT_STORE_PATH`                          | `PERSISTENT__STORE_PATH`                            |
+| `PROVIDER_TAVILY_API_KEY`                        | `PROVIDERS__TAVILY__API_KEY`                        |
+| `PROVIDER_KAGI_API_KEY`                          | `PROVIDERS__KAGI__API_KEY`                          |
+| `SEARCH_BACKEND`                                 | `SEARCH__BACKEND`                                   |
+| `SEARCH_BACKEND_CHAIN`                           | `SEARCH__CHAIN`                                     |
+
+Notes:
+
+- `PROVIDER_*` is now `PROVIDERS__*` (the key was previously singular).
+- `SEARCH_BACKEND_CHAIN` was folded into the `SEARCH__CHAIN` config field
+  (the `SEARCH_BACKEND__CHAIN` sub-key is no longer supported).
+- Defaults are unchanged. See `README.md` for the current defaults and the
+  full env var table.
+
+The `internal/config.Load()` signature changed from `Load() *Config` to
+`Load() (*Config, error)`. Errors are returned when an env value is present
+but cannot be parsed (e.g. an integer that fails to convert). Callers must
+handle the new error return.
+
 ## 2026-05-18 Changes against previous stable version.
 
 These notes are for users upgrading from previous stable to the latest version that introduces persistent admin configuration, privacy-bounded in-memory state, tool-assisted chat, reminders, optional web search, and OpenAI-compatible-only LLM access.

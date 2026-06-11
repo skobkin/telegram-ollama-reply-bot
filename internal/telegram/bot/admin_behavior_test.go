@@ -109,7 +109,7 @@ func TestAdminControlsDisabledTextIncludesUserID(t *testing.T) {
 	t.Parallel()
 
 	text := adminControlsDisabledText(&tg.User{ID: 123456789})
-	expected := "Admin controls are disabled: BOT_ADMIN_IDS is empty.\nYour Telegram user ID: 123456789\nSet BOT_ADMIN_IDS=123456789"
+	expected := "Admin controls are disabled: BOT__ADMIN_IDS is empty.\nYour Telegram user ID: 123456789\nSet BOT__ADMIN_IDS=123456789"
 
 	if text != expected {
 		t.Fatalf("unexpected text: expected %q, got %q", expected, text)
@@ -120,7 +120,7 @@ func TestAdminControlsDisabledTextWithoutUser(t *testing.T) {
 	t.Parallel()
 
 	text := adminControlsDisabledText(nil)
-	expected := "Admin controls are disabled: BOT_ADMIN_IDS is empty."
+	expected := "Admin controls are disabled: BOT__ADMIN_IDS is empty."
 
 	if text != expected {
 		t.Fatalf("unexpected text: expected %q, got %q", expected, text)

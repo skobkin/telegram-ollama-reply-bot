@@ -407,14 +407,14 @@ func (b *Bot) sendAdminError(ctx context.Context, message t.Message, err error) 
 }
 
 func adminControlsDisabledText(user *t.User) string {
-	text := "Admin controls are disabled: BOT_ADMIN_IDS is empty."
+	text := "Admin controls are disabled: BOT__ADMIN_IDS is empty."
 	if user == nil {
 		return text
 	}
 
 	userID := strconv.FormatInt(user.ID, 10)
 
-	return text + "\nYour Telegram user ID: " + userID + "\nSet BOT_ADMIN_IDS=" + userID
+	return text + "\nYour Telegram user ID: " + userID + "\nSet BOT__ADMIN_IDS=" + userID
 }
 
 func formatConfigFields(fields []string) string {
