@@ -37,6 +37,11 @@ const (
 	datetimeFormatResultCharBudget      = 700
 )
 
+// ToolResult is the value a Handler returns to the runtime. It is exported
+// as a type alias so packages outside `tooluse` (notably the MCP adapter in
+// `internal/mcp`) can write handler closures that satisfy the Handler type.
+type ToolResult = toolResult
+
 type Handler func(ctx context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error)
 
 type Definition struct {
@@ -247,6 +252,28 @@ func (r *Registry) Lookup(name string) (Definition, bool) {
 	definition, ok := r.definitions[name]
 
 	return definition, ok
+}
+
+// Register adds a new tool definition to the registry and includes it in the
+// default set returned to the LLM. Re-registering an existing name replaces
+// the prior definition; this is intentionally permissive so the MCP adapter
+// can re-publish a tool after a reconnect without first having to deregister
+// it (Deregister is intentionally absent — see plan for the list_changed
+// follow-up).
+//
+// Callers are responsible for ensuring the namespaced name does not collide
+// with a built-in tool; the MCP translator enforces this at translation time.
+func (r *Registry) Register(d Definition) {
+	if r.definitions == nil {
+		r.definitions = make(map[string]Definition)
+	}
+	if r.defaults == nil {
+		r.defaults = make([]string, 0)
+	}
+	if _, exists := r.definitions[d.Name]; !exists {
+		r.defaults = append(r.defaults, d.Name)
+	}
+	r.definitions[d.Name] = d
 }
 
 func isValidToolURL(raw string) bool {

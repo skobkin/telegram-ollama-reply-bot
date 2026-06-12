@@ -153,6 +153,7 @@ type MCPServerConfig struct {
 	Insecure         bool              `koanf:"insecure"`
 	InvocationPolicy string            `koanf:"invocation_policy"`
 	SideEffecting    *bool             `koanf:"side_effecting"`
+	ResultCharBudget int               `koanf:"result_char_budget"`
 	AllowedTools     []string          `koanf:"allowed_tools"`
 	RestrictedTools  []string          `koanf:"restricted_tools"`
 	Optional         bool              `koanf:"optional"`

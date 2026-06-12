@@ -1,5 +1,35 @@
 # Upgrade Notes
 
+## Optional external MCP tool servers (Streamable HTTP)
+
+The bot can now connect to one or more external [Model Context Protocol](https://modelcontextprotocol.io)
+(MCP) servers over the Streamable HTTP transport and expose their tools to the LLM alongside the built-ins.
+Each remote tool is registered under the namespaced name `mcp_<server>__<tool>` (lowercased and
+`[a-z0-9_]`-normalized). MCP is off by default; nothing is required to keep using the bot as before.
+
+New env vars (all under `MCP__SERVERS__<NAME>__*`):
+
+| Variable                                  | Description                                                                                              |
+|-------------------------------------------|----------------------------------------------------------------------------------------------------------|
+| `MCP__SERVERS__<NAME>__URL`               | Streamable HTTP endpoint (e.g. `https://mcp.example.com/mcp`)                                            |
+| `MCP__SERVERS__<NAME>__HEADERS__<KEY>`    | HTTP header sent to that server. Values are never logged.                                                |
+| `MCP__SERVERS__<NAME>__INSECURE`          | Allow plain `http://` for this server.                                                                   |
+| `MCP__SERVERS__<NAME>__INVOCATION_POLICY` | Default invocation policy: `discretionary` or `explicit_request_only`.                                  |
+| `MCP__SERVERS__<NAME>__SIDE_EFFECTING`    | Force `true`/`false` for the side-effecting flag.                                                        |
+| `MCP__SERVERS__<NAME>__ALLOWED_TOOLS`     | Whitelist of tool names to expose. Misnamed entries fail at startup.                                     |
+| `MCP__SERVERS__<NAME>__RESTRICTED_TOOLS`  | Deny-list of tool names to drop.                                                                         |
+| `MCP__SERVERS__<NAME>__OPTIONAL`          | When `true`, a connection failure on startup is logged and skipped instead of aborting the bot.         |
+
+Notable behaviours:
+
+- HTTPS is the default per server; `INSECURE=true` is required to use a `http://` URL.
+- An entry in `ALLOWED_TOOLS` that the server does not advertise is a hard startup error (catches typos early).
+- The default invocation policy is `discretionary` for tools with `readOnlyHint=true`, and `explicit_request_only`
+  otherwise. The default side-effecting flag is `destructiveHint`, treated as `true` when the annotation is
+  absent; `readOnlyHint=true` always forces the side-effecting flag to `false` per the MCP spec.
+- A successful `MCP__SERVERS__*` config registers only the namespaced tools; the built-in toolset is untouched.
+- STDIO transport is intentionally not supported in this iteration; only Streamable HTTP is wired.
+
 ## Configuration loader migrated to Koanf (env var path delimiter changed to `__`)
 
 The hand-rolled environment loader was replaced with

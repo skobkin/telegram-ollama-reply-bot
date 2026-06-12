@@ -17,6 +17,7 @@
   - Current-time lookup
   - Poll creation
   - Durable reminders
+- Optional [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers that publish additional tools at startup (Streamable HTTP transport)
 
 ## Configuration
 
@@ -48,6 +49,14 @@ The bot can be configured using the following environment variables:
 | `SENTRY__DSN`                                       | Sentry DSN for error tracking                                                                                     | No       | empty                    |
 | `PERSISTENT__STORE_PATH`                            | Path to the SQLite database used for durable bot data                                                             | No       | `/data/db.sqlite`        |
 | `BOT__ADMIN_IDS`                                    | Comma-separated list of admin user IDs                                                                            | No       | empty                    |
+| `MCP__SERVERS__<NAME>__URL`                         | Streamable HTTP endpoint of an MCP server (e.g. `https://mcp.example.com/mcp`)                                    | No       | empty                    |
+| `MCP__SERVERS__<NAME>__HEADERS__<KEY>`             | HTTP header sent to that MCP server (e.g. `Authorization=Bearer …`). Values are never logged.                     | No       | empty                    |
+| `MCP__SERVERS__<NAME>__INSECURE`                   | Allow plain `http://` for this server. Required for local development.                                            | No       | `false`                  |
+| `MCP__SERVERS__<NAME>__INVOCATION_POLICY`          | Default invocation policy for tools from this server: `discretionary` or `explicit_request_only`                 | No       | derived from `readOnlyHint` |
+| `MCP__SERVERS__<NAME>__SIDE_EFFECTING`             | Force `true`/`false` for the side-effecting flag of every tool from this server                                   | No       | derived from `destructiveHint` |
+| `MCP__SERVERS__<NAME>__ALLOWED_TOOLS`              | Comma-separated whitelist of tool names to expose from this server. Misnamed entries fail at startup.            | No       | empty                    |
+| `MCP__SERVERS__<NAME>__RESTRICTED_TOOLS`           | Comma-separated deny-list of tool names to drop from this server                                                  | No       | empty                    |
+| `MCP__SERVERS__<NAME>__OPTIONAL`                   | When `true`, a connection failure on startup is logged and skipped instead of aborting the bot                    | No       | `false`                  |
 
 ### Prompt and persona management
 
@@ -98,6 +107,40 @@ Ordinary chat replies always use the tool-capable chat workflow. `LLM__FEATURES_
 - `send_quiz` for explicit quiz and trivia requests
 - `send_dice` for explicit dice-roll and mini-game requests
 - `list_chat_schedule`, `add_schedule_item`, `remove_schedule_item` for durable chat reminders
+
+### External MCP tools
+
+The bot can also expose tools published by external [Model Context Protocol](https://modelcontextprotocol.io) (MCP)
+servers over Streamable HTTP. Each configured server is connected at startup, its `tools/list` is fetched, and
+each remote tool is registered under the namespaced name `mcp_<server>__<tool>` (lowercased and `[a-z0-9_]`-normalized).
+The LLM sees MCP tools alongside the built-ins; tool calls are routed back to the originating server.
+
+Header values are never written to logs.
+
+A worked example: a hosted browser/search MCP server with bearer-token auth, only exposing two specific tools:
+
+```env
+MCP__SERVERS__BROWSER__URL=https://mcp.example.com/mcp
+MCP__SERVERS__BROWSER__HEADERS__AUTHORIZATION=Bearer secret-token
+MCP__SERVERS__BROWSER__ALLOWED_TOOLS=fetch_url,summarize_page
+```
+
+A local development server (plain HTTP, fail-soft):
+
+```env
+MCP__SERVERS__LOCAL__URL=http://localhost:8765/mcp
+MCP__SERVERS__LOCAL__INSECURE=true
+MCP__SERVERS__LOCAL__OPTIONAL=true
+```
+
+Startup behaviour:
+
+- If a server's `URL` is unreachable, the bot fails to start unless `OPTIONAL=true` is set for that server.
+- An entry in `ALLOWED_TOOLS` that the server does not advertise is a hard startup error (catches typos early).
+- Tool invocation policy defaults to `discretionary` when the server's tool annotation sets `readOnlyHint=true`,
+  and `explicit_request_only` otherwise. The default side-effecting flag is `destructiveHint` (treated as `true`
+  when the annotation is absent), and is forced to `false` whenever `readOnlyHint=true` per the MCP spec.
+- `INSECURE=true` is required to use a `http://` URL. HTTPS is the default and is enforced per server.
 
 Reminder behavior in the first implementation slice:
 
@@ -165,6 +208,8 @@ docker run \
   -e LOG__LEVEL=info \
   -e SENTRY__DSN=https://your-sentry-dsn \
   -e BOT__ADMIN_IDS=123456789,987654321 \
+  -e MCP__SERVERS__BROWSER__URL=https://mcp.example.com/mcp \
+  -e MCP__SERVERS__BROWSER__HEADERS__AUTHORIZATION="Bearer secret-token" \
   -v bot-data:/data \
   skobkin/telegram-llm-bot
 ```

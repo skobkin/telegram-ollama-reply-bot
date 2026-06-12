@@ -52,6 +52,12 @@ type Runtime struct {
 	logger    *slog.Logger
 	config    Config
 	registry  *Registry
+	closers   []registeredCloser
+}
+
+type registeredCloser struct {
+	name   string
+	closer func() error
 }
 
 func New(llmService llmService, history state.ConversationStore, extractor extractor.Extractor, searcher search.Searcher, actions TelegramActionSender, reminderService *reminders.Service, logger *slog.Logger, cfg Config) *Runtime {
@@ -78,6 +84,59 @@ func New(llmService llmService, history state.ConversationStore, extractor extra
 	runtime.registry = newRegistry(runtime)
 
 	return runtime
+}
+
+// MCPToolSource is the minimal contract the runtime needs from an MCP
+// manager: a slice of translated definitions to install, and a closer to
+// call at shutdown. The interface keeps `tooluse` from importing the MCP
+// package directly and lets tests stub the manager trivially.
+type MCPToolSource interface {
+	Definitions() []Definition
+	Close() error
+}
+
+// AttachMCP registers every tool the source currently advertises and wires
+// a shutdown closer. It is a no-op when `source` is nil so the application
+// layer can call it unconditionally. Re-calling replaces the previous source.
+func (r *Runtime) AttachMCP(name string, source MCPToolSource) {
+	if source == nil {
+		return
+	}
+	for _, def := range source.Definitions() {
+		r.registry.Register(def)
+	}
+	r.RegisterCloser(name, source.Close)
+}
+
+// RegisterCloser adds a shutdown hook (e.g. closing an MCP session pool).
+// Closers run LIFO on Close; duplicate names replace the previous closer so
+// the same source can be re-attached without leaking stale shutdown hooks.
+func (r *Runtime) RegisterCloser(name string, closer func() error) {
+	if closer == nil {
+		return
+	}
+	for i, existing := range r.closers {
+		if existing.name == name {
+			r.closers[i].closer = closer
+
+			return
+		}
+	}
+	r.closers = append(r.closers, registeredCloser{name: name, closer: closer})
+}
+
+// Close runs every registered closer in LIFO order, logging (but not
+// propagating) individual errors so the caller can use it from a defer.
+func (r *Runtime) Close() {
+	if len(r.closers) == 0 {
+		return
+	}
+	for i := len(r.closers) - 1; i >= 0; i-- {
+		if err := r.closers[i].closer(); err != nil {
+			r.logger.Warn("tool runtime closer failed", "closer", r.closers[i].name, "error", err)
+		}
+	}
+	r.closers = nil
 }
 
 func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (string, *llm.TokenUsage, error) {

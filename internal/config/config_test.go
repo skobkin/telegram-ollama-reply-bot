@@ -442,6 +442,7 @@ func TestMCPConfigValidateHappyPath(t *testing.T) {
 				Timeout:          15 * time.Second,
 				InvocationPolicy: InvocationPolicyDiscretionary,
 				SideEffecting:    &sideEffecting,
+				ResultCharBudget: 4200,
 				AllowedTools:     []string{"fetch", " Summarize ", "fetch"},
 				RestrictedTools:  []string{"delete_history"},
 				Optional:         true,
@@ -458,13 +459,14 @@ func TestMCPConfigValidateHappyPath(t *testing.T) {
 	}
 }
 
-func TestInvocationPolicyFor(t *testing.T) {	cases := map[string]string{
-		"":                                       "",
-		"  ":                                     "",
-		"unknown":                                "",
-		InvocationPolicyExplicitRequestOnly:     InvocationPolicyExplicitRequestOnly,
-		"  " + InvocationPolicyDiscretionary:     InvocationPolicyDiscretionary,
-		InvocationPolicyDiscretionaryPaid:        InvocationPolicyDiscretionaryPaid,
+func TestInvocationPolicyFor(t *testing.T) {
+	cases := map[string]string{
+		"":                                   "",
+		"  ":                                 "",
+		"unknown":                            "",
+		InvocationPolicyExplicitRequestOnly:  InvocationPolicyExplicitRequestOnly,
+		"  " + InvocationPolicyDiscretionary: InvocationPolicyDiscretionary,
+		InvocationPolicyDiscretionaryPaid:    InvocationPolicyDiscretionaryPaid,
 	}
 
 	for in, want := range cases {
@@ -482,6 +484,7 @@ func TestLoadUsesMCPConfigFromEnv(t *testing.T) {
 	t.Setenv("MCP__SERVERS__BROWSER__URL", "https://mcp.example.com")
 	t.Setenv("MCP__SERVERS__BROWSER__TIMEOUT", "20s")
 	t.Setenv("MCP__SERVERS__BROWSER__INVOCATION_POLICY", InvocationPolicyDiscretionary)
+	t.Setenv("MCP__SERVERS__BROWSER__RESULT_CHAR_BUDGET", "5000")
 	t.Setenv("MCP__SERVERS__BROWSER__ALLOWED_TOOLS", "fetch, summarize , fetch")
 	t.Setenv("MCP__SERVERS__BROWSER__HEADERS__AUTHORIZATION", "Bearer secret")
 	t.Setenv("MCP__SERVERS__LOCAL__URL", "http://localhost:8765/mcp")
@@ -508,6 +511,9 @@ func TestLoadUsesMCPConfigFromEnv(t *testing.T) {
 	}
 	if browser.InvocationPolicy != InvocationPolicyDiscretionary {
 		t.Fatalf("unexpected invocation policy: %q", browser.InvocationPolicy)
+	}
+	if browser.ResultCharBudget != 5000 {
+		t.Fatalf("unexpected result char budget: %d", browser.ResultCharBudget)
 	}
 	if got, want := browser.Headers["authorization"], "Bearer secret"; got != want {
 		t.Fatalf("unexpected header: %q", got)

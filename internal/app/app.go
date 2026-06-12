@@ -10,6 +10,7 @@ import (
 	"telegram-ollama-reply-bot/internal/content/search"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/logging"
+	"telegram-ollama-reply-bot/internal/mcp"
 	psqlite "telegram-ollama-reply-bot/internal/persistence/sqlite"
 	"telegram-ollama-reply-bot/internal/reminders"
 	"telegram-ollama-reply-bot/internal/state/memory"
@@ -131,6 +132,14 @@ func Run(ctx context.Context) error {
 			sentry.CaptureException(err)
 		}
 	}()
+	mcpManager, err := mcp.NewFromConfig(ctx, cfg.MCP, logManager.Logger("mcp"))
+	if err != nil {
+		logger.Error("failed to initialize mcp manager", "error", err)
+		sentry.CaptureException(err)
+
+		return err
+	}
+
 	tools := tooluse.New(
 		llmc,
 		stores.Conversations(),
@@ -141,6 +150,8 @@ func Run(ctx context.Context) error {
 		logManager.Logger("tooluse"),
 		tooluse.Config{MaxIterations: cfg.LLM.ToolLoopMaxIterations, AdminIDs: cfg.Bot.AdminIDs, RecentHistoryLimit: cfg.Bot.UncompressedHistoryLimit},
 	)
+	tools.AttachMCP("mcp", mcpManager)
+	defer tools.Close()
 	botService := bot.NewBot(
 		ctx,
 		telegramAPI,
