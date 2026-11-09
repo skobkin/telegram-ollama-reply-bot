@@ -142,8 +142,10 @@ func InvocationPolicyFor(s string) string {
 // variable names cannot contain "-", spell a hyphenated header as multiple
 // `__`-separated segments after `HEADERS` (`...HEADERS__X__API__KEY` yields
 // the header name "x-api-key"); a single segment keeps its literal
-// underscores (`...HEADERS__X_API_KEY` yields "x_api_key"). `Timeout` is clamped to
-// `[1s, 60s]`. `InvocationPolicy` and `SideEffecting` are operator overrides for
+// underscores (`...HEADERS__X_API_KEY` yields "x_api_key"). `Timeout` is a
+// per-tool-call timeout: when unset (zero) the client uses its default of 15s,
+// and slow tools such as browser automation may set it far above that.
+// `InvocationPolicy` and `SideEffecting` are operator overrides for
 // the per-tool defaults derived from the MCP tool annotations (`readOnlyHint`
 // and `destructiveHint` respectively). `AllowedTools` is a whitelist; setting
 // it when none of the named tools exist on the server is a startup error
@@ -428,7 +430,8 @@ func (c LLMConfig) RouteForFeature(feature string) (FeatureRouteConfig, error) {
 // are:
 //
 //   - `URL` is a valid HTTP or HTTPS URL; HTTPS is required unless `Insecure` is true.
-//   - `Timeout`, if set, is in `[1s, 60s]`. Zero means "use the package default".
+//   - `Timeout`, if set, is positive. It is a per-tool-call timeout and has no
+//     upper limit; zero means "use the package default".
 //   - `InvocationPolicy`, if non-empty, matches a known policy value.
 //   - `ResultCharBudget`, if set, is positive. Zero (or absent) means "use the
 //     default budget"; there is no upper cap.
@@ -475,12 +478,11 @@ func (s MCPServerConfig) validate(name string) error {
 		return fmt.Errorf("mcp.servers.%s.url %q has unsupported scheme %q (use https or http with insecure=true)", name, rawURL, parsed.Scheme)
 	}
 
+	// Timeout is a per-tool-call timeout: when set it must simply be positive.
+	// There is no upper clamp, because slow tools such as browser automation
+	// legitimately need 120s or more. Zero means "use the client default".
 	if s.Timeout < 0 {
-		return fmt.Errorf("mcp.servers.%s.timeout must be >= 0, got %s", name, s.Timeout)
-	}
-
-	if s.Timeout > 0 && (s.Timeout < time.Second || s.Timeout > 60*time.Second) {
-		return fmt.Errorf("mcp.servers.%s.timeout %s is out of range [1s, 60s]", name, s.Timeout)
+		return fmt.Errorf("mcp.servers.%s.timeout must be positive when set (omit it to use the default), got %s", name, s.Timeout)
 	}
 
 	if s.InvocationPolicy != "" {

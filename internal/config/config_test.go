@@ -498,30 +498,63 @@ func TestMCPConfigValidateRejectsInvalidURL(t *testing.T) {
 	}
 }
 
-func TestMCPConfigValidateRejectsOutOfRangeTimeout(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		timeout time.Duration
-	}{
-		{"too short", 500 * time.Millisecond},
-		{"too long", 2 * time.Minute},
+func TestMCPConfigValidateRejectsNegativeTimeout(t *testing.T) {
+	c := MCPConfig{
+		Enabled: true,
+		Servers: map[string]MCPServerConfig{
+			"slow": {URL: "https://mcp.example.com", Timeout: -1 * time.Second},
+		},
+	}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("expected error for negative timeout")
+	}
+	if !strings.Contains(err.Error(), "timeout") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMCPConfigValidateAcceptsAnyPositiveTimeout(t *testing.T) {
+	// Timeout is a per-tool-call timeout: any positive duration is valid.
+	// Slow tools such as browser automation legitimately need 120s+.
+	for _, timeout := range []time.Duration{
+		500 * time.Millisecond,
+		15 * time.Second,
+		2 * time.Minute,
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(timeout.String(), func(t *testing.T) {
 			c := MCPConfig{
 				Enabled: true,
 				Servers: map[string]MCPServerConfig{
-					"slow": {URL: "https://mcp.example.com", Timeout: tc.timeout},
+					"slow": {URL: "https://mcp.example.com", Timeout: timeout},
 				},
 			}
 
-			err := c.Validate()
-			if err == nil {
-				t.Fatalf("expected error for timeout %s", tc.timeout)
-			}
-			if !strings.Contains(err.Error(), "out of range") {
-				t.Fatalf("unexpected error: %v", err)
+			if err := c.Validate(); err != nil {
+				t.Fatalf("unexpected error for timeout %s: %v", timeout, err)
 			}
 		})
+	}
+}
+
+func TestLoadAcceptsLongMCPTimeout(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("MCP__ENABLED", "true")
+	t.Setenv("MCP__SERVERS__BROWSER__URL", "https://mcp.example.com")
+	t.Setenv("MCP__SERVERS__BROWSER__TIMEOUT", "150s")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	browser, ok := cfg.MCP.Servers["browser"]
+	if !ok {
+		t.Fatalf("missing browser server")
+	}
+	if browser.Timeout != 150*time.Second {
+		t.Fatalf("unexpected timeout: %s", browser.Timeout)
 	}
 }
 
