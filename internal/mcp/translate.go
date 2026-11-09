@@ -1,6 +1,8 @@
 package mcp
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -19,6 +21,16 @@ const (
 	// from a remote MCP server and which server they belong to.
 	mcpToolNamePrefix = "mcp_"
 	mcpToolNameSep    = "__"
+
+	// mcpToolNameMaxLen caps the final namespaced name at 64 characters.
+	// OpenAI-compatible backends constrain function names to
+	// ^[a-zA-Z0-9_-]{1,64}$, and a longer name gets the entire chat request
+	// rejected with a 400 — not just the tool call.
+	mcpToolNameMaxLen = 64
+
+	// mcpToolNameHashLen is the length of the hex sha256 suffix appended to
+	// truncated names (see namespacedNameHashSuffix).
+	mcpToolNameHashLen = 8
 
 	// defaultMCPResultCharBudget is the per-tool result character budget used
 	// when an operator has not set one. The fetch-url budget is a reasonable
@@ -84,8 +96,33 @@ func collapseUnderscores(s string) string {
 // Sanitizing both segments independently makes collisions with built-in tooluse
 // tool names (no underscores between segments) and with each other visible at
 // the call site.
+//
+// The result is capped at mcpToolNameMaxLen characters: when the sanitized
+// name is longer, the readable part is truncated and a "-" plus a short hex
+// sha256 prefix of the full unsanitized name is appended (e.g.
+// "mcp_supabase…-1a2b3c4d"), so the result stays deterministic,
+// collision-resistant, and within the limit.
 func namespacedToolName(serverName, toolName string) string {
-	return mcpToolNamePrefix + sanitizeToolNameSegment(serverName) + mcpToolNameSep + sanitizeToolNameSegment(toolName)
+	full := mcpToolNamePrefix + sanitizeToolNameSegment(serverName) + mcpToolNameSep + sanitizeToolNameSegment(toolName)
+	if len(full) <= mcpToolNameMaxLen {
+		return full
+	}
+
+	suffix := namespacedNameHashSuffix(serverName, toolName)
+	keep := mcpToolNameMaxLen - 1 - len(suffix)
+
+	return full[:keep] + "-" + suffix
+}
+
+// namespacedNameHashSuffix derives the short hex hash identifying the full
+// unsanitized namespaced name. It is appended to truncated names so distinct
+// tools whose sanitized names share a long prefix stay distinguishable, and
+// truncation stays deterministic across restarts.
+func namespacedNameHashSuffix(serverName, toolName string) string {
+	raw := mcpToolNamePrefix + serverName + mcpToolNameSep + toolName
+	sum := sha256.Sum256([]byte(raw))
+
+	return hex.EncodeToString(sum[:])[:mcpToolNameHashLen]
 }
 
 // checkToolNameCollisions rejects a set of advertised tool names when two of

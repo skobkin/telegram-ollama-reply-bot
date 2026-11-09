@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -10,6 +11,13 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// validToolNameRe mirrors the OpenAI-compatible function-name constraint in
+// its canonical lower-case form (after sanitization).
+var validToolNameRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
+
+// validHashRe matches the 8-hex truncation suffix appended to capped names.
+var validHashRe = regexp.MustCompile(`^[0-9a-f]{8}$`)
 
 func TestSanitizeToolNameSegmentLowercasesAndReplacesPunctuation(t *testing.T) {
 	cases := map[string]string{
@@ -61,6 +69,84 @@ func TestCheckToolNameCollisionsAcceptsDistinctNames(t *testing.T) {
 func TestCheckToolNameCollisionsHandlesEmptyList(t *testing.T) {
 	if err := checkToolNameCollisions(nil); err != nil {
 		t.Fatalf("unexpected error for empty list: %v", err)
+	}
+}
+
+// TestNamespacedToolNameCapsLongNamesAtSixtyFourCharacters pins the F10
+// contract: a sanitized name longer than the OpenAI-compatible 64-char
+// function-name limit is truncated with a deterministic hex hash suffix, so
+// the chat request is not rejected with a 400.
+func TestNamespacedToolNameCapsLongNamesAtSixtyFourCharacters(t *testing.T) {
+	longTool := strings.Repeat("supabase_", 12) + "migration"
+
+	got := namespacedToolName("supabase", longTool)
+	if len(got) > 64 {
+		t.Fatalf("capped name length = %d, want <= 64 (%q)", len(got), got)
+	}
+	if !validToolNameRe.MatchString(got) {
+		t.Fatalf("capped name %q does not match ^[a-z0-9_-]+$", got)
+	}
+	if again := namespacedToolName("supabase", longTool); again != got {
+		t.Fatalf("truncation is not deterministic: %q vs %q", got, again)
+	}
+
+	// Format: readable 55-char prefix of the untruncated sanitized name,
+	// then '-' plus 8 hex chars.
+	untruncated := "mcp_supabase__" + sanitizeToolNameSegment(longTool)
+	if got[:55] != untruncated[:55] {
+		t.Fatalf("readable prefix = %q, want %q", got[:55], untruncated[:55])
+	}
+	if got[55] != '-' {
+		t.Fatalf("expected '-' separator at index 55, got %q", string(got[55]))
+	}
+	if !validHashRe.MatchString(got[56:]) {
+		t.Fatalf("expected 8-hex hash suffix, got %q", got[56:])
+	}
+}
+
+// TestNamespacedToolNameTruncationDistinguishesLongPrefixCollisions ensures
+// two distinct raw tools whose sanitized names share the whole readable
+// prefix still get distinct final names via the hash suffix.
+func TestNamespacedToolNameTruncationDistinguishesLongPrefixCollisions(t *testing.T) {
+	first := namespacedToolName("supabase", strings.Repeat("very_long_tool_name_", 5)+"alpha")
+	second := namespacedToolName("supabase", strings.Repeat("very_long_tool_name_", 5)+"beta")
+
+	if first == second {
+		t.Fatalf("distinct raw tools collapsed onto one truncated name %q", first)
+	}
+	if len(first) > 64 || len(second) > 64 {
+		t.Fatalf("truncated names exceed 64 chars: %d, %d", len(first), len(second))
+	}
+}
+
+// TestNamespacedToolNameKeepsSixtyFourCharNameUnchanged pins the boundary:
+// exactly 64 sanitized characters pass through unmodified (no hash suffix).
+func TestNamespacedToolNameKeepsSixtyFourCharNameUnchanged(t *testing.T) {
+	server := strings.Repeat("s", 10)
+	tool := strings.Repeat("t", 64-len(mcpToolNamePrefix)-len(server)-len(mcpToolNameSep)) // 48 -> total 64
+
+	want := mcpToolNamePrefix + server + mcpToolNameSep + tool
+	got := namespacedToolName(server, tool)
+	if len(want) != 64 {
+		t.Fatalf("test setup: untruncated length = %d, want 64", len(want))
+	}
+	if got != want {
+		t.Fatalf("boundary name was altered: got %q, want %q", got, want)
+	}
+}
+
+// TestNamespacedToolNameTruncatesSixtyFiveCharName checks the first
+// character beyond the limit triggers truncation.
+func TestNamespacedToolNameTruncatesSixtyFiveCharName(t *testing.T) {
+	server := strings.Repeat("s", 10)
+	tool := strings.Repeat("t", 49) // 4+10+2+49 = 65
+
+	got := namespacedToolName(server, tool)
+	if len(got) != 64 {
+		t.Fatalf("truncated length = %d, want 64", len(got))
+	}
+	if got[:len(mcpToolNamePrefix)+len(server)] != mcpToolNamePrefix+server {
+		t.Fatalf("truncated name lost its server prefix: %q", got)
 	}
 }
 
