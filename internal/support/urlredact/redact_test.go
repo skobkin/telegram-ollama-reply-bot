@@ -56,6 +56,23 @@ func TestRedact(t *testing.T) {
 			in:   `first https://a.example.invalid/x?k=1 then https://b.example.invalid/y?k=2 end`,
 			want: `first https://a.example.invalid/x then https://b.example.invalid/y end`,
 		},
+		{
+			// Regression: apostrophes are valid query characters. Stopping the
+			// match at one used to leave the remainder of the query — and its
+			// credentials — completely unredacted.
+			name: "apostrophe_in_query",
+			in:   `Post "https://mcp.example.invalid/mcp?filter='active'&api_key=hunter2": EOF`,
+			want: `Post "https://mcp.example.invalid/mcp": EOF`,
+		},
+		{
+			// Documented trade-off of the above: prose that quotes a URL with
+			// single quotes loses the closing quote (the whole run up to the
+			// next whitespace is treated as part of the URL). Go error
+			// formatters use double quotes, so this only affects prose.
+			name: "single_quoted_prose_loses_closing_quote",
+			in:   `error: 'https://x.invalid/p?k=v' refused`,
+			want: `error: 'https://x.invalid/p refused`,
+		},
 	}
 
 	for _, tc := range cases {
