@@ -126,6 +126,86 @@ func TestDecodeCallResultCollectsTextAndBlocks(t *testing.T) {
 	}
 }
 
+// TestDecodeCallResultErrorSummaryCarriesServerMessage pins the tool-error
+// contract: when the server returns IsError, the model must see the server's
+// own message in Summary (not a generic "tool returned a result").
+func TestDecodeCallResultErrorSummaryCarriesServerMessage(t *testing.T) {
+	reply := &mcp.CallToolResult{
+		IsError: true,
+		Content: []mcp.Content{&mcp.TextContent{Text: "disk full"}},
+	}
+
+	result, err := decodeCallResult(reply)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "error" {
+		t.Fatalf("expected status=error, got %q", result.Status)
+	}
+	if result.Summary != "disk full" {
+		t.Fatalf("expected server error message in summary, got %q", result.Summary)
+	}
+	if data := result.Data.(map[string]any); data["text"] != "disk full" {
+		t.Fatalf("expected text to carry the message too, got %v", data["text"])
+	}
+}
+
+// TestDecodeCallResultErrorSummaryJoinsTextBlocks checks that a multi-block
+// error message is joined with newlines in the summary.
+func TestDecodeCallResultErrorSummaryJoinsTextBlocks(t *testing.T) {
+	reply := &mcp.CallToolResult{
+		IsError: true,
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: "line 1"},
+			&mcp.TextContent{Text: "line 2"},
+		},
+	}
+
+	result, err := decodeCallResult(reply)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "error" {
+		t.Fatalf("expected status=error, got %q", result.Status)
+	}
+	if result.Summary != "line 1\nline 2" {
+		t.Fatalf("expected joined error summary, got %q", result.Summary)
+	}
+}
+
+// TestDecodeCallResultErrorSummaryFallsBackWithoutText checks the fallback
+// summary when an error result carries no text content at all.
+func TestDecodeCallResultErrorSummaryFallsBackWithoutText(t *testing.T) {
+	reply := &mcp.CallToolResult{IsError: true}
+
+	result, err := decodeCallResult(reply)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "error" {
+		t.Fatalf("expected status=error, got %q", result.Status)
+	}
+	if result.Summary != "tool returned an error" {
+		t.Fatalf("expected fallback summary, got %q", result.Summary)
+	}
+}
+
+// TestDecodeCallResultOkSummaryForNonError checks that a successful result
+// keeps the generic summary (callers must not confuse it with an error).
+func TestDecodeCallResultOkSummaryForNonError(t *testing.T) {
+	reply := &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: "disk fine"}},
+	}
+
+	result, err := decodeCallResult(reply)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "ok" || result.Summary != "tool returned a result" {
+		t.Fatalf("expected ok result with generic summary, got status=%q summary=%q", result.Status, result.Summary)
+	}
+}
+
 func TestDecodeCallResultCollectsStructuredContent(t *testing.T) {
 	structured := map[string]any{"answer": 42}
 	reply := &mcp.CallToolResult{

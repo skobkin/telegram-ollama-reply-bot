@@ -88,13 +88,6 @@ func callToolHandler(session *mcp.ClientSession, originalName, namespacedName st
 			return tooluse.ToolResult{}, decodeErr
 		}
 
-		if reply.IsError {
-			result.Status = "error"
-			if result.Summary == "" {
-				result.Summary = "tool returned an error"
-			}
-		}
-
 		textLen, blockCount, unsupportedCount := summarizeForLog(reply)
 		logCallResult(perCall, namespacedName, originalName, callCtx.RequestID, reply.IsError, textLen, blockCount, unsupportedCount)
 
@@ -129,24 +122,24 @@ func parseToolArguments(args json.RawMessage) (any, error) {
 }
 
 // decodeCallResult turns an MCP `CallToolResult` into a tooluse.ToolResult.
+// Error results (`IsError: true`) become Status "error" with `Summary`
+// carrying the server's own message (its text content, joined with newlines),
+// or "tool returned an error" when the server sent no text at all.
+//
 // The `Data` field carries:
 //
 //   - text content blocks under "text" (joined with newlines so the LLM
-//     sees a single coherent string), or per-block "blocks" with each
-//     content type and its string representation when there is a mix.
+//     sees a single coherent string).
 //   - structured content under "structured" when the server provided it.
-//   - unsupported content types (image, audio, embedded resources) under
-//     "unsupported" so the LLM can react to "I can't see that" without
+//   - non-text content types (image, audio, embedded resources) under
+//     "blocks" so the LLM can react to "I can't see that" without
 //     swallowing the rest of the response.
 //
 // Returns an error for hard decode failures (e.g. an unparseable structured
 // payload) so the LLM gets a clear "mcp call failed" rather than a
 // truncated "ok" status.
 func decodeCallResult(reply *mcp.CallToolResult) (tooluse.ToolResult, error) { //nolint:unparam // error return reserved for future SDK-shape changes
-	result := tooluse.ToolResult{
-		Status:  "ok",
-		Summary: "tool returned a result",
-	}
+	result := tooluse.ToolResult{Status: "ok"}
 
 	texts := make([]string, 0, len(reply.Content))
 	blocks := make([]map[string]any, 0, len(reply.Content))
@@ -189,6 +182,17 @@ func decodeCallResult(reply *mcp.CallToolResult) (tooluse.ToolResult, error) { /
 				"type": "unknown",
 			})
 		}
+	}
+
+	if reply.IsError {
+		result.Status = "error"
+		if summary := strings.Join(texts, "\n"); summary != "" {
+			result.Summary = summary
+		} else {
+			result.Summary = "tool returned an error"
+		}
+	} else {
+		result.Summary = "tool returned a result"
 	}
 
 	data := map[string]any{}
