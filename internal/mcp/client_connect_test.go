@@ -27,6 +27,36 @@ func newEchoMCPServer() *mcp.Server {
 	return srv
 }
 
+// TestStreamableTransportForCarriesReconnectBudget pins the SSE reconnect
+// budget: the transport must keep the SDK default of 5 reconnect attempts
+// (backing off 1s ×1.5 with full jitter, capped at 30s) and must carry the
+// httpClientForServer-built HTTP client, so a single transient drop of the
+// standing server→client notification stream is retried instead of silently
+// killing that stream for the rest of the session.
+func TestStreamableTransportForCarriesReconnectBudget(t *testing.T) {
+	cfg := config.MCPServerConfig{
+		URL:     "http://mcp.example.invalid/mcp",
+		Headers: map[string]string{"Authorization": "Bearer opaque"},
+	}
+
+	tr := streamableTransportFor(cfg)
+	if tr.MaxRetries != 5 {
+		t.Fatalf("MaxRetries = %d, want 5 (the SDK default reconnect budget)", tr.MaxRetries)
+	}
+	if tr.Endpoint != cfg.URL {
+		t.Fatalf("Endpoint = %q, want %q", tr.Endpoint, cfg.URL)
+	}
+	if tr.HTTPClient == nil {
+		t.Fatal("expected the transport to carry the httpClientForServer client")
+	}
+	if _, ok := tr.HTTPClient.Transport.(*headerRoundTripper); !ok {
+		t.Fatalf("expected httpClientForServer transport, got %T", tr.HTTPClient.Transport)
+	}
+	if got := tr.HTTPClient.Transport.(*headerRoundTripper).header.Get("Authorization"); got != "Bearer opaque" {
+		t.Fatalf("expected configured headers on the carried client, got %q", got)
+	}
+}
+
 // TestConnectBoundsSSEHeaderWait pins the handshake bound: a server that
 // answers the initialize POST but stalls the standing SSE GET before writing
 // response headers must not block connect forever. The SDK issues that GET on
@@ -39,6 +69,14 @@ func TestConnectBoundsSSEHeaderWait(t *testing.T) {
 	original := responseHeaderWaitTimeout
 	responseHeaderWaitTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { responseHeaderWaitTimeout = original })
+
+	// Trim the reconnect budget too: with the full SDK-default budget of 5,
+	// Connect legitimately spends ~14-28s walking the jittered backoff ladder
+	// between GET attempts. This test pins the per-attempt header wait, so one
+	// attempt + one retry (the pre-fix wiring) keeps the watchdog tight.
+	originalBudget := sseReconnectBudget
+	sseReconnectBudget = 1
+	t.Cleanup(func() { sseReconnectBudget = originalBudget })
 
 	inner := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return newEchoMCPServer() }, nil)
 

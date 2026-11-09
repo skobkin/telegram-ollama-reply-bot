@@ -73,6 +73,16 @@ var sessionCleanupTimeout = 5 * time.Second
 // the knob that fits). The var is mutable so tests can shorten it.
 var responseHeaderWaitTimeout = 30 * time.Second
 
+// sseReconnectBudget is the reconnect budget handed to the SDK's
+// StreamableClientTransport for the standing server→client SSE stream. It
+// matches the SDK default of 5: reconnects back off 1s ×1.5 with full jitter
+// (capped at 30s), and exhausting the budget permanently kills that session's
+// notification stream while POST tool calls keep working — a silent loss — so
+// a single transient drop must not be the end of it. The var is mutable so
+// tests can shorten the budget instead of waiting out the whole backoff
+// ladder.
+var sseReconnectBudget = 5
+
 func (t *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	injects := t.injectsInto(req)
 	bounded := req.Method == http.MethodDelete && sessionCleanupTimeout > 0
@@ -268,6 +278,18 @@ func callTimeout(server config.MCPServerConfig) time.Duration {
 	return defaultClientTimeout
 }
 
+// streamableTransportFor builds the Streamable HTTP transport for one server.
+// MaxRetries carries the SSE reconnect budget (see sseReconnectBudget for why
+// it must not be 1) and the HTTP client carries the configured headers and
+// bounds from httpClientForServer.
+func streamableTransportFor(server config.MCPServerConfig) *mcp.StreamableClientTransport {
+	return &mcp.StreamableClientTransport{
+		Endpoint:   server.URL,
+		HTTPClient: httpClientForServer(server),
+		MaxRetries: sseReconnectBudget,
+	}
+}
+
 // client wraps the MCP SDK's *Client and the open ClientSession for a single
 // server. The struct is intentionally thin: it owns the lifecycle (Connect /
 // Close) and exposes the toolset. The Manager coordinates many of these.
@@ -297,13 +319,7 @@ func (c *client) connect(ctx context.Context) error {
 		return errors.New("mcp client is not initialised")
 	}
 
-	transport := &mcp.StreamableClientTransport{
-		Endpoint:   c.config.URL,
-		HTTPClient: httpClientForServer(c.config),
-		MaxRetries: 1,
-	}
-
-	session, err := c.raw.Connect(ctx, transport, nil)
+	session, err := c.raw.Connect(ctx, streamableTransportFor(c.config), nil)
 	if err != nil {
 		// The endpoint URL may carry credentials as query parameters, and the
 		// SDK error quotes it verbatim; redact before the error reaches logs
