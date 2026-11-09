@@ -46,6 +46,26 @@ func TestRedact(t *testing.T) {
 			in:   `Post "https://mcp.example.invalid/mcp?token=a%zz": EOF`,
 			want: `Post "https://mcp.example.invalid/mcp": EOF`,
 		},
+		{ //nolint:gosec // test fixture: redaction must drop userinfo credentials
+			// Regression: the parse-failure fallback used to cut only at ?/#,
+			// so an unparseable URL with no query came through with its
+			// userinfo verbatim.
+			name: "unparseable_url_userinfo_stripped",
+			in:   `Post "https://user:pass@host/%zz": EOF`,
+			want: `Post "https://host/": EOF`,
+		},
+		{ //nolint:gosec // test fixture: redaction must drop userinfo credentials
+			// Regression: a host-less URL used to be returned verbatim, so
+			// its query — the most common credential spot — survived.
+			name: "hostless_url_query_cut",
+			in:   `connect https://?api_key=hunter2 refused`,
+			want: `connect https:// refused`,
+		},
+		{
+			name: "hostless_url_userinfo_and_query_cut",
+			in:   `dial https://user:pass@?api_key=hunter2: refused`,
+			want: `dial https://: refused`,
+		},
 		{
 			name: "no_urls_unchanged",
 			in:   `sending "tools/call": context deadline exceeded`,
@@ -126,6 +146,11 @@ func TestRedactOne(t *testing.T) {
 			name: "control_char_cut_at_query",
 			in:   "http://host/mcp?x=\x7f",
 			want: `http://host/mcp`,
+		},
+		{ //nolint:gosec // test fixture: redaction must drop userinfo credentials
+			name: "hostless_url_query_cut",
+			in:   `https://?api_key=hunter2`,
+			want: `https://`,
 		},
 		{
 			name: "not_a_url_unchanged",

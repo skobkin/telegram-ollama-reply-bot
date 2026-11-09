@@ -29,9 +29,9 @@ var urlPattern = regexp.MustCompile(`(?i)https?://[^\s"<>]+`)
 var userInfoPattern = regexp.MustCompile(`^([a-zA-Z][a-zA-Z0-9+.\-]*://)[^/@]+@`)
 
 // Redact strips the userinfo, query string, and fragment from every http(s)
-// URL embedded in s. URLs that cannot be parsed (e.g. invalid
-// percent-escapes) are cut at the first ? or # instead. Text without URLs is
-// returned unchanged.
+// URL embedded in s. URLs that cannot be parsed into a usable authority
+// (invalid percent-escapes, no host) fall back to a textual strip so their
+// userinfo and query cannot survive. Text without URLs is returned unchanged.
 func Redact(s string) string {
 	if !strings.Contains(s, "://") {
 		return s
@@ -55,20 +55,8 @@ func RedactOne(rawURL string) string {
 		return u.Scheme + "://" + u.Host + u.Path
 	}
 
-	// Not parseable into a usable authority, or not a URL at all. Best
-	// effort: drop userinfo textually — it can sit before the part that
-	// broke the parse — then cut the query/fragment and everything from the
-	// first invalid percent-escape on, so neither can smuggle credentials
-	// into the echoed value.
-	stripped := userInfoPattern.ReplaceAllString(rawURL, "$1")
-	if cut := strings.IndexAny(stripped, "?#"); cut != -1 {
-		stripped = stripped[:cut]
-	}
-	if cut := firstInvalidEscapeIndex(stripped); cut != -1 {
-		stripped = stripped[:cut]
-	}
-
-	return stripped
+	// Not parseable into a usable authority, or not a URL at all.
+	return bestEffortStrip(rawURL)
 }
 
 // redactOneURL reduces a single URL match to scheme://host/path.
@@ -83,18 +71,31 @@ func redactOneURL(match string) string {
 	}
 
 	u, err := url.Parse(match)
-	if err != nil {
-		if cut := strings.IndexAny(match, "?#"); cut != -1 {
-			match = match[:cut]
-		}
-
-		return match + trailingColon
-	}
-	if u.Host == "" {
-		return match + trailingColon
+	if err != nil || u.Host == "" {
+		// Unparseable or host-less: without the fallback, an invalid
+		// percent-escape used to leave the userinfo verbatim in the output,
+		// and a host-less URL used to come through with its query intact.
+		return bestEffortStrip(match) + trailingColon
 	}
 
 	return u.Scheme + "://" + u.Host + u.Path + trailingColon
+}
+
+// bestEffortStrip is the fallback for URLs that cannot be parsed into a
+// usable authority: drop the userinfo textually — it can sit before the part
+// that broke the parse — then cut the query/fragment and everything from the
+// first invalid percent-escape on, so neither can smuggle credentials into
+// the redacted value. Non-URL input passes through unchanged.
+func bestEffortStrip(s string) string {
+	stripped := userInfoPattern.ReplaceAllString(s, "$1")
+	if cut := strings.IndexAny(stripped, "?#"); cut != -1 {
+		stripped = stripped[:cut]
+	}
+	if cut := firstInvalidEscapeIndex(stripped); cut != -1 {
+		stripped = stripped[:cut]
+	}
+
+	return stripped
 }
 
 // firstInvalidEscapeIndex returns the index of the first '%' in s that does
