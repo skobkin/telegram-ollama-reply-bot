@@ -242,6 +242,58 @@ func TestLoadImageRecognitionEnabledCanBeDisabled(t *testing.T) {
 	}
 }
 
+func TestLoadUsesBotHistoryLimitDefaults(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.Bot.UncompressedHistoryLimit != 15 {
+		t.Fatalf("expected uncompressed history limit default of 15, got %d", cfg.Bot.UncompressedHistoryLimit)
+	}
+	if cfg.Bot.HistorySummaryThreshold != 5 {
+		t.Fatalf("expected history summary threshold default of 5, got %d", cfg.Bot.HistorySummaryThreshold)
+	}
+}
+
+func TestLoadUsesDocumentedLLMPrefixedHistoryLimitOverrides(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("LLM__UNCOMPRESSED_HISTORY_LIMIT", "20")
+	t.Setenv("LLM__HISTORY_SUMMARY_THRESHOLD", "3")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.Bot.UncompressedHistoryLimit != 20 {
+		t.Fatalf("expected uncompressed history limit override of 20, got %d", cfg.Bot.UncompressedHistoryLimit)
+	}
+	if cfg.Bot.HistorySummaryThreshold != 3 {
+		t.Fatalf("expected history summary threshold override of 3, got %d", cfg.Bot.HistorySummaryThreshold)
+	}
+}
+
+func TestLoadUsesBotPrefixedHistoryLimitOverrides(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("BOT__UNCOMPRESSED_HISTORY_LIMIT", "7")
+	t.Setenv("BOT__HISTORY_SUMMARY_THRESHOLD", "2")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.Bot.UncompressedHistoryLimit != 7 {
+		t.Fatalf("expected uncompressed history limit override of 7, got %d", cfg.Bot.UncompressedHistoryLimit)
+	}
+	if cfg.Bot.HistorySummaryThreshold != 2 {
+		t.Fatalf("expected history summary threshold override of 2, got %d", cfg.Bot.HistorySummaryThreshold)
+	}
+}
+
 func TestMCPConfigValidateAcceptsHTTPSServer(t *testing.T) {
 	c := MCPConfig{
 		Enabled: true,

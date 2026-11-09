@@ -221,6 +221,10 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: load env: %w", err)
 	}
 
+	if err := applyHistoryLimitAliases(k); err != nil {
+		return nil, fmt.Errorf("config: apply history limit aliases: %w", err)
+	}
+
 	var cfg Config
 	if err := k.UnmarshalWithConf("", &cfg, koanf.UnmarshalConf{
 		DecoderConfig: &mapstructure.DecoderConfig{
@@ -259,8 +263,8 @@ func applyDefaults(k *koanf.Koanf) error {
 	defaults := map[string]any{
 		"llm.tool_loop_max_iterations":   6,
 		"llm.image_recognition_enabled":  true,
-		"llm.uncompressed_history_limit": 15,
-		"llm.history_summary_threshold":  5,
+		"bot.uncompressed_history_limit": 15,
+		"bot.history_summary_threshold":  5,
 		"bot.processing_timeout":         "30s",
 		"state.max_bytes":                int64(256 << 20),
 		"state.history_max_bytes":        int64(160 << 20),
@@ -274,6 +278,35 @@ func applyDefaults(k *koanf.Koanf) error {
 	for key, value := range defaults {
 		if err := k.Set(key, value); err != nil {
 			return fmt.Errorf("set %q: %w", key, err)
+		}
+	}
+
+	return nil
+}
+
+// historyLimitAliases maps the documented environment variable paths of the
+// history limits onto the BotConfig paths where the fields actually live. The
+// limits used to be part of the LLM section before the Koanf migration, so
+// their documented names (LLM__UNCOMPRESSED_HISTORY_LIMIT,
+// LLM__HISTORY_SUMMARY_THRESHOLD) carry the llm.* prefix. When such a variable
+// is present in the environment, its value is copied onto the bot.* path.
+// Because the alias is applied last, a documented LLM__* variable wins if the
+// same limit is also provided through its canonical BOT__* name.
+func applyHistoryLimitAliases(k *koanf.Koanf) error {
+	aliases := [][2]string{
+		{"llm.uncompressed_history_limit", "bot.uncompressed_history_limit"},
+		{"llm.history_summary_threshold", "bot.history_summary_threshold"},
+	}
+
+	for _, alias := range aliases {
+		// The llm.* path only exists when the environment provided it: the
+		// defaults for these fields are seeded under bot.* directly.
+		value := k.Get(alias[0])
+		if value == nil {
+			continue
+		}
+		if err := k.Set(alias[1], value); err != nil {
+			return fmt.Errorf("set %q from %q: %w", alias[1], alias[0], err)
 		}
 	}
 
