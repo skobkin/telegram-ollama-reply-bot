@@ -443,8 +443,9 @@ func (c LLMConfig) RouteForFeature(feature string) (FeatureRouteConfig, error) {
 //   - `ResultCharBudget`, if set, is positive. Zero (or absent) means "use the
 //     default budget"; there is no upper cap.
 //   - `SideEffecting` nil is allowed (the bot derives it from `destructiveHint`).
-//   - `Headers` keys are non-empty (values are never validated; they are
-//     secrets and must not be logged at startup).
+//   - `Headers` keys are non-empty and must not name a protocol-managed
+//     header (values are never validated; they are secrets and must not be
+//     logged at startup).
 func (c MCPConfig) Validate() error {
 	if !c.Enabled {
 		return nil
@@ -470,6 +471,21 @@ func (c MCPConfig) Validate() error {
 // redaction accepts any scheme, not just http(s).
 func redactMCPEndpoint(rawURL string) string {
 	return urlredact.RedactOne(rawURL)
+}
+
+// mcpProtocolHeaders lists the header names the MCP streamable-HTTP transport
+// sets itself on every request: Accept, Content-Type, Mcp-Session-Id, and
+// MCP-Protocol-Version. The MCP client applies operator headers with
+// Header.Set (replace semantics, deliberate: no duplicate headers), so an
+// operator entry with one of these names replaces the SDK-set value and
+// breaks the protocol handshake at boot with a confusing server error. They
+// are refused at load time instead. HTTP header names are case-insensitive,
+// so the check is too.
+var mcpProtocolHeaders = map[string]struct{}{
+	"accept":               {},
+	"content-type":         {},
+	"mcp-session-id":       {},
+	"mcp-protocol-version": {},
 }
 
 func (s MCPServerConfig) validate(name string) error {
@@ -527,6 +543,11 @@ func (s MCPServerConfig) validate(name string) error {
 	for headerName := range s.Headers {
 		if strings.TrimSpace(headerName) == "" {
 			return fmt.Errorf("mcp.servers.%s.headers contains an empty header name", name)
+		}
+		if _, managed := mcpProtocolHeaders[strings.ToLower(headerName)]; managed {
+			// The name is echoed deliberately; the value is a secret and
+			// must never appear in startup diagnostics.
+			return fmt.Errorf("mcp.servers.%s.headers: %q is managed by the MCP protocol and cannot be overridden", name, headerName)
 		}
 	}
 

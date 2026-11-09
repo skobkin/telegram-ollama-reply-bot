@@ -769,6 +769,56 @@ func TestMCPConfigValidateAcceptsKnownInvocationPolicies(t *testing.T) {
 	}
 }
 
+func TestMCPConfigValidateRejectsProtocolManagedHeader(t *testing.T) {
+	for _, headerName := range []string{
+		"Accept",
+		"CONTENT-TYPE",
+		"Mcp-Session-Id",
+		"mcp-protocol-version",
+	} {
+		t.Run(headerName, func(t *testing.T) {
+			c := MCPConfig{
+				Enabled: true,
+				Servers: map[string]MCPServerConfig{
+					"browser": {
+						URL:     "https://mcp.example.com",
+						Headers: map[string]string{headerName: "operator-value"},
+					},
+				},
+			}
+
+			err := c.Validate()
+			if err == nil {
+				t.Fatalf("expected error for protocol-managed header %q", headerName)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "managed by the MCP protocol") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			// Only the header NAME may be echoed: values are secrets.
+			if strings.Contains(msg, "operator-value") {
+				t.Fatalf("error message leaks header value: %v", err)
+			}
+		})
+	}
+}
+
+func TestMCPConfigValidateAllowsAuthorizationHeader(t *testing.T) {
+	c := MCPConfig{
+		Enabled: true,
+		Servers: map[string]MCPServerConfig{
+			"browser": {
+				URL:     "https://mcp.example.com",
+				Headers: map[string]string{"Authorization": "Bearer secret"},
+			},
+		},
+	}
+
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestMCPConfigValidateRejectsEmptyHeaderName(t *testing.T) {
 	c := MCPConfig{
 		Enabled: true,
