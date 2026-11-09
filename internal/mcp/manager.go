@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync"
 	"time"
 
 	"telegram-ollama-reply-bot/internal/config"
@@ -33,7 +34,11 @@ type Manager struct {
 // NewManager wires the bot to every server in `cfg.Servers`, in sorted-name
 // order: `cfg.Servers` is a Go map with a randomized iteration order, so
 // sorting pins the registration order and keeps the resulting tool list
-// (and therefore the LLM prompt) stable across restarts. A misconfigured
+// (and therefore the LLM prompt) stable across restarts. The handshakes run
+// concurrently — each server gets its full connect-timeout budget and slow or
+// dead servers do not add their budgets to boot time — while registration,
+// duplicate detection, and logging stay strictly in sorted order so the
+// outcome (and log stream) is deterministic across restarts. A misconfigured
 // server is a hard error unless it is marked `Optional` — in that case the
 // manager logs a warning, drops the server, and keeps going with the
 // survivors. The error return is reserved for completely unrecoverable
@@ -68,6 +73,39 @@ func NewManager(ctx context.Context, cfg config.MCPConfig, logger *slog.Logger) 
 		return &Manager{logger: logger}, nil
 	}
 
+	names := sortedServerNames(cfg.Servers)
+
+	// Handshake phase: one goroutine per server, each writing only its own
+	// slot. Every client owns its session and HTTP client, slog is
+	// concurrency-safe, and no Manager field is touched — the workers only
+	// produce results, all shared state (and all logging) happens in the
+	// sorted pass below.
+	type connectResult struct {
+		client *client
+		err    error
+	}
+	results := make([]connectResult, len(names))
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			server := cfg.Servers[name]
+			raw := mcp.NewClient(implementation, nil)
+			cl := &client{
+				name:   name,
+				config: server,
+				raw:    raw,
+				logger: serverLogger(logger, name),
+			}
+			connectCtx, cancel := context.WithTimeout(ctx, connectTimeout(server))
+			err := cl.connect(connectCtx)
+			cancel()
+			results[i] = connectResult{client: cl, err: err}
+		}()
+	}
+	wg.Wait()
+
 	manager := &Manager{logger: logger}
 	// namespacedName -> server that produced it. A duplicate means two
 	// different (server, tool) pairs collapse onto one final namespaced name;
@@ -75,32 +113,28 @@ func NewManager(ctx context.Context, cfg config.MCPConfig, logger *slog.Logger) 
 	// registry (and which one wins would depend on map iteration order), so
 	// the config is unresolvable and boot must fail.
 	namespacedOwners := make(map[string]string)
-	for _, name := range sortedServerNames(cfg.Servers) {
-		server := cfg.Servers[name]
-		raw := mcp.NewClient(implementation, nil)
-		cl := &client{
-			name:   name,
-			config: server,
-			raw:    raw,
-			logger: serverLogger(logger, name),
-		}
-		connectCtx, cancel := context.WithTimeout(ctx, connectTimeout(server))
-		err := cl.connect(connectCtx)
-		cancel()
-		if err != nil {
-			if server.Optional {
+	// Single sorted pass over the results. The workers never log: every
+	// connected/failed/skipped line is emitted here in sorted order, keeping
+	// the log stream deterministic no matter when each handshake finished.
+	for i, name := range names {
+		result := results[i]
+		if result.err != nil {
+			if cfg.Servers[name].Optional {
 				logger.Warn(
 					"mcp server optional, skipping",
 					"server", name,
-					"error", err,
+					"error", result.err,
 				)
 
 				continue
 			}
+			// Survivors connected so far are already on the manager: Close
+			// tears their sessions down before startup aborts.
 			_ = manager.Close()
 
-			return nil, fmt.Errorf("mcp server %q: %w", name, err)
+			return nil, fmt.Errorf("mcp server %q: %w", name, result.err)
 		}
+		cl := result.client
 		manager.clients = append(manager.clients, cl)
 		for _, def := range cl.definitions {
 			if owner, ok := namespacedOwners[def.Name]; ok {

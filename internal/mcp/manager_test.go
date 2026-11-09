@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -112,6 +113,190 @@ func TestNewManagerRegistersServersInSortedOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("definitions order = %v, want %v", got, want)
+	}
+}
+
+// TestNewManagerConnectsServersConcurrently proves the handshakes overlap:
+// each server's handler blocks until BOTH servers have been entered, which is
+// only possible when the connects run concurrently — under sequential
+// connects the first server's handshake would sit in the barrier forever. The
+// watchdog turns such a regression into a failure instead of a hang.
+func TestNewManagerConnectsServersConcurrently(t *testing.T) {
+	alphaEntered := make(chan struct{}, 4)
+	zuluEntered := make(chan struct{}, 4)
+
+	var releaseOnce sync.Once
+	bothEntered := make(chan struct{})
+	release := func() {
+		releaseOnce.Do(func() { close(bothEntered) })
+	}
+
+	newGatedServer := func(entered chan<- struct{}) *httptest.Server {
+		inner := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return newEchoMCPServer() }, nil)
+
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Record entry exactly once; later requests (initialized
+			// notification, tools/list, SSE GET) must not block the
+			// coordinator.
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			// Wait until BOTH servers have been entered before serving
+			// anything — the initialize POST included.
+			select {
+			case <-bothEntered:
+			case <-r.Context().Done():
+
+				return
+			}
+			inner.ServeHTTP(w, r)
+		}))
+	}
+
+	alpha := newGatedServer(alphaEntered)
+	t.Cleanup(alpha.Close)
+	zulu := newGatedServer(zuluEntered)
+	t.Cleanup(zulu.Close)
+	// Registered after the server closes so cleanup LIFO order releases the
+	// barrier first: a still-gated request must never outlive the server it
+	// belongs to (same reasoning as the stalled-server tests).
+	t.Cleanup(release)
+
+	// Coordinator: open the barrier once both servers have been entered.
+	go func() {
+		<-alphaEntered
+		<-zuluEntered
+		release()
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	type bootResult struct {
+		manager *Manager
+		err     error
+	}
+	done := make(chan bootResult, 1)
+	go func() {
+		manager, err := NewManager(ctx, config.MCPConfig{
+			Enabled: true,
+			Servers: map[string]config.MCPServerConfig{
+				"alpha": {URL: alpha.URL, Timeout: 2 * time.Second},
+				"zulu":  {URL: zulu.URL, Timeout: 2 * time.Second},
+			},
+		}, discardLogger())
+		done <- bootResult{manager: manager, err: err}
+	}()
+
+	var booted bootResult
+	select {
+	case booted = <-done:
+	case <-time.After(5 * time.Second):
+		// Unblock any in-flight gated handshake before failing.
+		cancel()
+		t.Fatal("NewManager did not return within 5s; connects appear to be serialized")
+	}
+	if booted.err != nil {
+		cancel()
+		t.Fatalf("NewManager: %v", booted.err)
+	}
+	defer booted.manager.Close()
+
+	got := make([]string, 0)
+	for _, def := range booted.manager.Definitions() {
+		got = append(got, def.Name)
+	}
+	want := []string{"mcp_alpha__echo", "mcp_zulu__echo"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("definitions = %v, want %v", got, want)
+	}
+}
+
+// failingMCPServer returns an httptest server whose every request is answered
+// with a 500, so the SDK's initialize POST fails deterministically and fast.
+func failingMCPServer(t *testing.T) string {
+	t.Helper()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusInternalServerError)
+	}))
+	t.Cleanup(ts.Close)
+
+	return ts.URL
+}
+
+// TestNewManagerFailsAndTearsDownSurvivorWhenRequiredServerFails pins the
+// failure contract under parallel connects: when the second (sorted) server
+// fails its handshake, NewManager returns the wrapped per-server error AND
+// the first server's already-open session was torn down — observable as the
+// session-termination DELETE at the survivor's handler.
+func TestNewManagerFailsAndTearsDownSurvivorWhenRequiredServerFails(t *testing.T) {
+	deleteSeen := make(chan struct{}, 4)
+	inner := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return newEchoMCPServer() }, nil)
+	alpha := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			// Session termination from the startup-failure cleanup.
+			select {
+			case deleteSeen <- struct{}{}:
+			default:
+			}
+		}
+		inner.ServeHTTP(w, r)
+	}))
+	t.Cleanup(alpha.Close)
+
+	_, err := NewManager(context.Background(), config.MCPConfig{
+		Enabled: true,
+		Servers: map[string]config.MCPServerConfig{
+			"alpha": {URL: alpha.URL, Timeout: 2 * time.Second},
+			"zulu":  {URL: failingMCPServer(t), Timeout: 2 * time.Second},
+		},
+	}, discardLogger())
+	if err == nil {
+		t.Fatal("expected NewManager to fail when a required server fails")
+	}
+	for _, want := range []string{`mcp server "zulu"`, "connect to"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to mention %q, got: %v", want, err)
+		}
+	}
+
+	// The survivor's session must have been terminated before the error was
+	// returned; the wait is a deadline guard, not the expected path.
+	select {
+	case <-deleteSeen:
+	case <-time.After(3 * time.Second):
+		t.Fatal("survivor session was not terminated: no DELETE observed within 3s")
+	}
+}
+
+// TestNewManagerSkipsOptionalServerThatSortsFirst extends the optional-server
+// contract to parallel connects: a failing optional server must be skipped
+// regardless of its position in the sorted order, and the survivor's tools
+// must still register.
+func TestNewManagerSkipsOptionalServerThatSortsFirst(t *testing.T) {
+	healthy := newInProcessMCPServer(t, "fetch")
+
+	manager, err := NewManager(context.Background(), config.MCPConfig{
+		Enabled: true,
+		Servers: map[string]config.MCPServerConfig{
+			"alpha": {URL: failingMCPServer(t), Timeout: 2 * time.Second, Optional: true},
+			"zulu":  {URL: healthy, Timeout: 2 * time.Second},
+		},
+	}, discardLogger())
+	if err != nil {
+		t.Fatalf("NewManager must succeed when only the optional server fails: %v", err)
+	}
+	defer manager.Close()
+
+	got := make([]string, 0)
+	for _, def := range manager.Definitions() {
+		got = append(got, def.Name)
+	}
+	want := []string{"mcp_zulu__fetch"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("definitions = %v, want %v", got, want)
 	}
 }
 
