@@ -44,6 +44,20 @@ func NewManager(ctx context.Context, cfg config.MCPConfig, logger *slog.Logger) 
 		logger = slog.Default()
 	}
 	if !cfg.Enabled {
+		// Surface the misconfiguration when the operator configured servers
+		// but forgot to enable MCP: a plain "disabled" INFO would hide it.
+		// Server NAMES only — URLs may carry credentials in headers and are
+		// never logged.
+		if len(cfg.Servers) > 0 {
+			names := sortedServerNames(cfg.Servers)
+			logger.Warn(
+				"mcp support disabled by config while servers are configured",
+				"servers", names,
+				"count", len(names),
+			)
+
+			return &Manager{logger: logger}, nil
+		}
 		logger.Info("mcp support disabled by config")
 
 		return &Manager{logger: logger}, nil

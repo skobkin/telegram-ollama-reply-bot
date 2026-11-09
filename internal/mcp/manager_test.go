@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,5 +112,72 @@ func TestNewManagerRegistersServersInSortedOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("definitions order = %v, want %v", got, want)
+	}
+}
+
+// TestNewManagerWarnsWhenDisabledWithConfiguredServers pins the
+// misconfiguration hint: MCP disabled by config while servers are configured
+// must WARN with the configured server NAMES (never URLs), while the
+// disabled-and-empty case keeps the plain INFO.
+func TestNewManagerWarnsWhenDisabledWithConfiguredServers(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	manager, err := NewManager(context.Background(), config.MCPConfig{
+		Enabled: false,
+		Servers: map[string]config.MCPServerConfig{
+			"supabase": {
+				URL:     "http://127.0.0.1:9/harbour",
+				Headers: map[string]string{"Authorization": "Bearer super-secret-token"},
+			},
+			"atlas": {URL: "http://127.0.0.1:9/atlas"},
+		},
+	}, logger)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "mcp support disabled by config while servers are configured") {
+		t.Fatalf("expected misconfiguration WARN in log, got:\n%s", out)
+	}
+	if !strings.Contains(out, "supabase") || !strings.Contains(out, "atlas") {
+		t.Fatalf("expected configured server names in the WARN, got:\n%s", out)
+	}
+	if strings.Contains(out, "harbour") || strings.Contains(out, "127.0.0.1") {
+		t.Fatalf("server URL leaked into log:\n%s", out)
+	}
+	if !strings.Contains(out, "level=WARN") {
+		t.Fatalf("expected WARN level record, got:\n%s", out)
+	}
+	if strings.Contains(out, "level=INFO") {
+		t.Fatalf("disabled-with-servers case must not log the plain INFO:\n%s", out)
+	}
+}
+
+// TestNewManagerLogsPlainInfoWhenDisabledAndEmpty keeps the quiet path: no
+// servers configured plus MCP disabled is the normal off state and must not
+// produce the misconfiguration WARN.
+func TestNewManagerLogsPlainInfoWhenDisabledAndEmpty(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	manager, err := NewManager(context.Background(), config.MCPConfig{Enabled: false}, logger)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "mcp support disabled by config") {
+		t.Fatalf("expected plain disabled INFO in log, got:\n%s", out)
+	}
+	if strings.Contains(out, "while servers are configured") {
+		t.Fatalf("unexpected misconfiguration WARN for empty config:\n%s", out)
 	}
 }
