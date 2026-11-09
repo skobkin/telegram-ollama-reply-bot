@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -162,5 +163,68 @@ func TestCallTimeoutDefaultsWhenUnset(t *testing.T) {
 	}
 	if got := callTimeout(config.MCPServerConfig{Timeout: 3 * time.Second}); got != 3*time.Second {
 		t.Fatalf("expected configured timeout to win, got %v", got)
+	}
+}
+
+// rawArgsCapture records the exact argument bytes a server tool received.
+type rawArgsCapture struct {
+	mu   sync.Mutex
+	raws []string
+}
+
+func (c *rawArgsCapture) add(raw string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.raws = append(c.raws, raw)
+}
+
+func (c *rawArgsCapture) all() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]string(nil), c.raws...)
+}
+
+// TestCallToolHandlerPassesArgumentsThroughWithoutRemarshaling proves the
+// model's argument JSON reaches the server byte-for-byte: an integer above
+// 2^53 (which a decode-into-any + re-marshal round trip would corrupt via
+// float64) arrives exactly as sent. Nil arguments still produce a well-formed
+// empty object.
+func TestCallToolHandlerPassesArgumentsThroughWithoutRemarshaling(t *testing.T) {
+	capture := &rawArgsCapture{}
+
+	srv := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "1.0.0"}, nil)
+	srv.AddTool(
+		&mcp.Tool{Name: "capture", InputSchema: map[string]any{"type": "object"}},
+		func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			capture.add(string(req.Params.Arguments))
+
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "captured"}},
+			}, nil
+		},
+	)
+	ts := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil))
+	t.Cleanup(ts.Close)
+
+	session := connectCallTestClient(t, ts, config.MCPServerConfig{Timeout: testCallTimeout})
+	handler := callToolHandler(session, "capture", "mcp_test__capture", callTimeout(config.MCPServerConfig{Timeout: testCallTimeout}), nil)
+
+	if _, err := handler(context.Background(), tooluse.CallContext{}, []byte(`{"n":9007199254740993}`)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := handler(context.Background(), tooluse.CallContext{}, nil); err != nil {
+		t.Fatalf("unexpected error for nil arguments: %v", err)
+	}
+
+	got := capture.all()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 captured calls, got %d: %v", len(got), got)
+	}
+	if got[0] != `{"n":9007199254740993}` {
+		t.Fatalf("expected arguments to arrive exactly as sent, got %s", got[0])
+	}
+	if got[1] != `{}` {
+		t.Fatalf("expected nil arguments to arrive as an empty object, got %s", got[1])
 	}
 }

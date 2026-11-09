@@ -18,12 +18,8 @@ func TestParseToolArgumentsReturnsObjectForEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	obj, ok := got.(map[string]any)
-	if !ok {
-		t.Fatalf("expected map[string]any, got %T", got)
-	}
-	if len(obj) != 0 {
-		t.Fatalf("expected empty object, got %v", obj)
+	if string(got) != `{}` {
+		t.Fatalf("expected empty object bytes, got %s", got)
 	}
 }
 
@@ -32,52 +28,53 @@ func TestParseToolArgumentsReturnsObjectForNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	obj, ok := got.(map[string]any)
-	if !ok {
-		t.Fatalf("expected map[string]any, got %T", got)
-	}
-	if len(obj) != 0 {
-		t.Fatalf("expected empty object, got %v", obj)
+	if string(got) != `{}` {
+		t.Fatalf("expected empty object bytes, got %s", got)
 	}
 }
 
+// TestParseToolArgumentsPassesObjectThrough pins raw pass-through: object
+// arguments reach the SDK byte-for-byte, without any decode/re-encode round
+// trip (which would turn numbers into float64 and corrupt integers above
+// 2^53).
 func TestParseToolArgumentsPassesObjectThrough(t *testing.T) {
 	in := json.RawMessage(`{"q":"hello","n":3}`)
 	got, err := parseToolArguments(in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	obj, ok := got.(map[string]any)
-	if !ok {
-		t.Fatalf("expected map[string]any, got %T", got)
+	if string(got) != `{"q":"hello","n":3}` {
+		t.Fatalf("expected verbatim pass-through, got %s", got)
 	}
-	if obj["q"] != "hello" {
-		t.Fatalf("unexpected q: %v", obj["q"])
+}
+
+func TestParseToolArgumentsPreservesLargeIntegers(t *testing.T) {
+	in := json.RawMessage(`{"n":9007199254740993}`)
+	got, err := parseToolArguments(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	// JSON numbers decode to float64.
-	if obj["n"] != float64(3) {
-		t.Fatalf("unexpected n: %v", obj["n"])
+	if string(got) != `{"n":9007199254740993}` {
+		t.Fatalf("expected integer to survive untouched, got %s", got)
 	}
 }
 
 func TestParseToolArgumentsWrapsScalarsAsValueField(t *testing.T) {
-	cases := []json.RawMessage{
-		json.RawMessage(`"hello"`),
-		json.RawMessage(`42`),
-		json.RawMessage(`true`),
+	cases := map[string]string{
+		`"hello"`:          `{"value":"hello"}`,
+		`42`:               `{"value":42}`,
+		`9007199254740993`: `{"value":9007199254740993}`,
+		`true`:             `{"value":true}`,
+		`[1,2]`:            `{"value":[1,2]}`,
 	}
-	for _, in := range cases {
-		t.Run(string(in), func(t *testing.T) {
-			got, err := parseToolArguments(in)
+	for in, want := range cases {
+		t.Run(in, func(t *testing.T) {
+			got, err := parseToolArguments(json.RawMessage(in))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			obj, ok := got.(map[string]any)
-			if !ok {
-				t.Fatalf("expected map[string]any, got %T", got)
-			}
-			if _, ok := obj["value"]; !ok {
-				t.Fatalf("expected wrapped scalar under `value`, got %v", obj)
+			if string(got) != want {
+				t.Fatalf("expected wrapped %s, got %s", want, got)
 			}
 		})
 	}

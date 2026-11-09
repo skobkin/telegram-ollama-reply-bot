@@ -41,9 +41,11 @@ func TestHeaderRoundTripperReplacesExistingHeaders(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Mcp-Session-Id", "session-1")
 
-	if _, err := rt.RoundTrip(req); err != nil {
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
+	defer resp.Body.Close()
 	if len(base.requests) != 1 {
 		t.Fatalf("expected 1 captured request, got %d", len(base.requests))
 	}
@@ -86,9 +88,11 @@ func TestHeaderRoundTripperSetsAllConfiguredHeaders(t *testing.T) {
 	req.Header.Set("Mcp-Session-Id", "sdk-session")
 	req.Header.Set("Mcp-Protocol-Vers", "2025-03-26")
 
-	if _, err := rt.RoundTrip(req); err != nil {
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
+	defer resp.Body.Close()
 
 	sent := base.requests[0]
 	for name, want := range map[string]string{
@@ -116,9 +120,11 @@ func TestHeaderRoundTripperPassthroughWhenEmpty(t *testing.T) {
 	}
 	req.Header.Set("Accept", "text/event-stream")
 
-	if _, err := rt.RoundTrip(req); err != nil {
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
+	defer resp.Body.Close()
 	if len(base.requests) != 1 || base.requests[0] != req {
 		t.Fatalf("expected the original request to reach the base transport")
 	}

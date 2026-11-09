@@ -95,30 +95,39 @@ func callToolHandler(session *mcp.ClientSession, originalName, namespacedName st
 	}
 }
 
-// parseToolArguments turns a `json.RawMessage` argument blob into a value the
-// SDK can serialize back into the wire format. `map[string]any` is the
-// canonical shape for object arguments; an empty / null blob becomes an empty
-// object so the server always sees a JSON object as `arguments`.
-func parseToolArguments(args json.RawMessage) (any, error) {
+// parseToolArguments prepares the model's argument JSON for the wire. Object
+// arguments are passed through as raw bytes: they end up in
+// `CallToolParams.Arguments` as a `json.RawMessage`, which the SDK embeds
+// verbatim when it encodes the JSON-RPC request. Decoding into `any` and
+// letting the SDK re-marshal would turn every number into a float64 and
+// silently corrupt integers above 2^53, so the payload is never re-encoded.
+//
+// An empty / null blob becomes an empty object so the server always sees a
+// JSON object as `arguments`. Non-object arguments (arrays / scalars) are
+// wrapped as {"value": ...} because some MCP servers reject non-object
+// arguments; wrapping keeps the call well-formed while still not
+// re-encoding the wrapped payload.
+func parseToolArguments(args json.RawMessage) (json.RawMessage, error) {
 	trimmed := strings.TrimSpace(string(args))
 	if trimmed == "" || trimmed == "null" {
-		return map[string]any{}, nil
+		return json.RawMessage("{}"), nil
 	}
 
-	var parsed any
-	if err := json.Unmarshal(args, &parsed); err != nil {
-		return nil, fmt.Errorf("decode arguments: %w", err)
+	if !json.Valid([]byte(trimmed)) {
+		return nil, fmt.Errorf("decode arguments: invalid JSON")
 	}
-	if parsed == nil {
-		return map[string]any{}, nil
-	}
-	if obj, ok := parsed.(map[string]any); ok {
-		return obj, nil
+	if trimmed[0] == '{' {
+		return json.RawMessage(trimmed), nil
 	}
 
-	// Wrap arrays / scalars so the server still gets a JSON object. Some MCP
-	// servers reject non-object arguments; this keeps the call well-formed.
-	return map[string]any{"value": parsed}, nil
+	wrapped, err := json.Marshal(struct {
+		Value json.RawMessage `json:"value"`
+	}{Value: json.RawMessage(trimmed)})
+	if err != nil {
+		return nil, fmt.Errorf("wrap arguments: %w", err)
+	}
+
+	return wrapped, nil
 }
 
 // decodeCallResult turns an MCP `CallToolResult` into a tooluse.ToolResult.
