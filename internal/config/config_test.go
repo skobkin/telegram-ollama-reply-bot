@@ -350,6 +350,41 @@ func TestLoadRejectsNegativeMCPResultCharBudget(t *testing.T) {
 	}
 }
 
+func TestLoadJoinsMCPHeaderSegmentsWithHyphens(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("MCP__ENABLED", "true")
+	t.Setenv("MCP__SERVERS__BROWSER__URL", "https://mcp.example.com")
+	t.Setenv("MCP__SERVERS__BROWSER__HEADERS__X__API__KEY", "api-key-value")
+	t.Setenv("MCP__SERVERS__BROWSER__HEADERS__ACCEPT__LANGUAGE", "en-US")
+	t.Setenv("MCP__SERVERS__BROWSER__HEADERS__X_CUSTOM", "underscore-value")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	browser, ok := cfg.MCP.Servers["browser"]
+	if !ok {
+		t.Fatalf("missing browser server")
+	}
+
+	// Multiple `__`-separated segments are joined with "-": HTTP header names
+	// are case-insensitive and Go canonicalizes them on send.
+	if got, want := browser.Headers["x-api-key"], "api-key-value"; got != want {
+		t.Fatalf("unexpected x-api-key header: got %q want %q", got, want)
+	}
+	if got, want := browser.Headers["accept-language"], "en-US"; got != want {
+		t.Fatalf("unexpected accept-language header: got %q want %q", got, want)
+	}
+	// A single segment keeps its literal underscores.
+	if got, want := browser.Headers["x_custom"], "underscore-value"; got != want {
+		t.Fatalf("unexpected x_custom header: got %q want %q", got, want)
+	}
+	if len(browser.Headers) != 3 {
+		t.Fatalf("unexpected headers: %v", browser.Headers)
+	}
+}
+
 func TestMCPConfigValidateAcceptsHTTPSServer(t *testing.T) {
 	c := MCPConfig{
 		Enabled: true,

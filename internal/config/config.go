@@ -138,7 +138,11 @@ func InvocationPolicyFor(s string) string {
 // MCPServerConfig contains configuration for one MCP server.
 //
 // `URL` is required and must be HTTPS unless `Insecure` is true. `Headers` are
-// sent on every request; their values are never logged. `Timeout` is clamped to
+// sent on every request; their values are never logged. Because environment
+// variable names cannot contain "-", spell a hyphenated header as multiple
+// `__`-separated segments after `HEADERS` (`...HEADERS__X__API__KEY` yields
+// the header name "x-api-key"); a single segment keeps its literal
+// underscores (`...HEADERS__X_API_KEY` yields "x_api_key"). `Timeout` is clamped to
 // `[1s, 60s]`. `InvocationPolicy` and `SideEffecting` are operator overrides for
 // the per-tool defaults derived from the MCP tool annotations (`readOnlyHint`
 // and `destructiveHint` respectively). `AllowedTools` is a whitelist; setting
@@ -238,6 +242,10 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: apply history limit aliases: %w", err)
 	}
 
+	if err := flattenMCPHeaderNames(k); err != nil {
+		return nil, fmt.Errorf("config: flatten mcp headers: %w", err)
+	}
+
 	var cfg Config
 	if err := k.UnmarshalWithConf("", &cfg, koanf.UnmarshalConf{
 		DecoderConfig: &mapstructure.DecoderConfig{
@@ -324,6 +332,77 @@ func applyHistoryLimitAliases(k *koanf.Koanf) error {
 	}
 
 	return nil
+}
+
+// flattenMCPHeaderNames joins nested path segments under each MCP server's
+// `headers` map into a single header name. Environment variable names cannot
+// contain "-", so a hyphenated header is spelled with multiple `__`-separated
+// segments: MCP__SERVERS__S__HEADERS__X__API__KEY reaches the Koanf tree as
+// the nested path mcp.servers.s.headers.x.api.key, which cannot unmarshal
+// into the flat map[string]string field. The segments are joined with "-",
+// yielding the header name "x-api-key". A single segment keeps its literal
+// underscores: HEADERS__X_API_KEY yields "x_api_key".
+//
+// Koanf's Raw() returns a deep copy and Set() merges, so the rewritten
+// `mcp` subtree is deleted first and re-inserted afterwards.
+func flattenMCPHeaderNames(k *koanf.Koanf) error {
+	raw := k.Raw()
+	mcp, ok := raw["mcp"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	servers, ok := mcp["servers"].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	flattened := false
+	for _, serverValue := range servers {
+		server, ok := serverValue.(map[string]any)
+		if !ok {
+			continue
+		}
+		headers, ok := server["headers"].(map[string]any)
+		if !ok {
+			continue
+		}
+
+		joined := make(map[string]any, len(headers))
+		joinHeaderSegments(nil, headers, joined)
+		server["headers"] = joined
+		flattened = true
+	}
+
+	if !flattened {
+		return nil
+	}
+
+	k.Delete("mcp")
+	if err := k.Set("mcp", mcp); err != nil {
+		return fmt.Errorf("set mcp: %w", err)
+	}
+
+	return nil
+}
+
+// joinHeaderSegments walks a nested header map and writes every leaf into out,
+// keyed by its path segments joined with "-". prefix holds the segments
+// collected on the way down; it is copied at every level so sibling branches
+// cannot overwrite each other's entries through a shared backing array.
+func joinHeaderSegments(prefix []string, headers map[string]any, out map[string]any) {
+	for key, value := range headers {
+		next := make([]string, 0, len(prefix)+1)
+		next = append(next, prefix...)
+		next = append(next, key)
+
+		if nested, ok := value.(map[string]any); ok {
+			joinHeaderSegments(next, nested, out)
+
+			continue
+		}
+
+		out[strings.Join(next, "-")] = value
+	}
 }
 
 // RouteForFeature returns the per-feature model route for the given feature name.
