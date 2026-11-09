@@ -8,6 +8,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"reflect"
@@ -18,6 +19,8 @@ import (
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/providers/env/v2"
 	"github.com/knadh/koanf/v2"
+
+	"telegram-ollama-reply-bot/internal/support/urlredact"
 )
 
 // Config represents the root configuration structure.
@@ -455,6 +458,25 @@ func (c MCPConfig) Validate() error {
 	return nil
 }
 
+// redactMCPEndpoint strips credential-bearing URL parts (userinfo, query,
+// fragment) before a configured MCP endpoint is echoed into a validation
+// error, which ends up in stderr and container logs. MCP endpoints commonly
+// carry credentials as query parameters, so no validation path may quote them
+// verbatim.
+func redactMCPEndpoint(rawURL string) string {
+	if redacted := urlredact.Redact(rawURL); redacted != rawURL {
+		return redacted
+	}
+
+	// urlredact only recognizes http(s) URLs; anything else (e.g. a scheme
+	// rejected above) still must not keep its query or fragment.
+	if cut := strings.IndexAny(rawURL, "?#"); cut != -1 {
+		return rawURL[:cut]
+	}
+
+	return rawURL
+}
+
 func (s MCPServerConfig) validate(name string) error {
 	rawURL := strings.TrimSpace(s.URL)
 	if rawURL == "" {
@@ -463,7 +485,15 @@ func (s MCPServerConfig) validate(name string) error {
 
 	parsed, err := url.ParseRequestURI(rawURL)
 	if err != nil {
-		return fmt.Errorf("mcp.servers.%s.url %q is not a valid URL: %w", name, rawURL, err)
+		// A *url.Error quotes the raw URL it failed on, so rebuild it around
+		// the redacted endpoint: the query (often credentials) must stay out
+		// of startup diagnostics while the cause stays wrapped for callers.
+		var uerr *url.Error
+		if errors.As(err, &uerr) {
+			err = &url.Error{Op: uerr.Op, URL: redactMCPEndpoint(rawURL), Err: uerr.Err}
+		}
+
+		return fmt.Errorf("mcp.servers.%s.url %q is not a valid URL: %w", name, redactMCPEndpoint(rawURL), err)
 	}
 
 	scheme := strings.ToLower(parsed.Scheme)
@@ -472,10 +502,10 @@ func (s MCPServerConfig) validate(name string) error {
 		// always allowed
 	case "http":
 		if !s.Insecure {
-			return fmt.Errorf("mcp.servers.%s.url %q uses http://; set mcp.servers.%s.insecure=true to allow it", name, rawURL, name)
+			return fmt.Errorf("mcp.servers.%s.url %q uses http://; set mcp.servers.%s.insecure=true to allow it", name, redactMCPEndpoint(rawURL), name)
 		}
 	default:
-		return fmt.Errorf("mcp.servers.%s.url %q has unsupported scheme %q (use https or http with insecure=true)", name, rawURL, parsed.Scheme)
+		return fmt.Errorf("mcp.servers.%s.url %q has unsupported scheme %q (use https or http with insecure=true)", name, redactMCPEndpoint(rawURL), parsed.Scheme)
 	}
 
 	// Timeout is a per-tool-call timeout: when set it must simply be positive.

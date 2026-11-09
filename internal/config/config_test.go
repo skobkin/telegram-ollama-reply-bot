@@ -498,6 +498,74 @@ func TestMCPConfigValidateRejectsInvalidURL(t *testing.T) {
 	}
 }
 
+func TestMCPConfigValidateHTTPErrorRedactsQuery(t *testing.T) {
+	c := MCPConfig{
+		Enabled: true,
+		Servers: map[string]MCPServerConfig{
+			"probe": {URL: "http://mcp.example.invalid/mcp?api_key=secret-value"},
+		},
+	}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("expected error for http:// without insecure=true")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "secret-value") {
+		t.Fatalf("error message leaks query credentials: %v", err)
+	}
+	if !strings.Contains(msg, `mcp.servers.probe.url "http://mcp.example.invalid/mcp"`) {
+		t.Fatalf("error message lost redacted endpoint: %v", err)
+	}
+	if !strings.Contains(msg, "set mcp.servers.probe.insecure=true to allow it") {
+		t.Fatalf("error message lost insecure=true guidance: %v", err)
+	}
+}
+
+func TestMCPConfigValidateInvalidURLErrorRedactsQuery(t *testing.T) {
+	// A control character makes url.ParseRequestURI fail while the query
+	// string is still present in the raw value; the error must not echo it.
+	c := MCPConfig{
+		Enabled: true,
+		Servers: map[string]MCPServerConfig{
+			"probe": {URL: "http://mcp.example.invalid/mcp\x7f?api_key=secret-value"},
+		},
+	}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("expected error for malformed URL")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "secret-value") {
+		t.Fatalf("error message leaks query credentials: %v", err)
+	}
+	if !strings.Contains(msg, "probe") || !strings.Contains(msg, "is not a valid URL") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMCPConfigValidateUnsupportedSchemeErrorRedactsQuery(t *testing.T) {
+	c := MCPConfig{
+		Enabled: true,
+		Servers: map[string]MCPServerConfig{
+			"probe": {URL: "ftp://mcp.example.invalid/mcp?api_key=secret-value"},
+		},
+	}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("expected error for unsupported scheme")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "secret-value") {
+		t.Fatalf("error message leaks query credentials: %v", err)
+	}
+	if !strings.Contains(msg, `has unsupported scheme "ftp"`) {
+		t.Fatalf("error message lost scheme detail: %v", err)
+	}
+}
+
 func TestMCPConfigValidateRejectsNegativeTimeout(t *testing.T) {
 	c := MCPConfig{
 		Enabled: true,
