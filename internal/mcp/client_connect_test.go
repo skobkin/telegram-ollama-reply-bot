@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,5 +88,75 @@ func TestConnectBoundsSSEHeaderWait(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("expected connect to fail once the SSE stream request timed out")
+	}
+}
+
+// TestConnectFailureCleanupBoundedOnRedirectedDelete pins the discovery-
+// failure cleanup bound: connect() closes the just-opened session itself when
+// tool discovery fails (list tools, filter tools, translate), and those paths
+// must not block startup forever. Here discovery fails on a
+// RestrictedTools typo, and the session-termination DELETE is answered with a
+// 302 to a GET that never responds — the redirected hop carries no deadline,
+// so only the total close wait can end the cleanup. Before the fix,
+// connect() hung indefinitely inside session.Close().
+func TestConnectFailureCleanupBoundedOnRedirectedDelete(t *testing.T) {
+	original := sessionCleanupTimeout
+	sessionCleanupTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { sessionCleanupTimeout = original })
+
+	inner := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return newEchoMCPServer() }, nil)
+
+	releaseSink := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete:
+			http.Redirect(w, r, "/sink", http.StatusFound)
+		case r.URL.Path == "/sink":
+			// The redirected GET carries no deadline, so the abandoned
+			// client never closes its connection: waiting on
+			// r.Context().Done() alone would deadlock ts.Close, which only
+			// force-closes idle connections. The test releases the sink just
+			// before shutting the server down.
+			select {
+			case <-releaseSink:
+			case <-r.Context().Done():
+			}
+		default:
+			inner.ServeHTTP(w, r)
+		}
+	}))
+	t.Cleanup(ts.Close)
+	// Registered after ts.Close so cleanup LIFO order releases the sink
+	// first: that lets the abandoned session.Close() finish, which in turn
+	// tears down the SDK's standing SSE stream before the server waits on
+	// its connections.
+	t.Cleanup(func() { close(releaseSink) })
+
+	raw := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1.0.0"}, nil)
+	// "nope" is not advertised by the server, so filterTools fails by design.
+	c := &client{
+		name:   "connect-failure-probe",
+		config: config.MCPServerConfig{URL: ts.URL, RestrictedTools: []string{"nope"}},
+		raw:    raw,
+		logger: discardLogger(),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testConnectTimeout)
+	t.Cleanup(cancel)
+
+	done := make(chan error, 1)
+	go func() { done <- c.connect(ctx) }()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("connect blocked >2s on discovery-failure cleanup; the unbounded session.Close() hang is back")
+	}
+	if err == nil {
+		t.Fatal("expected connect to report the tool filter failure")
+	}
+	// The failure must be the filter error, not the (discarded) cleanup error.
+	if !strings.Contains(err.Error(), `restricted tool "nope"`) {
+		t.Fatalf("expected the filter error for %q, got %q", "nope", err.Error())
 	}
 }

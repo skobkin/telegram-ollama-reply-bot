@@ -51,7 +51,8 @@ type headerRoundTripper struct {
 
 // sessionCleanupTimeout bounds session termination twice over: each
 // session-termination DELETE round trip at the transport, and the total wait
-// for session.Close() in client.close. The transport-level deadline alone is
+// for session.Close() in closeSessionBounded (used by client.close and the
+// connect() failure paths). The transport-level deadline alone is
 // not enough: net/http answers a 301/302/303 to a DELETE by re-issuing the
 // request as a GET on the redirect target, and those follow-up hops reach
 // the transport on a fresh, deadline-free context — a redirect chain ending
@@ -313,7 +314,7 @@ func (c *client) connect(ctx context.Context) error {
 
 	tools, err := c.listTools(ctx)
 	if err != nil {
-		_ = session.Close()
+		_ = closeSessionBounded(session, c.logger, c.name)
 
 		return fmt.Errorf("list tools from %s: %s", redactURLCredentials(c.config.URL), redactURLCredentials(err.Error()))
 	}
@@ -327,7 +328,7 @@ func (c *client) connect(ctx context.Context) error {
 
 	allowed, err := filterTools(names, c.config.AllowedTools, c.config.RestrictedTools)
 	if err != nil {
-		_ = session.Close()
+		_ = closeSessionBounded(session, c.logger, c.name)
 
 		return fmt.Errorf("filter tools for %s: %w", c.name, err)
 	}
@@ -340,7 +341,7 @@ func (c *client) connect(ctx context.Context) error {
 		}
 		definition, err := translateDefinition(c.name, c.config, tool)
 		if err != nil {
-			_ = session.Close()
+			_ = closeSessionBounded(session, c.logger, c.name)
 
 			return fmt.Errorf("translate %s/%s: %w", c.name, name, err)
 		}
@@ -381,25 +382,16 @@ func (c *client) listTools(ctx context.Context) ([]*mcp.Tool, error) {
 	return tools, nil
 }
 
-// close releases the underlying session, if any. Safe to call multiple
-// times; subsequent calls are no-ops. Close errors can quote the request
-// URL (see redactURLCredentials) and are redacted before they reach logs.
+// closeSessionBounded closes session, waiting at most sessionCleanupTimeout.
+// On timeout the cleanup is abandoned in the background (the SDK's closeOnce
+// prevents a late finish from double-closing), a WARN is logged, and a
+// URL-free error is returned so shutdown and startup-failure cleanup proceed.
 //
-// The wait for the SDK's Close is bounded by sessionCleanupTimeout on top of
-// the per-DELETE transport deadline: net/http re-issues 301/302/303 answers
-// to the termination DELETE as GETs on the redirect target, and those
-// follow-up hops carry no deadline of their own. On timeout the cleanup is
-// abandoned in the background (the SDK's closeOnce keeps a late finish from
-// double-closing) and a URL-free error is returned so shutdown can proceed.
-func (c *client) close() error {
-	if c == nil || c.session == nil {
-		return nil
-	}
-	// Capture the session before nil-ing the field: the goroutine below must
-	// never touch c.session after close has cleared it.
-	session := c.session
-	c.session = nil
-
+// The total wait is bounded on top of the per-DELETE transport deadline
+// because net/http re-issues 301/302/303 answers to the termination DELETE as
+// GETs on the redirect target, and those follow-up hops carry no deadline of
+// their own.
+func closeSessionBounded(session *mcp.ClientSession, logger *slog.Logger, name string) error {
 	done := make(chan error, 1)
 	go func() {
 		done <- session.Close()
@@ -410,19 +402,39 @@ func (c *client) close() error {
 
 	select {
 	case err := <-done:
-		if err != nil {
-			err = errors.New(redactURLCredentials(err.Error()))
-		}
-
 		return err
 	case <-timer.C:
-		serverLogger(c.logger, c.name).Warn(
+		serverLogger(logger, name).Warn(
 			"mcp session cleanup timed out; abandoned and may keep running in the background",
 			"timeout", sessionCleanupTimeout,
 		)
 
 		return fmt.Errorf("mcp session cleanup timed out after %s", sessionCleanupTimeout)
 	}
+}
+
+// close releases the underlying session, if any. Safe to call multiple
+// times; subsequent calls are no-ops. The wait for the SDK's Close is bounded
+// by sessionCleanupTimeout (see closeSessionBounded), and close errors —
+// which can quote the request URL, see redactURLCredentials — are redacted
+// before they reach logs.
+func (c *client) close() error {
+	if c == nil || c.session == nil {
+		return nil
+	}
+	// Capture the session before nil-ing the field: the goroutine inside the
+	// helper must never touch c.session after close has cleared it.
+	session := c.session
+	c.session = nil
+
+	err := closeSessionBounded(session, c.logger, c.name)
+	if err != nil {
+		// The helper's timeout error is URL-free, so this wrap is a no-op
+		// there and only redacts genuine Close errors.
+		return errors.New(redactURLCredentials(err.Error()))
+	}
+
+	return nil
 }
 
 // serverLogger returns a *slog.Logger that already has the per-server
