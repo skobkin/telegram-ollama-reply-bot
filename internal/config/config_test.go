@@ -402,6 +402,7 @@ func TestMCPConfigValidateAcceptsHTTPSServer(t *testing.T) {
 
 func TestMCPConfigValidateRejectsEmptyServerName(t *testing.T) {
 	c := MCPConfig{
+		Enabled: true,
 		Servers: map[string]MCPServerConfig{
 			"": {URL: "https://mcp.example.com"},
 		},
@@ -418,6 +419,7 @@ func TestMCPConfigValidateRejectsEmptyServerName(t *testing.T) {
 
 func TestMCPConfigValidateRejectsEmptyURL(t *testing.T) {
 	c := MCPConfig{
+		Enabled: true,
 		Servers: map[string]MCPServerConfig{
 			"browser": {},
 		},
@@ -434,6 +436,7 @@ func TestMCPConfigValidateRejectsEmptyURL(t *testing.T) {
 
 func TestMCPConfigValidateRejectsHTTPWithoutInsecure(t *testing.T) {
 	c := MCPConfig{
+		Enabled: true,
 		Servers: map[string]MCPServerConfig{
 			"local": {URL: "http://localhost:8765/mcp"},
 		},
@@ -450,6 +453,7 @@ func TestMCPConfigValidateRejectsHTTPWithoutInsecure(t *testing.T) {
 
 func TestMCPConfigValidateAllowsHTTPWithInsecure(t *testing.T) {
 	c := MCPConfig{
+		Enabled: true,
 		Servers: map[string]MCPServerConfig{
 			"local": {URL: "http://localhost:8765/mcp", Insecure: true},
 		},
@@ -462,6 +466,7 @@ func TestMCPConfigValidateAllowsHTTPWithInsecure(t *testing.T) {
 
 func TestMCPConfigValidateRejectsUnsupportedScheme(t *testing.T) {
 	c := MCPConfig{
+		Enabled: true,
 		Servers: map[string]MCPServerConfig{
 			"weird": {URL: "ftp://mcp.example.com"},
 		},
@@ -478,6 +483,7 @@ func TestMCPConfigValidateRejectsUnsupportedScheme(t *testing.T) {
 
 func TestMCPConfigValidateRejectsInvalidURL(t *testing.T) {
 	c := MCPConfig{
+		Enabled: true,
 		Servers: map[string]MCPServerConfig{
 			"bad": {URL: "ht!tp://broken"},
 		},
@@ -502,6 +508,7 @@ func TestMCPConfigValidateRejectsOutOfRangeTimeout(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := MCPConfig{
+				Enabled: true,
 				Servers: map[string]MCPServerConfig{
 					"slow": {URL: "https://mcp.example.com", Timeout: tc.timeout},
 				},
@@ -520,6 +527,7 @@ func TestMCPConfigValidateRejectsOutOfRangeTimeout(t *testing.T) {
 
 func TestMCPConfigValidateRejectsUnknownInvocationPolicy(t *testing.T) {
 	c := MCPConfig{
+		Enabled: true,
 		Servers: map[string]MCPServerConfig{
 			"browser": {URL: "https://mcp.example.com", InvocationPolicy: "sometimes"},
 		},
@@ -543,6 +551,7 @@ func TestMCPConfigValidateAcceptsKnownInvocationPolicies(t *testing.T) {
 	} {
 		t.Run(policy, func(t *testing.T) {
 			c := MCPConfig{
+				Enabled: true,
 				Servers: map[string]MCPServerConfig{
 					"browser": {URL: "https://mcp.example.com", InvocationPolicy: policy},
 				},
@@ -557,6 +566,7 @@ func TestMCPConfigValidateAcceptsKnownInvocationPolicies(t *testing.T) {
 
 func TestMCPConfigValidateRejectsEmptyHeaderName(t *testing.T) {
 	c := MCPConfig{
+		Enabled: true,
 		Servers: map[string]MCPServerConfig{
 			"browser": {
 				URL:     "https://mcp.example.com",
@@ -673,6 +683,7 @@ func TestLoadUsesMCPConfigFromEnv(t *testing.T) {
 
 func TestLoadRejectsInvalidMCPFromEnv(t *testing.T) {
 	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("MCP__ENABLED", "true")
 	t.Setenv("MCP__SERVERS__BROWSER__URL", "ftp://mcp.example.com")
 
 	_, err := Load()
@@ -681,5 +692,23 @@ func TestLoadRejectsInvalidMCPFromEnv(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported scheme") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadSucceedsWithInvalidMCPServersWhenDisabled(t *testing.T) {
+	// An operator who set MCP variables but forgot MCP__ENABLED=true gets a
+	// booting bot: the manager short-circuits on Enabled, so the invalid
+	// per-server values are never used.
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("MCP__SERVERS__BROKEN__URL", "ftp://mcp.example.com")
+	t.Setenv("MCP__SERVERS__BROKEN__RESULT_CHAR_BUDGET", "-5")
+	t.Setenv("MCP__SERVERS__BROKEN__TIMEOUT", "-1s")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected load to succeed with MCP disabled, got: %v", err)
+	}
+	if cfg.MCP.Enabled {
+		t.Fatalf("expected mcp.enabled to default to false")
 	}
 }

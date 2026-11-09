@@ -421,10 +421,11 @@ func (c LLMConfig) RouteForFeature(feature string) (FeatureRouteConfig, error) {
 	}
 }
 
-// Validate checks the MCP configuration for semantic problems. It is run
-// unconditionally on every boot, even when MCP is disabled, so that obvious
-// typos and URL-scheme mistakes are surfaced before the bot ever tries to
-// start. The checks are:
+// Validate checks the MCP configuration for semantic problems. Servers are
+// only validated when MCP is enabled: the manager short-circuits on Enabled
+// and never connects, so an operator who set MCP variables but forgot
+// MCP__ENABLED=true gets a booting bot instead of a refused one. The checks
+// are:
 //
 //   - `URL` is a valid HTTP or HTTPS URL; HTTPS is required unless `Insecure` is true.
 //   - `Timeout`, if set, is in `[1s, 60s]`. Zero means "use the package default".
@@ -435,6 +436,10 @@ func (c LLMConfig) RouteForFeature(feature string) (FeatureRouteConfig, error) {
 //   - `Headers` keys are non-empty (values are never validated; they are
 //     secrets and must not be logged at startup).
 func (c MCPConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+
 	for name, server := range c.Servers {
 		if strings.TrimSpace(name) == "" {
 			return fmt.Errorf("mcp.servers: server name must not be empty")
