@@ -88,6 +88,25 @@ func namespacedToolName(serverName, toolName string) string {
 	return mcpToolNamePrefix + sanitizeToolNameSegment(serverName) + mcpToolNameSep + sanitizeToolNameSegment(toolName)
 }
 
+// checkToolNameCollisions rejects a set of advertised tool names when two of
+// them sanitize onto the same tool-name segment (e.g. "search.web" and
+// "search-web"): Registry.Register would silently replace the earlier
+// definition with the later one, and which one wins would depend on map
+// iteration order. The error names both raw tools so the operator can rename
+// one or scope it out of the filters.
+func checkToolNameCollisions(names []string) error {
+	seen := make(map[string]string, len(names))
+	for _, raw := range names {
+		segment := sanitizeToolNameSegment(raw)
+		if prev, ok := seen[segment]; ok {
+			return fmt.Errorf("tool name collision: %q and %q both translate to the same tool name %q", prev, raw, segment)
+		}
+		seen[segment] = raw
+	}
+
+	return nil
+}
+
 // resolveInvocationPolicy returns the operator override if set, otherwise
 // derives a sensible default from the MCP tool's `readOnlyHint` annotation.
 // The returned string is one of the values accepted by tooluse.InvocationPolicy.

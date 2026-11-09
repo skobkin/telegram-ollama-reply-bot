@@ -39,6 +39,31 @@ func TestNamespacedToolNameProducesMcpPrefix(t *testing.T) {
 	}
 }
 
+func TestCheckToolNameCollisionsRejectsCollidingRawNames(t *testing.T) {
+	err := checkToolNameCollisions([]string{"search.web", "search-web", "search_web"})
+	if err == nil {
+		t.Fatalf("expected error for colliding tool names")
+	}
+	for _, want := range []string{"search.web", "search-web", "search_web"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to mention %q, got: %v", want, err)
+		}
+	}
+}
+
+func TestCheckToolNameCollisionsAcceptsDistinctNames(t *testing.T) {
+	err := checkToolNameCollisions([]string{"search.web", "search_news", "fetch"})
+	if err != nil {
+		t.Fatalf("unexpected error for distinct names: %v", err)
+	}
+}
+
+func TestCheckToolNameCollisionsHandlesEmptyList(t *testing.T) {
+	if err := checkToolNameCollisions(nil); err != nil {
+		t.Fatalf("unexpected error for empty list: %v", err)
+	}
+}
+
 func TestTranslateDefinitionDefaultsFromAnnotations(t *testing.T) {
 	readOnly := true
 	tool := &mcp.Tool{

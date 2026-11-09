@@ -36,6 +36,9 @@ func normalizeToolNameList(values []string) []string {
 //
 //   - If `allowed` is non-empty, only tools present in it survive.
 //   - `restricted` is then subtracted from the survivors.
+//   - When two survivors sanitize onto the same namespaced tool name,
+//     filterTools returns an error: the registry would silently replace the
+//     earlier tool with the later one.
 //
 // The returned slice preserves the order of `available`. When the operator
 // names a tool in `allowed` that the server does not advertise, filterTools
@@ -84,6 +87,12 @@ func filterTools(available, allowed, restricted []string) ([]string, error) {
 			continue
 		}
 		out = append(out, name)
+	}
+
+	// Check survivors only: tools removed by the filters above are never
+	// registered, so they cannot collide.
+	if err := checkToolNameCollisions(out); err != nil {
+		return nil, err
 	}
 
 	return out, nil

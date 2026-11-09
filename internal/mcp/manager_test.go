@@ -181,3 +181,81 @@ func TestNewManagerLogsPlainInfoWhenDisabledAndEmpty(t *testing.T) {
 		t.Fatalf("unexpected misconfiguration WARN for empty config:\n%s", out)
 	}
 }
+
+// TestNewManagerRejectsCollidingToolNamesOnOneServer pins the fail-fast
+// behavior for two remote tools whose sanitized names collapse onto one
+// namespaced name: boot must error instead of silently registering whichever
+// tool happens to come last.
+func TestNewManagerRejectsCollidingToolNamesOnOneServer(t *testing.T) {
+	endpoint := newInProcessMCPServer(t, "search.web", "search-web")
+
+	_, err := NewManager(context.Background(), config.MCPConfig{
+		Enabled: true,
+		Servers: map[string]config.MCPServerConfig{
+			"srv": {URL: endpoint, Timeout: 2 * time.Second},
+		},
+	}, discardLogger())
+	if err == nil {
+		t.Fatalf("expected NewManager to fail on colliding tool names")
+	}
+
+	for _, want := range []string{"srv", "search.web", "search-web", "search_web"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to mention %q, got: %v", want, err)
+		}
+	}
+}
+
+// TestNewManagerRejectsCollidingServerNames pins the fail-fast behavior for
+// two servers whose sanitized names collapse onto the same prefix: both
+// tools would land on one namespaced name and the winner would depend on map
+// iteration order.
+func TestNewManagerRejectsCollidingServerNames(t *testing.T) {
+	first := newInProcessMCPServer(t, "fetch")
+	second := newInProcessMCPServer(t, "fetch")
+
+	_, err := NewManager(context.Background(), config.MCPConfig{
+		Enabled: true,
+		Servers: map[string]config.MCPServerConfig{
+			"a-b":  {URL: first, Timeout: 2 * time.Second},
+			"a__b": {URL: second, Timeout: 2 * time.Second},
+		},
+	}, discardLogger())
+	if err == nil {
+		t.Fatalf("expected NewManager to fail on colliding server names")
+	}
+
+	for _, want := range []string{"a-b", "a__b", "mcp_a_b__fetch"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to mention %q, got: %v", want, err)
+		}
+	}
+}
+
+// TestNewManagerAcceptsDistinctToolNamesAcrossServers keeps the healthy path
+// working: same tool name on differently-named servers must not be treated
+// as a collision.
+func TestNewManagerAcceptsDistinctToolNamesAcrossServers(t *testing.T) {
+	servers := map[string]config.MCPServerConfig{
+		"alpha": {URL: newInProcessMCPServer(t, "fetch"), Timeout: 2 * time.Second},
+		"beta":  {URL: newInProcessMCPServer(t, "fetch"), Timeout: 2 * time.Second},
+	}
+
+	manager, err := NewManager(context.Background(), config.MCPConfig{
+		Enabled: true,
+		Servers: servers,
+	}, discardLogger())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer manager.Close()
+
+	got := make([]string, 0)
+	for _, def := range manager.Definitions() {
+		got = append(got, def.Name)
+	}
+	want := []string{"mcp_alpha__fetch", "mcp_beta__fetch"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("definitions = %v, want %v", got, want)
+	}
+}

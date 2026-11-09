@@ -69,6 +69,12 @@ func NewManager(ctx context.Context, cfg config.MCPConfig, logger *slog.Logger) 
 	}
 
 	manager := &Manager{logger: logger}
+	// namespacedName -> server that produced it. A duplicate means two
+	// different (server, tool) pairs collapse onto one final namespaced name;
+	// the later registration would silently replace the earlier one on the
+	// registry (and which one wins would depend on map iteration order), so
+	// the config is unresolvable and boot must fail.
+	namespacedOwners := make(map[string]string)
 	for _, name := range sortedServerNames(cfg.Servers) {
 		server := cfg.Servers[name]
 		raw := mcp.NewClient(implementation, nil)
@@ -96,6 +102,17 @@ func NewManager(ctx context.Context, cfg config.MCPConfig, logger *slog.Logger) 
 			return nil, fmt.Errorf("mcp server %q: %w", name, err)
 		}
 		manager.clients = append(manager.clients, cl)
+		for _, def := range cl.definitions {
+			if owner, ok := namespacedOwners[def.Name]; ok {
+				_ = manager.Close()
+
+				return nil, fmt.Errorf(
+					"mcp namespaced tool name %q is produced by both server %q and server %q",
+					def.Name, owner, name,
+				)
+			}
+			namespacedOwners[def.Name] = name
+		}
 		logger.Info(
 			"mcp server connected",
 			"server", name,

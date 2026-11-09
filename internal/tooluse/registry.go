@@ -262,7 +262,12 @@ func (r *Registry) Lookup(name string) (Definition, bool) {
 // follow-up).
 //
 // Callers are responsible for ensuring the namespaced name does not collide
-// with a built-in tool; the MCP translator enforces this at translation time.
+// with a built-in tool. MCP tools cannot: every translated name carries the
+// reserved `mcp_` prefix that no built-in tool uses. Collisions between MCP
+// tools themselves are rejected at startup by the MCP manager (duplicate
+// sanitized names within one server fail in its tool filter; duplicate final
+// namespaced names across servers fail in NewManager) — Register itself does
+// not detect duplicates and replaces silently.
 func (r *Registry) Register(d Definition) {
 	if r.definitions == nil {
 		r.definitions = make(map[string]Definition)
