@@ -171,7 +171,9 @@ func endpointOrigin(rawURL string) string {
 //
 // Redirects to a plain-HTTP target are refused when the configured endpoint
 // is HTTPS: the transport would still attach the operator's credentials
-// (same host, so origin scoping passes) onto an unencrypted hop.
+// (same host, so origin scoping passes) onto an unencrypted hop. The policy
+// also caps redirect chains at maxRedirectHops, restoring Go's default
+// limit that a custom CheckRedirect replaces (see checkMCPRedirect).
 //
 // The base transport is http.DefaultTransport so operators get the same
 // proxy / TLS configuration as every other outbound call from the bot.
@@ -187,14 +189,24 @@ func httpClientForServer(server config.MCPServerConfig) *http.Client {
 			header: headers,
 			origin: endpointOrigin(server.URL),
 		},
-		CheckRedirect: rejectHTTPSDowngrade,
+		CheckRedirect: checkMCPRedirect,
 	}
 }
 
-// rejectHTTPSDowngrade is an http.Client CheckRedirect policy that refuses
-// any redirect from an HTTPS URL to a plain-HTTP URL, regardless of host.
-// Following such a redirect would resend credentials over plaintext.
-func rejectHTTPSDowngrade(req *http.Request, via []*http.Request) error {
+// maxRedirectHops matches net/http's built-in redirect limit. Setting a
+// custom CheckRedirect policy replaces the default one, so the limit has to
+// be re-implemented here: an uncapped chain would let a redirecting (or
+// self-redirecting) endpoint walk the client from hop to hop indefinitely.
+const maxRedirectHops = 10
+
+// checkMCPRedirect is an http.Client CheckRedirect policy that keeps Go's
+// default redirect-hop cap and refuses any redirect from an HTTPS URL to a
+// plain-HTTP URL, regardless of host. Following such a redirect would
+// resend credentials over plaintext.
+func checkMCPRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirectHops {
+		return fmt.Errorf("mcp: stopped after %d redirects", maxRedirectHops)
+	}
 	if len(via) == 0 {
 		return nil
 	}

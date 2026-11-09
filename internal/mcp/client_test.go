@@ -181,7 +181,7 @@ func TestHeaderRoundTripperDoesNotInjectAcrossRedirect(t *testing.T) {
 			header: http.Header{"Authorization": []string{"Bearer secret"}, "X-Api-Key": []string{"hunter2"}},
 			origin: endpointOrigin(source.URL),
 		},
-		CheckRedirect: rejectHTTPSDowngrade,
+		CheckRedirect: checkMCPRedirect,
 	}
 
 	resp, err := client.Get(source.URL + "/start")
@@ -221,7 +221,7 @@ func TestHeaderRoundTripperInjectsOnSameOriginRedirect(t *testing.T) {
 			header: http.Header{"Authorization": []string{"Bearer secret"}},
 			origin: endpointOrigin(source.URL),
 		},
-		CheckRedirect: rejectHTTPSDowngrade,
+		CheckRedirect: checkMCPRedirect,
 	}
 
 	resp, err := client.Get(source.URL + "/start")
@@ -254,17 +254,17 @@ func TestEndpointOrigin(t *testing.T) {
 	}
 }
 
-// TestRejectHTTPSDowngrade pins the redirect policy: an HTTPS endpoint must
+// TestCheckMCPRedirect pins the redirect policy: an HTTPS endpoint must
 // never be followed to a plain-HTTP target, on any host. Same- or upgraded-
 // scheme redirects stay allowed.
-func TestRejectHTTPSDowngrade(t *testing.T) {
+func TestCheckMCPRedirect(t *testing.T) {
 	via := []*http.Request{{URL: mustParseURL(t, "https://mcp.example.invalid/mcp")}}
 
 	downgrade, err := http.NewRequest(http.MethodGet, "http://mcp.example.invalid/mcp", nil)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
-	err = rejectHTTPSDowngrade(downgrade, via)
+	err = checkMCPRedirect(downgrade, via)
 	if err == nil {
 		t.Fatal("expected https to http redirect to be refused")
 	}
@@ -276,8 +276,37 @@ func TestRejectHTTPSDowngrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
-	if err := rejectHTTPSDowngrade(crossHostHTTPS, via); err != nil {
+	if err := checkMCPRedirect(crossHostHTTPS, via); err != nil {
 		t.Fatalf("expected https to https redirect to be allowed, got %v", err)
+	}
+}
+
+// TestCheckMCPRedirectCapsRedirectHops pins the hop limit Go's default
+// CheckRedirect would enforce: a custom policy replaces it, so after ten
+// hops the eleventh must be refused instead of letting a redirecting (or
+// self-redirecting) endpoint walk the client forever.
+func TestCheckMCPRedirectCapsRedirectHops(t *testing.T) {
+	via := make([]*http.Request, maxRedirectHops)
+	for i := range via {
+		via[i] = &http.Request{URL: mustParseURL(t, "https://mcp.example.invalid/hop")}
+	}
+
+	next, err := http.NewRequest(http.MethodGet, "https://mcp.example.invalid/hop", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+
+	err = checkMCPRedirect(next, via)
+	if err == nil {
+		t.Fatalf("expected the %dth redirect hop to be refused", maxRedirectHops+1)
+	}
+	if !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Fatalf("expected the default redirect-cap message, got %q", err.Error())
+	}
+
+	// Nine prior hops are still within the cap.
+	if err := checkMCPRedirect(next, via[:maxRedirectHops-1]); err != nil {
+		t.Fatalf("expected 9 prior hops to still pass, got %v", err)
 	}
 }
 
