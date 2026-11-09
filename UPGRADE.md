@@ -100,6 +100,22 @@ The `internal/config.Load()` signature changed from `Load() *Config` to
 but cannot be parsed (e.g. an integer that fails to convert). Callers must
 handle the new error return.
 
+### Value parsing semantics changed
+
+- Booleans: parsed with `strconv.ParseBool` semantics, so `TRUE`, `True`, `t`, and `1`
+  all mean true. Previously anything but the exact string `true` meant false, so
+  `LLM__IMAGE_RECOGNITION_ENABLED=TRUE` (or `=1`), which used to leave image recognition
+  disabled, now enables it. Values like `off`/`on` previously silently meant false; they
+  now abort startup.
+- Integers: parsed in base 10, so leading zeros no longer switch to octal (`010` is 10,
+  `08` is 8). A value that fails to parse is a hard startup error instead of silently
+  falling back to the default.
+- `BOT__ADMIN_IDS`: an unparseable entry is a fatal startup error. The old loader
+  silently skipped it, which could silently drop an admin's access.
+- An environment variable whose path collides with a config section of mismatched type
+  (e.g. `MCP__SERVERS=prod`) now aborts startup. Unknown top-level prefixes (`FOO__BAR`)
+  are still ignored.
+
 ## 2026-05-18 Changes against previous stable version.
 
 These notes are for users upgrading from previous stable to the latest version that introduces persistent admin configuration, privacy-bounded in-memory state, tool-assisted chat, reminders, optional web search, and OpenAI-compatible-only LLM access.

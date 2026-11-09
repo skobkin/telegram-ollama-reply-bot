@@ -228,9 +228,15 @@ func Load() (*Config, error) {
 			// filter, a plain scalar variable whose lowercased name collides
 			// with a top-level config key (e.g. LOG=debug replacing the
 			// whole log.* subtree) breaks unmarshalling and refuses the boot.
-			// Variables with an unknown prefix but a `__` delimiter (e.g.
-			// FOO__BAR=x) land on unmapped keys and are ignored by the
-			// struct unmarshal, so they are harmless.
+			// Variables with an unknown top-level prefix but a `__`
+			// delimiter (e.g. FOO__BAR=x) land on unmapped keys and are
+			// ignored by the struct unmarshal, so they are harmless. The
+			// strictness is deliberate, not universal: a variable whose
+			// second path segment names an existing config section of a
+			// different type aborts the boot. MCP__SERVERS=prod, for
+			// example, places a string on the mcp.servers map, and the
+			// struct unmarshal fails with a type error instead of quietly
+			// discarding the mistyped value.
 			//
 			// MCP header variables are dropped here unconditionally: they are
 			// parsed directly from the environment after the unmarshal (see
