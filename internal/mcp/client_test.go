@@ -1,8 +1,12 @@
 package mcp
 
 import (
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 
 	"telegram-ollama-reply-bot/internal/config"
@@ -151,4 +155,139 @@ func TestHttpClientForServerKeepsOriginalRequestHeaders(t *testing.T) {
 	if !reflect.DeepEqual(rt.header.Get("Authorization"), "Bearer opaque") {
 		t.Fatalf("unexpected Authorization header: %q", rt.header.Get("Authorization"))
 	}
+}
+
+// TestHeaderRoundTripperDoesNotInjectAcrossRedirect pins the credential
+// scoping: a redirect to another host (a different httptest URL, i.e. a
+// different host:port origin) must NOT receive the configured headers —
+// neither the ones Go would strip anyway (Authorization) nor arbitrary
+// operator headers (X-Api-Key) that Go copies verbatim.
+func TestHeaderRoundTripperDoesNotInjectAcrossRedirect(t *testing.T) {
+	var targetGot http.Header
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetGot = r.Header.Clone()
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(target.Close)
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/elsewhere", http.StatusFound)
+	}))
+	t.Cleanup(source.Close)
+
+	client := &http.Client{
+		Transport: &headerRoundTripper{
+			base:   http.DefaultTransport,
+			header: http.Header{"Authorization": []string{"Bearer secret"}, "X-Api-Key": []string{"hunter2"}},
+			origin: endpointOrigin(source.URL),
+		},
+		CheckRedirect: rejectHTTPSDowngrade,
+	}
+
+	resp, err := client.Get(source.URL + "/start")
+	if err != nil {
+		t.Fatalf("follow redirect: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+
+	if got := targetGot.Get("Authorization"); got != "" {
+		t.Fatalf("credential leaked to redirect target: Authorization=%q", got)
+	}
+	if got := targetGot.Get("X-Api-Key"); got != "" {
+		t.Fatalf("credential leaked to redirect target: X-Api-Key=%q", got)
+	}
+}
+
+// TestHeaderRoundTripperInjectsOnSameOriginRedirect verifies same-origin
+// redirect hops keep the configured credentials, so legitimately redirecting
+// servers keep working.
+func TestHeaderRoundTripperInjectsOnSameOriginRedirect(t *testing.T) {
+	var targetGot http.Header
+	inner := http.NewServeMux()
+	inner.HandleFunc("/final", func(w http.ResponseWriter, r *http.Request) {
+		targetGot = r.Header.Clone()
+		_, _ = w.Write([]byte("ok"))
+	})
+	inner.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/final", http.StatusFound)
+	})
+	source := httptest.NewServer(inner)
+	t.Cleanup(source.Close)
+
+	client := &http.Client{
+		Transport: &headerRoundTripper{
+			base:   http.DefaultTransport,
+			header: http.Header{"Authorization": []string{"Bearer secret"}},
+			origin: endpointOrigin(source.URL),
+		},
+		CheckRedirect: rejectHTTPSDowngrade,
+	}
+
+	resp, err := client.Get(source.URL + "/start")
+	if err != nil {
+		t.Fatalf("follow redirect: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+
+	if got := targetGot.Get("Authorization"); got != "Bearer secret" {
+		t.Fatalf("expected Authorization on same-origin redirect, got %q", got)
+	}
+}
+
+// TestEndpointOrigin pins the origin normalization used for header scoping.
+func TestEndpointOrigin(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{"https://MCP.Example.COM:8443/mcp?api_key=x", "https://mcp.example.com:8443"},
+		{"HTTP://localhost:9000/mcp", "http://localhost:9000"},
+		{"not a url", ""},
+		{"https:///no-host", ""},
+	}
+	for _, tc := range cases {
+		if got := endpointOrigin(tc.raw); got != tc.want {
+			t.Errorf("endpointOrigin(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
+// TestRejectHTTPSDowngrade pins the redirect policy: an HTTPS endpoint must
+// never be followed to a plain-HTTP target, on any host. Same- or upgraded-
+// scheme redirects stay allowed.
+func TestRejectHTTPSDowngrade(t *testing.T) {
+	via := []*http.Request{{URL: mustParseURL(t, "https://mcp.example.invalid/mcp")}}
+
+	downgrade, err := http.NewRequest(http.MethodGet, "http://mcp.example.invalid/mcp", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	err = rejectHTTPSDowngrade(downgrade, via)
+	if err == nil {
+		t.Fatal("expected https to http redirect to be refused")
+	}
+	if strings.Contains(err.Error(), "api_key") {
+		t.Fatalf("redirect refusal must not echo the target URL: %v", err)
+	}
+
+	crossHostHTTPS, err := http.NewRequest(http.MethodGet, "https://other.example.invalid/mcp", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	if err := rejectHTTPSDowngrade(crossHostHTTPS, via); err != nil {
+		t.Fatalf("expected https to https redirect to be allowed, got %v", err)
+	}
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+
+	return u
 }

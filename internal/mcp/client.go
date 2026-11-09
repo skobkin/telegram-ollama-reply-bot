@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"telegram-ollama-reply-bot/internal/config"
@@ -22,18 +24,27 @@ import (
 // working.
 const defaultClientTimeout = 15 * time.Second
 
-// headerRoundTripper injects the configured headers on every outgoing
-// request. Configured headers use Set semantics so an operator-configured
-// value replaces any value the SDK already set (Accept, Content-Type,
-// Mcp-Session-Id, MCP-Protocol-Version) instead of producing duplicates on
-// the wire. Header values are kept in-memory only and never logged.
+// headerRoundTripper injects the configured headers on outgoing requests to
+// the configured endpoint origin. Configured headers use Set semantics so an
+// operator-configured value replaces any value the SDK already set (Accept,
+// Content-Type, Mcp-Session-Id, MCP-Protocol-Version) instead of producing
+// duplicates on the wire. Header values are kept in-memory only and never
+// logged.
+//
+// When origin is non-empty, injection is skipped for requests to any other
+// scheme://host — typically redirect hops. Go's client already strips
+// well-known sensitive headers (Authorization, Cookie) on cross-host
+// redirects, but a transport-level injection would re-add them afterwards,
+// sending operator credentials to whatever host the server redirects to.
+// Same-host redirects keep the credentials and keep working.
 type headerRoundTripper struct {
 	base   http.RoundTripper
 	header http.Header
+	origin string // normalized "scheme://host" of the configured endpoint; empty = inject on every request
 }
 
 func (t *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if len(t.header) == 0 {
+	if !t.injectsInto(req) {
 		return t.base.RoundTrip(req)
 	}
 	// Clone the request to avoid mutating the caller's header map.
@@ -48,6 +59,45 @@ func (t *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	return t.base.RoundTrip(cloned)
 }
 
+// injectsInto reports whether the configured headers may be attached to this
+// request. Requests to a different origin than the configured endpoint (an
+// off-host redirect hop) never receive the configured credentials.
+func (t *headerRoundTripper) injectsInto(req *http.Request) bool {
+	if len(t.header) == 0 {
+		return false
+	}
+	if t.origin == "" {
+		return true
+	}
+
+	return requestOrigin(req) == t.origin
+}
+
+// requestOrigin normalizes a request URL to "scheme://host" for comparison
+// with headerRoundTripper.origin. The comparison is case-insensitive on both
+// parts (schemes and hostnames are case-insensitive per RFC 3986; the port
+// keeps its digits).
+func requestOrigin(req *http.Request) string {
+	if req.URL == nil || req.URL.Host == "" {
+		return ""
+	}
+
+	return strings.ToLower(req.URL.Scheme) + "://" + strings.ToLower(req.URL.Host)
+}
+
+// endpointOrigin normalizes the configured endpoint URL the same way
+// requestOrigin does. Returns "" when the URL has no host part (such an
+// endpoint fails to connect anyway, so origin scoping must not make things
+// worse).
+func endpointOrigin(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
+}
+
 // httpClientForServer builds an *http.Client whose transport injects the
 // configured headers. It deliberately sets no http.Client.Timeout: the
 // Streamable HTTP transport holds a standing SSE GET stream open for the
@@ -56,6 +106,10 @@ func (t *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 // wall-clock timeout here would force-kill the session's streams every
 // interval. Per-call time bounds are instead applied to each individual
 // tool call via callTimeout (see callToolHandler).
+//
+// Redirects to a plain-HTTP target are refused when the configured endpoint
+// is HTTPS: the transport would still attach the operator's credentials
+// (same host, so origin scoping passes) onto an unencrypted hop.
 //
 // The base transport is http.DefaultTransport so operators get the same
 // proxy / TLS configuration as every other outbound call from the bot.
@@ -69,8 +123,25 @@ func httpClientForServer(server config.MCPServerConfig) *http.Client {
 		Transport: &headerRoundTripper{
 			base:   http.DefaultTransport,
 			header: headers,
+			origin: endpointOrigin(server.URL),
 		},
+		CheckRedirect: rejectHTTPSDowngrade,
 	}
+}
+
+// rejectHTTPSDowngrade is an http.Client CheckRedirect policy that refuses
+// any redirect from an HTTPS URL to a plain-HTTP URL, regardless of host.
+// Following such a redirect would resend credentials over plaintext.
+func rejectHTTPSDowngrade(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	if strings.EqualFold(via[0].URL.Scheme, "https") && strings.EqualFold(req.URL.Scheme, "http") {
+		// Log-safe message: scheme and host only, never the full target URL.
+		return fmt.Errorf("mcp: refusing redirect from https to http://%s", req.URL.Host)
+	}
+
+	return nil
 }
 
 // callTimeout returns the per-tool-call deadline derived from the per-server
