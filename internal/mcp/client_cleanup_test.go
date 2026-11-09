@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,6 +156,89 @@ func TestClientCloseBoundsHangingDeleteCleanup(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("close() blocked >3s on a hanging DELETE; shutdown hang is back")
+	}
+	if c.session != nil {
+		t.Fatal("expected session to be cleared after close")
+	}
+}
+
+// TestClientCloseBoundsRedirectedCleanup pins the gap the transport-level
+// DELETE deadline cannot cover: a server answering the session-termination
+// DELETE with a 302 makes net/http re-issue it as a GET on the redirect
+// target, and that follow-up hop carries no deadline. The total close wait
+// must fire anyway, returning a URL-free error instead of blocking shutdown
+// forever on a hanging redirect target.
+func TestClientCloseBoundsRedirectedCleanup(t *testing.T) {
+	original := sessionCleanupTimeout
+	sessionCleanupTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { sessionCleanupTimeout = original })
+
+	srv := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "1.0.0"}, nil)
+	srv.AddTool(
+		&mcp.Tool{Name: "echo", InputSchema: map[string]any{"type": "object"}},
+		func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+		},
+	)
+	inner := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
+
+	releaseSink := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete:
+			http.Redirect(w, r, "/sink", http.StatusFound)
+		case r.URL.Path == "/sink":
+			// The redirected GET carries no deadline, so the abandoned
+			// client never closes its connection: waiting on
+			// r.Context().Done() alone would deadlock ts.Close, which only
+			// force-closes idle connections. The test releases the sink just
+			// before shutting the server down.
+			select {
+			case <-releaseSink:
+			case <-r.Context().Done():
+			}
+		default:
+			inner.ServeHTTP(w, r)
+		}
+	}))
+	t.Cleanup(ts.Close)
+	// Registered after ts.Close so cleanup LIFO order releases the sink
+	// first: that lets the abandoned session.Close() finish, which in turn
+	// tears down the SDK's standing SSE stream before the server waits on
+	// its connections.
+	t.Cleanup(func() { close(releaseSink) })
+
+	raw := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1.0.0"}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), testConnectTimeout)
+	t.Cleanup(cancel)
+
+	c := &client{
+		name:   "redirect-cleanup-probe",
+		config: config.MCPServerConfig{URL: ts.URL},
+		raw:    raw,
+		logger: discardLogger(),
+	}
+	if err := c.connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- c.close() }()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("close() blocked >2s on a redirected cleanup; the deadline does not survive the 302")
+	}
+	if err == nil {
+		t.Fatal("expected close to report the abandoned cleanup")
+	}
+	if !strings.Contains(err.Error(), "cleanup timed out") {
+		t.Fatalf("expected the error to mention the cleanup timeout, got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), ts.URL) {
+		t.Fatalf("timeout error must not echo any URL: %q", err.Error())
 	}
 	if c.session != nil {
 		t.Fatal("expected session to be cleared after close")

@@ -49,13 +49,19 @@ type headerRoundTripper struct {
 	origin string // normalized "scheme://host" of the configured endpoint; empty = inject on every request
 }
 
-// sessionCleanupTimeout bounds the DELETE request the MCP SDK sends to
-// terminate a session on Close. The SDK issues it on a detached context with
-// no deadline (it must outlive Connect) and this client deliberately sets no
-// http.Client.Timeout so the standing SSE stream can live indefinitely —
-// together that means a server accepting DELETE but never answering blocks
-// shutdown and optional-server cleanup forever. The bound is a var so tests
-// can shorten it.
+// sessionCleanupTimeout bounds session termination twice over: each
+// session-termination DELETE round trip at the transport, and the total wait
+// for session.Close() in client.close. The transport-level deadline alone is
+// not enough: net/http answers a 301/302/303 to a DELETE by re-issuing the
+// request as a GET on the redirect target, and those follow-up hops reach
+// the transport on a fresh, deadline-free context — a redirect chain ending
+// on a hanging server would block Close forever. The SDK also issues the
+// DELETE on a detached context with no deadline (it must outlive Connect)
+// and this client deliberately sets no http.Client.Timeout so the standing
+// SSE stream can live indefinitely, so without these bounds a server
+// accepting the DELETE but never answering blocks shutdown and
+// optional-server cleanup forever. The bound is a var so tests can shorten
+// it.
 var sessionCleanupTimeout = 5 * time.Second
 
 func (t *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -328,17 +334,45 @@ func (c *client) listTools(ctx context.Context) ([]*mcp.Tool, error) {
 // close releases the underlying session, if any. Safe to call multiple
 // times; subsequent calls are no-ops. Close errors can quote the request
 // URL (see redactURLCredentials) and are redacted before they reach logs.
+//
+// The wait for the SDK's Close is bounded by sessionCleanupTimeout on top of
+// the per-DELETE transport deadline: net/http re-issues 301/302/303 answers
+// to the termination DELETE as GETs on the redirect target, and those
+// follow-up hops carry no deadline of their own. On timeout the cleanup is
+// abandoned in the background (the SDK's closeOnce keeps a late finish from
+// double-closing) and a URL-free error is returned so shutdown can proceed.
 func (c *client) close() error {
 	if c == nil || c.session == nil {
 		return nil
 	}
-	err := c.session.Close()
+	// Capture the session before nil-ing the field: the goroutine below must
+	// never touch c.session after close has cleared it.
+	session := c.session
 	c.session = nil
-	if err != nil {
-		err = errors.New(redactURLCredentials(err.Error()))
-	}
 
-	return err
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Close()
+	}()
+
+	timer := time.NewTimer(sessionCleanupTimeout)
+	defer timer.Stop()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			err = errors.New(redactURLCredentials(err.Error()))
+		}
+
+		return err
+	case <-timer.C:
+		serverLogger(c.logger, c.name).Warn(
+			"mcp session cleanup timed out; abandoned and may keep running in the background",
+			"timeout", sessionCleanupTimeout,
+		)
+
+		return fmt.Errorf("mcp session cleanup timed out after %s", sessionCleanupTimeout)
+	}
 }
 
 // serverLogger returns a *slog.Logger that already has the per-server
