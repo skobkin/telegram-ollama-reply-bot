@@ -41,8 +41,10 @@ func normalizeToolNameList(values []string) []string {
 //     earlier tool with the later one.
 //
 // The returned slice preserves the order of `available`. When the operator
-// names a tool in `allowed` that the server does not advertise, filterTools
-// returns an error so the misconfiguration is caught at startup.
+// names a tool in `allowed` or in `restricted` that the server does not
+// advertise, filterTools returns an error so the misconfiguration is caught
+// at startup — a misspelled deny-list entry would otherwise leave the
+// dangerous tool fully exposed while boot succeeded.
 func filterTools(available, allowed, restricted []string) ([]string, error) {
 	allowedNorm := normalizeToolNameList(allowed)
 	restrictedNorm := normalizeToolNameList(restricted)
@@ -58,6 +60,18 @@ func filterTools(available, allowed, restricted []string) ([]string, error) {
 		for _, name := range allowedNorm {
 			if _, ok := availableSet[name]; !ok {
 				return nil, fmt.Errorf("allowed tool %q is not advertised by the server", name)
+			}
+		}
+	}
+
+	// Fail-fast on typos in the deny-list too, mirroring the allow-list check
+	// above with the same error style: a misspelled restricted entry (e.g.
+	// "delete_histroy") would otherwise be silently dropped and the tool it
+	// was meant to hide would stay fully exposed.
+	if len(restrictedNorm) > 0 {
+		for _, name := range restrictedNorm {
+			if _, ok := availableSet[name]; !ok {
+				return nil, fmt.Errorf("restricted tool %q is not advertised by the server", name)
 			}
 		}
 	}
