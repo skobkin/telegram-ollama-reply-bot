@@ -126,14 +126,15 @@ func parseToolArguments(args json.RawMessage) (any, error) {
 // carrying the server's own message (its text content, joined with newlines),
 // or "tool returned an error" when the server sent no text at all.
 //
-// The `Data` field carries:
+// The `Data` field carries each piece of content exactly once:
 //
 //   - text content blocks under "text" (joined with newlines so the LLM
-//     sees a single coherent string).
-//   - structured content under "structured" when the server provided it.
+//     sees a single coherent string). Text is never duplicated per block.
 //   - non-text content types (image, audio, embedded resources) under
-//     "blocks" so the LLM can react to "I can't see that" without
-//     swallowing the rest of the response.
+//     "blocks", present only when such content exists, so the LLM can
+//     react to "I can't see that" without swallowing the rest of the
+//     response.
+//   - structured content under "structured" when the server provided it.
 //
 // Returns an error for hard decode failures (e.g. an unparseable structured
 // payload) so the LLM gets a clear "mcp call failed" rather than a
@@ -142,8 +143,7 @@ func decodeCallResult(reply *mcp.CallToolResult) (tooluse.ToolResult, error) { /
 	result := tooluse.ToolResult{Status: "ok"}
 
 	texts := make([]string, 0, len(reply.Content))
-	blocks := make([]map[string]any, 0, len(reply.Content))
-	unsupported := make([]map[string]any, 0)
+	blocks := make([]map[string]any, 0)
 
 	for _, item := range reply.Content {
 		switch value := item.(type) {
@@ -152,18 +152,14 @@ func decodeCallResult(reply *mcp.CallToolResult) (tooluse.ToolResult, error) { /
 				continue
 			}
 			texts = append(texts, value.Text)
-			blocks = append(blocks, map[string]any{
-				"type": "text",
-				"text": value.Text,
-			})
 		case *mcp.ImageContent:
-			unsupported = append(unsupported, map[string]any{
+			blocks = append(blocks, map[string]any{
 				"type":      "image",
 				"mime_type": value.MIMEType,
 				"bytes":     len(value.Data),
 			})
 		case *mcp.AudioContent:
-			unsupported = append(unsupported, map[string]any{
+			blocks = append(blocks, map[string]any{
 				"type":      "audio",
 				"mime_type": value.MIMEType,
 				"bytes":     len(value.Data),
@@ -172,13 +168,13 @@ func decodeCallResult(reply *mcp.CallToolResult) (tooluse.ToolResult, error) { /
 			if value == nil || value.Resource == nil {
 				continue
 			}
-			unsupported = append(unsupported, map[string]any{
+			blocks = append(blocks, map[string]any{
 				"type":      "embedded_resource",
 				"mime_type": value.Resource.MIMEType,
 				"uri":       value.Resource.URI,
 			})
 		default:
-			unsupported = append(unsupported, map[string]any{
+			blocks = append(blocks, map[string]any{
 				"type": "unknown",
 			})
 		}
@@ -204,9 +200,6 @@ func decodeCallResult(reply *mcp.CallToolResult) (tooluse.ToolResult, error) { /
 	}
 	if reply.StructuredContent != nil {
 		data["structured"] = reply.StructuredContent
-	}
-	if len(unsupported) > 0 {
-		data["unsupported"] = unsupported
 	}
 	if len(data) == 0 {
 		data["empty"] = true

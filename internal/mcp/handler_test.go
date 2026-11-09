@@ -90,7 +90,10 @@ func TestParseToolArgumentsRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestDecodeCallResultCollectsTextAndBlocks(t *testing.T) {
+// TestDecodeCallResultAllTextCarriesSingleCopy pins the no-duplication
+// contract: an all-text result exposes the joined text once under "text" and
+// never adds a "blocks" key.
+func TestDecodeCallResultAllTextCarriesSingleCopy(t *testing.T) {
 	reply := &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: "first"},
@@ -112,17 +115,15 @@ func TestDecodeCallResultCollectsTextAndBlocks(t *testing.T) {
 	if data["text"] != "first\nsecond" {
 		t.Fatalf("expected text joined with newlines, got %v", data["text"])
 	}
-	blocks, ok := data["blocks"].([]map[string]any)
-	if !ok {
-		t.Fatalf("expected blocks to be []map[string]any, got %T", data["blocks"])
+	if _, present := data["blocks"]; present {
+		t.Fatalf("expected no blocks key for all-text results, got %v", data["blocks"])
 	}
-	if len(blocks) != 2 {
-		t.Fatalf("expected 2 blocks, got %d", len(blocks))
+	marshaled, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal data: %v", err)
 	}
-	for _, b := range blocks {
-		if b["type"] != "text" {
-			t.Fatalf("expected text block, got %v", b)
-		}
+	if got := strings.Count(string(marshaled), "first"); got != 1 {
+		t.Fatalf("expected exactly one copy of the text in the payload, got %d: %s", got, marshaled)
 	}
 }
 
@@ -226,7 +227,10 @@ func TestDecodeCallResultCollectsStructuredContent(t *testing.T) {
 	}
 }
 
-func TestDecodeCallResultClassifiesUnsupportedContentTypes(t *testing.T) {
+// TestDecodeCallResultMixedContentBlocksListNonTextOnly checks that a mixed
+// result lists the non-text items under "blocks" while the joined text stays
+// the only copy of the text content.
+func TestDecodeCallResultMixedContentBlocksListNonTextOnly(t *testing.T) {
 	reply := &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: "caption"},
@@ -244,18 +248,64 @@ func TestDecodeCallResultClassifiesUnsupportedContentTypes(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected map[string]any, got %T", result.Data)
 	}
-	unsupported, ok := data["unsupported"].([]map[string]any)
-	if !ok {
-		t.Fatalf("expected unsupported to be []map[string]any, got %T", data["unsupported"])
+	if data["text"] != "caption" {
+		t.Fatalf("expected joined text under text, got %v", data["text"])
 	}
-	if len(unsupported) != 3 {
-		t.Fatalf("expected 3 unsupported items, got %d", len(unsupported))
+	if _, present := data["unsupported"]; present {
+		t.Fatalf("expected no separate unsupported key, got %v", data["unsupported"])
+	}
+	blocks, ok := data["blocks"].([]map[string]any)
+	if !ok {
+		t.Fatalf("expected blocks to be []map[string]any, got %T", data["blocks"])
+	}
+	if len(blocks) != 3 {
+		t.Fatalf("expected 3 non-text blocks, got %d", len(blocks))
 	}
 	wantTypes := []string{"image", "audio", "embedded_resource"}
 	for i, want := range wantTypes {
-		if unsupported[i]["type"] != want {
-			t.Fatalf("expected type[%d]=%q, got %v", i, want, unsupported[i])
+		if blocks[i]["type"] != want {
+			t.Fatalf("expected type[%d]=%q, got %v", i, want, blocks[i])
 		}
+	}
+	for _, b := range blocks {
+		if _, hasText := b["text"]; hasText {
+			t.Fatalf("expected no duplicated text inside blocks, got %v", b)
+		}
+	}
+	// The marshaled payload must not carry the text more than once.
+	marshaled, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal data: %v", err)
+	}
+	if got := strings.Count(string(marshaled), "caption"); got != 1 {
+		t.Fatalf("expected exactly one copy of the text in the payload, got %d: %s", got, marshaled)
+	}
+}
+
+// TestDecodeCallResultNonTextOnlyListsBlocks verifies a result with no text
+// at all still surfaces the non-text content instead of collapsing to
+// "empty".
+func TestDecodeCallResultNonTextOnlyListsBlocks(t *testing.T) {
+	reply := &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.ImageContent{MIMEType: "image/jpeg", Data: []byte{0x01}},
+		},
+	}
+
+	result, err := decodeCallResult(reply)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	data := result.Data.(map[string]any)
+	if _, present := data["text"]; present {
+		t.Fatalf("expected no text key, got %v", data["text"])
+	}
+	if _, present := data["empty"]; present {
+		t.Fatalf("expected non-empty data for image-only content, got %v", data)
+	}
+	blocks, ok := data["blocks"].([]map[string]any)
+	if !ok || len(blocks) != 1 || blocks[0]["type"] != "image" {
+		t.Fatalf("expected a single image block, got %v", data["blocks"])
 	}
 }
 
