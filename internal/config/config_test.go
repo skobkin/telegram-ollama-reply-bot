@@ -769,6 +769,39 @@ func TestMCPConfigValidateAcceptsKnownInvocationPolicies(t *testing.T) {
 	}
 }
 
+func TestLoadDecodesIntegerEnvVarsInBase10(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+
+	// Leading zeros must not flip into octal parsing.
+	t.Setenv("LLM__TOOL_LOOP_MAX_ITERATIONS", "010")
+	t.Setenv("STATE__MAX_BYTES", "010")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load 010: %v", err)
+	}
+	if cfg.LLM.ToolLoopMaxIterations != 10 {
+		t.Fatalf("expected 010 to decode as 10, got %d", cfg.LLM.ToolLoopMaxIterations)
+	}
+	if cfg.State.MaxBytes != 10 {
+		t.Fatalf("expected 010 to decode as 10 for int64 fields, got %d", cfg.State.MaxBytes)
+	}
+
+	t.Setenv("LLM__TOOL_LOOP_MAX_ITERATIONS", "08")
+	t.Setenv("STATE__MAX_BYTES", "08")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("load 08: %v", err)
+	}
+	if cfg.LLM.ToolLoopMaxIterations != 8 {
+		t.Fatalf("expected 08 to decode as 8, got %d", cfg.LLM.ToolLoopMaxIterations)
+	}
+
+	t.Setenv("LLM__TOOL_LOOP_MAX_ITERATIONS", "abc")
+	if _, err = Load(); err == nil {
+		t.Fatalf("expected load to fail on a non-numeric integer value")
+	}
+}
+
 func TestMCPConfigValidateRejectsProtocolManagedHeader(t *testing.T) {
 	for _, headerName := range []string{
 		"Accept",

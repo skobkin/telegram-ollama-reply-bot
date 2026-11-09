@@ -267,6 +267,7 @@ func Load() (*Config, error) {
 				csvInt64SliceHook(),
 				csvStringSliceHook(),
 				mapstructure.StringToTimeDurationHookFunc(),
+				decimalIntHook(),
 			),
 		},
 	}); err != nil {
@@ -552,6 +553,34 @@ func (s MCPServerConfig) validate(name string) error {
 	}
 
 	return nil
+}
+
+// decimalIntHook decodes string values into integer fields with
+// strconv.ParseInt in base 10. With WeaklyTypedInput, mapstructure would
+// otherwise parse numeric strings via ParseInt(s, 0, ...), so a leading zero
+// meant octal: "010" silently became 8 and "08" refused the boot. The
+// pre-Koanf loader used strconv.Atoi, i.e. base 10. A value that fails to
+// parse is returned as an error, matching the documented contract that a
+// present-but-unparseable env value is a hard startup error instead of a
+// silent fallback to the default. The hook runs after the duration hook, so
+// duration strings never reach it, and its type assertion skips non-string
+// values that earlier hooks already converted.
+func decimalIntHook() mapstructure.DecodeHookFunc {
+	return func(f, t reflect.Type, data any) (any, error) {
+		if f.Kind() != reflect.String || (t.Kind() != reflect.Int && t.Kind() != reflect.Int64) {
+			return data, nil
+		}
+		raw, ok := data.(string)
+		if !ok {
+			return data, nil
+		}
+		n, err := strconv.ParseInt(raw, 10, t.Bits())
+		if err != nil {
+			return nil, fmt.Errorf("parse %q as int: %w", raw, err)
+		}
+
+		return n, nil
+	}
 }
 
 // csvInt64SliceHook parses a comma-separated string of decimal integers into a
