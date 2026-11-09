@@ -5,27 +5,41 @@
 The bot can now connect to one or more external [Model Context Protocol](https://modelcontextprotocol.io)
 (MCP) servers over the Streamable HTTP transport and expose their tools to the LLM alongside the built-ins.
 Each remote tool is registered under the namespaced name `mcp_<server>__<tool>` (lowercased and
-`[a-z0-9_]`-normalized). MCP is off by default; nothing is required to keep using the bot as before.
+`[a-z0-9_]`-normalized). MCP is off by default (`MCP__ENABLED=false`); nothing is required to keep using the
+bot as before. When servers are configured while the flag is left disabled, the bot logs a warning at startup and
+runs without MCP tools; per-server validation is skipped while disabled, so a forgotten enable flag cannot block boot.
 
-New env vars (all under `MCP__SERVERS__<NAME>__*`):
+New env vars (`MCP__ENABLED`, plus per-server `MCP__SERVERS__<NAME>__*`):
 
-| Variable                                  | Description                                                                                              |
-|-------------------------------------------|----------------------------------------------------------------------------------------------------------|
-| `MCP__SERVERS__<NAME>__URL`               | Streamable HTTP endpoint (e.g. `https://mcp.example.com/mcp`)                                            |
-| `MCP__SERVERS__<NAME>__HEADERS__<KEY>`    | HTTP header sent to that server. Values are never logged.                                                |
-| `MCP__SERVERS__<NAME>__INSECURE`          | Allow plain `http://` for this server.                                                                   |
-| `MCP__SERVERS__<NAME>__INVOCATION_POLICY` | Default invocation policy: `discretionary` or `explicit_request_only`.                                  |
-| `MCP__SERVERS__<NAME>__SIDE_EFFECTING`    | Force `true`/`false` for the side-effecting flag.                                                        |
-| `MCP__SERVERS__<NAME>__ALLOWED_TOOLS`     | Whitelist of tool names to expose. Misnamed entries fail at startup.                                     |
-| `MCP__SERVERS__<NAME>__RESTRICTED_TOOLS`  | Deny-list of tool names to drop.                                                                         |
-| `MCP__SERVERS__<NAME>__OPTIONAL`          | When `true`, a connection failure on startup is logged and skipped instead of aborting the bot.         |
+| Variable                                    | Description                                                                                               |
+|---------------------------------------------|-----------------------------------------------------------------------------------------------------------|
+| `MCP__ENABLED`                              | Master switch; MCP tools are registered only when `true`.                                                 |
+| `MCP__SERVERS__<NAME>__URL`                 | Streamable HTTP endpoint (e.g. `https://mcp.example.com/mcp`)                                             |
+| `MCP__SERVERS__<NAME>__HEADERS__<SEG>`      | HTTP header; multiple segments after `HEADERS` join with `-` (e.g. `X__API__KEY` = `X-Api-Key`).          |
+| `MCP__SERVERS__<NAME>__INSECURE`            | Allow plain `http://` for this server.                                                                    |
+| `MCP__SERVERS__<NAME>__TIMEOUT`             | Per-tool-call timeout (Go duration, default `15s`); caps tool calls, not the standing connection.         |
+| `MCP__SERVERS__<NAME>__INVOCATION_POLICY`   | Default invocation policy: `discretionary`, `discretionary_paid`, or `explicit_request_only`.             |
+| `MCP__SERVERS__<NAME>__SIDE_EFFECTING`      | Force `true`/`false` for the side-effecting flag.                                                         |
+| `MCP__SERVERS__<NAME>__RESULT_CHAR_BUDGET`  | Maximum characters of a tool result forwarded to the model (default `3500`); must be positive when set.   |
+| `MCP__SERVERS__<NAME>__ALLOWED_TOOLS`       | Whitelist of tool names to expose. Misnamed entries fail at startup.                                      |
+| `MCP__SERVERS__<NAME>__RESTRICTED_TOOLS`    | Deny-list of tool names to drop. Misnamed entries fail at startup.                                        |
+| `MCP__SERVERS__<NAME>__OPTIONAL`            | When `true`, a connection failure on startup is logged and skipped instead of aborting the bot.           |
 
 Notable behaviours:
 
 - HTTPS is the default per server; `INSECURE=true` is required to use a `http://` URL.
-- An entry in `ALLOWED_TOOLS` that the server does not advertise is a hard startup error (catches typos early).
+- Entries in `ALLOWED_TOOLS` or `RESTRICTED_TOOLS` that the server does not advertise are a hard startup error
+  for non-optional servers (catches typos early).
+- Header names are given as path segments after `HEADERS`: multiple segments join with `-`
+  (`HEADERS__X__API__KEY=v` sends `X-Api-Key`), while a single segment keeps its literal underscores
+  (`HEADERS__X_API_KEY=v` sends `X_Api_Key`).
+- `TIMEOUT` has no upper limit (slow tools such as browser automation can use `120s` or more); it caps individual
+  tool calls, not the standing server connection.
+- `RESULT_CHAR_BUDGET` must be a positive integer when set; values `<= 0` are a startup configuration error.
 - The default invocation policy is `discretionary` for tools with `readOnlyHint=true`, and `explicit_request_only`
-  otherwise. The default side-effecting flag is `destructiveHint`, treated as `true` when the annotation is
+  otherwise. `discretionary_paid` behaves like `discretionary` but tells the model to reserve the tool for calls
+  that need accuracy or freshness, since each call consumes a paid external resource.
+  The default side-effecting flag is `destructiveHint`, treated as `true` when the annotation is
   absent; `readOnlyHint=true` always forces the side-effecting flag to `false` per the MCP spec.
 - A successful `MCP__SERVERS__*` config registers only the namespaced tools; the built-in toolset is untouched.
 - STDIO transport is intentionally not supported in this iteration; only Streamable HTTP is wired.

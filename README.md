@@ -49,13 +49,16 @@ The bot can be configured using the following environment variables:
 | `SENTRY__DSN`                                       | Sentry DSN for error tracking                                                                                     | No       | empty                    |
 | `PERSISTENT__STORE_PATH`                            | Path to the SQLite database used for durable bot data                                                             | No       | `/data/db.sqlite`        |
 | `BOT__ADMIN_IDS`                                    | Comma-separated list of admin user IDs                                                                            | No       | empty                    |
-| `MCP__SERVERS__<NAME>__URL`                         | Streamable HTTP endpoint of an MCP server (e.g. `https://mcp.example.com/mcp`)                                    | No       | empty                    |
-| `MCP__SERVERS__<NAME>__HEADERS__<KEY>`             | HTTP header sent to that MCP server (e.g. `Authorization=Bearer …`). Values are never logged.                     | No       | empty                    |
+| `MCP__ENABLED`                                     | Master switch for MCP tool servers; tools are registered only when `true`                                         | No       | `false`                  |
+| `MCP__SERVERS__<NAME>__URL`                        | Streamable HTTP endpoint of an MCP server (e.g. `https://mcp.example.com/mcp`)                                    | No       | empty                    |
+| `MCP__SERVERS__<NAME>__HEADERS__<SEG>[__<SEG>...]` | HTTP header sent to that MCP server (e.g. `Authorization=Bearer …`). Values are never logged.                     | No       | empty                    |
 | `MCP__SERVERS__<NAME>__INSECURE`                   | Allow plain `http://` for this server. Required for local development.                                            | No       | `false`                  |
-| `MCP__SERVERS__<NAME>__INVOCATION_POLICY`          | Default invocation policy for tools from this server: `discretionary` or `explicit_request_only`                 | No       | derived from `readOnlyHint` |
+| `MCP__SERVERS__<NAME>__TIMEOUT`                    | Per-tool-call timeout. Go duration string (e.g. `30s`); caps tool calls, not the standing connection.             | No       | `15s`                    |
+| `MCP__SERVERS__<NAME>__INVOCATION_POLICY`          | Default invocation policy for this server: `discretionary`, `discretionary_paid`, or `explicit_request_only`      | No       | derived from `readOnlyHint` |
 | `MCP__SERVERS__<NAME>__SIDE_EFFECTING`             | Force `true`/`false` for the side-effecting flag of every tool from this server                                   | No       | derived from `destructiveHint` |
-| `MCP__SERVERS__<NAME>__ALLOWED_TOOLS`              | Comma-separated whitelist of tool names to expose from this server. Misnamed entries fail at startup.            | No       | empty                    |
-| `MCP__SERVERS__<NAME>__RESTRICTED_TOOLS`           | Comma-separated deny-list of tool names to drop from this server                                                  | No       | empty                    |
+| `MCP__SERVERS__<NAME>__RESULT_CHAR_BUDGET`         | Maximum characters of a tool result forwarded to the model. Must be a positive integer when set.                  | No       | `3500`                   |
+| `MCP__SERVERS__<NAME>__ALLOWED_TOOLS`              | Comma-separated whitelist of tool names to expose from this server. Misnamed entries fail at startup.             | No       | empty                    |
+| `MCP__SERVERS__<NAME>__RESTRICTED_TOOLS`           | Comma-separated deny-list of tool names to drop from this server. Misnamed entries fail at startup.               | No       | empty                    |
 | `MCP__SERVERS__<NAME>__OPTIONAL`                   | When `true`, a connection failure on startup is logged and skipped instead of aborting the bot                    | No       | `false`                  |
 
 ### Prompt and persona management
@@ -115,19 +118,28 @@ servers over Streamable HTTP. Each configured server is connected at startup, it
 each remote tool is registered under the namespaced name `mcp_<server>__<tool>` (lowercased and `[a-z0-9_]`-normalized).
 The LLM sees MCP tools alongside the built-ins; tool calls are routed back to the originating server.
 
-Header values are never written to logs.
+MCP is disabled by default: tools are registered only when `MCP__ENABLED=true`. When the flag is `false` but servers
+are still configured, the bot logs a warning at startup and runs without MCP tools. While disabled, per-server
+validation is skipped, so a forgotten enable flag cannot block boot.
+
+Header values are never written to logs. Header names are given as path segments after `HEADERS` and joined with `-`:
+`MCP__SERVERS__BROWSER__HEADERS__X__API__KEY=v` sends the header `X-Api-Key`. A single segment keeps its literal
+underscores, so `MCP__SERVERS__BROWSER__HEADERS__X_API_KEY=v` sends `X_Api_Key`.
 
 A worked example: a hosted browser/search MCP server with bearer-token auth, only exposing two specific tools:
 
 ```env
+MCP__ENABLED=true
 MCP__SERVERS__BROWSER__URL=https://mcp.example.com/mcp
 MCP__SERVERS__BROWSER__HEADERS__AUTHORIZATION=Bearer secret-token
+MCP__SERVERS__BROWSER__TIMEOUT=120s
 MCP__SERVERS__BROWSER__ALLOWED_TOOLS=fetch_url,summarize_page
 ```
 
 A local development server (plain HTTP, fail-soft):
 
 ```env
+MCP__ENABLED=true
 MCP__SERVERS__LOCAL__URL=http://localhost:8765/mcp
 MCP__SERVERS__LOCAL__INSECURE=true
 MCP__SERVERS__LOCAL__OPTIONAL=true
@@ -136,9 +148,16 @@ MCP__SERVERS__LOCAL__OPTIONAL=true
 Startup behaviour:
 
 - If a server's `URL` is unreachable, the bot fails to start unless `OPTIONAL=true` is set for that server.
-- An entry in `ALLOWED_TOOLS` that the server does not advertise is a hard startup error (catches typos early).
+- Entries in `ALLOWED_TOOLS` or `RESTRICTED_TOOLS` that the server does not advertise are a hard startup error
+  for non-optional servers (catches typos early).
+- `TIMEOUT` caps each individual tool call (default `15s`, no upper limit; slow tools such as browser automation
+  can use `120s` or more). It does not cap the standing connection to the server.
+- `RESULT_CHAR_BUDGET` caps how many characters of a tool result are forwarded to the model (default `3500`).
+  It must be a positive integer when set; values `<= 0` are a startup configuration error.
 - Tool invocation policy defaults to `discretionary` when the server's tool annotation sets `readOnlyHint=true`,
-  and `explicit_request_only` otherwise. The default side-effecting flag is `destructiveHint` (treated as `true`
+  and `explicit_request_only` otherwise. `discretionary_paid` behaves like `discretionary` but tells the model to
+  reserve the tool for calls that need accuracy or freshness, since each call consumes a paid external resource.
+  The default side-effecting flag is `destructiveHint` (treated as `true`
   when the annotation is absent), and is forced to `false` whenever `readOnlyHint=true` per the MCP spec.
 - `INSECURE=true` is required to use a `http://` URL. HTTPS is the default and is enforced per server.
 
@@ -208,6 +227,7 @@ docker run \
   -e LOG__LEVEL=info \
   -e SENTRY__DSN=https://your-sentry-dsn \
   -e BOT__ADMIN_IDS=123456789,987654321 \
+  -e MCP__ENABLED=true \
   -e MCP__SERVERS__BROWSER__URL=https://mcp.example.com/mcp \
   -e MCP__SERVERS__BROWSER__HEADERS__AUTHORIZATION="Bearer secret-token" \
   -v bot-data:/data \
