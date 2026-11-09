@@ -417,6 +417,28 @@ func TestLoadKeepsPathPrefixRelatedMCPHeaders(t *testing.T) {
 	}
 }
 
+func TestLoadTrimsMCPServerURL(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("MCP__ENABLED", "true")
+	t.Setenv("MCP__SERVERS__BROWSER__URL", "  https://mcp.example.com  ")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	browser, ok := cfg.MCP.Servers["browser"]
+	if !ok {
+		t.Fatalf("missing browser server")
+	}
+	if browser.URL != "https://mcp.example.com" {
+		t.Fatalf("expected stored URL to be trimmed, got %q", browser.URL)
+	}
+	if err := cfg.MCP.Validate(); err != nil {
+		t.Fatalf("expected trimmed URL to validate: %v", err)
+	}
+}
+
 func TestMCPConfigValidateAcceptsHTTPSServer(t *testing.T) {
 	c := MCPConfig{
 		Enabled: true,

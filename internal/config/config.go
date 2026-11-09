@@ -275,6 +275,18 @@ func Load() (*Config, error) {
 
 	applyMCPHeaderEnv(&cfg)
 
+	// Endpoint URLs are trimmed at load time: validate() trims only for its
+	// own checks, so a value set with surrounding spaces would pass
+	// validation and then fail the connection with a misleading error.
+	for name, server := range cfg.MCP.Servers {
+		trimmed := strings.TrimSpace(server.URL)
+		if trimmed == server.URL {
+			continue
+		}
+		server.URL = trimmed
+		cfg.MCP.Servers[name] = server
+	}
+
 	// Per-feature model fallback: summarize and image_recognition inherit the
 	// chat model when not explicitly set. This keeps the existing operator
 	// experience of "set CHAT and you're done" while still allowing overrides.
