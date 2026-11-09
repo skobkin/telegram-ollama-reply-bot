@@ -73,6 +73,19 @@ func TestRedact(t *testing.T) {
 			in:   `error: 'https://x.invalid/p?k=v' refused`,
 			want: `error: 'https://x.invalid/p refused`,
 		},
+		{
+			// Regression: the pattern used to be case-sensitive, so an
+			// endpoint configured as HTTPS://... fell through unredacted and
+			// leaked into startup diagnostics verbatim.
+			name: "uppercase_scheme_redacted",
+			in:   `connect to HTTPS://host/mcp?api_key=hunter2: EOF`,
+			want: `connect to https://host/mcp: EOF`,
+		},
+		{
+			name: "mixed_case_scheme_redacted",
+			in:   `Post "HtTpS://host/mcp?api_key=hunter2": EOF`,
+			want: `Post "https://host/mcp": EOF`,
+		},
 	}
 
 	for _, tc := range cases {

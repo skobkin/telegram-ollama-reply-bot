@@ -12,13 +12,16 @@ import (
 	"strings"
 )
 
-// urlPattern matches http(s) URLs embedded in text. It stops at whitespace,
-// double quotes, and angle brackets — the characters error formatters use to
+// urlPattern matches http(s) URLs embedded in text, case-insensitively:
+// endpoints configured as HTTPS://... must be redacted just like https://.
+// Scheme case is not preserved — url.Parse lowercases u.Scheme, so redacted
+// output always carries a lowercase scheme. It stops at whitespace, double
+// quotes, and angle brackets — the characters error formatters use to
 // delimit URLs (`*url.Error` renders as `Op "URL": cause`). Apostrophes are
 // deliberately NOT delimiters: they are valid query characters and appear
 // inside real URLs (?filter='active'), so stopping at one would leave the
 // rest of the query — and its credentials — unredacted.
-var urlPattern = regexp.MustCompile(`https?://[^\s"<>]+`)
+var urlPattern = regexp.MustCompile(`(?i)https?://[^\s"<>]+`)
 
 // Redact strips the userinfo, query string, and fragment from every http(s)
 // URL embedded in s. URLs that cannot be parsed (e.g. invalid
