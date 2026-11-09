@@ -96,3 +96,49 @@ func TestRedact(t *testing.T) {
 		})
 	}
 }
+
+// TestRedactOne pins the single-URL rules used for configured endpoints:
+// any scheme is accepted (callers often redact an endpoint whose scheme is
+// about to be rejected), and userinfo never survives a failed parse — the
+// textual fallback strips it before cutting the rest.
+func TestRedactOne(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{ //nolint:gosec // test fixture: redaction must drop userinfo credentials
+			name: "non_http_scheme_userinfo_dropped",
+			in:   `ftp://user:pass@host/mcp`,
+			want: `ftp://host/mcp`,
+		},
+		{ //nolint:gosec // test fixture: redaction must drop userinfo credentials
+			name: "uppercase_scheme_lowercased_and_cleaned",
+			in:   `HTTPS://user:pass@host/mcp?k=s`,
+			want: `https://host/mcp`,
+		},
+		{ //nolint:gosec // test fixture: redaction must drop userinfo credentials
+			name: "unparseable_escape_userinfo_stripped_and_cut",
+			in:   `https://user:pass@host/%zz`,
+			want: `https://host/`,
+		},
+		{
+			name: "control_char_cut_at_query",
+			in:   "http://host/mcp?x=\x7f",
+			want: `http://host/mcp`,
+		},
+		{
+			name: "not_a_url_unchanged",
+			in:   `not a url`,
+			want: `not a url`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RedactOne(tc.in); got != tc.want {
+				t.Fatalf("RedactOne:\n  in:  %s\n  got: %s\n  want:%s", tc.in, got, tc.want)
+			}
+		})
+	}
+}

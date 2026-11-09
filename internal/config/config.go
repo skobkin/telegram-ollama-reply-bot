@@ -458,23 +458,14 @@ func (c MCPConfig) Validate() error {
 	return nil
 }
 
-// redactMCPEndpoint strips credential-bearing URL parts (userinfo, query,
-// fragment) before a configured MCP endpoint is echoed into a validation
-// error, which ends up in stderr and container logs. MCP endpoints commonly
-// carry credentials as query parameters, so no validation path may quote them
-// verbatim.
+// redactMCPEndpoint reduces a configured MCP endpoint to scheme://host/path
+// before it is echoed into a validation error, which ends up in stderr and
+// container logs. MCP endpoints commonly carry credentials (as query
+// parameters or userinfo), and the scheme may be one the validation below
+// rejects, so no validation path may quote the endpoint verbatim; the
+// redaction accepts any scheme, not just http(s).
 func redactMCPEndpoint(rawURL string) string {
-	if redacted := urlredact.Redact(rawURL); redacted != rawURL {
-		return redacted
-	}
-
-	// urlredact only recognizes http(s) URLs; anything else (e.g. a scheme
-	// rejected above) still must not keep its query or fragment.
-	if cut := strings.IndexAny(rawURL, "?#"); cut != -1 {
-		return rawURL[:cut]
-	}
-
-	return rawURL
+	return urlredact.RedactOne(rawURL)
 }
 
 func (s MCPServerConfig) validate(name string) error {

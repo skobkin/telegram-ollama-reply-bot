@@ -566,6 +566,56 @@ func TestMCPConfigValidateUnsupportedSchemeErrorRedactsQuery(t *testing.T) {
 	}
 }
 
+func TestMCPConfigValidateUnsupportedSchemeErrorRedactsUserinfo(t *testing.T) {
+	// ftp:// has no query string, so before RedactOne it fell through
+	// redaction entirely and the userinfo credentials were echoed verbatim
+	// into stderr and container logs.
+	c := MCPConfig{
+		Enabled: true,
+		Servers: map[string]MCPServerConfig{
+			//nolint:gosec // test fixture: redaction must drop userinfo credentials
+			"probe": {URL: "ftp://user:secretpass@host/mcp"},
+		},
+	}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("expected error for unsupported scheme")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "secretpass") || strings.Contains(msg, "user:") {
+		t.Fatalf("error message leaks userinfo credentials: %v", err)
+	}
+	if !strings.Contains(msg, `has unsupported scheme "ftp"`) {
+		t.Fatalf("error message lost scheme detail: %v", err)
+	}
+}
+
+func TestMCPConfigValidateInvalidURLErrorRedactsUserinfo(t *testing.T) {
+	// An invalid percent-escape makes url.ParseRequestURI fail; the credential
+	// would appear twice without redaction — in the echoed URL and in the
+	// rebuilt *url.Error — so both are checked via the whole error string.
+	c := MCPConfig{
+		Enabled: true,
+		Servers: map[string]MCPServerConfig{
+			//nolint:gosec // test fixture: redaction must drop userinfo credentials
+			"probe": {URL: "https://user:secretpass@host/%zz"},
+		},
+	}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("expected error for malformed URL")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "secretpass") || strings.Contains(msg, "user:") {
+		t.Fatalf("error message leaks userinfo credentials: %v", err)
+	}
+	if !strings.Contains(msg, "is not a valid URL") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestMCPConfigValidateRejectsNegativeTimeout(t *testing.T) {
 	c := MCPConfig{
 		Enabled: true,
