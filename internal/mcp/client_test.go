@@ -199,6 +199,49 @@ func TestHeaderRoundTripperDoesNotInjectAcrossRedirect(t *testing.T) {
 	}
 }
 
+// TestClientStripsRefererOnCrossOriginRedirect pins the Referer leak: Go
+// synthesizes a Referer header from the previous hop's URL — query string
+// included — on every followed redirect, so an endpoint whose query carries
+// credentials would hand them to the redirect target through the client's
+// own Referer. The redirect policy must strip it before the hop goes out;
+// without the strip the target here receives
+// `Referer: <source>/mcp?api_key=referer-secret`.
+func TestClientStripsRefererOnCrossOriginRedirect(t *testing.T) {
+	var targetGot http.Header
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetGot = r.Header.Clone()
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(target.Close)
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/elsewhere", http.StatusFound)
+	}))
+	t.Cleanup(source.Close)
+
+	// Wired through httpClientForServer so the endpoint URL carries the
+	// secret in its query and origin-scoped header injection is in play.
+	client := httpClientForServer(config.MCPServerConfig{
+		URL:     source.URL + "/mcp?api_key=referer-secret",
+		Headers: map[string]string{"Authorization": "Bearer secret"},
+	})
+
+	resp, err := client.Get(source.URL + "/mcp?api_key=referer-secret")
+	if err != nil {
+		t.Fatalf("follow redirect: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+
+	if got := targetGot.Get("Referer"); got != "" {
+		t.Fatalf("synthesized Referer leaked to redirect target: %q", got)
+	}
+	// Header scoping still guards the same hop.
+	if got := targetGot.Get("Authorization"); got != "" {
+		t.Fatalf("credential leaked to redirect target: Authorization=%q", got)
+	}
+}
+
 // TestHeaderRoundTripperInjectsOnSameOriginRedirect verifies same-origin
 // redirect hops keep the configured credentials, so legitimately redirecting
 // servers keep working.

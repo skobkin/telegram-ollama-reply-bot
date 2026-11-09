@@ -203,6 +203,14 @@ const maxRedirectHops = 10
 // default redirect-hop cap and refuses any redirect from an HTTPS URL to a
 // plain-HTTP URL, regardless of host. Following such a redirect would
 // resend credentials over plaintext.
+//
+// On every hop that is going to be followed, the Referer header Go just
+// synthesized is stripped: net/http sets Referer from the previous hop's URL
+// — query string included — before running the policy, so an endpoint whose
+// query carries credentials (API keys, access tokens) would leak them to
+// whatever target the redirect points at, including other origins. The
+// initial request is left untouched: Go only synthesizes Referer on redirect
+// hops, so `len(via) == 0` has nothing to strip.
 func checkMCPRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= maxRedirectHops {
 		return fmt.Errorf("mcp: stopped after %d redirects", maxRedirectHops)
@@ -214,6 +222,10 @@ func checkMCPRedirect(req *http.Request, via []*http.Request) error {
 		// Log-safe message: scheme and host only, never the full target URL.
 		return fmt.Errorf("mcp: refusing redirect from https to http://%s", req.URL.Host)
 	}
+
+	// This hop is going to be followed: drop the Referer synthesized from
+	// the previous hop's URL before the request goes out.
+	req.Header.Del("Referer")
 
 	return nil
 }
