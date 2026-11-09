@@ -191,9 +191,12 @@ func resolveResultCharBudget(server config.MCPServerConfig) int {
 
 // schemaAsParameters re-marshals the tool's input schema to JSON so it can be
 // passed straight to the LLM as `tooluse.Definition.Parameters`. The MCP SDK
-// guarantees the value marshals to valid JSON schema; if the server sent an
-// empty or nil schema we fall back to `{"type":"object"}` so the model can
-// still call the tool with no arguments.
+// guarantees the value marshals to valid JSON, but the OpenAI-compatible chat
+// API expects `parameters` to be a JSON Schema OBJECT — so anything else at
+// the JSON root falls back to `{"type":"object"}`: nil/empty/null schemas
+// (so the model can still call the tool with no arguments), plus the bare
+// "string", number, boolean, and array roots that are legal in draft 2020-12
+// and would otherwise break every tool call with an API-side 400.
 func schemaAsParameters(schema any) (json.RawMessage, error) {
 	if schema == nil {
 		return json.RawMessage(`{"type":"object"}`), nil
@@ -202,11 +205,30 @@ func schemaAsParameters(schema any) (json.RawMessage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal schema: %w", err)
 	}
-	if len(data) == 0 || string(data) == "null" {
+	if !isJSONObjectRoot(data) {
 		return json.RawMessage(`{"type":"object"}`), nil
 	}
 
 	return data, nil
+}
+
+// isJSONObjectRoot reports whether the JSON document in data has an object at
+// its root: the first non-whitespace byte must open an object. Empty input is
+// not an object root.
+func isJSONObjectRoot(data []byte) bool {
+	for _, b := range data {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{':
+			return true
+		default:
+
+			return false
+		}
+	}
+
+	return false
 }
 
 // toolAnnotations returns the MCP SDK tool's annotation block, or nil when

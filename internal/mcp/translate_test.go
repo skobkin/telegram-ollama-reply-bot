@@ -259,6 +259,43 @@ func TestSchemaAsParametersPassesThroughJSONSchema(t *testing.T) {
 	}
 }
 
+// TestSchemaAsParametersFallsBackForNonObjectRoots pins the JSON-Schema-object
+// contract: the OpenAI-compatible chat API expects `parameters` to be a JSON
+// Schema OBJECT, so a tool whose advertised schema has a non-object JSON root
+// (legal in draft 2020-12) must fall back to `{"type":"object"}` instead of
+// being forwarded verbatim and breaking every tool call with an API-side 400.
+// Object roots are forwarded unchanged.
+func TestSchemaAsParametersFallsBackForNonObjectRoots(t *testing.T) {
+	const fallback = `{"type":"object"}`
+
+	cases := []struct {
+		name  string
+		input any
+		want  string
+	}{
+		{"string root", "string", fallback},
+		{"number root", 3.5, fallback},
+		{"array root", []any{"a"}, fallback},
+		{"bool root", true, fallback},
+		{"null root", json.RawMessage(`null`), fallback},
+		{"object root forwarded", map[string]any{"type": "object"}, `{"type":"object"}`},
+		{"object schema forwarded", json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}}}`), `{"type":"object","properties":{"q":{"type":"string"}}}`},
+		{"nil input", nil, fallback},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := schemaAsParameters(tc.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("schemaAsParameters(%v) = %s, want %s", tc.input, string(got), tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveInvocationPolicyUnknownOperatorValueFallsBackToAnnotation(t *testing.T) {
 	server := config.MCPServerConfig{InvocationPolicy: "unknown_policy"}
 	got := resolveInvocationPolicy(server, &mcp.ToolAnnotations{ReadOnlyHint: true})
