@@ -192,7 +192,10 @@ func (c *client) connect(ctx context.Context) error {
 
 	session, err := c.raw.Connect(ctx, transport, nil)
 	if err != nil {
-		return fmt.Errorf("connect to %s: %w", c.config.URL, err)
+		// The endpoint URL may carry credentials as query parameters, and the
+		// SDK error quotes it verbatim; redact before the error reaches logs
+		// or the startup failure message.
+		return fmt.Errorf("connect to %s: %s", redactURLCredentials(c.config.URL), redactURLCredentials(err.Error()))
 	}
 	c.session = session
 
@@ -200,7 +203,7 @@ func (c *client) connect(ctx context.Context) error {
 	if err != nil {
 		_ = session.Close()
 
-		return fmt.Errorf("list tools from %s: %w", c.config.URL, err)
+		return fmt.Errorf("list tools from %s: %s", redactURLCredentials(c.config.URL), redactURLCredentials(err.Error()))
 	}
 
 	names := make([]string, 0, len(tools))
@@ -267,13 +270,17 @@ func (c *client) listTools(ctx context.Context) ([]*mcp.Tool, error) {
 }
 
 // close releases the underlying session, if any. Safe to call multiple
-// times; subsequent calls are no-ops.
+// times; subsequent calls are no-ops. Close errors can quote the request
+// URL (see redactURLCredentials) and are redacted before they reach logs.
 func (c *client) close() error {
 	if c == nil || c.session == nil {
 		return nil
 	}
 	err := c.session.Close()
 	c.session = nil
+	if err != nil {
+		err = errors.New(redactURLCredentials(err.Error()))
+	}
 
 	return err
 }

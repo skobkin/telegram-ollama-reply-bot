@@ -68,10 +68,14 @@ func callToolHandler(session *mcp.ClientSession, originalName, namespacedName st
 			Arguments: parsed,
 		})
 		if callErr != nil {
-			perCall.Warn("mcp call failed", "error", callErr)
+			// Transport errors quote the full request URL, which may carry
+			// credentials as query parameters. Redact before logging and
+			// before the text is copied into the tool response the LLM sees.
+			sanitized := redactURLCredentials(callErr.Error())
+			perCall.Warn("mcp call failed", "error", sanitized)
 			logCallResult(perCall, namespacedName, originalName, callCtx.RequestID, true, 0, 0, 0)
 
-			return tooluse.ToolResult{}, fmt.Errorf("mcp_unreachable: %w", callErr)
+			return tooluse.ToolResult{}, fmt.Errorf("mcp_unreachable: %s", sanitized)
 		}
 		if reply == nil {
 			perCall.Warn("mcp call returned no result")
