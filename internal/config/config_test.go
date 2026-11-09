@@ -318,6 +318,38 @@ func TestLoadUsesBotPrefixedHistoryLimitOverrides(t *testing.T) {
 	}
 }
 
+func TestMCPConfigValidateRejectsNegativeResultCharBudget(t *testing.T) {
+	c := MCPConfig{
+		Enabled: true,
+		Servers: map[string]MCPServerConfig{
+			"browser": {URL: "https://mcp.example.com", ResultCharBudget: -1},
+		},
+	}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("expected error for negative result char budget")
+	}
+	if !strings.Contains(err.Error(), "browser") || !strings.Contains(err.Error(), "result_char_budget") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadRejectsNegativeMCPResultCharBudget(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("MCP__ENABLED", "true")
+	t.Setenv("MCP__SERVERS__BROWSER__URL", "https://mcp.example.com")
+	t.Setenv("MCP__SERVERS__BROWSER__RESULT_CHAR_BUDGET", "-5")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatalf("expected load to fail on negative MCP result char budget")
+	}
+	if !strings.Contains(err.Error(), "browser") {
+		t.Fatalf("expected error to mention the server name, got: %v", err)
+	}
+}
+
 func TestMCPConfigValidateAcceptsHTTPSServer(t *testing.T) {
 	c := MCPConfig{
 		Enabled: true,

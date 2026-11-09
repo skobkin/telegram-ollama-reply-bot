@@ -350,6 +350,8 @@ func (c LLMConfig) RouteForFeature(feature string) (FeatureRouteConfig, error) {
 //   - `URL` is a valid HTTP or HTTPS URL; HTTPS is required unless `Insecure` is true.
 //   - `Timeout`, if set, is in `[1s, 60s]`. Zero means "use the package default".
 //   - `InvocationPolicy`, if non-empty, matches a known policy value.
+//   - `ResultCharBudget`, if set, is positive. Zero (or absent) means "use the
+//     default budget"; there is no upper cap.
 //   - `SideEffecting` nil is allowed (the bot derives it from `destructiveHint`).
 //   - `Headers` keys are non-empty (values are never validated; they are
 //     secrets and must not be logged at startup).
@@ -404,6 +406,11 @@ func (s MCPServerConfig) validate(name string) error {
 		default:
 			return fmt.Errorf("mcp.servers.%s.invocation_policy %q is not a known value (use explicit_request_only, discretionary, or discretionary_paid)", name, s.InvocationPolicy)
 		}
+	}
+
+	// Zero means "unset": the per-tool budget falls back to the default.
+	if s.ResultCharBudget < 0 {
+		return fmt.Errorf("mcp.servers.%s.result_char_budget %d must be positive when set (omit it to use the default budget)", name, s.ResultCharBudget)
 	}
 
 	for headerName := range s.Headers {
