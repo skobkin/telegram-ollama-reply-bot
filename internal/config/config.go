@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -230,7 +231,18 @@ func Load() (*Config, error) {
 			// Variables with an unknown prefix but a `__` delimiter (e.g.
 			// FOO__BAR=x) land on unmapped keys and are ignored by the
 			// struct unmarshal, so they are harmless.
+			//
+			// MCP header variables are dropped here unconditionally: they are
+			// parsed directly from the environment after the unmarshal (see
+			// applyMCPHeaderEnv). Routing them through the Koanf tree makes
+			// two header names that are path-prefixes of each other (x.api as
+			// a scalar vs x.api.key as a nested map) race in the merge, and
+			// one of the two headers is silently lost depending on environ
+			// order.
 			if !strings.Contains(key, "__") {
+				return "", nil
+			}
+			if isMCPHeaderVar(key) {
 				return "", nil
 			}
 			if strings.TrimSpace(value) == "" {
@@ -247,10 +259,6 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: apply history limit aliases: %w", err)
 	}
 
-	if err := flattenMCPHeaderNames(k); err != nil {
-		return nil, fmt.Errorf("config: flatten mcp headers: %w", err)
-	}
-
 	var cfg Config
 	if err := k.UnmarshalWithConf("", &cfg, koanf.UnmarshalConf{
 		DecoderConfig: &mapstructure.DecoderConfig{
@@ -264,6 +272,8 @@ func Load() (*Config, error) {
 	}); err != nil {
 		return nil, fmt.Errorf("config: unmarshal: %w", err)
 	}
+
+	applyMCPHeaderEnv(&cfg)
 
 	// Per-feature model fallback: summarize and image_recognition inherit the
 	// chat model when not explicitly set. This keeps the existing operator
@@ -339,74 +349,56 @@ func applyHistoryLimitAliases(k *koanf.Koanf) error {
 	return nil
 }
 
-// flattenMCPHeaderNames joins nested path segments under each MCP server's
-// `headers` map into a single header name. Environment variable names cannot
-// contain "-", so a hyphenated header is spelled with multiple `__`-separated
-// segments: MCP__SERVERS__S__HEADERS__X__API__KEY reaches the Koanf tree as
-// the nested path mcp.servers.s.headers.x.api.key, which cannot unmarshal
-// into the flat map[string]string field. The segments are joined with "-",
-// yielding the header name "x-api-key". A single segment keeps its literal
-// underscores: HEADERS__X_API_KEY yields "x_api_key".
-//
-// Koanf's Raw() returns a deep copy and Set() merges, so the rewritten
-// `mcp` subtree is deleted first and re-inserted afterwards.
-func flattenMCPHeaderNames(k *koanf.Koanf) error {
-	raw := k.Raw()
-	mcp, ok := raw["mcp"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	servers, ok := mcp["servers"].(map[string]any)
-	if !ok {
-		return nil
-	}
+// isMCPHeaderVar reports whether an environment variable name is an MCP
+// request header: MCP__SERVERS__<SERVER>__HEADERS__<SEG>[__SEG...]. The shape
+// is checked before lowercasing, so the segment comparison is case-insensitive.
+func isMCPHeaderVar(key string) bool {
+	parts := strings.Split(key, "__")
 
-	flattened := false
-	for _, serverValue := range servers {
-		server, ok := serverValue.(map[string]any)
-		if !ok {
-			continue
-		}
-		headers, ok := server["headers"].(map[string]any)
-		if !ok {
-			continue
-		}
-
-		joined := make(map[string]any, len(headers))
-		joinHeaderSegments(nil, headers, joined)
-		server["headers"] = joined
-		flattened = true
-	}
-
-	if !flattened {
-		return nil
-	}
-
-	k.Delete("mcp")
-	if err := k.Set("mcp", mcp); err != nil {
-		return fmt.Errorf("set mcp: %w", err)
-	}
-
-	return nil
+	return len(parts) >= 5 &&
+		strings.EqualFold(parts[0], "mcp") &&
+		strings.EqualFold(parts[1], "servers") &&
+		strings.EqualFold(parts[3], "headers")
 }
 
-// joinHeaderSegments walks a nested header map and writes every leaf into out,
-// keyed by its path segments joined with "-". prefix holds the segments
-// collected on the way down; it is copied at every level so sibling branches
-// cannot overwrite each other's entries through a shared backing array.
-func joinHeaderSegments(prefix []string, headers map[string]any, out map[string]any) {
-	for key, value := range headers {
-		next := make([]string, 0, len(prefix)+1)
-		next = append(next, prefix...)
-		next = append(next, key)
-
-		if nested, ok := value.(map[string]any); ok {
-			joinHeaderSegments(next, nested, out)
-
+// applyMCPHeaderEnv merges MCP request headers from the environment directly
+// into the loaded config, bypassing Koanf. Environment variable names cannot
+// contain "-", so a hyphenated header is spelled with multiple `__`-separated
+// segments: MCP__SERVERS__S__HEADERS__X__API__KEY yields the header name
+// "x-api-key". A single segment keeps its literal underscores:
+// HEADERS__X_API_KEY yields "x_api_key". Keys are lowercased, matching the
+// env provider's transform.
+//
+// Headers are parsed here because Koanf models a header name as a nested
+// path under mcp.servers.<name>.headers, and a merge of two names that are
+// path-prefixes of each other (x.api scalar vs x.api.key map) silently drops
+// one of the two depending on environ order. Headers for a server name with
+// no entry in cfg.MCP.Servers are silently skipped, mirroring how the struct
+// unmarshal ignores unmapped keys. Blank values are treated as unset, like
+// every other variable.
+func applyMCPHeaderEnv(cfg *Config) {
+	for _, entry := range os.Environ() {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || !isMCPHeaderVar(key) {
+			continue
+		}
+		if strings.TrimSpace(value) == "" {
 			continue
 		}
 
-		out[strings.Join(next, "-")] = value
+		parts := strings.Split(key, "__")
+		server := strings.ToLower(parts[2])
+		serverCfg, ok := cfg.MCP.Servers[server]
+		if !ok {
+			continue
+		}
+
+		headerName := strings.ToLower(strings.Join(parts[4:], "-"))
+		if serverCfg.Headers == nil {
+			serverCfg.Headers = make(map[string]string)
+		}
+		serverCfg.Headers[headerName] = value
+		cfg.MCP.Servers[server] = serverCfg
 	}
 }
 

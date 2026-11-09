@@ -385,6 +385,38 @@ func TestLoadJoinsMCPHeaderSegmentsWithHyphens(t *testing.T) {
 	}
 }
 
+func TestLoadKeepsPathPrefixRelatedMCPHeaders(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("MCP__ENABLED", "true")
+	t.Setenv("MCP__SERVERS__BROWSER__URL", "https://mcp.example.com")
+	t.Setenv("MCP__SERVERS__BROWSER__HEADERS__X__API", "v1")
+	t.Setenv("MCP__SERVERS__BROWSER__HEADERS__X__API__KEY", "v2")
+
+	// In the Koanf tree these spell a scalar (x.api) and a nested map
+	// (x.api.key) that are path-prefixes of each other; the merge used to
+	// lose one of the two depending on environ order, so loop enough runs
+	// to catch nondeterminism instead of pinning a lucky ordering.
+	for run := 0; run < 10; run++ {
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("run %d: load: %v", run, err)
+		}
+		browser, ok := cfg.MCP.Servers["browser"]
+		if !ok {
+			t.Fatalf("run %d: missing browser server", run)
+		}
+		if got, want := browser.Headers["x-api"], "v1"; got != want {
+			t.Fatalf("run %d: unexpected x-api header: got %q want %q (headers: %v)", run, got, want, browser.Headers)
+		}
+		if got, want := browser.Headers["x-api-key"], "v2"; got != want {
+			t.Fatalf("run %d: unexpected x-api-key header: got %q want %q (headers: %v)", run, got, want, browser.Headers)
+		}
+		if len(browser.Headers) != 2 {
+			t.Fatalf("run %d: unexpected headers: %v", run, browser.Headers)
+		}
+	}
+}
+
 func TestMCPConfigValidateAcceptsHTTPSServer(t *testing.T) {
 	c := MCPConfig{
 		Enabled: true,
