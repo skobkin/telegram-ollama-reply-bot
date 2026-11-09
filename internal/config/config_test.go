@@ -242,6 +242,30 @@ func TestLoadImageRecognitionEnabledCanBeDisabled(t *testing.T) {
 	}
 }
 
+func TestLoadIgnoresPlainEnvVarsWithoutDelimiter(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	// Plain scalar variables whose lowercased names collide with top-level
+	// config keys must not affect the config tree at all: `LOG=debug` used to
+	// replace the whole log.* subtree and abort the boot with an unmarshal
+	// error.
+	t.Setenv("LOG", "debug")
+	t.Setenv("BOT", "x")
+	t.Setenv("STATE", "something")
+	t.Setenv("FOO__BAR", "ignored-but-harmless")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.Logging.Level != "info" {
+		t.Fatalf("expected logging level default to survive plain env vars, got %q", cfg.Logging.Level)
+	}
+	if cfg.LLM.Features.Chat.Model != "gemma4:e4b" {
+		t.Fatalf("unexpected chat model: %q", cfg.LLM.Features.Chat.Model)
+	}
+}
+
 func TestLoadUsesBotHistoryLimitDefaults(t *testing.T) {
 	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
 

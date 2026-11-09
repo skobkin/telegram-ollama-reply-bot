@@ -211,6 +211,19 @@ func Load() (*Config, error) {
 
 	if err := k.Load(env.Provider("__", env.Opt{
 		TransformFunc: func(key, value string) (string, any) {
+			// The provider is created without a prefix, so it sees every
+			// process environment variable. Only variables that contain the
+			// `__` path delimiter can map onto the config tree; blanking the
+			// key makes the provider drop the variable entirely. Without this
+			// filter, a plain scalar variable whose lowercased name collides
+			// with a top-level config key (e.g. LOG=debug replacing the
+			// whole log.* subtree) breaks unmarshalling and refuses the boot.
+			// Variables with an unknown prefix but a `__` delimiter (e.g.
+			// FOO__BAR=x) land on unmapped keys and are ignored by the
+			// struct unmarshal, so they are harmless.
+			if !strings.Contains(key, "__") {
+				return "", nil
+			}
 			if strings.TrimSpace(value) == "" {
 				return "", nil
 			}
