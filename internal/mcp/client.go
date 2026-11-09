@@ -23,7 +23,10 @@ import (
 const defaultClientTimeout = 15 * time.Second
 
 // headerRoundTripper injects the configured headers on every outgoing
-// request. Header values are kept in-memory only and never logged.
+// request. Configured headers use Set semantics so an operator-configured
+// value replaces any value the SDK already set (Accept, Content-Type,
+// Mcp-Session-Id, MCP-Protocol-Version) instead of producing duplicates on
+// the wire. Header values are kept in-memory only and never logged.
 type headerRoundTripper struct {
 	base   http.RoundTripper
 	header http.Header
@@ -38,7 +41,7 @@ func (t *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	cloned.Header = req.Header.Clone()
 	for name, values := range t.header {
 		for _, v := range values {
-			cloned.Header.Add(name, v)
+			cloned.Header.Set(name, v)
 		}
 	}
 
