@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"telegram-ollama-reply-bot/internal/config"
@@ -29,12 +30,15 @@ type Manager struct {
 	logger  *slog.Logger
 }
 
-// NewManager wires the bot to every server in `cfg.Servers`, in order. A
-// misconfigured server is a hard error unless it is marked `Optional` — in
-// that case the manager logs a warning, drops the server, and keeps going
-// with the survivors. The error return is reserved for completely
-// unrecoverable situations (e.g. a config-shaped problem that prevents
-// even attempting to connect).
+// NewManager wires the bot to every server in `cfg.Servers`, in sorted-name
+// order: `cfg.Servers` is a Go map with a randomized iteration order, so
+// sorting pins the registration order and keeps the resulting tool list
+// (and therefore the LLM prompt) stable across restarts. A misconfigured
+// server is a hard error unless it is marked `Optional` — in that case the
+// manager logs a warning, drops the server, and keeps going with the
+// survivors. The error return is reserved for completely unrecoverable
+// situations (e.g. a config-shaped problem that prevents even attempting to
+// connect).
 func NewManager(ctx context.Context, cfg config.MCPConfig, logger *slog.Logger) (*Manager, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -51,7 +55,8 @@ func NewManager(ctx context.Context, cfg config.MCPConfig, logger *slog.Logger) 
 	}
 
 	manager := &Manager{logger: logger}
-	for name, server := range cfg.Servers {
+	for _, name := range sortedServerNames(cfg.Servers) {
+		server := cfg.Servers[name]
 		raw := mcp.NewClient(implementation, nil)
 		cl := &client{
 			name:   name,
@@ -88,6 +93,20 @@ func NewManager(ctx context.Context, cfg config.MCPConfig, logger *slog.Logger) 
 	}
 
 	return manager, nil
+}
+
+// sortedServerNames returns the configured server names in sorted order.
+// cfg.Servers is a Go map, so its iteration order is randomized per run;
+// sorting pins the registration order so the tool list exposed to the LLM
+// is deterministic across restarts.
+func sortedServerNames(servers map[string]config.MCPServerConfig) []string {
+	names := make([]string, 0, len(servers))
+	for name := range servers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+
+	return names
 }
 
 // connectTimeout is the deadline for a single server's Connect + ListTools
