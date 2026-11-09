@@ -10,6 +10,14 @@ import (
 )
 
 func main() {
+	// os.Exit lives here, above any deferred calls: run() keeps its own
+	// defers (signal teardown) on the normal return path.
+	os.Exit(run())
+}
+
+// run builds the root context and hands it to the application, returning the
+// process exit code.
+func run() int {
 	// The container runs the bot as PID 1 (exec-form ENTRYPOINT), so
 	// `docker stop` delivers SIGTERM to this process. Without a handler
 	// the Go runtime's default disposition kills it immediately and the
@@ -29,6 +37,9 @@ func main() {
 		// config validation and wiring, which name the failing setting —
 		// keep that diagnostic visible at bootstrap.
 		fmt.Fprintf(os.Stderr, "startup failed: %v\n", err)
-		os.Exit(1)
+
+		return 1
 	}
+
+	return 0
 }
