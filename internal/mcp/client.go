@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -37,26 +38,76 @@ const defaultClientTimeout = 15 * time.Second
 // redirects, but a transport-level injection would re-add them afterwards,
 // sending operator credentials to whatever host the server redirects to.
 // Same-host redirects keep the credentials and keep working.
+//
+// DELETE requests additionally carry a bounded deadline (see
+// sessionCleanupTimeout): they terminate the session during Close, run on a
+// detached context the SDK never cancels, and would otherwise hang shutdown
+// forever against a server that accepts DELETE but never answers.
 type headerRoundTripper struct {
 	base   http.RoundTripper
 	header http.Header
 	origin string // normalized "scheme://host" of the configured endpoint; empty = inject on every request
 }
 
+// sessionCleanupTimeout bounds the DELETE request the MCP SDK sends to
+// terminate a session on Close. The SDK issues it on a detached context with
+// no deadline (it must outlive Connect) and this client deliberately sets no
+// http.Client.Timeout so the standing SSE stream can live indefinitely —
+// together that means a server accepting DELETE but never answering blocks
+// shutdown and optional-server cleanup forever. The bound is a var so tests
+// can shorten it.
+var sessionCleanupTimeout = 5 * time.Second
+
 func (t *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if !t.injectsInto(req) {
+	injects := t.injectsInto(req)
+	bounded := req.Method == http.MethodDelete && sessionCleanupTimeout > 0
+	if !injects && !bounded {
+		// Fast path: the request reaches the base transport untouched.
 		return t.base.RoundTrip(req)
 	}
+
+	ctx := req.Context()
+	cancel := context.CancelFunc(func() {})
+	if bounded {
+		ctx, cancel = context.WithTimeout(ctx, sessionCleanupTimeout)
+	}
+
 	// Clone the request to avoid mutating the caller's header map.
-	cloned := req.Clone(req.Context())
-	cloned.Header = req.Header.Clone()
-	for name, values := range t.header {
-		for _, v := range values {
-			cloned.Header.Set(name, v)
+	cloned := req.Clone(ctx)
+	if injects {
+		for name, values := range t.header {
+			for _, v := range values {
+				cloned.Header.Set(name, v)
+			}
 		}
 	}
 
-	return t.base.RoundTrip(cloned)
+	resp, err := t.base.RoundTrip(cloned)
+	if err != nil {
+		cancel()
+
+		return nil, err
+	}
+	if bounded {
+		resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+	}
+
+	return resp, nil
+}
+
+// cancelOnCloseBody releases the bounded cleanup request's context once its
+// (small, non-streamed) body is closed. If the caller never closes it, the
+// deadline itself reclaims the connection when it fires.
+type cancelOnCloseBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelOnCloseBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+
+	return err
 }
 
 // injectsInto reports whether the configured headers may be attached to this
@@ -105,7 +156,8 @@ func endpointOrigin(rawURL string) string {
 // http.Client.Timeout caps the entire request including the body read — a
 // wall-clock timeout here would force-kill the session's streams every
 // interval. Per-call time bounds are instead applied to each individual
-// tool call via callTimeout (see callToolHandler).
+// tool call via callTimeout (see callToolHandler), and session-termination
+// DELETEs get a bounded transport-level deadline (see sessionCleanupTimeout).
 //
 // Redirects to a plain-HTTP target are refused when the configured endpoint
 // is HTTPS: the transport would still attach the operator's credentials
