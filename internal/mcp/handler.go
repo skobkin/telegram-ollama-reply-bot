@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"telegram-ollama-reply-bot/internal/tooluse"
 
@@ -14,11 +15,15 @@ import (
 
 // callToolHandler returns the tooluse.Handler that routes a tool call back to
 // the originating MCP server's `ClientSession.CallTool`. The closure captures
-// the session, the original (un-prefixed) tool name, the namespaced name, and
-// a logger that already has `server` set as a structured field; the
-// tooluse-side name (`namespacedToolName`) is never sent over the wire.
+// the session, the original (un-prefixed) tool name, the namespaced name, the
+// per-server call timeout, and a logger that already has `server` set as a
+// structured field; the tooluse-side name (`namespacedToolName`) is never sent
+// over the wire.
 //
-// The per-call `callCtx` is supplied by the tooluse runtime at dispatch time.
+// The per-call `ctx` is supplied by the tooluse runtime at dispatch time. Each
+// invocation is additionally bounded by `callTimeout` (the per-server
+// configured timeout), because the underlying HTTP client deliberately has no
+// wall-clock timeout: it must stay free to hold the standing SSE stream open.
 // We only add per-request fields to the logger; everything else is closure-
 // captured.
 //
@@ -29,17 +34,17 @@ import (
 // Distinguishing failure modes for the LLM:
 //
 //   - protocol-level errors (network down, server unreachable, mid-call
-//     disconnect) -> a Go `error` and `toolResult{Status:"error"}` with the
-//     structured code `mcp_unreachable`. The LLM can self-correct by
-//     retrying or telling the user.
+//     disconnect, per-call timeout exceeded) -> a Go `error` and
+//     `toolResult{Status:"error"}` with the structured code `mcp_unreachable`.
+//     The LLM can self-correct by retrying or telling the user.
 //   - tool-level errors (server returned `IsError: true`) -> a successful Go
 //     return whose `Summary` carries the server's message. The existing
 //     tooluse audit logger surfaces it as `is_error` / `error`; the LLM can
 //     also see it directly in the data block.
 //   - non-text content (image, audio, embedded resources) -> collected under
-//     `Data["unsupported"]` rather than silently dropped, so misbehaving
-//     servers are visible at the call site.
-func callToolHandler(session *mcp.ClientSession, originalName, namespacedName string, logger *slog.Logger) tooluse.Handler {
+//     `Data["blocks"]` rather than silently dropped, so misbehaving servers
+//     are visible at the call site.
+func callToolHandler(session *mcp.ClientSession, originalName, namespacedName string, callTimeout time.Duration, logger *slog.Logger) tooluse.Handler {
 	return func(ctx context.Context, callCtx tooluse.CallContext, args json.RawMessage) (tooluse.ToolResult, error) {
 		if session == nil {
 			return tooluse.ToolResult{}, fmt.Errorf("mcp session is not connected")
@@ -55,7 +60,10 @@ func callToolHandler(session *mcp.ClientSession, originalName, namespacedName st
 			return tooluse.ToolResult{}, fmt.Errorf("parse arguments: %w", err)
 		}
 
-		reply, callErr := session.CallTool(ctx, &mcp.CallToolParams{
+		callCtxTimeout, cancel := context.WithTimeout(ctx, callTimeout)
+		defer cancel()
+
+		reply, callErr := session.CallTool(callCtxTimeout, &mcp.CallToolParams{
 			Name:      originalName,
 			Arguments: parsed,
 		})

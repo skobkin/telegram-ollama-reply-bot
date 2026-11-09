@@ -16,10 +16,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// defaultClientTimeout is the per-request timeout used when the operator did
-// not set `mcp.servers.<name>.timeout`. It is intentionally shorter than the
-// per-server maximum (60s) so a single misconfigured server cannot stall the
-// chat loop.
+// defaultClientTimeout is the per-tool-call timeout used when the operator did
+// not set `mcp.servers.<name>.timeout`. Config may accept any positive
+// duration; there is deliberately no upper clamp so long-running tools keep
+// working.
 const defaultClientTimeout = 15 * time.Second
 
 // headerRoundTripper injects the configured headers on every outgoing
@@ -45,29 +45,40 @@ func (t *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	return t.base.RoundTrip(cloned)
 }
 
-// httpClientForServer builds an *http.Client whose timeout matches the
-// per-server override (or the package default) and whose transport injects
-// the configured headers. The base transport is http.DefaultTransport so
-// operators get the same proxy / TLS configuration as every other
-// outbound call from the bot.
+// httpClientForServer builds an *http.Client whose transport injects the
+// configured headers. It deliberately sets no http.Client.Timeout: the
+// Streamable HTTP transport holds a standing SSE GET stream open for the
+// lifetime of the session and streams tool-call response bodies, and
+// http.Client.Timeout caps the entire request including the body read — a
+// wall-clock timeout here would force-kill the session's streams every
+// interval. Per-call time bounds are instead applied to each individual
+// tool call via callTimeout (see callToolHandler).
+//
+// The base transport is http.DefaultTransport so operators get the same
+// proxy / TLS configuration as every other outbound call from the bot.
 func httpClientForServer(server config.MCPServerConfig) *http.Client {
-	timeout := server.Timeout
-	if timeout <= 0 {
-		timeout = defaultClientTimeout
-	}
-
 	headers := http.Header{}
 	for name, value := range server.Headers {
 		headers.Set(name, value)
 	}
 
 	return &http.Client{
-		Timeout: timeout,
 		Transport: &headerRoundTripper{
 			base:   http.DefaultTransport,
 			header: headers,
 		},
 	}
+}
+
+// callTimeout returns the per-tool-call deadline derived from the per-server
+// override, falling back to the package default when the operator left it
+// unset.
+func callTimeout(server config.MCPServerConfig) time.Duration {
+	if server.Timeout > 0 {
+		return server.Timeout
+	}
+
+	return defaultClientTimeout
 }
 
 // client wraps the MCP SDK's *Client and the open ClientSession for a single
@@ -145,12 +156,14 @@ func (c *client) connect(ctx context.Context) error {
 			return fmt.Errorf("translate %s/%s: %w", c.name, name, err)
 		}
 		// Wire the call closure now that the session is open. The handler
-		// captures the live session and the un-prefixed tool name so the
-		// tooluse runtime can dispatch without knowing about MCP.
+		// captures the live session, the un-prefixed tool name, and the
+		// per-server call timeout so the tooluse runtime can dispatch without
+		// knowing about MCP.
 		definition.Handler = callToolHandler(
 			session,
 			tool.Name,
 			definition.Name,
+			callTimeout(c.config),
 			serverLogger(c.logger, c.name),
 		)
 		definitions = append(definitions, definition)

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"telegram-ollama-reply-bot/internal/tooluse"
 
@@ -266,7 +267,7 @@ func (devNull) Write(p []byte) (int, error) { return len(p), nil }
 // a handler closure built with a nil session is a clear, machine-parseable
 // failure rather than a nil-pointer panic.
 func TestCallToolHandlerReturnsErrorWhenSessionIsNil(t *testing.T) {
-	handler := callToolHandler(nil, "echo", "mcp_demo__echo", nil)
+	handler := callToolHandler(nil, "echo", "mcp_demo__echo", 5*time.Second, nil)
 	_, err := handler(nil, tooluse.CallContext{}, json.RawMessage(`{}`))
 	if err == nil {
 		t.Fatalf("expected error for nil session")
