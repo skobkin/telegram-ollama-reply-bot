@@ -90,6 +90,10 @@ func (t *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	}
 	if bounded {
 		resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+	} else {
+		// Unbounded requests never wrapped a timeout context; cancel is the
+		// no-op fallback here and runs immediately.
+		cancel()
 	}
 
 	return resp, nil

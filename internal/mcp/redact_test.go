@@ -42,7 +42,7 @@ func TestRedactURLCredentials(t *testing.T) {
 			in:   `connect to https://mcp.example.invalid/mcp?api_key=hunter2: EOF`,
 			want: `connect to https://mcp.example.invalid/mcp: EOF`,
 		},
-		{
+		{ //nolint:gosec // test fixture: redaction must drop userinfo credentials
 			name: "userinfo_dropped",
 			in:   `Post "https://user:pass@mcp.example.invalid/mcp": EOF`,
 			want: `Post "https://mcp.example.invalid/mcp": EOF`,
@@ -108,6 +108,7 @@ func TestCallToolHandlerRedactsTransportError(t *testing.T) {
 					conn, _, err := hj.Hijack()
 					if err == nil {
 						_ = conn.Close() // abrupt reset mid-call
+
 						return
 					}
 				}
