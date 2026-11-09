@@ -64,6 +64,14 @@ type headerRoundTripper struct {
 // it.
 var sessionCleanupTimeout = 5 * time.Second
 
+// responseHeaderWaitTimeout bounds how long requests issued through
+// httpClientForServer wait for their first response headers (set as
+// http.Transport.ResponseHeaderTimeout on the cloned base). The bound exists
+// for the Streamable HTTP handshake (see httpClientForServer for why a
+// transport-level header-wait timeout, and not a request-level deadline, is
+// the knob that fits). The var is mutable so tests can shorten it.
+var responseHeaderWaitTimeout = 30 * time.Second
+
 func (t *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	injects := t.injectsInto(req)
 	bounded := req.Method == http.MethodDelete && sessionCleanupTimeout > 0
@@ -175,17 +183,35 @@ func endpointOrigin(rawURL string) string {
 // also caps redirect chains at maxRedirectHops, restoring Go's default
 // limit that a custom CheckRedirect replaces (see checkMCPRedirect).
 //
-// The base transport is http.DefaultTransport so operators get the same
-// proxy / TLS configuration as every other outbound call from the bot.
+// The base transport is cloned from http.DefaultTransport — never mutated in
+// place, it is shared by every other outbound call from the bot — so
+// operators keep the same proxy / TLS configuration, plus one extra bound:
+// ResponseHeaderTimeout caps how long any request waits for its first
+// response headers. That bound exists for the Streamable HTTP handshake: the
+// SDK (go-sdk v1.2.0, streamable.go) issues the standing SSE GET — which
+// carries server-initiated messages for the lifetime of the session — on a
+// detached connection context (context.WithCancel over a context detached
+// from the caller's), and it runs synchronously inside Connect. A deadline on
+// the caller's bootstrap context therefore never reaches that GET, so a
+// server that answers the initialize POST but stalls the GET before writing
+// response headers blocks startup forever. A request-level deadline or
+// http.Client.Timeout would be the wrong knob: both cap the entire request
+// including the body read, killing the standing SSE stream (and streamed
+// tool-call responses) after the interval. ResponseHeaderTimeout bounds only
+// the wait for headers; once headers arrive the body streams without any
+// timeout.
 func httpClientForServer(server config.MCPServerConfig) *http.Client {
 	headers := http.Header{}
 	for name, value := range server.Headers {
 		headers.Set(name, value)
 	}
 
+	base := http.DefaultTransport.(*http.Transport).Clone() // never mutate the shared DefaultTransport
+	base.ResponseHeaderTimeout = responseHeaderWaitTimeout
+
 	return &http.Client{
 		Transport: &headerRoundTripper{
-			base:   http.DefaultTransport,
+			base:   base,
 			header: headers,
 			origin: endpointOrigin(server.URL),
 		},
