@@ -135,6 +135,17 @@ func (s *Service) RestoreBuiltinGlobalPrompt(ctx context.Context, feature Prompt
 	return s.store.ClearPromptTemplate(ctx, feature, 0)
 }
 
+// ValidatePromptBody checks a prompt body against the injected validator
+// without storing it, so callers can separate validation failures (user
+// input problems) from persistence failures.
+func (s *Service) ValidatePromptBody(feature PromptFeature, body string) error {
+	if !IsPromptFeature(feature) {
+		return fmt.Errorf("unknown prompt feature %q", feature)
+	}
+
+	return s.validatePromptBody(feature, body)
+}
+
 func (s *Service) validatePromptBody(feature PromptFeature, body string) error {
 	if s.promptValidator != nil {
 		return s.promptValidator(feature, body)

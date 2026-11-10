@@ -46,6 +46,8 @@ const (
 	VerbAllowAdd   = "aw"   // args: <chat_id> → allowlist add
 	VerbAllowRem   = "ar"   // args: <chat_id> → allowlist remove (confirm)
 	VerbAccessPol  = "ap"   // args: <allowlist|allow_all> → switch policy (confirm)
+	VerbResetChat  = "rov"  // → reset ALL chat overrides (confirm)
+	VerbBack       = "back" // pop the navigation stack
 	VerbConfirmYes = "ok"   // confirm the pending confirmation
 	VerbConfirmNo  = "no"   // cancel the pending confirmation
 	VerbStats      = "st"   // → statistics screen
@@ -58,8 +60,8 @@ var knownVerbs = map[string]bool{
 	VerbClear: true, VerbPrompts: true, VerbPromptFeat: true, VerbPromptView: true,
 	VerbPromptDL: true, VerbPromptBL: true, VerbPromptText: true, VerbPromptUp: true,
 	VerbPromptRstC: true, VerbPromptRstG: true, VerbAccess: true, VerbAllowAdd: true,
-	VerbAllowRem: true, VerbAccessPol: true, VerbConfirmYes: true, VerbConfirmNo: true,
-	VerbStats: true,
+	VerbAllowRem: true, VerbAccessPol: true, VerbResetChat: true, VerbBack: true,
+	VerbConfirmYes: true, VerbConfirmNo: true, VerbStats: true,
 }
 
 // MaxCallbackBytes is the Telegram callback data limit.

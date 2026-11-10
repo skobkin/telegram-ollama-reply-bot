@@ -65,7 +65,12 @@ type ScreenState struct {
 	Search  string
 	Field   string
 	Feature adminconfig.PromptFeature
-	Notice  string
+	// Detail carries the confirm-screen description (built when the
+	// confirmation is created, so re-renders need no extra session state).
+	Detail string
+	// Danger marks a confirmation as destructive (button styling hint).
+	Danger bool
+	Notice string
 }
 
 // PendingKind enumerates awaited admin inputs.
@@ -92,7 +97,7 @@ type Pending struct {
 	Field       string
 	Feature     adminconfig.PromptFeature
 	ScopeChatID int64
-	RequestID   int32
+	RequestID   int
 	PromptMsgID int
 	ExpiresAt   time.Time
 	Attempts    int
@@ -147,12 +152,15 @@ type Session struct {
 	Epoch uint64
 }
 
-// Render is a committed screen snapshot plus the epoch that orders it.
+// Render is a committed screen snapshot plus the epoch that orders it. Built
+// is the presentation-ready screen for the state, attached by the controller
+// after the commit; the adapter renders it through the render gate.
 type Render struct {
 	AdminID int64
 	Epoch   uint64
 	MsgID   int
 	Screen  ScreenState
+	Built   *Screen
 }
 
 // renderGate serializes the visible message updates of one admin so an
