@@ -13,6 +13,8 @@ type stubStore struct {
 	prompts      map[string]string
 	whitelist    []int64
 	whitelistHit bool
+	policy       AccessPolicy
+	chats        []ChatCatalogEntry
 }
 
 func (s *stubStore) GetGlobalSettings(context.Context) (GlobalSettings, error) { return s.global, nil }
@@ -34,13 +36,66 @@ func (s *stubStore) SetPromptTemplate(context.Context, PromptFeature, int64, str
 	return nil
 }
 func (s *stubStore) ClearPromptTemplate(context.Context, PromptFeature, int64) error { return nil }
-func (s *stubStore) UpsertChatCatalog(context.Context, ChatCatalogEntry) error       { return nil }
-func (s *stubStore) ListChats(context.Context) ([]ChatCatalogEntry, error)           { return nil, nil }
-func (s *stubStore) AddWhitelistChat(context.Context, int64, int64) error            { return nil }
-func (s *stubStore) RemoveWhitelistChat(context.Context, int64) error                { return nil }
-func (s *stubStore) ListWhitelistChats(context.Context) ([]int64, error)             { return s.whitelist, nil }
+func (s *stubStore) UpsertChatCatalog(_ context.Context, entry ChatCatalogEntry) error {
+	for i, existing := range s.chats {
+		if existing.ChatID == entry.ChatID {
+			s.chats[i] = entry
+
+			return nil
+		}
+	}
+	s.chats = append(s.chats, entry)
+
+	return nil
+}
+func (s *stubStore) ListChats(context.Context) ([]ChatCatalogEntry, error) { return s.chats, nil }
+func (s *stubStore) AddWhitelistChat(_ context.Context, chatID int64, _ int64) error {
+	for _, existing := range s.whitelist {
+		if existing == chatID {
+			return nil
+		}
+	}
+	s.whitelist = append(s.whitelist, chatID)
+
+	return nil
+}
+func (s *stubStore) RemoveWhitelistChat(_ context.Context, chatID int64) error {
+	kept := make([]int64, 0, len(s.whitelist))
+	for _, existing := range s.whitelist {
+		if existing != chatID {
+			kept = append(kept, existing)
+		}
+	}
+	s.whitelist = kept
+
+	return nil
+}
+func (s *stubStore) ListWhitelistChats(context.Context) ([]int64, error) { return s.whitelist, nil }
 func (s *stubStore) IsChatWhitelisted(context.Context, int64) (bool, error) {
 	return s.whitelistHit, nil
+}
+func (s *stubStore) GetAccessPolicy(context.Context) (AccessPolicy, error) {
+	if s.policy == "" {
+		return AccessPolicyAllowlist, nil
+	}
+
+	return s.policy, nil
+}
+func (s *stubStore) SetAccessPolicy(_ context.Context, policy AccessPolicy, _ int64) error {
+	if !IsValidAccessPolicy(policy) {
+		return fmt.Errorf("unsupported access policy %q", policy)
+	}
+	s.policy = policy
+
+	return nil
+}
+func (s *stubStore) ListWhitelistEntries(context.Context) ([]WhitelistEntry, error) {
+	entries := make([]WhitelistEntry, 0, len(s.whitelist))
+	for _, chatID := range s.whitelist {
+		entries = append(entries, WhitelistEntry{ChatID: chatID})
+	}
+
+	return entries, nil
 }
 
 func TestResolveChatConfigUsesChatOverrides(t *testing.T) {

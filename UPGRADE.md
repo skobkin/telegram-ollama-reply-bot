@@ -1,5 +1,15 @@
 # Upgrade Notes
 
+## Explicit access policy (breaking)
+
+Access control is now an explicit policy instead of the old implicit rule "an empty whitelist means allow everyone".
+
+- The database gains an `access_policy` column (`allowlist` or `allow_all`), migrated to **`allowlist`** for every existing install.
+- **Breaking for installs with an empty whitelist**: previously the bot answered every chat; now all ordinary chats are denied until you either add them to the allowlist or explicitly switch the policy to `allow_all`. Installs with a populated whitelist behave exactly as before — entries are preserved and still allowed.
+- Admin DMs (`BOT__ADMIN_IDS`) are always exempt, and `BOT__DM_ADMINS_ONLY` keeps working unchanged. Switching the policy never modifies allowlist membership, so you can switch back and forth without data loss.
+- **Scheduled reminders are affected**: reminders for chats denied by the new policy stop delivering (their occurrences are skipped and schedules advance); reminders to admin DMs keep working.
+- Remediation after upgrade: open `/admin` → *Access* in an admin DM, add the chats you serve, or confirm the switch to `allow_all` there.
+
 ## DM restrictions (#62)
 
 New optional env var `BOT__DM_ADMINS_ONLY` (default `false` — unset means today's behavior):

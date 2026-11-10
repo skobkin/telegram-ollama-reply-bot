@@ -27,6 +27,41 @@ func InteractivityModes() []InteractivityMode {
 	}
 }
 
+// AccessPolicy decides which chats the bot serves beyond admin DMs.
+type AccessPolicy string
+
+const (
+	// AccessPolicyAllowlist serves only chats on the whitelist. An empty
+	// allowlist denies all ordinary chats (admin DMs stay exempt).
+	AccessPolicyAllowlist AccessPolicy = "allowlist"
+	// AccessPolicyAllowAll serves every chat regardless of whitelist
+	// membership. Membership data is preserved and still shown.
+	AccessPolicyAllowAll AccessPolicy = "allow_all"
+)
+
+// AccessPolicies lists the supported access policies.
+func AccessPolicies() []AccessPolicy {
+	return []AccessPolicy{AccessPolicyAllowlist, AccessPolicyAllowAll}
+}
+
+// IsValidAccessPolicy reports whether the value is a supported policy.
+func IsValidAccessPolicy(policy AccessPolicy) bool {
+	for _, supported := range AccessPolicies() {
+		if policy == supported {
+			return true
+		}
+	}
+
+	return false
+}
+
+// WhitelistEntry is one allowlist membership row with audit fields.
+type WhitelistEntry struct {
+	ChatID  int64
+	AddedAt time.Time
+	AddedBy int64
+}
+
 type PromptFeature string
 
 const (
@@ -98,8 +133,11 @@ type Store interface {
 	ClearPromptTemplate(ctx context.Context, feature PromptFeature, chatID int64) error
 	UpsertChatCatalog(ctx context.Context, entry ChatCatalogEntry) error
 	ListChats(ctx context.Context) ([]ChatCatalogEntry, error)
+	GetAccessPolicy(ctx context.Context) (AccessPolicy, error)
+	SetAccessPolicy(ctx context.Context, policy AccessPolicy, actorID int64) error
 	AddWhitelistChat(ctx context.Context, chatID int64, actorID int64) error
 	RemoveWhitelistChat(ctx context.Context, chatID int64) error
 	ListWhitelistChats(ctx context.Context) ([]int64, error)
+	ListWhitelistEntries(ctx context.Context) ([]WhitelistEntry, error)
 	IsChatWhitelisted(ctx context.Context, chatID int64) (bool, error)
 }

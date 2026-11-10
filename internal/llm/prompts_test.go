@@ -48,6 +48,15 @@ func (s *promptStoreStub) AddWhitelistChat(context.Context, int64, int64) error 
 func (s *promptStoreStub) RemoveWhitelistChat(context.Context, int64) error       { return nil }
 func (s *promptStoreStub) ListWhitelistChats(context.Context) ([]int64, error)    { return nil, nil }
 func (s *promptStoreStub) IsChatWhitelisted(context.Context, int64) (bool, error) { return false, nil }
+func (s *promptStoreStub) GetAccessPolicy(context.Context) (adminconfig.AccessPolicy, error) {
+	return adminconfig.AccessPolicyAllowlist, nil
+}
+func (s *promptStoreStub) SetAccessPolicy(context.Context, adminconfig.AccessPolicy, int64) error {
+	return nil
+}
+func (s *promptStoreStub) ListWhitelistEntries(context.Context) ([]adminconfig.WhitelistEntry, error) {
+	return nil, nil
+}
 
 func TestAdminPromptRendererUsesPerChatLanguageAndGender(t *testing.T) {
 	svc := adminconfig.NewService(&promptStoreStub{

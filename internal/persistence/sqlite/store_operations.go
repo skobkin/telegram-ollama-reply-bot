@@ -279,6 +279,31 @@ ORDER BY last_seen_at DESC, chat_id ASC
 	return result, rows.Err()
 }
 
+func (s *Store) GetAccessPolicy(ctx context.Context) (adminconfig.AccessPolicy, error) {
+	var policy string
+	err := s.db.QueryRowContext(ctx, `SELECT access_policy FROM global_settings WHERE id = 1`).Scan(&policy)
+	if err != nil {
+		return adminconfig.AccessPolicyAllowlist, fmt.Errorf("get access policy: %w", err)
+	}
+
+	return adminconfig.AccessPolicy(policy), nil
+}
+
+func (s *Store) SetAccessPolicy(ctx context.Context, policy adminconfig.AccessPolicy, actorID int64) error {
+	if !adminconfig.IsValidAccessPolicy(policy) {
+		return fmt.Errorf("unsupported access policy %q", policy)
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+UPDATE global_settings SET access_policy = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1
+`, string(policy), actorID)
+	if err != nil {
+		return fmt.Errorf("set access policy: %w", err)
+	}
+
+	return nil
+}
+
 func (s *Store) AddWhitelistChat(ctx context.Context, chatID int64, actorID int64) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO chat_whitelist(chat_id, added_at, added_by)
@@ -315,6 +340,27 @@ func (s *Store) ListWhitelistChats(ctx context.Context) ([]int64, error) {
 			return nil, fmt.Errorf("scan whitelist chat: %w", err)
 		}
 		result = append(result, chatID)
+	}
+
+	return result, rows.Err()
+}
+
+func (s *Store) ListWhitelistEntries(ctx context.Context) ([]adminconfig.WhitelistEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT chat_id, added_at, added_by FROM chat_whitelist ORDER BY chat_id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list whitelist entries: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var result []adminconfig.WhitelistEntry
+	for rows.Next() {
+		var entry adminconfig.WhitelistEntry
+		var addedAt string
+		if err := rows.Scan(&entry.ChatID, &addedAt, &entry.AddedBy); err != nil {
+			return nil, fmt.Errorf("scan whitelist entry: %w", err)
+		}
+		entry.AddedAt = parseSQLiteTime(addedAt)
+		result = append(result, entry)
 	}
 
 	return result, rows.Err()

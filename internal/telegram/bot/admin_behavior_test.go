@@ -48,6 +48,15 @@ func (s *adminStoreStub) AddWhitelistChat(context.Context, int64, int64) error  
 func (s *adminStoreStub) RemoveWhitelistChat(context.Context, int64) error       { return nil }
 func (s *adminStoreStub) ListWhitelistChats(context.Context) ([]int64, error)    { return nil, nil }
 func (s *adminStoreStub) IsChatWhitelisted(context.Context, int64) (bool, error) { return false, nil }
+func (s *adminStoreStub) GetAccessPolicy(context.Context) (adminconfig.AccessPolicy, error) {
+	return adminconfig.AccessPolicyAllowlist, nil
+}
+func (s *adminStoreStub) SetAccessPolicy(context.Context, adminconfig.AccessPolicy, int64) error {
+	return nil
+}
+func (s *adminStoreStub) ListWhitelistEntries(context.Context) ([]adminconfig.WhitelistEntry, error) {
+	return nil, nil
+}
 
 func TestShouldProcessChatMessageDisabledByDefault(t *testing.T) {
 	b := &Bot{

@@ -66,6 +66,12 @@ func (s *dmCatalogSpy) UpsertChatCatalog(context.Context, adminconfig.ChatCatalo
 	return nil
 }
 
+// GetAccessPolicy isolates these tests from the access layer: the DM gate is
+// the concern here, so the chain must pass the access gate unconditionally.
+func (s *dmCatalogSpy) GetAccessPolicy(context.Context) (adminconfig.AccessPolicy, error) {
+	return adminconfig.AccessPolicyAllowAll, nil
+}
+
 // runDMGateChain pushes one update through the REAL registerMiddlewares chain
 // (request logger → DM gate → catalog → access gate → history → stats) with a
 // marker handler standing in for every command and conversation handler, then
@@ -128,9 +134,10 @@ func dmPrivateUpdate(fromID int64, text string) tg.Update {
 	return tg.Update{UpdateID: 42, Message: message}
 }
 
-// TestDMAdminsOnlyGateFlagFalseKeepsPrivateFlow is the compatibility contract:
-// with the flag off (the default), a non-admin private message flows through
-// the whole chain exactly as before — cataloged, stored, and counted.
+// TestDMAdminsOnlyGateFlagFalseKeepsPrivateFlow is the DM-gate contract: with
+// the flag off (the default), a private message from an access-allowed chat
+// flows through the whole chain — cataloged, stored, and counted. (The access
+// policy itself is allow_all in this fixture; it is covered separately.)
 func TestDMAdminsOnlyGateFlagFalseKeepsPrivateFlow(t *testing.T) {
 	reached, history, stats, catalog := runDMGateChain(t,
 		config.BotConfig{AdminIDs: []int64{7}},

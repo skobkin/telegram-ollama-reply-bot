@@ -108,21 +108,6 @@ func (s *Service) ChatList(ctx context.Context) ([]ChatCatalogEntry, error) {
 	return chats, nil
 }
 
-func (s *Service) ShouldAllowChat(ctx context.Context, chatID int64, isAdminDM bool) (bool, error) {
-	if isAdminDM {
-		return true, nil
-	}
-
-	chats, err := s.store.ListWhitelistChats(ctx)
-	if err != nil {
-		return false, err
-	}
-	if len(chats) == 0 {
-		return true, nil
-	}
-
-	return s.store.IsChatWhitelisted(ctx, chatID)
-}
 func BoolPointer(v bool) *bool {
 	return &v
 }

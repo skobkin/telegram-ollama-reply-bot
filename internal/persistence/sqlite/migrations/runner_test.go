@@ -179,6 +179,19 @@ func TestApplyRenamesChatAliasToCharacterName(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	if _, err := db.ExecContext(ctx, `
+CREATE TABLE global_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  character_name TEXT NOT NULL,
+  language TEXT NOT NULL,
+  gender TEXT NOT NULL,
+  tone_mode TEXT NOT NULL,
+  allow_teasing INTEGER NOT NULL CHECK (allow_teasing IN (0, 1)),
+  default_interactivity_mode TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  updated_by INTEGER NOT NULL
+);
+INSERT INTO global_settings(id, character_name, language, gender, tone_mode, allow_teasing, default_interactivity_mode, updated_at, updated_by)
+VALUES(1, 'name', 'English', 'neutral', 'default', 0, 'disabled', CURRENT_TIMESTAMP, 0);
 CREATE TABLE chat_settings (
   chat_id INTEGER PRIMARY KEY,
   alias TEXT NOT NULL DEFAULT '',
