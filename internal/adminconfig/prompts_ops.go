@@ -2,7 +2,9 @@ package adminconfig
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 )
 
 // PromptSource reports where an effective prompt body comes from.
@@ -147,6 +149,10 @@ func (s *Service) ValidatePromptBody(feature PromptFeature, body string) error {
 }
 
 func (s *Service) validatePromptBody(feature PromptFeature, body string) error {
+	if strings.TrimSpace(body) == "" {
+		return errors.New("prompt body must not be empty")
+	}
+
 	if s.promptValidator != nil {
 		return s.promptValidator(feature, body)
 	}

@@ -131,6 +131,27 @@ func TestSetPromptValidatesBeforePersist(t *testing.T) {
 	}
 }
 
+// TestSetPromptRejectsEmptyBodies pins the central empty rejection: an empty
+// template (zero-byte upload, whitespace-only reply) must never wipe the
+// active template with a success notice.
+func TestSetPromptRejectsEmptyBodies(t *testing.T) {
+	store := &stubStore{prompts: map[string]string{"chat:0": "old"}}
+	svc := NewService(store, testBuiltins(), nil)
+	ctx := context.Background()
+
+	for _, body := range []string{"", "   ", "\n\t"} {
+		if err := svc.SetPrompt(ctx, PromptFeatureChat, 0, body, 7); err == nil {
+			t.Fatalf("empty body %q must be rejected", body)
+		}
+		if err := svc.ValidatePromptBody(PromptFeatureChat, body); err == nil {
+			t.Fatalf("ValidatePromptBody must reject %q too", body)
+		}
+	}
+	if got := store.prompts["chat:0"]; got != "old" {
+		t.Fatalf("empty bodies must not overwrite, got %q", got)
+	}
+}
+
 // TestSetPromptFallsBackToParseOnlyValidation proves a nil validator keeps
 // parse-only semantics for low-level tests.
 func TestSetPromptFallsBackToParseOnlyValidation(t *testing.T) {

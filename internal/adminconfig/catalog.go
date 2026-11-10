@@ -49,7 +49,9 @@ func (s *Service) QueryChats(ctx context.Context, query ChatQuery) (ChatPage, er
 		excluded[id] = true
 	}
 
-	search := strings.ToLower(strings.TrimSpace(query.Search))
+	// Stored usernames carry no leading '@' while the search prompt
+	// advertises '@username' — strip it so the advertised form matches.
+	search := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(query.Search), "@"))
 	searchID := int64(0)
 	if parsed, err := strconv.ParseInt(strings.TrimSpace(query.Search), 10, 64); err == nil {
 		searchID = parsed

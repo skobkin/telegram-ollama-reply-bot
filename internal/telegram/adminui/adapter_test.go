@@ -1,6 +1,7 @@
 package adminui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -505,7 +506,9 @@ func (f *fakeAdminAPI) chatScopedMenuSyncs() []fakeRequest {
 	return matched
 }
 
-// harness wires the real controller + manager + adapter against the fake API.
+// harness wires the real controller + manager + adapter against the fake
+// API. logs captures the adapter's structured log output for leak
+// assertions.
 type harness struct {
 	adapter    *Adapter
 	manager    *core.Manager
@@ -515,6 +518,7 @@ type harness struct {
 	bh         *th.BotHandler
 	botAPI     *tg.Bot
 	clock      *testClock
+	logs       *bytes.Buffer
 }
 
 func newHarness(t *testing.T) *harness {
@@ -551,7 +555,8 @@ func newHarnessWithAdmins(t *testing.T, adminIDs ...int64) *harness {
 		t.Fatalf("NewBot: %v", err)
 	}
 
-	adapter := NewAdapter(controller, manager, adminIDs, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	logs := &bytes.Buffer{}
+	adapter := NewAdapter(controller, manager, adminIDs, slog.New(slog.NewTextHandler(logs, nil)))
 
 	bh, err := th.NewBotHandler(botAPI, make(chan tg.Update))
 	if err != nil {
@@ -570,6 +575,7 @@ func newHarnessWithAdmins(t *testing.T, adminIDs ...int64) *harness {
 		bh:         bh,
 		botAPI:     botAPI,
 		clock:      clock,
+		logs:       logs,
 	}
 }
 
@@ -1143,5 +1149,64 @@ func TestAccessScreenPaginatesLargeAllowlist(t *testing.T) {
 	h.tap(t, core.VerbAccess, "2")
 	if text = h.api.lastSentText("editMessageText"); !strings.Contains(text, "page 2 of 2") {
 		t.Fatalf("second page expected, got %q", text)
+	}
+}
+
+// TestDocumentDownloadFailuresNeverLeakToken pins the sanitizer: metadata
+// and transport failures log typed errors only — the raw transport error
+// embeds the token-bearing file URL and must never reach the logs.
+func TestDocumentDownloadFailuresNeverLeakToken(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+	h.tap(t, core.VerbPrompts)
+	h.tap(t, core.VerbPromptFeat, "ch")
+	h.tap(t, core.VerbPromptUp, "ch")
+
+	prompt := botPromptMessage(int(h.api.lastSendMessageID()), core.AdminInputMarker+" — upload")
+
+	h.api.mu.Lock()
+	h.api.failMethods["getFile"] = errors.New("http do request: connection refused")
+	h.api.mu.Unlock()
+	h.deliver(t, documentReplyToBotUpdate(prompt))
+
+	if text := h.api.lastSentText("sendMessage"); !strings.Contains(text, "Failed to download the document") {
+		t.Fatalf("download failure feedback expected, got %q", text)
+	}
+	logs := h.logs.String()
+	if !strings.Contains(logs, "telegram file metadata request failed") {
+		t.Fatalf("the typed sentinel must be logged, got %q", logs)
+	}
+	if strings.Contains(logs, testToken) || strings.Contains(logs, "/file/bot") {
+		t.Fatalf("the bot token or file URL must never appear in logs: %q", logs)
+	}
+	for _, call := range h.store.writeCalls() {
+		if strings.Contains(call, "SetPromptTemplate") {
+			t.Fatalf("a failed download must not persist, got %v", call)
+		}
+	}
+}
+
+// TestEmptyPromptUploadRejected pins the central empty-body rejection: a
+// zero-byte upload (or whitespace-only text) can no longer silently wipe the
+// active template with a success notice.
+func TestEmptyPromptUploadRejected(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+	h.tap(t, core.VerbPrompts)
+	h.tap(t, core.VerbPromptFeat, "ch")
+	h.tap(t, core.VerbPromptUp, "ch")
+
+	h.api.files["uploads/prompt.md"] = []byte("   ")
+
+	prompt := botPromptMessage(int(h.api.lastSendMessageID()), core.AdminInputMarker+" — upload")
+	h.deliver(t, documentReplyToBotUpdate(prompt))
+
+	for _, call := range h.store.writeCalls() {
+		if strings.Contains(call, "SetPromptTemplate") {
+			t.Fatalf("empty prompt bodies must never be persisted, got %v", call)
+		}
+	}
+	if text := h.api.lastSentText("sendMessage"); !strings.Contains(text, "must not be empty") {
+		t.Fatalf("actionable rejection expected, got %q", text)
 	}
 }

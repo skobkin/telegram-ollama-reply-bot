@@ -62,6 +62,13 @@ func TestQueryChatsSearch(t *testing.T) {
 		t.Fatalf("username search failed: %+v err %v", page, err)
 	}
 
+	// The @username form the search prompt advertises must match the stored
+	// bare username.
+	page, err = svc.QueryChats(ctx, ChatQuery{Search: "@Gamma"})
+	if err != nil || page.Total != 1 || page.Entries[0].ChatID != 500 {
+		t.Fatalf("@username search failed: %+v err %v", page, err)
+	}
+
 	// Exact numeric ID match.
 	page, err = svc.QueryChats(ctx, ChatQuery{Search: "-1002"})
 	if err != nil || page.Total != 1 || page.Entries[0].ChatID != -1002 {

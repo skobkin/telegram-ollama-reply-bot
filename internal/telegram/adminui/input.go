@@ -1,6 +1,7 @@
 package adminui
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	th "github.com/mymmrac/telego/telegohandler"
 
 	core "telegram-ollama-reply-bot/internal/adminui"
+	"telegram-ollama-reply-bot/internal/support/safeerr"
 )
 
 // downloadClient fetches uploaded prompt documents. The bound is enforced on
@@ -78,6 +80,16 @@ func (a *Adapter) handleAdminInput(ctx *th.Context, message t.Message) error {
 	}
 }
 
+// errAdminFileMetadata names Telegram getFile (metadata) failures in the
+// admin upload path. Raw errors are never surfaced: request URLs embed the
+// bot token, so causes are discarded via safeerr and only the typed kind
+// remains.
+var errAdminFileMetadata = errors.New("telegram file metadata request failed")
+
+// errAdminFileDownload names Telegram file-download failures in the admin
+// upload path, sanitized the same way.
+var errAdminFileDownload = errors.New("telegram file download failed")
+
 // downloadDocument fetches a prompt upload bounded to PromptBodyLimit+1
 // actual bytes: a full 32769-byte read means oversized content, immune to
 // absent or understated FileSize metadata. Validation (.txt/.md, UTF-8) is
@@ -85,27 +97,27 @@ func (a *Adapter) handleAdminInput(ctx *th.Context, message t.Message) error {
 func (a *Adapter) downloadDocument(ctx *th.Context, document *t.Document) (*core.DocumentInput, error) {
 	file, err := a.api.GetFile(ctx, &t.GetFileParams{FileID: document.FileID})
 	if err != nil {
-		return nil, fmt.Errorf("get file: %w", err)
+		return nil, safeerr.WrapTransport(errAdminFileMetadata, err)
 	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, a.api.FileDownloadURL(file.FilePath), nil)
 	if err != nil {
-		return nil, fmt.Errorf("build download request: %w", err)
+		return nil, fmt.Errorf("%w: cannot build request", errAdminFileDownload)
 	}
 
 	response, err := downloadClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("download: %w", err)
+		return nil, safeerr.WrapTransport(errAdminFileDownload, err)
 	}
 	defer response.Body.Close() //nolint:errcheck // read-side cleanup
 
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download status %d", response.StatusCode)
+		return nil, fmt.Errorf("%w: http status %d", errAdminFileDownload, response.StatusCode)
 	}
 
 	content, err := io.ReadAll(io.LimitReader(response.Body, core.PromptBodyLimit+1))
 	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
+		return nil, safeerr.WrapTransport(errAdminFileDownload, err)
 	}
 
 	return &core.DocumentInput{
