@@ -24,13 +24,14 @@ are never cached or stored.
 - Image originals are not stored locally; the bot re-fetches them from Telegram through the `file_id` references
   already kept in ephemeral in-memory history. An image stays analyzable while a reference is reachable from the
   current chat/topic context — the stored history, the current message, or its reply chain — even if the original
-  message was trimmed from the stored history. Once no reachable reference remains (or after a restart, which
-  clears all in-memory state), the tool reports that predictably.
-- Each **successful** `analyze_image` call performs exactly one recognition request. Whether that request costs
-  money depends on the endpoint (a self-hosted OpenAI-compatible backend may be free; MiniMax bills per request).
-  Invalid prompts and unavailable images fail before any request is made, and the model may invoke the tool
-  several times within a single reply: `LLM__TOOL_LOOP_MAX_ITERATIONS` bounds model/tool rounds, not the number
-  of tool calls inside one round. There is no fixed recognition-request count per user message.
+  message was trimmed from the stored history. Once no reachable reference remains, the tool reports that
+  predictably. A restart drops all previously retained history; images in messages arriving after the restart —
+  or quoted in their reply chains — become analyzable again as soon as those references exist.
+- Each valid, resolved `analyze_image` invocation performs exactly one recognition operation. Charges depend on
+  the provider and plan (a self-hosted OpenAI-compatible backend may be free). Invalid prompts and unresolved
+  images cause no recognition operation at all, and the model may invoke the tool several times within a single
+  reply: `LLM__TOOL_LOOP_MAX_ITERATIONS` bounds model/tool rounds, not the number of tool calls inside one
+  round. There is no fixed recognition count per user message.
 - Resolution only ever accepts the current message, its reply chain, and the current chat/topic history — never
   model-supplied file IDs, URLs, or paths.
 
@@ -69,6 +70,7 @@ Example — a dedicated OpenAI-compatible endpoint just for recognition:
 
 ```env
 LLM__IMAGE_RECOGNITION_ENABLED=true
+LLM__IMAGE_RECOGNITION__RECOGNIZER=openai_compat
 LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__BASE_URL=https://vision.example.com/v1
 LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__API_TOKEN=your-vision-token
 LLM__FEATURES__IMAGE_RECOGNITION__MODEL=your-vision-model
@@ -80,7 +82,7 @@ Behavior changes to be aware of:
   are rejected locally). Previously the bot hardcoded `image/jpeg`. Signature detection selects the format — it is
   not an integrity check of the image data.
 - Telegram file downloads and recognition input are bounded by `LLM__IMAGE_RECOGNITION__MAX_IMAGE_BYTES`
-  (a client-side choice — the MiniMax API documents no image size limit). Files whose advertised size exceeds the
+  (a bot-side limit, independent of any provider-side limits). Files whose advertised size exceeds the
   bound are skipped without downloading; unknown or underreported sizes are bounded during the download itself
   (the transfer is aborted at the bound).
 - With recognition disabled (`LLM__IMAGE_RECOGNITION_ENABLED=false`) or a model-free recognizer (`minimax_vlm`)
@@ -93,9 +95,15 @@ Behavior changes to be aware of:
 ## Bot output now uses Telegram Rich Messages
 
 LLM replies, `/summarize` and `/stats` output are sent as [Rich Messages](https://core.telegram.org/bots/api)
-(Bot API 10.3) and render GitHub Flavored Markdown natively: headings, tables, task lists, footnotes,
-spoilers and code fences now look the way the model intended them. The reply limit rose from 4000 to
-32768 characters; over-length replies are cropped with an ellipsis as before.
+(rich-message sending was introduced in
+[Bot API 10.1](https://core.telegram.org/bots/api-changelog#june-11-2026)) and render GitHub Flavored
+Markdown natively: headings, tables, task lists, footnotes, spoilers and code fences now look the way
+the model intended them. The reply limit rose from 4000 to 32768 characters; over-length replies are
+cropped with an ellipsis as before.
+
+Self-hosted Bot API endpoints need a build that supports the rich-message method. Against an older
+endpoint the rich send simply fails and the automatic fallback below is used — upgrade the endpoint
+to get rich output.
 
 The old MarkdownV2 sanitizer pipeline is kept as an automatic per-message fallback: when a rich
 message send fails for any reason, the reply is re-sent through the legacy pipeline (still subject
