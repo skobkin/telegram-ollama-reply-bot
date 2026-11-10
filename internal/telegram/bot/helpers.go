@@ -462,7 +462,11 @@ func downloadFileWithContext(ctx context.Context, fileURL string, maxBytes int64
 	}
 
 	if maxBytes > 0 && int64(len(data)) > maxBytes {
-		return nil, fmt.Errorf("%w: file exceeds bound of %d bytes", errFileDownload, maxBytes)
+		// The size sentinel must survive on this path too: the reported
+		// FileSize pre-check misses zero/underreported metadata, and the
+		// streamed-body bound is the same condition for callers classifying
+		// the error.
+		return nil, errors.Join(errFileDownload, fmt.Errorf("%w: streamed body exceeds bound of %d bytes", vision.ErrImageTooLarge, maxBytes))
 	}
 
 	return data, nil

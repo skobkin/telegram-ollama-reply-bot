@@ -368,6 +368,36 @@ func TestAnalyzeImage_FileSizePreCheckSkipsDownload(t *testing.T) {
 	}
 }
 
+// TestAnalyzeImage_DownloadOversizeKeepsSizeKind covers the streamed-body
+// bound when the metadata is zero or underreported: the vision size sentinel
+// must survive so callers classify the failure as image_too_large.
+func TestAnalyzeImage_DownloadOversizeKeepsSizeKind(t *testing.T) {
+	t.Parallel()
+
+	for name, reportedSize := range map[string]int{
+		"zero metadata":      0,
+		"underreported size": 4,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			b, describer, _, requests := newImageTestBot(t, []byte(strings.Repeat("x", 100)))
+			b.imageRecognition = ImageRecognitionSettings{Enabled: true, MaxImageBytes: 10}
+
+			_, err := b.AnalyzeImage(context.Background(), state.ImageMeta{FileID: "f", FileSize: reportedSize}, "read")
+			if !errors.Is(err, vision.ErrImageTooLarge) {
+				t.Fatalf("download-time oversize must keep the size kind, got %v", err)
+			}
+			if !errors.Is(err, ErrImageRecognition) || !errors.Is(err, errFileDownload) {
+				t.Fatalf("expected joined sentinels preserved, got %v", err)
+			}
+			if requests.Load() == 0 || describer.analyzeCalls != 0 {
+				t.Fatalf("expected one bounded download and no recognition (requests=%d analyze=%d)", requests.Load(), describer.analyzeCalls)
+			}
+		})
+	}
+}
+
 // TestAnalyzeImage_GetFileErrorSanitized reuses the #113 guarantee on the
 // analysis path: a getFile transport error carries the token-bearing URL and
 // must be classified and discarded before the error escapes.

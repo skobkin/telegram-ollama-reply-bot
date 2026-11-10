@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/state"
@@ -536,5 +537,167 @@ func TestReplyWithTools_AccountsUsageAcrossMultipleToolCalls(t *testing.T) {
 	}
 	if analyzer.calls != 1 {
 		t.Fatalf("expected one analyzer call, got %d", analyzer.calls)
+	}
+}
+
+// wireTextFor runs a tool through executeToolCall and returns the exact text
+// bound for the model message.
+func wireTextFor(t *testing.T, r *Runtime, req ChatRequest, call llm.ToolCall) string {
+	t.Helper()
+
+	message, _ := r.executeToolCall(context.Background(), req, call)
+
+	return message.Text()
+}
+
+func decodeWireResult(t *testing.T, wire string) (topLevel, data map[string]any) {
+	t.Helper()
+
+	if !json.Valid([]byte(wire)) {
+		t.Fatalf("wire text is not complete JSON: %.120s…", wire)
+	}
+	if err := json.Unmarshal([]byte(wire), &topLevel); err != nil {
+		t.Fatalf("wire text does not decode: %v", err)
+	}
+	data, _ = topLevel["data"].(map[string]any)
+	if data == nil {
+		t.Fatalf("wire result carries no data object: %#v", topLevel)
+	}
+
+	return topLevel, data
+}
+
+// TestImageToolsWireResultsAreCompleteJSON drives both tools through
+// executeToolCall with escaping-hostile content (HTML-style characters,
+// quotes, backslashes, newlines) and asserts the model-bound text is always
+// complete JSON within budget, keeps usable identities, and reports
+// truncation/omission truthfully.
+func TestImageToolsWireResultsAreCompleteJSON(t *testing.T) {
+	t.Parallel()
+
+	runtime, analyzer, store := newImageToolsRuntime(t)
+	scope := state.ConversationScope{ChatID: 7}
+
+	for i := 1; i <= 5; i++ {
+		msg := imageMessage(i, 7, 0, "file")
+		msg.Text = strings.Repeat(`<&>"\`+"\n", 20)
+		msg.Image = strings.Repeat("<&>", 70)
+		store.AppendMessage(scope, msg)
+	}
+	analyzer.analysis = strings.Repeat("<\\>\n\"quote\"", 400)
+
+	req := ChatRequest{Scope: scope, RequestMessage: state.Message{ChatID: 7, MessageID: 99}}
+
+	listWire := wireTextFor(t, runtime, req, llm.ToolCall{ID: "l", Name: "list_recent_images", Arguments: json.RawMessage(`{}`)})
+	if got := len([]rune(listWire)); got > listImagesResultCharBudget {
+		t.Fatalf("list wire %d runes exceeds budget %d", got, listImagesResultCharBudget)
+	}
+	listTop, listData := decodeWireResult(t, listWire)
+	if listTop["status"] != "ok" {
+		t.Fatalf("unexpected list status: %#v", listTop["status"])
+	}
+	images, ok := listData["images"].([]any)
+	if !ok || len(images) == 0 {
+		t.Fatalf("expected usable image identities, got %#v", listData["images"])
+	}
+	returnedIDs := make([]int, 0, len(images))
+	for _, raw := range images {
+		entry, _ := raw.(map[string]any)
+		id, _ := entry["message_id"].(float64)
+		if id <= 0 {
+			t.Fatalf("entry lost its identity: %#v", entry)
+		}
+		returnedIDs = append(returnedIDs, int(id))
+	}
+	// Truthful counts: whatever was dropped is reported.
+	if omitted, has := listData["omitted_count"]; has {
+		omittedCount, _ := omitted.(float64)
+		total, _ := listData["total_found"].(float64)
+		if int(omittedCount)+len(images) != int(total) || int(total) != 5 {
+			t.Fatalf("untruthful counts: returned=%d omitted=%v total=%v", len(images), omittedCount, total)
+		}
+		// Newest identities survive.
+		if returnedIDs[0] != 5 {
+			t.Fatalf("expected newest identity first, got %v", returnedIDs)
+		}
+	}
+
+	analyzeWire := wireTextFor(t, runtime, req, llm.ToolCall{ID: "a", Name: "analyze_image", Arguments: json.RawMessage(`{"message_id":1,"prompt":"read"}`)})
+	if got := len([]rune(analyzeWire)); got > analyzeImageResultCharBudget {
+		t.Fatalf("analyze wire %d runes exceeds budget %d", got, analyzeImageResultCharBudget)
+	}
+	analyzeTop, analyzeData := decodeWireResult(t, analyzeWire)
+	if analyzeTop["status"] != "ok" || analyzeData["message_id"] != float64(1) {
+		t.Fatalf("unexpected analyze wire: %#v", analyzeData)
+	}
+	if analysis, _ := analyzeData["analysis"].(string); analysis == "" {
+		t.Fatal("expected non-empty analysis on the wire")
+	}
+}
+
+// TestAnalyzeImage_WireBudgetSurvivesEscapingTorture shrinks below the floor
+// gracefully: heavily escaped output stays complete JSON within budget with
+// a non-empty analysis.
+func TestAnalyzeImage_WireBudgetSurvivesEscapingTorture(t *testing.T) {
+	t.Parallel()
+
+	runtime, analyzer, store := newImageToolsRuntime(t)
+	scope := state.ConversationScope{ChatID: 7}
+	store.AppendMessage(scope, imageMessage(1, 7, 0, "f"))
+	analyzer.analysis = strings.Repeat("<\\>\n\"&", 800) // every char escapes to ~6
+
+	req := ChatRequest{Scope: scope, RequestMessage: state.Message{ChatID: 7, MessageID: 99}}
+	wire := wireTextFor(t, runtime, req, llm.ToolCall{ID: "a", Name: "analyze_image", Arguments: json.RawMessage(`{"message_id":1,"prompt":"read"}`)})
+
+	if got := len([]rune(wire)); got > analyzeImageResultCharBudget {
+		t.Fatalf("wire %d runes exceeds budget %d", got, analyzeImageResultCharBudget)
+	}
+	_, data := decodeWireResult(t, wire)
+	if data["truncated"] != true {
+		t.Fatalf("expected truncated flag for shrunken analysis: %#v", data)
+	}
+	if analysis, _ := data["analysis"].(string); utf8.RuneCountInString(analysis) < analyzeImageMinAnalysisChars-1 {
+		t.Fatalf("analysis shrank below the floor: %d runes", utf8.RuneCountInString(analysis))
+	}
+}
+
+// TestSnapshotCandidateScopeContract is the EVERY-candidate helper contract:
+// snapshot nodes are scope-checked exactly like requester and reply-chain
+// nodes — a foreign node never supplies an image and never shadows an
+// in-scope duplicate, including topic0 mismatches.
+func TestSnapshotCandidateScopeContract(t *testing.T) {
+	t.Parallel()
+
+	scope := state.ConversationScope{ChatID: 7, TopicID: 3}
+
+	foreign := imageMessage(1, 8, 3, "foreign")
+	if meta := resolveScopeImage(scope, state.Message{}, []state.Message{foreign}, 1); meta != nil {
+		t.Fatal("foreign snapshot node must not resolve")
+	}
+
+	topicMismatch := imageMessage(1, 7, 0, "topic0")
+	if meta := resolveScopeImage(scope, state.Message{}, []state.Message{topicMismatch}, 1); meta != nil {
+		t.Fatal("topic0 node must not resolve for a nonzero-topic scope")
+	}
+	if meta := resolveScopeImage(state.ConversationScope{ChatID: 7}, state.Message{}, []state.Message{imageMessage(1, 7, 3, "nz")}, 1); meta != nil {
+		t.Fatal("nonzero-topic node must not resolve for a topic0 scope")
+	}
+
+	// Collision: a foreign node sharing the message_id of an in-scope node
+	// must be skipped, not shadow it.
+	inScope := imageMessage(5, 7, 3, "f-in")
+	inScope.Image = "described"
+	foreignCollision := imageMessage(5, 8, 3, "f-forged")
+
+	meta := resolveScopeImage(scope, state.Message{}, []state.Message{inScope, foreignCollision}, 5)
+	if meta == nil || meta.FileID != "f-in" {
+		t.Fatalf("in-scope node must survive a foreign collision, got %+v", meta)
+	}
+
+	candidates := scopeMessageCandidates(scope, state.Message{ChatID: 7, TopicID: 3}, []state.Message{inScope, foreignCollision})
+	for _, msg := range candidates {
+		if msg.ChatID != 7 || msg.TopicID != 3 {
+			t.Fatalf("candidate leaked out of scope: %+v", msg)
+		}
 	}
 }

@@ -20,7 +20,12 @@ const (
 	recentImagesDescriptionCharLimit = 200
 	recentImagesTextCharLimit        = 180
 	analyzeImageAnalysisCharLimit    = 2200
+	analyzeImageMinAnalysisChars     = 64
 	analyzeImagePromptMaxChars       = 4000
+
+	// headroom absorbed per shrinking step so escaping overhead discovered
+	// by the marshal check cannot stall the fit one rune at a time.
+	analyzeImageFitHeadroom = 32
 )
 
 // Stable error codes surfaced to the model by the image tools.
@@ -53,39 +58,19 @@ func (r *Runtime) listRecentImages(_ context.Context, callCtx CallContext, args 
 	snapshot := r.history.Snapshot(callCtx.Scope)
 	candidates := scopeMessageCandidates(callCtx.Scope, callCtx.Requester, snapshot.Messages)
 
-	images := make([]map[string]any, 0, payload.Limit)
+	sources := make([]state.Message, 0, payload.Limit)
 	for _, msg := range candidates {
-		if len(images) >= payload.Limit {
+		if len(sources) >= payload.Limit {
 			break
 		}
 		if msg.MessageID == 0 || !msg.HasImage {
 			continue
 		}
 
-		entry := map[string]any{
-			"message_id":          msg.MessageID,
-			"reply_to_message_id": replyToMessageID(msg),
-			"from_id":             msg.FromID,
-			"name":                msg.Name,
-			"username":            msg.Username,
-			"created_at":          formatToolTime(msg.CreatedAt),
-			"has_description":     msg.Image != "",
-		}
-		// The description fields mirror the stored message only: hydration
-		// fills cloned prompt copies and caches text in the image cache, so
-		// the stored text is often empty — has_description:false is normal
-		// and does not mean the image was never described.
-		if msg.Image != "" {
-			entry["description_preview"] = truncateUTF8(normalizeWhitespace(msg.Image), recentImagesDescriptionCharLimit)
-		}
-		if text := normalizeWhitespace(msg.Text); text != "" {
-			entry["text_preview"] = truncateUTF8(text, recentImagesTextCharLimit)
-		}
-
-		images = append(images, entry)
+		sources = append(sources, msg)
 	}
 
-	if len(images) == 0 {
+	if len(sources) == 0 {
 		result := toolResult{
 			Status:  "empty",
 			Summary: "No image-bearing messages were found in the current chat/topic history",
@@ -99,16 +84,82 @@ func (r *Runtime) listRecentImages(_ context.Context, callCtx CallContext, args 
 		return result, nil
 	}
 
-	result := toolResult{
-		Status:  "ok",
-		Summary: fmt.Sprintf("Found %d recent image-bearing message(s)", len(images)),
-		Data: map[string]any{
+	totalFound := len(sources)
+
+	renderImages := func(descLimit, textLimit int) []map[string]any {
+		images := make([]map[string]any, 0, len(sources))
+		for _, msg := range sources {
+			entry := map[string]any{
+				"message_id":          msg.MessageID,
+				"reply_to_message_id": replyToMessageID(msg),
+				"from_id":             msg.FromID,
+				"name":                msg.Name,
+				"username":            msg.Username,
+				"created_at":          formatToolTime(msg.CreatedAt),
+				"has_description":     msg.Image != "",
+			}
+			// The description fields mirror the stored message only: hydration
+			// fills cloned prompt copies and caches text in the image cache, so
+			// the stored text is often empty — has_description:false is normal
+			// and does not mean the image was never described.
+			if msg.Image != "" && descLimit > 0 {
+				entry["description_preview"] = truncateUTF8(normalizeWhitespace(msg.Image), descLimit)
+			}
+			if text := normalizeWhitespace(msg.Text); text != "" && textLimit > 0 {
+				entry["text_preview"] = truncateUTF8(text, textLimit)
+			}
+
+			images = append(images, entry)
+		}
+
+		return images
+	}
+
+	buildResult := func(images []map[string]any, omitted int) toolResult {
+		summary := fmt.Sprintf("Found %d recent image-bearing message(s)", len(images))
+		data := map[string]any{
 			"chat_id":  callCtx.Scope.ChatID,
 			"topic_id": callCtx.Scope.TopicID,
 			"images":   images,
-		},
+		}
+		if omitted > 0 {
+			summary += fmt.Sprintf(", omitted %d older due to result size", omitted)
+			data["total_found"] = totalFound
+			data["omitted_count"] = omitted
+		}
+
+		return toolResult{Status: "ok", Summary: summary, Data: data}
 	}
-	logToolResult(callCtx, result, "images_count", len(images))
+
+	// Wire-budget fit: shrink the structured result (drop oldest entries
+	// first, then previews; identities always stay) until the marshaled JSON
+	// fits the budget, so the common marshaler never hard-cuts the JSON
+	// mid-string.
+	images := renderImages(recentImagesDescriptionCharLimit, recentImagesTextCharLimit)
+	descLimit, textLimit := recentImagesDescriptionCharLimit, recentImagesTextCharLimit
+	omitted := 0
+	for marshaledRunes(buildResult(images, omitted)) > listImagesResultCharBudget {
+		switch {
+		case len(sources) > 1:
+			sources = sources[:len(sources)-1]
+			omitted++
+			images = renderImages(descLimit, textLimit)
+		case descLimit > 0 || textLimit > 0:
+			descLimit /= 2
+			textLimit /= 2
+			images = renderImages(descLimit, textLimit)
+		default:
+			// Nothing left to shrink without losing the only identity; the
+			// common marshaler's hard cut is the last resort.
+			result := buildResult(images, omitted)
+			logToolResult(callCtx, result, "images_count", len(images), "omitted_count", omitted)
+
+			return result, nil
+		}
+	}
+
+	result := buildResult(images, omitted)
+	logToolResult(callCtx, result, "images_count", len(images), "omitted_count", omitted)
 
 	return result, nil
 }
@@ -161,7 +212,7 @@ func (r *Runtime) analyzeImage(ctx context.Context, callCtx CallContext, args js
 		return result, nil
 	}
 
-	analysis, err := r.imageAnalyzer.AnalyzeImage(ctx, *meta, prompt)
+	rawAnalysis, err := r.imageAnalyzer.AnalyzeImage(ctx, *meta, prompt)
 	if err != nil {
 		result := imageAnalysisErrorResult(callCtx, analyzeErrorCode(err), err.Error(), payload.MessageID)
 		logToolResult(callCtx, result, "message_id", payload.MessageID, "analysis_length", 0)
@@ -169,20 +220,60 @@ func (r *Runtime) analyzeImage(ctx context.Context, callCtx CallContext, args js
 		return result, nil
 	}
 
-	result := toolResult{
-		Status:  "ok",
-		Summary: "Image analyzed under the requested prompt",
-		Data: map[string]any{
+	// Wire-budget fit: shrink the analysis (identities and metadata always
+	// stay) until the marshaled JSON fits the budget, so the common marshaler
+	// never hard-cuts the JSON mid-string. Escaping overhead — quotes,
+	// backslashes, newlines, HTML-style characters — is discovered by the
+	// marshal check itself.
+	buildResult := func(analysis string) toolResult {
+		data := map[string]any{
 			"chat_id":    callCtx.Scope.ChatID,
 			"topic_id":   callCtx.Scope.TopicID,
 			"message_id": payload.MessageID,
-			"analysis":   truncateUTF8(analysis, analyzeImageAnalysisCharLimit),
+			"analysis":   analysis,
 			"note":       "fresh analysis under your prompt; the cached baseline description is unchanged",
-		},
+		}
+		if utf8.RuneCountInString(analysis) < utf8.RuneCountInString(rawAnalysis) {
+			data["truncated"] = true
+		}
+
+		return toolResult{Status: "ok", Summary: "Image analyzed under the requested prompt", Data: data}
 	}
-	logToolResult(callCtx, result, "message_id", payload.MessageID, "analysis_length", len(analysis))
+
+	current := truncateUTF8(rawAnalysis, analyzeImageAnalysisCharLimit)
+	for marshaledRunes(buildResult(current)) > analyzeImageResultCharBudget {
+		overshoot := marshaledRunes(buildResult(current)) - analyzeImageResultCharBudget
+		next := utf8.RuneCountInString(current) - overshoot - analyzeImageFitHeadroom
+		if next < analyzeImageMinAnalysisChars {
+			next = analyzeImageMinAnalysisChars
+		}
+		if next >= utf8.RuneCountInString(current) {
+			// Already at the floor; the common marshaler's hard cut is the
+			// last resort (unreachable with the shipped budget).
+			break
+		}
+		current = truncateUTF8(rawAnalysis, next)
+	}
+
+	result := buildResult(current)
+	logToolResult(callCtx, result,
+		"message_id", payload.MessageID,
+		"analysis_length", len(rawAnalysis),
+		"analysis_returned", utf8.RuneCountInString(current),
+	)
 
 	return result, nil
+}
+
+// marshaledRunes reports the wire length the common result marshaling would
+// produce, accounting for JSON escaping and metadata overhead.
+func marshaledRunes(result toolResult) int {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return 1 << 30
+	}
+
+	return utf8.RuneCountInString(string(data))
 }
 
 // messageInScope enforces the scope-equality rule for every image-tool
@@ -231,6 +322,13 @@ func scopeMessageCandidates(scope state.ConversationScope, requester state.Messa
 	}
 
 	for i := len(snapshot) - 1; i >= 0; i-- {
+		// The EVERY-candidate scope rule: snapshot nodes are scope-checked
+		// too, so a foreign node can never supply an image or shadow an
+		// in-scope duplicate (per-scope streams normally mask this, but the
+		// helper contract must hold on its own).
+		if !messageInScope(snapshot[i], scope) {
+			continue
+		}
 		add(snapshot[i])
 	}
 
