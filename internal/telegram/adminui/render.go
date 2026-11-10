@@ -25,6 +25,12 @@ func (a *Adapter) applyRender(ctx *th.Context, adminID int64, render *core.Rende
 			_, err := a.api.EditMessageText(ctx, params)
 			switch {
 			case err == nil:
+				// Adopt the edited message: after a session replacement the
+				// fresh session starts with MsgID 0 even though it just
+				// edited the live menu — without adopting, the next render
+				// would send a duplicate menu instead of editing.
+				a.manager.AdoptMsgID(adminID, render.MsgID)
+
 				return nil
 			case isMessageGone(err):
 				a.logger.Debug("admin ui menu message gone, resending", "admin_id", adminID, "message_id", render.MsgID)

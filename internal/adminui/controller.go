@@ -688,7 +688,22 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 		return nil
 
 	case VerbAccess:
-		s.PushScreen(ScreenState{Kind: ScreenAccess})
+		page := 1
+		if len(action.Args) == 1 {
+			parsed, err := strconv.Atoi(action.Args[0])
+			if err != nil || parsed < 1 {
+				return errInvalidArg
+			}
+			page = parsed
+		} else if len(action.Args) > 1 {
+			return errInvalidArg
+		}
+		if s.Screen.Kind == ScreenAccess {
+			s.Screen.Page = page
+			s.Screen.Notice = ""
+		} else {
+			s.PushScreen(ScreenState{Kind: ScreenAccess, Page: page})
+		}
 		s.MarkRerender()
 
 		return nil
@@ -1334,7 +1349,28 @@ func (c *Controller) buildScreen(ctx context.Context, seq uint32, state ScreenSt
 		if err != nil {
 			return nil, err
 		}
-		screen = b.access(AccessData{Summary: summary, Entries: entries})
+		page := state.Page
+		if page < 1 {
+			page = 1
+		}
+		// The allowlist is unbounded; paginate like the catalog so the
+		// screen always fits Telegram's message and keyboard limits.
+		pages := (len(entries) + adminconfig.DefaultChatPageSize - 1) / adminconfig.DefaultChatPageSize
+		if pages > 0 && page > pages {
+			page = pages
+		}
+		start := (page - 1) * adminconfig.DefaultChatPageSize
+		end := start + adminconfig.DefaultChatPageSize
+		if end > len(entries) {
+			end = len(entries)
+		}
+		screen = b.access(AccessData{
+			Summary: summary,
+			Entries: entries[start:end],
+			Total:   len(entries),
+			Page:    page,
+			Pages:   pages,
+		})
 
 	case ScreenStatistics:
 		snapshot := "Statistics are not available."

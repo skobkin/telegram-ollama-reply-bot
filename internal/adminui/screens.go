@@ -464,10 +464,15 @@ func (b screenBuilder) promptDetail(data PromptDetailData) *Screen {
 	return &Screen{Text: text.String(), Rows: rows}
 }
 
-// AccessData feeds the access policy screen.
+// AccessData feeds the access policy screen. Entries is ONE page of the
+// allowlist (paginated like the catalog so the screen always fits Telegram's
+// message and keyboard limits); Total is the full entry count.
 type AccessData struct {
 	Summary adminconfig.AccessSummary
 	Entries []adminconfig.AllowlistEntry
+	Total   int
+	Page    int
+	Pages   int
 }
 
 func (b screenBuilder) access(data AccessData) *Screen {
@@ -479,12 +484,17 @@ func (b screenBuilder) access(data AccessData) *Screen {
 	} else {
 		text.WriteString("Every chat is served; allowlist membership is kept for reference.\n")
 	}
-	fmt.Fprintf(&text, "\nAllowlist (%d):\n", data.Summary.AllowlistCount)
+	fmt.Fprintf(&text, "\nAllowlist (%d", data.Total)
+	if data.Pages > 1 {
+		fmt.Fprintf(&text, ", page %d of %d", data.Page, data.Pages)
+	}
+	text.WriteString("):\n")
 	if len(data.Entries) == 0 {
 		text.WriteString("(empty — no ordinary chats are allowed under the allowlist policy)\n")
 	}
+	first := (data.Page - 1) * adminconfig.DefaultChatPageSize
 	for i, entry := range data.Entries {
-		fmt.Fprintf(&text, "%d. %s — %d%s\n", i+1,
+		fmt.Fprintf(&text, "%d. %s — %d%s\n", first+i+1,
 			truncateRunes(allowlistEntryName(entry), 32), entry.ChatID, allowlistAddedMark(entry))
 	}
 
@@ -495,6 +505,17 @@ func (b screenBuilder) access(data AccessData) *Screen {
 			row = append(row, b.danger("✕ "+strconv.FormatInt(data.Entries[i+1].ChatID, 10), VerbAllowRem, strconv.FormatInt(data.Entries[i+1].ChatID, 10)))
 		}
 		rows = append(rows, row)
+	}
+
+	if data.Pages > 1 {
+		nav := ButtonRow{}
+		if data.Page > 1 {
+			nav = append(nav, b.btn("< Prev", VerbAccess, strconv.Itoa(data.Page-1)))
+		}
+		if data.Page < data.Pages {
+			nav = append(nav, b.btn("Next >", VerbAccess, strconv.Itoa(data.Page+1)))
+		}
+		rows = append(rows, nav)
 	}
 
 	rows = append(rows, ButtonRow{b.btn("➕ Add chat", VerbCatalog, "a")})

@@ -63,6 +63,9 @@ type memStore struct {
 	policy    adminconfig.AccessPolicy
 	whitelist map[int64]bool
 	calls     []string
+
+	// failPolicy makes GetAccessPolicy fail, to exercise error feedback.
+	failPolicy bool
 }
 
 func newMemStore() *memStore {
@@ -221,6 +224,10 @@ func (s *memStore) ListChats(context.Context) ([]adminconfig.ChatCatalogEntry, e
 func (s *memStore) GetAccessPolicy(context.Context) (adminconfig.AccessPolicy, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.failPolicy {
+		return "", errors.New("policy lookup failed")
+	}
 
 	return s.policy, nil
 }
@@ -1047,5 +1054,94 @@ func TestAdminMenuFailureRetriedOnAdminOpen(t *testing.T) {
 
 	if got := len(h.api.chatScopedMenuSyncs()); got != 2 {
 		t.Fatalf("the failed admin menu must be retried on /admin, got %d", got)
+	}
+}
+
+// TestReopenEditsLiveMenuWithoutDuplicate pins adopt-on-edit: after a second
+// /admin edits the live menu message, the replacement session must record
+// that message ID so the next button press edits again instead of sending a
+// duplicate menu.
+func TestReopenEditsLiveMenuWithoutDuplicate(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+	h.tap(t, core.VerbCatalog, "1")
+
+	sendsBefore := h.api.callCount("sendMessage")
+	editsBefore := h.api.callCount("editMessageText")
+
+	h.deliver(t, privateUpdate(testAdmin, "/admin"))
+	if got := h.api.callCount("sendMessage"); got != sendsBefore {
+		t.Fatalf("reopen must edit the live menu, sent %d extra messages", got-sendsBefore)
+	}
+
+	h.tap(t, core.VerbCatalog, "1")
+	if got := h.api.callCount("sendMessage"); got != sendsBefore {
+		t.Fatalf("post-reopen tap must edit, got %d extra sends", got-sendsBefore)
+	}
+	if got := h.api.callCount("editMessageText"); got != editsBefore+2 {
+		t.Fatalf("expected two edits (reopen + tap), got %d", got-editsBefore)
+	}
+}
+
+// TestUppercaseCancelStillCancels pins case-insensitive command matching
+// (th.CommandEqual matches case-insensitively; the handler must too): an
+// uppercase /CANCEL with a live pending deletes the prompt and cancels.
+func TestUppercaseCancelStillCancels(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+	h.tap(t, core.VerbGlobalSet)
+	h.tap(t, core.VerbField, "lg")
+	h.tap(t, core.VerbString, "lg")
+
+	h.deliver(t, privateUpdate(testAdmin, "/CANCEL"))
+
+	if got := h.api.callCount("deleteMessage"); got != 1 {
+		t.Fatalf("/CANCEL must cancel (delete the pending prompt), got %d deletes", got)
+	}
+	if text := h.api.lastSentText("sendMessage"); !strings.Contains(text, "Cancelled") {
+		t.Fatalf("cancellation feedback expected, got %q", text)
+	}
+}
+
+// TestAdminCommandFailureSendsFeedback pins the error path: a failing
+// OpenDashboard answers the admin instead of silently doing nothing.
+func TestAdminCommandFailureSendsFeedback(t *testing.T) {
+	h := newHarness(t)
+	h.store.mu.Lock()
+	h.store.failPolicy = true
+	h.store.mu.Unlock()
+
+	h.deliver(t, privateUpdate(testAdmin, "/admin"))
+
+	if text := h.api.lastSentText("sendMessage"); !strings.Contains(text, "Failed:") {
+		t.Fatalf("failure feedback expected, got %q", text)
+	}
+}
+
+// TestAccessScreenPaginatesLargeAllowlist pins the bounded access screen:
+// with more entries than one page the screen paginates instead of exceeding
+// Telegram's message and keyboard limits.
+func TestAccessScreenPaginatesLargeAllowlist(t *testing.T) {
+	h := newHarness(t)
+	h.store.mu.Lock()
+	for i := int64(1); i <= 10; i++ {
+		h.store.whitelist[-1000000000-i] = true
+	}
+	h.store.mu.Unlock()
+
+	h.open(t)
+	h.tap(t, core.VerbAccess)
+
+	text := h.api.lastSentText("editMessageText")
+	if !strings.Contains(text, "page 1 of 2") {
+		t.Fatalf("first page expected, got %q", text)
+	}
+	if !strings.Contains(text, "Allowlist (10") {
+		t.Fatalf("total count expected, got %q", text)
+	}
+
+	h.tap(t, core.VerbAccess, "2")
+	if text = h.api.lastSentText("editMessageText"); !strings.Contains(text, "page 2 of 2") {
+		t.Fatalf("second page expected, got %q", text)
 	}
 }

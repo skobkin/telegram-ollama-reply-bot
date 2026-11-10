@@ -124,7 +124,7 @@ func (a *Adapter) handleAdminCommand(ctx *th.Context, message t.Message) error {
 		outcome core.Outcome
 		err     error
 	)
-	if command == "cancel" {
+	if strings.EqualFold(command, "cancel") {
 		outcome, err = a.controller.Cancel(ctx, adminID)
 	} else {
 		outcome, err = a.controller.OpenDashboard(ctx, adminID)
@@ -133,11 +133,12 @@ func (a *Adapter) handleAdminCommand(ctx *th.Context, message t.Message) error {
 		}
 	}
 	if err != nil {
-		// The command is answered by its error feedback path inside the
-		// controller; this handler never fails the update chain.
+		// Match the callback/reply feedback convention so a failed /admin
+		// is never a silent no-op for the admin.
 		a.logger.Error("admin ui command failed", "admin_id", adminID, "command", command, "error", err)
+		a.sendPlain(ctx, adminID, "Failed: "+err.Error())
 
-		return nil //nolint:nilerr // handled: feedback already sent to the admin
+		return nil //nolint:nilerr // handled: feedback sent to the admin
 	}
 
 	a.applyOutcome(ctx, adminID, outcome)
