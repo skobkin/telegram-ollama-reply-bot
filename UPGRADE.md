@@ -22,10 +22,15 @@ are never cached or stored.
 - No configuration changes: the tools appear only while `LLM__IMAGE_RECOGNITION_ENABLED=true` and work with both
   the `openai_compat` and `minimax_vlm` recognizers.
 - Image originals are not stored locally; the bot re-fetches them from Telegram through the `file_id` references
-  already kept in ephemeral in-memory history. When a message is trimmed from history (or after a restart), its image
-  is no longer analyzable and the tool reports that predictably.
-- Each `analyze_image` call performs exactly one recognition request (a paid call on both back-ends); the MiniMax
-  route reports no token usage for it.
+  already kept in ephemeral in-memory history. An image stays analyzable while a reference is reachable from the
+  current chat/topic context — the stored history, the current message, or its reply chain — even if the original
+  message was trimmed from the stored history. Once no reachable reference remains (or after a restart, which
+  clears all in-memory state), the tool reports that predictably.
+- Each **successful** `analyze_image` call performs exactly one recognition request. Whether that request costs
+  money depends on the endpoint (a self-hosted OpenAI-compatible backend may be free; MiniMax bills per request).
+  Invalid prompts and unavailable images fail before any request is made, and the model may invoke the tool
+  several times within a single reply: `LLM__TOOL_LOOP_MAX_ITERATIONS` bounds model/tool rounds, not the number
+  of tool calls inside one round. There is no fixed recognition-request count per user message.
 - Resolution only ever accepts the current message, its reply chain, and the current chat/topic history — never
   model-supplied file IDs, URLs, or paths.
 
@@ -35,40 +40,67 @@ Image recognition is extracted behind a dedicated recognizer layer. The default 
 `openai_compat` recognizer keeps using the multimodal chat model (`LLM__FEATURES__IMAGE_RECOGNITION__MODEL`, inheriting
 the chat model) on the conversational backend, and `LLM__IMAGE_RECOGNITION_ENABLED` keeps working exactly as before.
 
-New optional env vars (all additive — unset means today's behavior):
+New optional env vars (all additive — one new default applies, see `MAX_IMAGE_BYTES` below):
 
 | Variable                                           | Description                                                                                            | Default                  |
 |----------------------------------------------------|--------------------------------------------------------------------------------------------------------|--------------------------|
 | `LLM__IMAGE_RECOGNITION__RECOGNIZER`               | `openai_compat` (default) or `minimax_vlm`                                                              | `openai_compat`          |
-| `LLM__IMAGE_RECOGNITION__MAX_IMAGE_BYTES`          | Client-side bound on downloaded image size                                                              | `10485760` (10 MiB)      |
+| `LLM__IMAGE_RECOGNITION__MAX_IMAGE_BYTES`          | Client-side bound on downloaded image size, in bytes. Must be a positive integer; values `<= 0` are a startup error. Raise it if your users send larger images (e.g. `20971520` for 20 MiB) | `10485760` (10 MiB) |
 | `LLM__IMAGE_RECOGNITION__MINIMAX_VLM__BASE_URL`    | MiniMax endpoint base; must match the key's region                                                      | `https://api.minimax.io` |
-| `LLM__IMAGE_RECOGNITION__MINIMAX_VLM__API_KEY`     | MiniMax key; required when the recognizer is `minimax_vlm`, never inherited from the OpenAI-compat token | -                        |
-| `LLM__IMAGE_RECOGNITION__MINIMAX_VLM__TIMEOUT`     | Per-request timeout                                                                                     | `60s`                    |
-| `LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__BASE_URL`  | Optional dedicated OpenAI-compatible endpoint for recognition (empty reuses the conversational backend) | empty                    |
-| `LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__API_TOKEN` | Token for the dedicated endpoint (only valid with its `BASE_URL`)                                       | empty                    |
+| `LLM__IMAGE_RECOGNITION__MINIMAX_VLM__API_KEY`     | MiniMax key; required only when the recognizer is `minimax_vlm` **and** recognition is enabled; never inherited from the OpenAI-compat token | -                        |
+| `LLM__IMAGE_RECOGNITION__MINIMAX_VLM__TIMEOUT`     | Per-request timeout. In practice also capped by the surrounding `BOT__PROCESSING_TIMEOUT` (default `30s`); raise that too when you want a longer recognizer timeout to take effect | `60s`                    |
+| `LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__BASE_URL`  | Optional dedicated OpenAI-compatible endpoint for recognition. Empty reuses the conversational backend and its token. When set, recognition uses this endpoint with its own `API_TOKEN` — the conversational token is not reused | empty                    |
+| `LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__API_TOKEN` | Token for the dedicated endpoint; only valid together with its `BASE_URL`                              | empty                    |
+
+The dedicated OpenAI-compatible endpoint (like the default route) still selects its model with
+`LLM__FEATURES__IMAGE_RECOGNITION__MODEL`, inherited from `LLM__FEATURES__CHAT__MODEL` when unset —
+make sure the model exists on whichever endpoint serves recognition.
+
+Example — MiniMax as the recognizer:
+
+```env
+LLM__IMAGE_RECOGNITION_ENABLED=true
+LLM__IMAGE_RECOGNITION__RECOGNIZER=minimax_vlm
+LLM__IMAGE_RECOGNITION__MINIMAX_VLM__API_KEY=your-minimax-key
+# optional: LLM__IMAGE_RECOGNITION__MINIMAX_VLM__BASE_URL=https://api.minimaxi.com  (China region)
+```
+
+Example — a dedicated OpenAI-compatible endpoint just for recognition:
+
+```env
+LLM__IMAGE_RECOGNITION_ENABLED=true
+LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__BASE_URL=https://vision.example.com/v1
+LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__API_TOKEN=your-vision-token
+LLM__FEATURES__IMAGE_RECOGNITION__MODEL=your-vision-model
+```
 
 Behavior changes to be aware of:
 
-- Image MIME types are now detected from the image's actual bytes (JPEG/PNG/WebP accepted; other formats are
-  rejected locally). Previously the bot hardcoded `image/jpeg`.
+- Image MIME types are now detected from the image's leading byte signature (JPEG/PNG/WebP accepted; other formats
+  are rejected locally). Previously the bot hardcoded `image/jpeg`. Signature detection selects the format — it is
+  not an integrity check of the image data.
 - Telegram file downloads and recognition input are bounded by `LLM__IMAGE_RECOGNITION__MAX_IMAGE_BYTES`
-  (a client-side choice — the MiniMax API documents no image size limit); oversized files are skipped without
-  downloading.
+  (a client-side choice — the MiniMax API documents no image size limit). Files whose advertised size exceeds the
+  bound are skipped without downloading; unknown or underreported sizes are bounded during the download itself
+  (the transfer is aborted at the bound).
 - With recognition disabled (`LLM__IMAGE_RECOGNITION_ENABLED=false`) or a model-free recognizer (`minimax_vlm`)
   selected, the startup check no longer requires an image model to be present. Previously the bot refused to boot
   when the image model was missing even with recognition disabled. With a dedicated image endpoint configured, the
   image model is checked against that endpoint, not the conversational one.
-- The MiniMax route reports no token usage (`/stats` unchanged for the OpenAI-compatible route).
+- The MiniMax route uses no image LLM model and reports no token usage; because usage is unknown, its requests
+  are not tracked in the token/cost statistics (`/stats` unchanged for the OpenAI-compatible route).
 
 ## Bot output now uses Telegram Rich Messages
 
 LLM replies, `/summarize` and `/stats` output are sent as [Rich Messages](https://core.telegram.org/bots/api)
-(Bot API 10.2) and render GitHub Flavored Markdown natively: headings, tables, task lists, footnotes,
+(Bot API 10.3) and render GitHub Flavored Markdown natively: headings, tables, task lists, footnotes,
 spoilers and code fences now look the way the model intended them. The reply limit rose from 4000 to
 32768 characters; over-length replies are cropped with an ellipsis as before.
 
 The old MarkdownV2 sanitizer pipeline is kept as an automatic per-message fallback: when a rich
-message send fails, the reply is re-sent through the legacy pipeline before the plain error message.
+message send fails for any reason, the reply is re-sent through the legacy pipeline (still subject
+to the legacy 4000-character limit) before the plain error message. Crops on either path reserve
+room for appended suffixes such as the `/summarize` source link, so the suffix always survives.
 There are no configuration changes.
 
 Requirements: `telego` upgraded v1.8.0 → v1.12.1; Go ≥ 1.26.7 is now needed to build.
