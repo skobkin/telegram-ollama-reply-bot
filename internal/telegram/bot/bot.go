@@ -328,16 +328,9 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 		return
 	}
 
-	sanitizedReply := b.sanitizer.Sanitize(llmReply)
-
-	reply := tu.Message(
-		chatID,
-		sanitizedReply,
-	).WithParseMode(t.ModeMarkdownV2)
-
-	_, err = b.api.SendMessage(baseCtx, b.reply(message, reply))
+	err = b.sendRichMarkdownReply(baseCtx, message, llmReply)
 	if err != nil {
-		logger.Error("cannot send reply message", "error", err, "reply_length", len(sanitizedReply))
+		logger.Error("cannot send reply message", "error", err, "reply_length", len(llmReply))
 		sentry.CaptureException(err)
 
 		b.trySendReplyError(baseCtx, message)

@@ -1,5 +1,18 @@
 # Upgrade Notes
 
+## Bot output now uses Telegram Rich Messages
+
+LLM replies, `/summarize` and `/stats` output are sent as [Rich Messages](https://core.telegram.org/bots/api)
+(Bot API 10.2) and render GitHub Flavored Markdown natively: headings, tables, task lists, footnotes,
+spoilers and code fences now look the way the model intended them. The reply limit rose from 4000 to
+32768 characters; over-length replies are cropped with an ellipsis as before.
+
+The old MarkdownV2 sanitizer pipeline is kept as an automatic per-message fallback: when a rich
+message send fails, the reply is re-sent through the legacy pipeline before the plain error message.
+There are no configuration changes.
+
+Requirements: `telego` upgraded v1.8.0 → v1.12.1; Go ≥ 1.26.7 is now needed to build.
+
 ## Optional external MCP tool servers (Streamable HTTP)
 
 The bot can now connect to one or more external [Model Context Protocol](https://modelcontextprotocol.io)

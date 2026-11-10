@@ -1,17 +1,15 @@
-package bot
+package markdown
 
 import (
 	"strings"
 	"testing"
-
-	"telegram-ollama-reply-bot/internal/support/markdown"
 )
 
 func TestCropToMaxLengthMarkdownV2_SanitizesAfterCrop(t *testing.T) {
 	text := "*bold text* trailing"
-	s := markdown.NewTgMarkdownV2Sanitizer()
+	s := NewTgMarkdownV2Sanitizer()
 	sanitized := s.Sanitize(text)
-	cropped, changed := cropToMaxLengthMarkdownV2(sanitized, 12)
+	cropped, changed := CropToMaxLengthMarkdownV2(sanitized, 12)
 	if !changed {
 		t.Fatalf("expected crop to modify text")
 	}
@@ -22,10 +20,10 @@ func TestCropToMaxLengthMarkdownV2_SanitizesAfterCrop(t *testing.T) {
 }
 
 func TestSanitizeAndCrop_LongReply(t *testing.T) {
-	s := markdown.NewTgMarkdownV2Sanitizer()
+	s := NewTgMarkdownV2Sanitizer()
 	long := strings.Repeat("a", 5000) + "*"
 	sanitized := s.Sanitize(long)
-	cropped, changed := cropToMaxLengthMarkdownV2(sanitized, 100)
+	cropped, changed := CropToMaxLengthMarkdownV2(sanitized, 100)
 	if changed {
 		cropped = s.Sanitize(cropped)
 	}
@@ -38,14 +36,14 @@ func TestSanitizeAndCrop_LongReply(t *testing.T) {
 }
 
 func TestSanitizeAndCrop_UnclosedCode(t *testing.T) {
-	s := markdown.NewTgMarkdownV2Sanitizer()
+	s := NewTgMarkdownV2Sanitizer()
 	const repeat = 20
 	code := strings.Repeat("abcd ", repeat)
 	text := "`" + code + "` trailing"
 	sanitized := s.Sanitize(text)
 	closing := "` trailing"
 	limit := len([]rune(sanitized)) - len([]rune(closing))
-	cropped, changed := cropToMaxLengthMarkdownV2(sanitized, limit)
+	cropped, changed := CropToMaxLengthMarkdownV2(sanitized, limit)
 	if !changed {
 		t.Fatalf("expected crop to modify text")
 	}
@@ -64,14 +62,14 @@ func TestSanitizeAndCrop_UnclosedCode(t *testing.T) {
 }
 
 func TestSanitizeAndCrop_UnclosedFencedCode(t *testing.T) {
-	s := markdown.NewTgMarkdownV2Sanitizer()
+	s := NewTgMarkdownV2Sanitizer()
 	const repeat = 20
 	code := strings.Repeat("line\n", repeat)
 	text := "```\n" + code + "``` trailing"
 	sanitized := s.Sanitize(text)
 	closing := "``` trailing"
 	limit := len([]rune(sanitized)) - len([]rune(closing))
-	cropped, changed := cropToMaxLengthMarkdownV2(sanitized, limit)
+	cropped, changed := CropToMaxLengthMarkdownV2(sanitized, limit)
 	if !changed {
 		t.Fatalf("expected crop to modify text")
 	}

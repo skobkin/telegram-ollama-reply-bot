@@ -266,60 +266,6 @@ func isValidAndAllowedURL(text string) bool {
 	return true
 }
 
-func cropToMaxLengthMarkdownV2(text string, limit int) (string, bool) {
-	runes := []rune(text)
-	if len(runes) <= limit {
-		return text, false
-	}
-
-	const ellipsis = "\\.\\.\\."
-	ellipsisLen := len(ellipsis)
-
-	cropPoint := limit - ellipsisLen
-	if cropPoint > len(runes) {
-		cropPoint = len(runes)
-	}
-	for cropPoint > 0 && (runes[cropPoint] != ' ' || runes[cropPoint-1] == '\\') {
-		cropPoint--
-	}
-
-	croppedRunes := runes[:cropPoint]
-
-	// escape dangling formatting markers
-	markers := []rune{'*', '_', '~', '|', '`'}
-	for _, m := range markers {
-		unescapedCount := 0
-		lastIdx := -1
-		for i := 0; i < len(croppedRunes); i++ {
-			if croppedRunes[i] == '\\' {
-				i++
-
-				continue
-			}
-			if croppedRunes[i] == m {
-				unescapedCount++
-				lastIdx = i
-			}
-		}
-		if unescapedCount%2 != 0 && lastIdx >= 0 {
-			croppedRunes = append(croppedRunes[:lastIdx], append([]rune{'\\'}, croppedRunes[lastIdx:]...)...)
-		}
-	}
-
-	if len(croppedRunes)+ellipsisLen > limit {
-		cropPoint := limit - ellipsisLen
-		if cropPoint > len(croppedRunes) {
-			cropPoint = len(croppedRunes)
-		}
-		for cropPoint > 0 && croppedRunes[cropPoint-1] == '\\' {
-			cropPoint--
-		}
-		croppedRunes = croppedRunes[:cropPoint]
-	}
-
-	return string(croppedRunes) + ellipsis, true
-}
-
 func (b *Bot) isFromAdmin(message *t.Message) bool {
 	if message == nil || message.From == nil {
 		return false

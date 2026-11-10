@@ -100,15 +100,9 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 
 	footerURL := b.sanitizer.EscapeURL(article.URL)
 	footer := "\n\n[src](" + footerURL + ")"
-	body := b.sanitizer.Sanitize(summarizeReply)
-	cropped, changed := cropToMaxLengthMarkdownV2(body, TelegramCharLimit-len(footer))
-	if changed {
-		cropped = b.sanitizer.Sanitize(cropped)
-	}
-	replyMarkdown := cropped + footer
+	replyMarkdown := summarizeReply + footer
 
-	replyMessage := tu.Message(chatID, replyMarkdown).WithParseMode(t.ModeMarkdownV2)
-	_, err = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, replyMessage))
+	err = b.sendRichMarkdownReply(ctx.Context(), message, replyMarkdown)
 	if err != nil {
 		logger.Error("cannot send summarize reply", "error", err, "reply_length", len(replyMarkdown))
 		sentry.CaptureException(err)
@@ -182,8 +176,7 @@ func (b *Bot) statsHandler(ctx *th.Context, message t.Message) error {
 	b.sendTyping(ctx.Context(), chatID)
 
 	statsJSON := "```json\n" + b.stats.String() + "\n```"
-	replyText := b.sanitizer.Sanitize("Current bot stats:\n" + statsJSON)
-	_, err := ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(chatID, replyText)).WithParseMode(t.ModeMarkdownV2))
+	err := b.sendRichMarkdownReply(ctx.Context(), message, "Current bot stats:\n"+statsJSON)
 	if err != nil {
 		logger.Error("cannot send stats message", "error", err)
 		sentry.CaptureException(err)
