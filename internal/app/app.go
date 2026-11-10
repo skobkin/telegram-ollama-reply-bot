@@ -128,7 +128,11 @@ func Run(ctx context.Context) error {
 	}
 	defer func() { _ = persistentStore.Close() }()
 
-	adminService := adminconfig.NewService(persistentStore)
+	adminService := adminconfig.NewService(persistentStore, adminconfig.BuiltinTemplates{
+		adminconfig.PromptFeatureChat:             llm.DefaultChatPromptTemplate,
+		adminconfig.PromptFeatureSummarize:        llm.DefaultSummarizePromptTemplate,
+		adminconfig.PromptFeatureImageRecognition: llm.DefaultImageRecognitionPromptTemplate,
+	}, llm.ValidatePromptTemplate)
 
 	prompts := llm.NewAdminPromptRenderer(adminService, cfg.LLM.ImageRecognitionEnabled)
 

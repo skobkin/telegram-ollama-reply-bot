@@ -9,7 +9,7 @@ func TestShouldAllowChatDeniesOrdinaryChatsUnderDefaultPolicy(t *testing.T) {
 	// Fresh install: allowlist policy with an empty allowlist denies
 	// everything except admin DMs. The old implicit "empty = allow everyone"
 	// behavior is gone.
-	svc := NewService(&stubStore{})
+	svc := NewService(&stubStore{}, nil, nil)
 
 	allowed, err := svc.ShouldAllowChat(context.Background(), 100500, false)
 	if err != nil {
@@ -21,7 +21,7 @@ func TestShouldAllowChatDeniesOrdinaryChatsUnderDefaultPolicy(t *testing.T) {
 }
 
 func TestShouldAllowChatAlwaysAllowsAdminDM(t *testing.T) {
-	svc := NewService(&stubStore{})
+	svc := NewService(&stubStore{}, nil, nil)
 
 	allowed, err := svc.ShouldAllowChat(context.Background(), 7, true)
 	if err != nil {
@@ -33,7 +33,7 @@ func TestShouldAllowChatAlwaysAllowsAdminDM(t *testing.T) {
 }
 
 func TestShouldAllowChatAllowlistMembership(t *testing.T) {
-	svc := NewService(&stubStore{policy: AccessPolicyAllowlist, whitelistHit: true})
+	svc := NewService(&stubStore{policy: AccessPolicyAllowlist, whitelistHit: true}, nil, nil)
 
 	allowed, err := svc.ShouldAllowChat(context.Background(), 42, false)
 	if err != nil {
@@ -45,7 +45,7 @@ func TestShouldAllowChatAllowlistMembership(t *testing.T) {
 }
 
 func TestShouldAllowChatAllowAllPermitsEverything(t *testing.T) {
-	svc := NewService(&stubStore{policy: AccessPolicyAllowAll, whitelistHit: false})
+	svc := NewService(&stubStore{policy: AccessPolicyAllowAll, whitelistHit: false}, nil, nil)
 
 	allowed, err := svc.ShouldAllowChat(context.Background(), -100999, false)
 	if err != nil {
@@ -58,7 +58,7 @@ func TestShouldAllowChatAllowAllPermitsEverything(t *testing.T) {
 
 func TestAccessPolicyNormalizesUnknownStoredValue(t *testing.T) {
 	// A manually corrupted value must fail closed (allowlist), not open.
-	svc := NewService(&stubStore{policy: AccessPolicy("bogus")})
+	svc := NewService(&stubStore{policy: AccessPolicy("bogus")}, nil, nil)
 
 	policy, err := svc.AccessPolicy(context.Background())
 	if err != nil {
@@ -71,7 +71,7 @@ func TestAccessPolicyNormalizesUnknownStoredValue(t *testing.T) {
 
 func TestSetAccessPolicyValidatesBeforeStore(t *testing.T) {
 	store := &stubStore{policy: AccessPolicyAllowlist}
-	svc := NewService(store)
+	svc := NewService(store, nil, nil)
 
 	if err := svc.SetAccessPolicy(context.Background(), AccessPolicy("bogus"), 1); err == nil {
 		t.Fatalf("expected invalid policy to be rejected")
@@ -90,7 +90,7 @@ func TestSetAccessPolicyValidatesBeforeStore(t *testing.T) {
 
 func TestSetAllowlistAddAndRemove(t *testing.T) {
 	store := &stubStore{whitelist: []int64{5}, whitelistHit: true}
-	svc := NewService(store)
+	svc := NewService(store, nil, nil)
 
 	if err := svc.SetAllowlist(context.Background(), 7, true, 1); err != nil {
 		t.Fatalf("add allowlist chat: %v", err)
@@ -105,7 +105,7 @@ func TestSetAllowlistAddAndRemove(t *testing.T) {
 }
 
 func TestAccessSummaryCountsEntries(t *testing.T) {
-	svc := NewService(&stubStore{policy: AccessPolicyAllowAll, whitelist: []int64{1, 2, 3}})
+	svc := NewService(&stubStore{policy: AccessPolicyAllowAll, whitelist: []int64{1, 2, 3}}, nil, nil)
 
 	summary, err := svc.AccessSummary(context.Background())
 	if err != nil {
@@ -123,7 +123,7 @@ func TestAllowlistJoinsCatalogDisplayData(t *testing.T) {
 			{ChatID: -100123, ChatType: "supergroup", Title: "Group Foo", Username: "groupfoo", DisplayName: "Group Foo"},
 			{ChatID: 999, ChatType: "private", DisplayName: "Unrelated"},
 		},
-	})
+	}, nil, nil)
 
 	entries, err := svc.Allowlist(context.Background())
 	if err != nil {

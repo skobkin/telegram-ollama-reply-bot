@@ -76,7 +76,7 @@ func TestAdminPromptRendererUsesPerChatLanguageAndGender(t *testing.T) {
 		prompts: map[string]string{
 			"chat:5": "name={{.CharacterName}} lang={{.Language}} gender={{.Gender}} model={{.Model}}",
 		},
-	})
+	}, nil, nil)
 
 	renderer := NewAdminPromptRenderer(svc, true)
 	rendered, err := renderer.RenderChatSystemPrompt(context.Background(), PromptScope{ChatID: 5}, "gemma", "", "policy")
@@ -101,7 +101,7 @@ func TestAdminPromptRendererRendersToolPolicyInChatPrompt(t *testing.T) {
 		prompts: map[string]string{
 			"chat:0": "policy={{.ToolPolicy}} lang={{.Language}} model={{.Model}}",
 		},
-	})
+	}, nil, nil)
 
 	renderer := NewAdminPromptRenderer(svc, true)
 	rendered, err := renderer.RenderChatSystemPrompt(context.Background(), PromptScope{}, "gemma", "ctx", "line one")

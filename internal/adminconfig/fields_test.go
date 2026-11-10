@@ -7,12 +7,12 @@ import (
 
 func TestGlobalFieldSpecsMatchServiceFieldList(t *testing.T) {
 	specs := GlobalFieldSpecs()
-	if len(specs) != len(NewService(nil).GlobalFields()) {
-		t.Fatalf("global specs %v do not match service fields %v", specNames(specs), NewService(nil).GlobalFields())
+	if len(specs) != len(NewService(nil, nil, nil).GlobalFields()) {
+		t.Fatalf("global specs %v do not match service fields %v", specNames(specs), NewService(nil, nil, nil).GlobalFields())
 	}
 	for i, spec := range specs {
-		if spec.Name != NewService(nil).GlobalFields()[i] {
-			t.Fatalf("global spec %d is %q, service lists %q", i, spec.Name, NewService(nil).GlobalFields()[i])
+		if spec.Name != NewService(nil, nil, nil).GlobalFields()[i] {
+			t.Fatalf("global spec %d is %q, service lists %q", i, spec.Name, NewService(nil, nil, nil).GlobalFields()[i])
 		}
 		if spec.Label == "" {
 			t.Fatalf("global spec %q has empty label", spec.Name)
@@ -22,12 +22,12 @@ func TestGlobalFieldSpecsMatchServiceFieldList(t *testing.T) {
 
 func TestChatFieldSpecsMatchServiceFieldList(t *testing.T) {
 	specs := ChatFieldSpecs()
-	if len(specs) != len(NewService(nil).ChatFields()) {
-		t.Fatalf("chat specs %v do not match service fields %v", specNames(specs), NewService(nil).ChatFields())
+	if len(specs) != len(NewService(nil, nil, nil).ChatFields()) {
+		t.Fatalf("chat specs %v do not match service fields %v", specNames(specs), NewService(nil, nil, nil).ChatFields())
 	}
 	for i, spec := range specs {
-		if spec.Name != NewService(nil).ChatFields()[i] {
-			t.Fatalf("chat spec %d is %q, service lists %q", i, spec.Name, NewService(nil).ChatFields()[i])
+		if spec.Name != NewService(nil, nil, nil).ChatFields()[i] {
+			t.Fatalf("chat spec %d is %q, service lists %q", i, spec.Name, NewService(nil, nil, nil).ChatFields()[i])
 		}
 		if spec.Label == "" {
 			t.Fatalf("chat spec %q has empty label", spec.Name)

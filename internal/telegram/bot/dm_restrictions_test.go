@@ -97,7 +97,7 @@ func runDMGateChain(t *testing.T, cfg config.BotConfig, update tg.Update) (reach
 		cfg:     cfg,
 		history: history,
 		stats:   stats,
-		admin:   adminconfig.NewService(catalog),
+		admin:   adminconfig.NewService(catalog, nil, nil),
 	}
 	testBot.registerMiddlewares(bh)
 

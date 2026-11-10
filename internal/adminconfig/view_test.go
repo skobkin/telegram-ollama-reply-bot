@@ -17,7 +17,7 @@ func viewTestGlobal() GlobalSettings {
 }
 
 func TestEffectiveGlobalConfigReturnsSettingsAndSpecs(t *testing.T) {
-	svc := NewService(&stubStore{global: viewTestGlobal()})
+	svc := NewService(&stubStore{global: viewTestGlobal()}, nil, nil)
 
 	view, err := svc.EffectiveGlobalConfig(context.Background())
 	if err != nil {
@@ -33,7 +33,7 @@ func TestEffectiveGlobalConfigReturnsSettingsAndSpecs(t *testing.T) {
 }
 
 func TestEffectiveChatConfigWithoutSettingsRowIsAllInherited(t *testing.T) {
-	svc := NewService(&stubStore{global: viewTestGlobal()})
+	svc := NewService(&stubStore{global: viewTestGlobal()}, nil, nil)
 
 	view, err := svc.EffectiveChatConfig(context.Background(), -100123)
 	if err != nil {
@@ -66,7 +66,7 @@ func TestEffectiveChatConfigMarksOverridesExistenceBased(t *testing.T) {
 			InteractivityMode: InteractivityMentionsReplies,
 			HasInteractivity:  true,
 		},
-	})
+	}, nil, nil)
 
 	view, err := svc.EffectiveChatConfig(context.Background(), 42)
 	if err != nil {
@@ -96,7 +96,7 @@ func TestEffectiveChatConfigNilBoolAndUnsetInteractivityInherit(t *testing.T) {
 		global:    viewTestGlobal(),
 		chatFound: true,
 		chat:      ChatSettings{HasInteractivity: false},
-	})
+	}, nil, nil)
 
 	view, err := svc.EffectiveChatConfig(context.Background(), 42)
 	if err != nil {
@@ -122,7 +122,7 @@ func TestEffectiveChatConfigNilBoolAndUnsetInteractivityInherit(t *testing.T) {
 }
 
 func TestEffectiveChatConfigReportsAllowlisted(t *testing.T) {
-	svc := NewService(&stubStore{global: viewTestGlobal(), whitelistHit: true})
+	svc := NewService(&stubStore{global: viewTestGlobal(), whitelistHit: true}, nil, nil)
 
 	view, err := svc.EffectiveChatConfig(context.Background(), 7)
 	if err != nil {

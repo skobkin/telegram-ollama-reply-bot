@@ -215,7 +215,7 @@ func TestServiceBuildChatToolRequestUsesChatScopedPromptAndResolvedPersona(t *te
 				Chat: config.FeatureRouteConfig{Model: "gpt"},
 			},
 		},
-		prompts: NewAdminPromptRenderer(adminconfig.NewService(store), true),
+		prompts: NewAdminPromptRenderer(adminconfig.NewService(store, nil, nil), true),
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 

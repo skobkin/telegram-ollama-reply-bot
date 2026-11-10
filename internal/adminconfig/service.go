@@ -7,12 +7,24 @@ import (
 	"text/template"
 )
 
+// BuiltinTemplates supplies the built-in prompt body per feature. The wiring
+// layer provides the real constants (from internal/llm) so this package stays
+// free of the llm import.
+type BuiltinTemplates map[PromptFeature]string
+
+// PromptValidator checks a prompt template body for a feature. The real
+// implementation (execute-level validation from internal/llm) is injected at
+// wiring time; a nil validator falls back to parse-only checks.
+type PromptValidator func(feature PromptFeature, body string) error
+
 type Service struct {
-	store Store
+	store           Store
+	builtins        BuiltinTemplates
+	promptValidator PromptValidator
 }
 
-func NewService(store Store) *Service {
-	return &Service{store: store}
+func NewService(store Store, builtins BuiltinTemplates, promptValidator PromptValidator) *Service {
+	return &Service{store: store, builtins: builtins, promptValidator: promptValidator}
 }
 
 func (s *Service) Store() Store {

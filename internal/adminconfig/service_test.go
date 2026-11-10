@@ -32,10 +32,19 @@ func (s *stubStore) GetPromptTemplate(_ context.Context, feature PromptFeature, 
 
 	return body, ok, nil
 }
-func (s *stubStore) SetPromptTemplate(context.Context, PromptFeature, int64, string, int64) error {
+func (s *stubStore) SetPromptTemplate(_ context.Context, feature PromptFeature, chatID int64, body string, _ int64) error {
+	if s.prompts == nil {
+		s.prompts = map[string]string{}
+	}
+	s.prompts[fmt.Sprintf("%s:%d", feature, chatID)] = body
+
 	return nil
 }
-func (s *stubStore) ClearPromptTemplate(context.Context, PromptFeature, int64) error { return nil }
+func (s *stubStore) ClearPromptTemplate(_ context.Context, feature PromptFeature, chatID int64) error {
+	delete(s.prompts, fmt.Sprintf("%s:%d", feature, chatID))
+
+	return nil
+}
 func (s *stubStore) UpsertChatCatalog(_ context.Context, entry ChatCatalogEntry) error {
 	for i, existing := range s.chats {
 		if existing.ChatID == entry.ChatID {
@@ -118,7 +127,7 @@ func TestResolveChatConfigUsesChatOverrides(t *testing.T) {
 			InteractivityMode: InteractivityMentionsReplies,
 			HasInteractivity:  true,
 		},
-	})
+	}, nil, nil)
 
 	resolved, err := svc.ResolveChatConfig(context.Background(), 1)
 	if err != nil {
@@ -144,7 +153,7 @@ func TestResolveChatConfigFallsBackToGlobalCharacterName(t *testing.T) {
 		chat: ChatSettings{
 			Language: "English",
 		},
-	})
+	}, nil, nil)
 
 	resolved, err := svc.ResolveChatConfig(context.Background(), 1)
 	if err != nil {
@@ -157,7 +166,7 @@ func TestResolveChatConfigFallsBackToGlobalCharacterName(t *testing.T) {
 }
 
 func TestShouldAllowChatBypassesWhitelistForAdminDM(t *testing.T) {
-	svc := NewService(&stubStore{whitelist: []int64{1}, whitelistHit: false})
+	svc := NewService(&stubStore{whitelist: []int64{1}, whitelistHit: false}, nil, nil)
 
 	allowed, err := svc.ShouldAllowChat(context.Background(), 123, true)
 	if err != nil {
@@ -169,7 +178,7 @@ func TestShouldAllowChatBypassesWhitelistForAdminDM(t *testing.T) {
 }
 
 func TestPromptFeaturesExcludesToolUse(t *testing.T) {
-	svc := NewService(&stubStore{})
+	svc := NewService(&stubStore{}, nil, nil)
 
 	features := svc.PromptFeatures()
 	expected := []PromptFeature{PromptFeatureChat, PromptFeatureSummarize, PromptFeatureImageRecognition}

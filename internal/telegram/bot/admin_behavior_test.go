@@ -69,7 +69,7 @@ func TestShouldProcessChatMessageDisabledByDefault(t *testing.T) {
 				ToneMode:                 "default",
 				DefaultInteractivityMode: adminconfig.InteractivityDisabled,
 			},
-		}),
+		}, nil, nil),
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
@@ -99,7 +99,7 @@ func TestShouldProcessChatMessageUsesCharacterNameTrigger(t *testing.T) {
 			chatSettings: adminconfig.ChatSettings{
 				CharacterName: "kitsune",
 			},
-		}),
+		}, nil, nil),
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 

@@ -37,6 +37,33 @@ type AdminPromptRenderer struct {
 	imageRecognitionEnabled bool
 }
 
+// ChatPromptData is the data contract of chat system prompts. The renderers
+// and template validation share this single source of truth: every field
+// here is a legitimate template placeholder for the chat feature.
+type ChatPromptData struct {
+	Language                string
+	Model                   string
+	Context                 string
+	Gender                  string
+	CharacterName           string
+	ToneMode                string
+	AllowTeasing            bool
+	ImageRecognitionEnabled bool
+	ToolPolicy              string
+}
+
+// SummarizePromptData is the data contract of summarize system prompts.
+type SummarizePromptData struct {
+	Language  string
+	MaxLength int
+}
+
+// ImageRecognitionPromptData is the data contract of image recognition
+// system prompts.
+type ImageRecognitionPromptData struct {
+	Language string
+}
+
 func NewStaticPromptRenderer(imageRecognitionEnabled bool) (*StaticPromptRenderer, error) {
 	chatTmpl, err := template.New("chat").Parse(DefaultChatPromptTemplate)
 	if err != nil {
@@ -72,17 +99,7 @@ func NewAdminPromptRenderer(config *adminconfig.Service, imageRecognitionEnabled
 }
 
 func (p *StaticPromptRenderer) RenderChatSystemPrompt(_ context.Context, _ PromptScope, model, compactContext, toolPolicy string) (string, error) {
-	return executeTemplate("chat", p.chatTemplate, struct {
-		Language                string
-		Model                   string
-		Context                 string
-		Gender                  string
-		CharacterName           string
-		ToneMode                string
-		AllowTeasing            bool
-		ImageRecognitionEnabled bool
-		ToolPolicy              string
-	}{
+	return executeTemplate("chat", p.chatTemplate, ChatPromptData{
 		Language:                p.language,
 		Model:                   model,
 		Context:                 compactContext,
@@ -96,19 +113,14 @@ func (p *StaticPromptRenderer) RenderChatSystemPrompt(_ context.Context, _ Promp
 }
 
 func (p *StaticPromptRenderer) RenderSummarizeSystemPrompt(_ context.Context, _ PromptScope) (string, error) {
-	return executeTemplate("summarize", p.summarizeTemplate, struct {
-		Language  string
-		MaxLength int
-	}{
+	return executeTemplate("summarize", p.summarizeTemplate, SummarizePromptData{
 		Language:  p.language,
 		MaxLength: p.maxSummaryLength,
 	})
 }
 
 func (p *StaticPromptRenderer) RenderImageRecognitionSystemPrompt(_ context.Context, _ PromptScope) (string, error) {
-	return executeTemplate("image_recognition", p.imageRecognitionTemplate, struct {
-		Language string
-	}{
+	return executeTemplate("image_recognition", p.imageRecognitionTemplate, ImageRecognitionPromptData{
 		Language: p.language,
 	})
 }
@@ -129,17 +141,7 @@ func (p *AdminPromptRenderer) RenderChatSystemPrompt(ctx context.Context, scope 
 		return "", err
 	}
 
-	return executeTemplate("chat", tmpl, struct {
-		Language                string
-		Model                   string
-		Context                 string
-		Gender                  string
-		CharacterName           string
-		ToneMode                string
-		AllowTeasing            bool
-		ImageRecognitionEnabled bool
-		ToolPolicy              string
-	}{
+	return executeTemplate("chat", tmpl, ChatPromptData{
 		Language:                resolved.Language,
 		Model:                   model,
 		Context:                 compactContext,
@@ -168,10 +170,7 @@ func (p *AdminPromptRenderer) RenderSummarizeSystemPrompt(ctx context.Context, s
 		return "", err
 	}
 
-	return executeTemplate("summarize", tmpl, struct {
-		Language  string
-		MaxLength int
-	}{
+	return executeTemplate("summarize", tmpl, SummarizePromptData{
 		Language:  resolved.Language,
 		MaxLength: DefaultMaxSummaryLength,
 	})
@@ -193,9 +192,7 @@ func (p *AdminPromptRenderer) RenderImageRecognitionSystemPrompt(ctx context.Con
 		return "", err
 	}
 
-	return executeTemplate("image_recognition", tmpl, struct {
-		Language string
-	}{
+	return executeTemplate("image_recognition", tmpl, ImageRecognitionPromptData{
 		Language: resolved.Language,
 	})
 }
