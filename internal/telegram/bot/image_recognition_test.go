@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -238,4 +239,155 @@ func TestDownloadFileWithContext_TransportErrorSanitized(t *testing.T) {
 	if strings.Contains(err.Error(), sentinel) {
 		t.Fatalf("download error leaks the token-bearing URL: %q", err.Error())
 	}
+}
+
+// roundTripFunc adapts a function to http.RoundTripper.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// countingReader counts the bytes actually read from the underlying reader.
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	r.n += n
+
+	return n, err
+}
+
+// TestDownloadFileWithContext_ErrorBodyNotDrained ensures a non-200 response
+// body is never consumed unboundedly: an endless error body must neither
+// bypass the size bound nor stall the caller before the HTTP error surfaces.
+func TestDownloadFileWithContext_ErrorBodyNotDrained(t *testing.T) {
+	t.Parallel()
+
+	body := &countingReader{r: strings.NewReader(strings.Repeat("x", 100_000))}
+	old := fileDownloadClient
+	fileDownloadClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(body)}, nil
+	})}
+	t.Cleanup(func() { fileDownloadClient = old })
+
+	_, err := downloadFileWithContext(context.Background(), "https://example.test/file", 128)
+	if err == nil {
+		t.Fatalf("expected HTTP error")
+	}
+	if !strings.Contains(err.Error(), "http status 500") {
+		t.Fatalf("expected numeric HTTP status in error, got %v", err)
+	}
+	if body.n > 129 {
+		t.Fatalf("error response consumed %d bytes despite the 128-byte bound", body.n)
+	}
+}
+
+// mapImageCache is an in-memory state.ImageStore stub.
+type mapImageCache struct {
+	entries map[string]string
+}
+
+func (c *mapImageCache) Get(meta *state.ImageMeta) (string, bool) {
+	desc, ok := c.entries[meta.FileID]
+
+	return desc, ok
+}
+
+func (c *mapImageCache) Set(meta *state.ImageMeta, description string) {
+	c.entries[meta.FileID] = description
+}
+
+// assertImageErrorTreeClean recursively walks the error tree (single and
+// multi Unwrap — what Sentry's exception chain traverses) and fails when any
+// node's message contains one of the sentinels.
+func assertImageErrorTreeClean(t *testing.T, err error, sentinels ...string) {
+	t.Helper()
+
+	seen := make(map[error]bool)
+
+	var visit func(error)
+	visit = func(e error) {
+		if e == nil || seen[e] {
+			return
+		}
+		seen[e] = true
+
+		msg := e.Error()
+		for _, s := range sentinels {
+			if strings.Contains(msg, s) {
+				t.Fatalf("error tree leaks %q: %q", s, msg)
+			}
+		}
+
+		//nolint:errorlint // intentional: enumerating the direct unwrap structure like Sentry, not matching a target type
+		switch unwrapper := e.(type) {
+		case interface{ Unwrap() error }:
+			visit(unwrapper.Unwrap())
+		case interface{ Unwrap() []error }:
+			for _, child := range unwrapper.Unwrap() {
+				visit(child)
+			}
+		}
+	}
+
+	visit(err)
+}
+
+// TestEnsureMessageImageDescription_GetFileErrorSanitized drives the full
+// logging path: a getFile transport error carries the token-bearing request
+// URL, and the joined error is logged and captured — so the raw cause must be
+// classified and discarded before joining, keeping only the typed kind and
+// ctx sentinels.
+func TestEnsureMessageImageDescription_GetFileErrorSanitized(t *testing.T) {
+	t.Parallel()
+
+	token := "1:" + strings.Repeat("A", 35)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return nil, errors.New("metadata transport failed at " + r.URL.String())
+	})}
+	api, err := tg.NewBot(token, tg.WithHTTPClient(client), tg.WithDiscardLogger())
+	if err != nil {
+		t.Fatalf("cannot create test bot api: %v", err)
+	}
+
+	var logs bytes.Buffer
+	b := &Bot{
+		api:    api,
+		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		ctx:    context.Background(),
+		vision: &fakeDescriber{},
+		stats:  &stubStats{},
+		imageCache: &mapImageCache{
+			entries: map[string]string{},
+		},
+		imageRecognition: ImageRecognitionSettings{Enabled: true, MaxImageBytes: 1 << 20},
+	}
+
+	msg := &state.Message{HasImage: true, ImageMeta: &state.ImageMeta{FileID: "f", FileSize: 10}}
+	b.ensureMessageImageDescription(context.Background(), msg)
+
+	if msg.Image != "" {
+		t.Fatalf("expected no description on metadata failure")
+	}
+	if !strings.Contains(logs.String(), "failed to describe image") {
+		t.Fatalf("expected the normal-level failure log, got %q", logs.String())
+	}
+	if strings.Contains(logs.String(), token) {
+		t.Fatalf("bot log leaks the token-bearing getFile URL: %q", logs.String())
+	}
+
+	// Re-derive the joined error from the same path to inspect the tree.
+	_, err = b.describeImage(context.Background(), msg.ImageMeta)
+	if err == nil {
+		t.Fatalf("expected metadata error")
+	}
+	if !errors.Is(err, ErrImageRecognition) {
+		t.Fatalf("expected ErrImageRecognition joined, got %v", err)
+	}
+	if !errors.Is(err, errFileMetadata) {
+		t.Fatalf("expected typed metadata kind, got %v", err)
+	}
+	assertImageErrorTreeClean(t, err, token)
 }

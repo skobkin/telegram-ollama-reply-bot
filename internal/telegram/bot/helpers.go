@@ -329,7 +329,9 @@ func (b *Bot) describeImage(ctx context.Context, imageMeta *state.ImageMeta) (st
 
 	file, err := b.api.GetFile(ctx, &t.GetFileParams{FileID: imageMeta.FileID})
 	if err != nil {
-		return "", errors.Join(ErrImageRecognition, err)
+		// The getFile request URL embeds the bot token; classify-and-discard
+		// the raw cause before the error is joined and reaches logs or Sentry.
+		return "", errors.Join(ErrImageRecognition, safeerr.WrapTransport(errFileMetadata, err))
 	}
 
 	fileBytes, err := downloadFileWithContext(ctx, b.api.FileDownloadURL(file.FilePath), maxBytes)
@@ -392,6 +394,11 @@ func (b *Bot) hasSoftTrigger(message t.Message, resolved adminconfig.ResolvedCha
 	return false
 }
 
+// errFileMetadata names Telegram getFile (metadata request) failures. Raw
+// errors are never surfaced: the request URL embeds the bot token, so causes
+// are discarded via safeerr and only the typed kind and ctx sentinels remain.
+var errFileMetadata = errors.New("telegram file metadata request failed")
+
 // errFileDownload names Telegram file-download failures. Raw transport errors
 // are never surfaced: the download URL embeds the bot token, so causes are
 // discarded via safeerr and only the typed kind and HTTP status remain.
@@ -420,8 +427,10 @@ func downloadFileWithContext(ctx context.Context, fileURL string, maxBytes int64
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, resp.Body)
-
+		// No unbounded drain: an endless or oversized error body must not
+		// stall the caller (hydration can run before the per-request
+		// processing deadline) or bypass the size bound. The deferred Close
+		// discards the connection instead of reusing it.
 		return nil, fmt.Errorf("%w: http status %d", errFileDownload, resp.StatusCode)
 	}
 

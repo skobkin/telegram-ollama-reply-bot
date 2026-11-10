@@ -1,11 +1,14 @@
 package vision
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
+	"text/template"
 
 	"telegram-ollama-reply-bot/internal/llm"
 )
@@ -150,6 +153,43 @@ func TestServiceDescribe_TemplateErrorKeepsLegacySentinel(t *testing.T) {
 	_, err := service.Describe(context.Background(), append([]byte{0xFF, 0xD8, 0xFF}, []byte("body")...))
 	if !errors.Is(err, llm.ErrTemplateProcessing) {
 		t.Fatalf("expected ErrTemplateProcessing, got %v", err)
+	}
+}
+
+// TestServiceDescribe_TemplateErrorDoesNotLeakTemplateText uses a real
+// text/template execution failure: the error quotes the offending expression,
+// including operator-managed literals, so neither the returned error nor the
+// normal-level log may carry it — only the stable template-error kind.
+func TestServiceDescribe_TemplateErrorDoesNotLeakTemplateText(t *testing.T) {
+	t.Parallel()
+
+	const sentinel = "PRIVATE_ADMIN_TEMPLATE_SENTINEL"
+	tmpl := template.Must(template.New("image_recognition").Parse(`{{ index "` + sentinel + `" 999 }}`))
+	execErr := tmpl.Execute(io.Discard, nil)
+	if execErr == nil {
+		t.Fatal("expected template execution error")
+	}
+	if !strings.Contains(execErr.Error(), sentinel) {
+		t.Fatalf("precondition: execution error must echo the template literal, got %v", execErr)
+	}
+
+	var logs bytes.Buffer
+	service := NewService(
+		&fakeRecognizer{name: "fake"},
+		&fakeRenderer{renderErr: execErr},
+		1<<20,
+		slog.New(slog.NewTextHandler(&logs, nil)),
+	)
+
+	_, err := service.Describe(context.Background(), append([]byte{0xFF, 0xD8, 0xFF}, []byte("body")...))
+	if !errors.Is(err, llm.ErrTemplateProcessing) {
+		t.Fatalf("expected ErrTemplateProcessing, got %v", err)
+	}
+	if strings.Contains(err.Error(), sentinel) {
+		t.Fatalf("returned error leaks template text: %q", err.Error())
+	}
+	if logText := logs.String(); strings.Contains(logText, sentinel) {
+		t.Fatalf("template failure log leaks operator-managed template text: %q", logText)
 	}
 }
 

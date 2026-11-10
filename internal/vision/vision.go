@@ -120,7 +120,11 @@ func (s *Service) Describe(ctx context.Context, imageData []byte) (Recognition, 
 
 	prompt, err := s.prompts.RenderImageRecognitionSystemPrompt(ctx, llm.PromptScope{})
 	if err != nil {
-		logger.Error("image recognition template processing failed", "error", err)
+		// Render failures can echo operator-managed template text (template
+		// execution errors quote the offending expression and literals), so
+		// only the stable kind is logged; the raw error is not retained in
+		// logs, the returned chain, or Sentry.
+		logger.Error("image recognition template processing failed", "error", llm.ErrTemplateProcessing)
 
 		return Recognition{}, llm.ErrTemplateProcessing
 	}
