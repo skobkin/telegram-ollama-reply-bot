@@ -302,6 +302,12 @@ type fakeAdminAPI struct {
 	chats          map[int64]*tg.ChatFullInfo
 	failMethods    map[string]error
 	failChatScopes bool // setMyCommands fails only for per-chat scopes
+
+	// One-shot request gate: the first request of the armed method parks
+	// inside serve until released — an in-flight Telegram API call.
+	gateMethod  string
+	gateEntered chan struct{}
+	gateRelease chan struct{}
 }
 
 type fakeRequest struct {
@@ -342,6 +348,8 @@ func (f *fakeAdminAPI) serve(w http.ResponseWriter, r *http.Request) {
 
 	method := strings.TrimPrefix(r.URL.Path, "/bot"+testToken+"/")
 
+	f.parkIfGated(method) // no-op unless a test armed the gate
+
 	// Multipart bodies (sendDocument): capture filename and content.
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		document := readMultipartDocument(r)
@@ -370,7 +378,11 @@ func (f *fakeAdminAPI) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Unlock()
 
 	if failure != nil || chatScopeFailure {
-		writeJSON(w, map[string]any{"ok": false, "description": "forced failure"})
+		description := "forced failure"
+		if failure != nil {
+			description = failure.Error()
+		}
+		writeJSON(w, map[string]any{"ok": false, "description": description})
 
 		return
 	}
@@ -446,6 +458,41 @@ func readMultipartDocument(request *http.Request) capturedDocument {
 	content, _ := io.ReadAll(part)
 
 	return capturedDocument{filename: part.FileName(), content: string(content)}
+}
+
+// armGate arms the one-shot request gate for a method. The FIRST request of
+// that method parks inside the fake server; entered is signaled when it
+// parks, and closing release lets it complete. Later requests flow normally.
+func (f *fakeAdminAPI) armGate(method string) (entered, release chan struct{}) {
+	entered = make(chan struct{}, 1)
+	release = make(chan struct{})
+
+	f.mu.Lock()
+	f.gateMethod = method
+	f.gateEntered = entered
+	f.gateRelease = release
+	f.mu.Unlock()
+
+	return entered, release
+}
+
+// parkIfGated blocks the calling request until the test releases the gate —
+// an in-flight Telegram API call. No-op for unmatched or unarmed methods.
+func (f *fakeAdminAPI) parkIfGated(method string) {
+	f.mu.Lock()
+	entered, release := f.gateEntered, f.gateRelease
+	match := f.gateMethod == method
+	if match {
+		f.gateMethod, f.gateEntered, f.gateRelease = "", nil, nil // one-shot
+	}
+	f.mu.Unlock()
+
+	if !match {
+		return
+	}
+
+	entered <- struct{}{}
+	<-release
 }
 
 func (f *fakeAdminAPI) requestsOf(method string) []fakeRequest {
@@ -885,6 +932,211 @@ func TestStringInputFlowEndToEnd(t *testing.T) {
 	}
 	if text := h.api.lastSentText("editMessageText"); !strings.Contains(text, "Saved") {
 		t.Fatalf("screen must confirm the save, got %q", text)
+	}
+}
+
+func TestRetryPromptCorrelatesEndToEnd(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+	h.tap(t, core.VerbGlobalSet)
+	h.tap(t, core.VerbField, "tm")
+	h.tap(t, core.VerbString, "tm")
+
+	// First reply is invalid (tone_mode max is 128 bytes): the controller
+	// keeps the pending and sends a retry prompt for it.
+	first := botPromptMessage(int(h.api.lastSendMessageID()), core.AdminInputMarker+" — tone mode")
+	h.deliver(t, replyToBotUpdate(strings.Repeat("x", 129), first))
+
+	prompts := h.api.requestsOf("sendMessage")
+	if len(prompts) != 3 { // dashboard + first prompt + retry prompt
+		t.Fatalf("retry prompt expected, got %d sends", len(prompts))
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(prompts[2].Body), &body); err != nil {
+		t.Fatalf("unmarshal retry body: %v", err)
+	}
+	retry := botPromptMessage(int(h.api.lastSendMessageID()), lastJSONText(body))
+	if !strings.HasPrefix(retry.Text, core.AdminInputMarker) {
+		t.Fatalf("retry prompt must carry the marker, got %q", retry.Text)
+	}
+
+	// A valid reply to the RETRY message must apply: before the correlation
+	// fix the retry carried no pending identity, never stamped its message,
+	// and this reply was rejected as no-longer-active.
+	h.deliver(t, replyToBotUpdate("playful", retry))
+
+	found := false
+	for _, call := range h.store.writeCalls() {
+		if strings.Contains(call, "SetGlobalField:tone_mode=playful") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("reply to the retry prompt must save the value, calls: %v", h.store.writeCalls())
+	}
+}
+
+func TestDownloadKeepsKeyboardLiveEndToEnd(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+	h.tap(t, core.VerbPrompts)
+	h.tap(t, core.VerbPromptFeat, "ch")
+
+	session := h.manager.Session(testAdmin)
+	_, _, msgID, _ := session.DetachedSnapshot()
+	seq := session.Seq // the sequence the visible keyboard encodes
+
+	h.deliver(t, callbackUpdate(testAdmin, msgID, core.EncodeAction(core.VerbPromptBL, seq, "ch")))
+	if got := h.api.callCount("sendDocument"); got != 1 {
+		t.Fatalf("builtin download must send a document, got %d", got)
+	}
+
+	// The keyboard still on screen was built with `seq`: the next press must
+	// APPLY, not bounce as stale with a "Menu updated" notice.
+	h.deliver(t, callbackUpdate(testAdmin, msgID, core.EncodeAction(core.VerbBack, seq)))
+
+	edits := h.api.requestsOf("editMessageText")
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(edits[len(edits)-1].Body), &payload); err != nil {
+		t.Fatalf("unmarshal edit body: %v", err)
+	}
+	if text := lastJSONText(payload); strings.Contains(text, "Menu updated") {
+		t.Fatalf("press after download must apply, got %q", text)
+	}
+}
+
+// TestInFlightResendNeverAdoptsOntoReplacement pins the menu-adoption race:
+// the callback's edit finds the menu gone and resends; /admin replaces the
+// session while the resend is in flight. The resent message belongs to the
+// detached session — the replacement must not adopt it.
+func TestInFlightResendNeverAdoptsOntoReplacement(t *testing.T) {
+	h := newHarness(t)
+	h.open(t) // live menu, first session
+
+	h.api.mu.Lock()
+	h.api.failMethods["editMessageText"] = errors.New("message to edit not found")
+	h.api.mu.Unlock()
+	entered, release := h.api.armGate("sendMessage")
+
+	// A Fatalf while a request is parked must not hang server.Close in
+	// cleanup — always release the gate on the way out, exactly once.
+	var releaseOnce sync.Once
+	releaseGate := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseGate)
+
+	session := h.manager.Session(testAdmin)
+	_, _, msgID, _ := session.DetachedSnapshot()
+	data := core.EncodeAction(core.VerbCatalog, session.Seq, "1")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := h.bh.BaseGroup().HandleUpdate(context.Background(), h.botAPI, callbackUpdate(testAdmin, msgID, data)); err != nil {
+			t.Errorf("handle update: %v", err)
+		}
+	}()
+	<-entered // the resend is in flight
+
+	// /admin replaces the session while the Telegram request is parked (its
+	// own dashboard render is deliberately not applied here).
+	if _, err := h.controller.OpenDashboard(context.Background(), testAdmin); err != nil {
+		t.Fatalf("open dashboard: %v", err)
+	}
+
+	releaseGate()
+	wg.Wait()
+
+	fresh := h.manager.Session(testAdmin)
+	_, _, freshMsgID, _ := fresh.DetachedSnapshot()
+	if freshMsgID != 0 {
+		t.Fatalf("replacement must not adopt the detached session's resent menu, got %d", freshMsgID)
+	}
+
+	// The admin is not stranded: a fresh /admin sends and adopts its own menu.
+	h.deliver(t, privateUpdate(testAdmin, "/admin"))
+	fresh = h.manager.Session(testAdmin)
+	_, _, freshMsgID, _ = fresh.DetachedSnapshot()
+	if freshMsgID == 0 {
+		t.Fatalf("fresh /admin must adopt its own menu message")
+	}
+	if got := h.api.callCount("answerCallbackQuery"); got != 1 {
+		t.Fatalf("the parked callback must still be answered exactly once, got %d", got)
+	}
+}
+
+// TestDelayedPromptSendNeverStampsReplacementPending pins the cross-session
+// prompt-correlation race: both sessions number their first pending input 1,
+// so a ForceReply send from a replaced session collides with the replacement
+// session's own pending. The late send must be dropped.
+func TestDelayedPromptSendNeverStampsReplacementPending(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+	h.tap(t, core.VerbGlobalSet)
+	h.tap(t, core.VerbField, "lg")
+
+	// The string-edit prompt send parks inside the fake API.
+	entered, release := h.api.armGate("sendMessage")
+
+	// Same anti-hang guard as the resend test: release exactly once even on
+	// a Fatalf path, so server.Close in cleanup never blocks on a parked
+	// request.
+	var releaseOnce sync.Once
+	releaseGate := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseGate)
+
+	session := h.manager.Session(testAdmin)
+	_, _, msgID, _ := session.DetachedSnapshot()
+	data := core.EncodeAction(core.VerbString, session.Seq, "lg")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := h.bh.BaseGroup().HandleUpdate(context.Background(), h.botAPI, callbackUpdate(testAdmin, msgID, data)); err != nil {
+			t.Errorf("handle update: %v", err)
+		}
+	}()
+	<-entered // the old session's prompt send is in flight
+
+	// Safe unlocked read: the pending committed before the send parked, and
+	// the parked goroutine touches no session state until released.
+	old := h.manager.Session(testAdmin)
+	oldPendingID := old.Pending.ID
+
+	// /admin replaces the session; the replacement arms its own string
+	// pending (controller-side — its prompt is not sent) while the old send
+	// is still parked.
+	if _, err := h.controller.OpenDashboard(context.Background(), testAdmin); err != nil {
+		t.Fatalf("open dashboard: %v", err)
+	}
+	freshSeq, _, _, _ := h.manager.Session(testAdmin).Snapshot()
+	freshOutcome, err := h.controller.HandleCallback(context.Background(), testAdmin, 0, core.EncodeAction(core.VerbString, freshSeq, "lg"))
+	if err != nil {
+		t.Fatalf("arm replacement pending: %v", err)
+	}
+	if freshOutcome.Input == nil {
+		t.Fatalf("replacement string tap must arm a pending input")
+	}
+	if freshOutcome.Input.PendingID != oldPendingID {
+		t.Fatalf("test premise: pending IDs must collide across sessions, got %d and %d",
+			oldPendingID, freshOutcome.Input.PendingID)
+	}
+
+	releaseGate()
+	wg.Wait()
+
+	// Safe unlocked reads: wg.Wait above ordered the goroutine's last touches.
+	fresh := h.manager.Session(testAdmin)
+	stamped := fresh.Pending.PromptMsgID
+	freshID := fresh.Pending.ID
+	if stamped != 0 {
+		t.Fatalf("replacement pending must stay unstamped by the old session's late send, got %d", stamped)
+	}
+
+	// The replacement's own prompt still correlates normally.
+	if err := h.manager.SetPendingPromptMsgID(fresh, freshID, 900); err != nil {
+		t.Fatalf("own send must correlate: %v", err)
 	}
 }
 

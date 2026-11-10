@@ -28,8 +28,11 @@ func (a *Adapter) applyRender(ctx *th.Context, adminID int64, render *core.Rende
 				// Adopt the edited message: after a session replacement the
 				// fresh session starts with MsgID 0 even though it just
 				// edited the live menu — without adopting, the next render
-				// would send a duplicate menu instead of editing.
-				a.manager.AdoptMsgID(adminID, render.MsgID)
+				// would send a duplicate menu instead of editing. Adoption is
+				// scoped to the rendering session: if /admin replaced it
+				// while the edit was in flight, the stamp is refused rather
+				// than redirecting the replacement's menu.
+				a.manager.AdoptMsgID(session, render.MsgID)
 
 				return nil
 			case isMessageGone(err):
@@ -45,7 +48,7 @@ func (a *Adapter) applyRender(ctx *th.Context, adminID int64, render *core.Rende
 		if err != nil {
 			return err
 		}
-		a.manager.AdoptMsgID(adminID, message.MessageID)
+		a.manager.AdoptMsgID(session, message.MessageID)
 
 		return nil
 	})
@@ -80,8 +83,10 @@ func inlineKeyboard(screen *core.Screen) *t.InlineKeyboardMarkup {
 
 // sendInputPrompt sends a correlated ForceReply prompt and records its message
 // ID as the very next statement after the API call — a pending input is never
-// matchable before its prompt message ID is known.
-func (a *Adapter) sendInputPrompt(ctx *th.Context, adminID int64, request *core.InputRequest) {
+// matchable before its prompt message ID is known. The stamp is scoped to the
+// committing session: a send completing after /admin replaced the session is
+// dropped instead of correlating the replacement session's pending.
+func (a *Adapter) sendInputPrompt(ctx *th.Context, session *core.Session, adminID int64, request *core.InputRequest) {
 	params := tu.Message(tu.ID(adminID), request.Text)
 	params.ReplyMarkup = &t.ForceReply{
 		ForceReply:            true,
@@ -94,7 +99,7 @@ func (a *Adapter) sendInputPrompt(ctx *th.Context, adminID int64, request *core.
 
 		return
 	}
-	if err := a.manager.SetPendingPromptMsgID(adminID, request.PendingID, message.MessageID); err != nil {
+	if err := a.manager.SetPendingPromptMsgID(session, request.PendingID, message.MessageID); err != nil {
 		a.logger.Debug("admin ui input prompt not correlated", "admin_id", adminID, "error", err)
 	}
 }

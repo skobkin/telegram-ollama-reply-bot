@@ -253,10 +253,10 @@ func (a *Adapter) applyOutcome(ctx *th.Context, adminID int64, outcome core.Outc
 		a.sendPlain(ctx, adminID, outcome.Message.Text)
 	}
 	if outcome.Input != nil {
-		a.sendInputPrompt(ctx, adminID, outcome.Input)
+		a.sendInputPrompt(ctx, outcome.Session, adminID, outcome.Input)
 	}
 	if outcome.Picker != nil {
-		a.sendPickerKeyboard(ctx, adminID, outcome.Picker)
+		a.sendPickerKeyboard(ctx, outcome.Session, adminID, outcome.Picker)
 	}
 	if outcome.Document != nil {
 		a.sendDocumentPayload(ctx, adminID, outcome.Document)

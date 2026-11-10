@@ -52,8 +52,10 @@ var (
 
 // InputRequest asks the adapter to send a correlated ForceReply prompt. The
 // message ID of the sent message must be recorded via
-// Manager.SetPendingPromptMsgID immediately after the send, keyed by
-// PendingID so a replaced pending can never be stamped by a late send.
+// Manager.SetPendingPromptMsgID immediately after the send, keyed to the
+// committing session plus PendingID so a replaced pending — or a replaced
+// session whose pendings reuse the same IDs — can never be stamped by a late
+// send. Retry prompts after invalid input carry the SAME pending's ID.
 type InputRequest struct {
 	PendingID   uint64
 	Text        string
@@ -435,10 +437,16 @@ func (c *Controller) notice(ctx context.Context, adminID int64, text string) Out
 }
 
 // attachRender builds the presentation screen for a committed render and
-// attaches it to the outcome. Build failures leave the render unset: the
-// state is committed but the visible message stays as-is (fail-safe).
+// attaches it to the outcome. The committing session is attached even
+// without a render: the adapter's post-IO correlation (prompt stamps, menu
+// adoption) is keyed to the session that committed, never to "whatever
+// session is live now". Build failures leave the render unset: the state is
+// committed but the visible message stays as-is (fail-safe).
 func (c *Controller) attachRender(ctx context.Context, outcome *Outcome, result ApplyResult) {
-	if result.Render == nil || result.Session == nil {
+	if result.Session != nil {
+		outcome.Session = result.Session
+	}
+	if result.Render == nil {
 		return
 	}
 
@@ -449,12 +457,13 @@ func (c *Controller) attachRender(ctx context.Context, outcome *Outcome, result 
 
 	result.Render.Built = screen
 	outcome.Render = result.Render
-	outcome.Session = result.Session
 }
 
 // handleVerb dispatches one decoded callback action inside the session lock.
 // Handlers touch the store first and session state last (the Apply fn
-// discipline) and signal screen changes via MarkRerender/MarkConsumed.
+// discipline) and signal screen changes via MarkRerender; pure-output verbs
+// (prompt views/downloads) change no session state, keeping the visible
+// keyboard's sequence valid.
 func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, action Action, fx *fx) error {
 	now := c.manager.Now()
 
@@ -582,7 +591,6 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 		if err != nil {
 			return err
 		}
-		s.MarkConsumed()
 		if len(body) > PromptViewDocumentThreshold {
 			fx.document = promptDocument(feature, body)
 		} else {
@@ -600,7 +608,6 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 		if err != nil {
 			return err
 		}
-		s.MarkConsumed()
 		fx.document = promptDocument(feature, body)
 
 		return nil
@@ -617,7 +624,6 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 
 			return nil
 		}
-		s.MarkConsumed()
 		fx.document = promptDocument(feature, body)
 
 		return nil
@@ -1039,7 +1045,7 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 
 		p.ExpiresAt = now.Add(PendingTTL)
 		text, placeholder := c.retryPrompt(ctx, p, err)
-		fx.input = &InputRequest{Text: text, Placeholder: placeholder}
+		fx.input = &InputRequest{PendingID: p.ID, Text: text, Placeholder: placeholder}
 
 		return nil
 	}

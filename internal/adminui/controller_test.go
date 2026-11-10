@@ -315,7 +315,7 @@ func mustOpen(t *testing.T, c *Controller) *Session {
 		t.Fatalf("dashboard screen unexpected: %q", outcome.Render.Built.Text)
 	}
 
-	c.manager.AdoptMsgID(testAdminID, 100)
+	c.manager.AdoptMsgID(outcome.Session, 100)
 
 	return outcome.Session
 }
@@ -345,7 +345,7 @@ func armPending(t *testing.T, c *Controller, msgID int) {
 		t.Fatalf("arm pending: no live pending")
 	}
 
-	if err := c.manager.SetPendingPromptMsgID(testAdminID, session.Pending.ID, msgID); err != nil {
+	if err := c.manager.SetPendingPromptMsgID(session, session.Pending.ID, msgID); err != nil {
 		t.Fatalf("arm pending: %v", err)
 	}
 }
@@ -546,6 +546,9 @@ func TestStringInputFlowSaveAndAttemptsCancel(t *testing.T) {
 		if outcome.Input == nil {
 			t.Fatalf("invalid reply %d must trigger a fresh prompt, got %+v", attempt+1, outcome)
 		}
+		if outcome.Input.PendingID == 0 {
+			t.Fatalf("retry prompt must carry the pending identity (its message must correlate)")
+		}
 		if !strings.Contains(outcome.Input.Text, "⚠️") || !strings.Contains(outcome.Input.Text, "exceeds") {
 			t.Fatalf("retry prompt must carry the error: %q", outcome.Input.Text)
 		}
@@ -628,6 +631,53 @@ func TestPromptSourcesDownloadsAndDistinctResets(t *testing.T) {
 		"ClearPromptTemplate:0:chat",
 		"ClearPromptTemplate:-100200300400:chat",
 	)
+}
+
+// TestPromptOutputActionsKeepVisibleKeyboardLive pins the download/view fix:
+// pure-output verbs advance neither the screen nor the sequence, so the
+// keyboard already rendered keeps working — the press AFTER a download must
+// apply, not bounce as stale with a "Menu updated" notice.
+func TestPromptOutputActionsKeepVisibleKeyboardLive(t *testing.T) {
+	c, _ := newTestController(t)
+	session := mustOpen(t, c)
+
+	tap(t, c, session, VerbPrompts)
+	tap(t, c, session, VerbPromptFeat, "ch")
+
+	session.mu.Lock()
+	seq, msgID := session.Seq, session.MsgID
+	session.mu.Unlock()
+
+	// View, download active, download builtin — all with the same sequence,
+	// exactly like the keyboard still on screen.
+	for _, verb := range []string{VerbPromptView, VerbPromptDL, VerbPromptBL} {
+		outcome, err := c.HandleCallback(context.Background(), testAdminID, msgID, EncodeAction(verb, seq, "ch"))
+		if err != nil {
+			t.Fatalf("%s: %v", verb, err)
+		}
+		if outcome.Document == nil && outcome.Message == nil {
+			t.Fatalf("%s must produce output, got %+v", verb, outcome)
+		}
+	}
+
+	session.mu.Lock()
+	after := session.Seq
+	session.mu.Unlock()
+	if after != seq {
+		t.Fatalf("output actions must not advance the sequence: %d → %d", seq, after)
+	}
+
+	// The immediately-following press on that same keyboard applies.
+	outcome, err := c.HandleCallback(context.Background(), testAdminID, msgID, EncodeAction(VerbBack, seq))
+	if err != nil {
+		t.Fatalf("back after downloads: %v", err)
+	}
+	if outcome.Render == nil || outcome.Render.Screen.Kind != ScreenPrompts {
+		t.Fatalf("back must navigate to the prompts menu: %+v", outcome.Render)
+	}
+	if strings.Contains(outcome.Render.Built.Text, "Menu updated") {
+		t.Fatalf("press after download must apply, not refresh as stale: %q", outcome.Render.Built.Text)
+	}
 }
 
 func TestPromptReplaceViaTextAndUpload(t *testing.T) {

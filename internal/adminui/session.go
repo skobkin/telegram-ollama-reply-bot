@@ -144,7 +144,6 @@ type Session struct {
 	mu       sync.Mutex
 	detached bool
 	rerender bool
-	consumed bool
 
 	AdminID    int64
 	MsgID      int
@@ -311,11 +310,12 @@ type ApplyResult struct {
 //   - for callback actions (seq > 0) the sequence must match the session's
 //     current Seq, otherwise ErrSeqStale (no mutation);
 //   - fn runs under the session lock (store IO allowed, Telegram IO
-//     forbidden) and signals its outcome on the session: MarkRerender when
-//     the screen changed (Seq bumps, a fresh render epoch is assigned, a
-//     Render snapshot is produced), MarkConsumed for observable actions
-//     without a screen change (Seq bumps so replaying the same button is
-//     stale), or neither for pure no-ops (nothing changes);
+//     forbidden) and signals a screen change via MarkRerender (Seq bumps, a
+//     fresh render epoch is assigned, a Render snapshot is produced); every
+//     other outcome leaves Seq alone — observable-but-idempotent actions
+//     (document downloads, prompt views) must keep the already-visible
+//     keyboard valid, and replay protection for real mutations comes from
+//     the store write itself plus the Seq the NEXT render mints;
 //   - an error return aborts the commit — fn must arrange to touch session
 //     state only after its own operations succeed (the controller's
 //     discipline: mutate the store first, the session last).
@@ -340,14 +340,12 @@ func (m *Manager) Apply(adminID int64, seq uint32, fn func(s *Session) error) (A
 
 	err := fn(session)
 	rerender := session.rerender
-	consumed := session.consumed
 	session.rerender = false
-	session.consumed = false
 	if err != nil {
 		return ApplyResult{}, err
 	}
 
-	if rerender || consumed {
+	if rerender {
 		session.Seq++
 	}
 	if rerender {
@@ -362,11 +360,6 @@ func (m *Manager) Apply(adminID int64, seq uint32, fn func(s *Session) error) (A
 
 // MarkRerender flags the session for a screen refresh on commit.
 func (s *Session) MarkRerender() { s.rerender = true }
-
-// MarkConsumed flags an observable action without a screen change (for
-// example a document download): the sequence bumps so the pressed button
-// cannot be replayed, but no re-render is produced.
-func (s *Session) MarkConsumed() { s.consumed = true }
 
 // PushScreen navigates: the current screen goes onto the back stack (capped)
 // and the new screen becomes current.
@@ -488,27 +481,44 @@ func (m *Manager) gateFor(adminID int64) *renderGate {
 	return gate
 }
 
-// AdoptMsgID records a new screen message ID (after a resend) under the
-// session lock. No-ops for missing sessions.
-func (m *Manager) AdoptMsgID(adminID int64, msgID int) {
-	session := m.Session(adminID)
+// AdoptMsgID records a new screen message ID (after a successful edit or
+// resend) — but only on the session the render belongs to. A Telegram call
+// that completes after /admin replaced the session must never redirect the
+// replacement's menu to the old session's message. No-ops for missing or
+// replaced sessions.
+func (m *Manager) AdoptMsgID(session *Session, msgID int) {
 	if session == nil {
 		return
 	}
 
-	session.mu.Lock()
-	session.MsgID = msgID
-	session.mu.Unlock()
+	_, _ = m.Apply(session.AdminID, 0, func(s *Session) error {
+		if s != session {
+			return ErrDetached
+		}
+		s.MsgID = msgID
+
+		return nil
+	})
 }
 
 // SetPendingPromptMsgID records the message ID of a sent input prompt as the
-// very next statement after the API call. It stamps ONLY the pending whose
-// identity the request carried: if the admin already replaced that pending
-// (double-tap on another field) or it moved on (chat selection consumed), the
-// late send is dropped instead of correlating the wrong prompt. Pendings are
-// stamped at most once.
-func (m *Manager) SetPendingPromptMsgID(adminID int64, pendingID uint64, msgID int) error {
-	_, err := m.Apply(adminID, 0, func(s *Session) error {
+// very next statement after the API call. It stamps ONLY the pending of the
+// session the request belongs to AND whose identity the request carried: if
+// the admin already replaced that pending (double-tap on another field), it
+// moved on (chat selection consumed), or /admin replaced the whole session
+// while the send was in flight, the late send is dropped instead of
+// correlating the wrong prompt — per-session pending IDs restart at 1, so
+// the identity check is what prevents a colliding cross-session stamp.
+// Pendings are stamped at most once.
+func (m *Manager) SetPendingPromptMsgID(session *Session, pendingID uint64, msgID int) error {
+	if session == nil {
+		return ErrPendingReplaced
+	}
+
+	_, err := m.Apply(session.AdminID, 0, func(s *Session) error {
+		if s != session {
+			return ErrPendingReplaced
+		}
 		p := s.Pending
 		switch {
 		case p == nil, p.ID != pendingID:

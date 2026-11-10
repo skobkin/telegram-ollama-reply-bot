@@ -16,7 +16,7 @@ import (
 // stays nil so chats the bot has never joined are selectable too; channels are
 // excluded via ChatIsChannel=false. The keyboard is removed before the first
 // shared chat is processed (handleChatShared).
-func (a *Adapter) sendPickerKeyboard(ctx *th.Context, adminID int64, picker *core.PickerRequest) {
+func (a *Adapter) sendPickerKeyboard(ctx *th.Context, session *core.Session, adminID int64, picker *core.PickerRequest) {
 	button := tu.KeyboardButton("Choose a chat")
 	// The controller generates request IDs within the positive int32 range;
 	// masking here keeps the boundary locally provable.
@@ -36,8 +36,9 @@ func (a *Adapter) sendPickerKeyboard(ctx *th.Context, adminID int64, picker *cor
 		return
 	}
 	// The picker prompt doubles as the pending-input anchor: the ChatShared
-	// response references its message, so correlate it like a ForceReply.
-	if err := a.manager.SetPendingPromptMsgID(adminID, picker.PendingID, message.MessageID); err != nil {
+	// response references its message, so correlate it like a ForceReply —
+	// scoped to the committing session exactly like sendInputPrompt.
+	if err := a.manager.SetPendingPromptMsgID(session, picker.PendingID, message.MessageID); err != nil {
 		a.logger.Debug("admin ui picker prompt not correlated", "admin_id", adminID, "error", err)
 	}
 }

@@ -121,27 +121,25 @@ func TestApplyFnErrorAbortsCommit(t *testing.T) {
 	}
 }
 
-// TestMarkConsumedBumpsSeqWithoutRender pins the observable-action-no-render
-// semantics used by document downloads: the button cannot be replayed, but
-// no edit happens.
-func TestMarkConsumedBumpsSeqWithoutRender(t *testing.T) {
+// TestApplyWithoutRerenderKeepsSeq pins the semantics that keep the visible
+// keyboard alive across pure-output actions (prompt views/downloads): an
+// apply that signals neither a screen change nor a store mutation must not
+// advance the sequence, or every such action would stale-date the buttons
+// already on screen.
+func TestApplyWithoutRerenderKeepsSeq(t *testing.T) {
 	m := NewManager(nil)
 	session := m.Replace(7, ScreenState{Kind: ScreenDashboard})
 	before := session.Seq
 
-	result, err := m.Apply(7, session.Seq, func(s *Session) error {
-		s.MarkConsumed()
-
-		return nil
-	})
+	result, err := m.Apply(7, session.Seq, func(*Session) error { return nil })
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if session.Seq != before+1 {
-		t.Fatalf("consumed action must bump seq")
+	if session.Seq != before {
+		t.Fatalf("no-rerender apply must keep the sequence, got %d (was %d)", session.Seq, before)
 	}
 	if result.Render != nil {
-		t.Fatalf("consumed action must not produce a render")
+		t.Fatalf("no-rerender apply must not produce a render")
 	}
 }
 
@@ -296,7 +294,7 @@ func TestConcurrentSameAdminCallbacksMutateExactlyOncePerSeq(t *testing.T) {
 			defer wg.Done()
 			_, _ = m.Apply(7, seq, func(s *Session) error {
 				mutations.Add(1)
-				s.MarkConsumed()
+				s.MarkRerender() // every real mutation refreshes the screen
 
 				return nil
 			})
@@ -305,7 +303,7 @@ func TestConcurrentSameAdminCallbacksMutateExactlyOncePerSeq(t *testing.T) {
 	wg.Wait()
 
 	if got := mutations.Load(); got != 1 {
-		t.Fatalf("exactly one concurrent observable callback with the same seq must mutate, got %d", got)
+		t.Fatalf("exactly one concurrent mutating callback with the same seq must commit, got %d", got)
 	}
 }
 
@@ -480,9 +478,13 @@ func TestSetPendingPromptMsgID(t *testing.T) {
 	m := NewManager(nil)
 	session := m.Replace(7, ScreenState{Kind: ScreenCatalog})
 
-	// Before any prompt exists, recording must fail (no pending).
-	if err := m.SetPendingPromptMsgID(7, 1, 55); err == nil {
+	// Before any prompt exists, recording must fail (no pending); a nil
+	// session (defensive) fails too.
+	if err := m.SetPendingPromptMsgID(session, 1, 55); err == nil {
 		t.Fatalf("recording without a pending must fail")
+	}
+	if err := m.SetPendingPromptMsgID(nil, 1, 55); err == nil {
+		t.Fatalf("recording without a session must fail")
 	}
 
 	if _, err := m.Apply(7, session.Seq, func(s *Session) error {
@@ -495,14 +497,14 @@ func TestSetPendingPromptMsgID(t *testing.T) {
 
 	liveID := session.Pending.ID
 
-	if err := m.SetPendingPromptMsgID(7, liveID, 55); err != nil {
+	if err := m.SetPendingPromptMsgID(session, liveID, 55); err != nil {
 		t.Fatalf("record prompt msg id: %v", err)
 	}
 	if session.Pending.PromptMsgID != 55 {
 		t.Fatalf("prompt message id must be recorded, got %d", session.Pending.PromptMsgID)
 	}
 
-	if err := m.SetPendingPromptMsgID(7, liveID, 0); err == nil {
+	if err := m.SetPendingPromptMsgID(session, liveID, 0); err == nil {
 		t.Fatalf("zero message id must be rejected (never visible as live)")
 	}
 
@@ -516,7 +518,7 @@ func TestSetPendingPromptMsgID(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("apply replacement: %v", err)
 	}
-	if err := m.SetPendingPromptMsgID(7, liveID, 77); err == nil {
+	if err := m.SetPendingPromptMsgID(session, liveID, 77); err == nil {
 		t.Fatalf("stamping by a replaced pending's id must fail")
 	}
 	if session.Pending.PromptMsgID != 0 {
@@ -524,15 +526,117 @@ func TestSetPendingPromptMsgID(t *testing.T) {
 	}
 
 	// Re-stamping the same pending is refused (one prompt per pending).
-	if err := m.SetPendingPromptMsgID(7, replaced, 88); err != nil {
+	if err := m.SetPendingPromptMsgID(session, replaced, 88); err != nil {
 		t.Fatalf("stamp replacement: %v", err)
 	}
-	if err := m.SetPendingPromptMsgID(7, replaced, 99); err == nil {
+	if err := m.SetPendingPromptMsgID(session, replaced, 99); err == nil {
 		t.Fatalf("double stamping must be refused")
 	}
 	if session.Pending.PromptMsgID != 88 {
 		t.Fatalf("the first stamp must win, got %d", session.Pending.PromptMsgID)
 	}
+}
+
+// TestSetPendingPromptMsgIDRefusesReplacedSession pins the cross-session
+// correlation race: per-session pending IDs restart at 1, so a ForceReply
+// send from a session that /admin replaced mid-flight collides with the
+// replacement session's own pending numbering. The late send must be dropped
+// — stamping it would correlate the wrong prompt message (and a reply to the
+// wrong prompt would then write the wrong field).
+func TestSetPendingPromptMsgIDRefusesReplacedSession(t *testing.T) {
+	m := NewManager(nil)
+
+	arm := func(session *Session) uint64 {
+		t.Helper()
+
+		_, err := m.Apply(7, session.Seq, func(s *Session) error {
+			s.Pending = &Pending{ID: s.NextPendingID(), Kind: PendingStringInput, Field: "language"}
+
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("arm pending: %v", err)
+		}
+
+		session.mu.Lock()
+		defer session.mu.Unlock()
+
+		return session.Pending.ID
+	}
+
+	old := m.Replace(7, ScreenState{Kind: ScreenCatalog})
+	oldID := arm(old)
+
+	fresh := m.Replace(7, ScreenState{Kind: ScreenCatalog})
+	freshID := arm(fresh)
+	if oldID != freshID {
+		t.Fatalf("test premise: pending IDs must collide across sessions, got %d and %d", oldID, freshID)
+	}
+
+	// The delayed send of the old session's prompt completes after the
+	// replacement armed its own pending with the same ID.
+	if err := m.SetPendingPromptMsgID(old, oldID, 111); !errors.Is(err, ErrPendingReplaced) {
+		t.Fatalf("late send from the replaced session must be refused, got %v", err)
+	}
+	fresh.mu.Lock()
+	stamped := fresh.Pending.PromptMsgID
+	fresh.mu.Unlock()
+	if stamped != 0 {
+		t.Fatalf("replacement pending must stay unstamped, got %d", stamped)
+	}
+
+	// The replacement session's own send still correlates normally.
+	if err := m.SetPendingPromptMsgID(fresh, freshID, 222); err != nil {
+		t.Fatalf("own send must correlate: %v", err)
+	}
+	fresh.mu.Lock()
+	stamped = fresh.Pending.PromptMsgID
+	fresh.mu.Unlock()
+	if stamped != 222 {
+		t.Fatalf("own send must stamp its message, got %d", stamped)
+	}
+}
+
+// TestAdoptMsgIDRefusesReplacedSession pins the menu-adoption race: a
+// Telegram edit or resend completing after /admin replaced the session must
+// not redirect the replacement session's menu message — otherwise the fresh
+// session would point at a message its buttons are not attached to (or
+// orphan a duplicate live menu).
+func TestAdoptMsgIDRefusesReplacedSession(t *testing.T) {
+	m := NewManager(nil)
+	old := m.Replace(7, ScreenState{Kind: ScreenDashboard})
+	old.mu.Lock()
+	old.MsgID = 100
+	old.mu.Unlock()
+
+	fresh := m.Replace(7, ScreenState{Kind: ScreenDashboard})
+
+	// The old session's in-flight render finishes after the replacement.
+	m.AdoptMsgID(old, 500)
+
+	old.mu.Lock()
+	oldMsgID := old.MsgID
+	old.mu.Unlock()
+	fresh.mu.Lock()
+	freshMsgID := fresh.MsgID
+	fresh.mu.Unlock()
+	if freshMsgID != 0 {
+		t.Fatalf("replacement session must not adopt a detached session's message, got %d", freshMsgID)
+	}
+	if oldMsgID != 100 {
+		t.Fatalf("refused adoption must not touch the old session either, got %d", oldMsgID)
+	}
+
+	// The live session's own adoptions still apply.
+	m.AdoptMsgID(fresh, 501)
+	fresh.mu.Lock()
+	freshMsgID = fresh.MsgID
+	fresh.mu.Unlock()
+	if freshMsgID != 501 {
+		t.Fatalf("live session must adopt its own message, got %d", freshMsgID)
+	}
+
+	m.AdoptMsgID(nil, 502) // nil session is a safe no-op
 }
 
 func TestPendingExpiry(t *testing.T) {
