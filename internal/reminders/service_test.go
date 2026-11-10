@@ -86,7 +86,7 @@ func (s *senderStub) SendMessage(_ context.Context, params *t.SendMessageParams)
 
 func TestAddReminderComputesMonthlySchedule(t *testing.T) {
 	store := newStoreStub()
-	svc := NewService(store, &senderStub{}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc := NewService(store, &senderStub{}, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	svc.now = func() time.Time { return time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC) }
 
 	reminder, err := svc.AddReminder(context.Background(), state.ConversationScope{ChatID: 1}, 7, CreateRequest{
@@ -120,7 +120,7 @@ func TestRemoveReminderChecksOwnership(t *testing.T) {
 	}
 	store.items[reminder.ID] = reminder
 
-	svc := NewService(store, &senderStub{}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc := NewService(store, &senderStub{}, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if _, err := svc.RemoveReminder(context.Background(), 8, reminder.ID); err == nil {
 		t.Fatal("expected ownership error")
 	}

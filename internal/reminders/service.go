@@ -27,31 +27,47 @@ type Sender interface {
 	SendMessage(ctx context.Context, params *t.SendMessageParams) (*t.Message, error)
 }
 
-type Service struct {
-	store    Store
-	sender   Sender
-	logger   *slog.Logger
-	adminIDs []int64
-	now      func() time.Time
+// CanDeliverFunc decides whether a reminder may be delivered to a chat right
+// now. A nil function allows delivery unconditionally. An error is a
+// transient lookup failure: delivery fails closed for now and the occurrence
+// is retried later without being marked delivered. An explicit false is a
+// policy denial: nothing is sent, the occurrence is skipped, and the schedule
+// advances exactly like a delivered one.
+type CanDeliverFunc func(ctx context.Context, chatID int64) (bool, error)
 
-	mu        sync.Mutex
-	reminders map[string]Reminder
-	wake      chan struct{}
+// accessRetryBackoff spaces retries of reminders whose access check failed
+// transiently, so a flaky lookup cannot busy-loop the scheduler.
+const accessRetryBackoff = 5 * time.Minute
+
+type Service struct {
+	store      Store
+	sender     Sender
+	logger     *slog.Logger
+	adminIDs   []int64
+	canDeliver CanDeliverFunc
+	now        func() time.Time
+
+	mu          sync.Mutex
+	reminders   map[string]Reminder
+	nextAttempt map[string]time.Time
+	wake        chan struct{}
 }
 
-func NewService(store Store, sender Sender, adminIDs []int64, logger *slog.Logger) *Service {
+func NewService(store Store, sender Sender, adminIDs []int64, canDeliver CanDeliverFunc, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
 
 	return &Service{
-		store:     store,
-		sender:    sender,
-		logger:    logger,
-		adminIDs:  append([]int64(nil), adminIDs...),
-		now:       func() time.Time { return time.Now().UTC() },
-		reminders: make(map[string]Reminder),
-		wake:      make(chan struct{}, 1),
+		store:       store,
+		sender:      sender,
+		logger:      logger,
+		adminIDs:    append([]int64(nil), adminIDs...),
+		canDeliver:  canDeliver,
+		now:         func() time.Time { return time.Now().UTC() },
+		reminders:   make(map[string]Reminder),
+		nextAttempt: make(map[string]time.Time),
+		wake:        make(chan struct{}, 1),
 	}
 }
 
@@ -151,6 +167,7 @@ func (s *Service) RemoveReminder(ctx context.Context, requesterUserID int64, rem
 
 	s.mu.Lock()
 	delete(s.reminders, reminderID)
+	delete(s.nextAttempt, reminderID)
 	s.mu.Unlock()
 	s.signalWake()
 
@@ -173,6 +190,14 @@ func (s *Service) nextWait() time.Duration {
 		if delta < 0 {
 			delta = 0
 		}
+		if attempt := s.nextAttempt[reminder.ID]; attempt.After(now) {
+			// A transient access-check failure backs the reminder off: sleep
+			// until its retry time so the loop does not spin on a due
+			// reminder whose delivery keeps failing.
+			if backoff := attempt.Sub(now); backoff > delta {
+				delta = backoff
+			}
+		}
 		if wait < 0 || delta < wait {
 			wait = delta
 		}
@@ -187,9 +212,13 @@ func (s *Service) processDue(ctx context.Context) {
 	s.mu.Lock()
 	due := make([]Reminder, 0)
 	for _, reminder := range s.reminders {
-		if reminder.Active && !reminder.NextDueAt.After(now) {
-			due = append(due, reminder)
+		if !reminder.Active || reminder.NextDueAt.After(now) {
+			continue
 		}
+		if s.nextAttempt[reminder.ID].After(now) {
+			continue
+		}
+		due = append(due, reminder)
 	}
 	s.mu.Unlock()
 
@@ -214,6 +243,27 @@ func (s *Service) deliverReminder(ctx context.Context, reminder Reminder) error 
 		return err
 	}
 
+	if s.canDeliver != nil {
+		allowed, err := s.canDeliver(ctx, reminder.Scope.ChatID)
+		if err != nil {
+			// Transient failure: fail closed on sending, keep the occurrence
+			// pending, retry after the backoff.
+			s.deferAccessRetry(reminder.ID)
+
+			return fmt.Errorf("access check: %w", err)
+		}
+		if !allowed {
+			// Policy denial: no message is sent (no content leak), the
+			// occurrence is skipped, and the schedule advances exactly as it
+			// would after a delivery — mirroring downtime semantics.
+			s.logger.Warn("reminder delivery denied by access policy",
+				"reminder_id", reminder.ID,
+				"chat_id", reminder.Scope.ChatID)
+
+			return s.recordDelivery(ctx, reminder, s.now(), nextDue, active)
+		}
+	}
+
 	params := &t.SendMessageParams{
 		ChatID: tu.ID(reminder.Scope.ChatID),
 		Text:   "Reminder: " + reminder.Text,
@@ -225,12 +275,19 @@ func (s *Service) deliverReminder(ctx context.Context, reminder Reminder) error 
 		return err
 	}
 
-	deliveredAt := s.now()
+	return s.recordDelivery(ctx, reminder, s.now(), nextDue, active)
+}
+
+// recordDelivery advances the reminder state after an occurrence was handled
+// (sent or skipped by policy): recurring schedules move to nextDue and
+// one-shots complete.
+func (s *Service) recordDelivery(ctx context.Context, reminder Reminder, deliveredAt, nextDue time.Time, active bool) error {
 	if err := s.store.UpdateReminderDelivery(ctx, reminder.ID, deliveredAt, nextDue, active); err != nil {
 		return err
 	}
 
 	s.mu.Lock()
+	delete(s.nextAttempt, reminder.ID)
 	if !active {
 		delete(s.reminders, reminder.ID)
 	} else {
@@ -244,6 +301,12 @@ func (s *Service) deliverReminder(ctx context.Context, reminder Reminder) error 
 	s.signalWake()
 
 	return nil
+}
+
+func (s *Service) deferAccessRetry(reminderID string) {
+	s.mu.Lock()
+	s.nextAttempt[reminderID] = s.now().Add(accessRetryBackoff)
+	s.mu.Unlock()
 }
 
 func computeDeliveryWindow(reminder Reminder, now time.Time) (time.Time, time.Time, bool, error) {

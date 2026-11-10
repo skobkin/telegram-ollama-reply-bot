@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"slices"
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/buildinfo"
 	"telegram-ollama-reply-bot/internal/config"
@@ -237,7 +238,16 @@ func Run(ctx context.Context) error {
 	}
 
 	sanitizer := markdown.NewTgMarkdownV2Sanitizer()
-	reminderService := reminders.NewService(persistentStore, telegramAPI, cfg.Bot.AdminIDs, logManager.Logger("reminders"))
+	// Reminder delivery respects the access policy. Admin DMs are always
+	// deliverable (positive chat IDs are private chats; only admin-owned ones
+	// are exempt), ordinary chats go through the same decision as messages.
+	reminderService := reminders.NewService(persistentStore, telegramAPI, cfg.Bot.AdminIDs, func(ctx context.Context, chatID int64) (bool, error) {
+		if chatID > 0 && slices.Contains(cfg.Bot.AdminIDs, chatID) {
+			return true, nil
+		}
+
+		return adminService.ShouldAllowChat(ctx, chatID, false)
+	}, logManager.Logger("reminders"))
 	go func() {
 		if err := reminderService.Run(ctx); err != nil {
 			logger.Error("reminder scheduler exited with error", "error", err)
