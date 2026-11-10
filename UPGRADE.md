@@ -27,11 +27,13 @@ are never cached or stored.
   message was trimmed from the stored history. Once no reachable reference remains, the tool reports that
   predictably. A restart drops all previously retained history; images in messages arriving after the restart —
   or quoted in their reply chains — become analyzable again as soon as those references exist.
-- Each valid, resolved `analyze_image` invocation performs exactly one recognition operation. Charges depend on
-  the provider and plan (a self-hosted OpenAI-compatible backend may be free). Invalid prompts and unresolved
-  images cause no recognition operation at all, and the model may invoke the tool several times within a single
-  reply: `LLM__TOOL_LOOP_MAX_ITERATIONS` bounds model/tool rounds, not the number of tool calls inside one
-  round. There is no fixed recognition count per user message.
+- Each valid, resolved `analyze_image` invocation can trigger one recognition operation — and only after the
+  image download and validation succeed: a failed download, an image over the size bound, or an unsupported
+  image type all fail before any recognizer call. Charges depend on the provider and plan (a self-hosted
+  OpenAI-compatible backend may be free). Invalid prompts and unresolved images also cause no recognition
+  operation, and the model may invoke the tool several times within a single reply:
+  `LLM__TOOL_LOOP_MAX_ITERATIONS` bounds model/tool rounds, not the number of tool calls inside one round.
+  There is no fixed recognition count per user message.
 - Resolution only ever accepts the current message, its reply chain, and the current chat/topic history — never
   model-supplied file IDs, URLs, or paths.
 
@@ -49,7 +51,7 @@ New optional env vars (all additive — one new default applies, see `MAX_IMAGE_
 | `LLM__IMAGE_RECOGNITION__MAX_IMAGE_BYTES`          | Client-side bound on downloaded image size, in bytes. Must be a positive integer; values `<= 0` are a startup error. Raise it if your users send larger images (e.g. `20971520` for 20 MiB) | `10485760` (10 MiB) |
 | `LLM__IMAGE_RECOGNITION__MINIMAX_VLM__BASE_URL`    | MiniMax endpoint base; must match the key's region                                                      | `https://api.minimax.io` |
 | `LLM__IMAGE_RECOGNITION__MINIMAX_VLM__API_KEY`     | MiniMax key; required only when the recognizer is `minimax_vlm` **and** recognition is enabled; never inherited from the OpenAI-compat token | -                        |
-| `LLM__IMAGE_RECOGNITION__MINIMAX_VLM__TIMEOUT`     | Per-request timeout. In practice also capped by the surrounding `BOT__PROCESSING_TIMEOUT` (default `30s`); raise that too when you want a longer recognizer timeout to take effect | `60s`                    |
+| `LLM__IMAGE_RECOGNITION__MINIMAX_VLM__TIMEOUT`     | Per-request HTTP timeout for MiniMax recognition calls; earlier parent-context cancellation can shorten it (see notes below) | `60s`                    |
 | `LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__BASE_URL`  | Optional dedicated OpenAI-compatible endpoint for recognition. Empty reuses the conversational backend and its token. When set, recognition uses this endpoint with its own `API_TOKEN` — the conversational token is not reused | empty                    |
 | `LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__API_TOKEN` | Token for the dedicated endpoint; only valid together with its `BASE_URL`                              | empty                    |
 
@@ -78,13 +80,19 @@ LLM__FEATURES__IMAGE_RECOGNITION__MODEL=your-vision-model
 
 Behavior changes to be aware of:
 
+- The MiniMax per-request timeout (`LLM__IMAGE_RECOGNITION__MINIMAX_VLM__TIMEOUT`, default `60s`) can be
+  shortened by earlier parent-context cancellation. `analyze_image` runs inside the tool loop under
+  `BOT__PROCESSING_TIMEOUT` (default `30s`) and shares its remaining budget, so raise that too when you want
+  longer tool-driven analyses. The initial baseline description of an incoming image is hydrated before that
+  processing deadline is applied, so `BOT__PROCESSING_TIMEOUT` is not a universal limit on image processing.
+
 - Image MIME types are now detected from the image's leading byte signature (JPEG/PNG/WebP accepted; other formats
   are rejected locally). Previously the bot hardcoded `image/jpeg`. Signature detection selects the format — it is
   not an integrity check of the image data.
 - Telegram file downloads and recognition input are bounded by `LLM__IMAGE_RECOGNITION__MAX_IMAGE_BYTES`
   (a bot-side limit, independent of any provider-side limits). Files whose advertised size exceeds the
   bound are skipped without downloading; unknown or underreported sizes are bounded during the download itself
-  (the transfer is aborted at the bound).
+  (the download is stopped once the transferred data is known to exceed the bound).
 - With recognition disabled (`LLM__IMAGE_RECOGNITION_ENABLED=false`) or a model-free recognizer (`minimax_vlm`)
   selected, the startup check no longer requires an image model to be present. Previously the bot refused to boot
   when the image model was missing even with recognition disabled. With a dedicated image endpoint configured, the
