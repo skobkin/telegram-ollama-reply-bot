@@ -661,6 +661,86 @@ func TestAnalyzeImage_WireBudgetSurvivesEscapingTorture(t *testing.T) {
 	}
 }
 
+// TestAnalyzeImage_WireFitUsesAvailableBudget proves the binary-search fitter
+// uses the budget rather than collapsing to the floor: escaped runes cost
+// several wire characters each, and the longest fitting prefix must keep the
+// bulk of the analysis.
+func TestAnalyzeImage_WireFitUsesAvailableBudget(t *testing.T) {
+	t.Parallel()
+
+	runtime, analyzer, store := newImageToolsRuntime(t)
+	scope := state.ConversationScope{ChatID: 7}
+	store.AppendMessage(scope, imageMessage(1, 7, 0, "f"))
+
+	// 500 runes of '<' serialize to ~3000 wire characters; more than 300
+	// escaped runes fit the 2600 budget.
+	analyzer.analysis = strings.Repeat("<", 500)
+
+	result := runAnalyzeImage(t, runtime, imageCallContext(scope, state.Message{ChatID: 7}), `{"message_id":1,"prompt":"read"}`)
+
+	analysis, ok := result.Data.(map[string]any)["analysis"].(string)
+	if !ok {
+		t.Fatalf("expected analysis string, got %#v", result.Data)
+	}
+	if got := utf8.RuneCountInString(analysis); got < 300 {
+		t.Fatalf("only %d analysis runes retained although >300 escaped runes fit the budget", got)
+	}
+	if result.Data.(map[string]any)["truncated"] != true {
+		t.Fatal("expected truncated flag for a shrunken analysis")
+	}
+}
+
+// TestListRecentImages_RetainsAllIdentitiesUnderBudget proves hostile preview
+// content never makes identities undiscoverable: the fitter shrinks previews
+// and strips optional metadata (compact mode) before any entry is dropped, so
+// every requested message_id stays reachable for analyze_image.
+func TestListRecentImages_RetainsAllIdentitiesUnderBudget(t *testing.T) {
+	t.Parallel()
+
+	runtime, _, store := newImageToolsRuntime(t)
+	scope := state.ConversationScope{ChatID: 7}
+
+	for i := 1; i <= 5; i++ {
+		msg := imageMessage(i, 7, 0, "f")
+		msg.Text = strings.Repeat("<", 180)
+		msg.Image = strings.Repeat("<", 200)
+		store.AppendMessage(scope, msg)
+	}
+
+	req := ChatRequest{Scope: scope, RequestMessage: state.Message{ChatID: 7, MessageID: 99}}
+	wire := wireTextFor(t, runtime, req, llm.ToolCall{ID: "l", Name: "list_recent_images", Arguments: json.RawMessage(`{"limit":10}`)})
+
+	if got := len([]rune(wire)); got > listImagesResultCharBudget {
+		t.Fatalf("wire %d runes exceeds budget %d", got, listImagesResultCharBudget)
+	}
+	top, data := decodeWireResult(t, wire)
+	if top["status"] != "ok" {
+		t.Fatalf("unexpected status: %#v", top["status"])
+	}
+
+	images, ok := data["images"].([]any)
+	if !ok || len(images) != 5 {
+		t.Fatalf("expected all 5 identities retained, got %#v", data["images"])
+	}
+	seen := map[int]bool{}
+	for _, raw := range images {
+		entry, _ := raw.(map[string]any)
+		id, _ := entry["message_id"].(float64)
+		if id <= 0 || seen[int(id)] {
+			t.Fatalf("unusable or duplicated identity: %#v", entry)
+		}
+		seen[int(id)] = true
+	}
+	for i := 1; i <= 5; i++ {
+		if !seen[i] {
+			t.Fatalf("identity %d became undiscoverable; got %v", i, seen)
+		}
+	}
+	if _, has := data["omitted_count"]; has {
+		t.Fatalf("identities must be retained instead of omitted: %#v", data)
+	}
+}
+
 // TestSnapshotCandidateScopeContract is the EVERY-candidate helper contract:
 // snapshot nodes are scope-checked exactly like requester and reply-chain
 // nodes — a foreign node never supplies an image and never shadows an

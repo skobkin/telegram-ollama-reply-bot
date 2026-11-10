@@ -19,13 +19,10 @@ const (
 
 	recentImagesDescriptionCharLimit = 200
 	recentImagesTextCharLimit        = 180
+	recentImagesNameCharLimit        = 40
 	analyzeImageAnalysisCharLimit    = 2200
 	analyzeImageMinAnalysisChars     = 64
 	analyzeImagePromptMaxChars       = 4000
-
-	// headroom absorbed per shrinking step so escaping overhead discovered
-	// by the marshal check cannot stall the fit one rune at a time.
-	analyzeImageFitHeadroom = 32
 )
 
 // Stable error codes surfaced to the model by the image tools.
@@ -86,18 +83,30 @@ func (r *Runtime) listRecentImages(_ context.Context, callCtx CallContext, args 
 
 	totalFound := len(sources)
 
-	renderImages := func(descLimit, textLimit int) []map[string]any {
+	// renderImages builds the wire entries. identityOnly strips optional
+	// metadata and previews down to a compact identity (bounded name, time,
+	// description presence) so every requested message_id stays discoverable
+	// under the wire budget.
+	renderImages := func(descLimit, textLimit int, identityOnly bool) []map[string]any {
 		images := make([]map[string]any, 0, len(sources))
 		for _, msg := range sources {
 			entry := map[string]any{
-				"message_id":          msg.MessageID,
-				"reply_to_message_id": replyToMessageID(msg),
-				"from_id":             msg.FromID,
-				"name":                msg.Name,
-				"username":            msg.Username,
-				"created_at":          formatToolTime(msg.CreatedAt),
-				"has_description":     msg.Image != "",
+				"message_id":      msg.MessageID,
+				"created_at":      formatToolTime(msg.CreatedAt),
+				"has_description": msg.Image != "",
 			}
+			if identityOnly {
+				entry["name"] = truncateUTF8(msg.Name, recentImagesNameCharLimit)
+
+				images = append(images, entry)
+
+				continue
+			}
+
+			entry["reply_to_message_id"] = replyToMessageID(msg)
+			entry["from_id"] = msg.FromID
+			entry["name"] = msg.Name
+			entry["username"] = msg.Username
 			// The description fields mirror the stored message only: hydration
 			// fills cloned prompt copies and caches text in the image cache, so
 			// the stored text is often empty — has_description:false is normal
@@ -115,12 +124,15 @@ func (r *Runtime) listRecentImages(_ context.Context, callCtx CallContext, args 
 		return images
 	}
 
-	buildResult := func(images []map[string]any, omitted int) toolResult {
+	buildResult := func(images []map[string]any, omitted int, compact bool) toolResult {
 		summary := fmt.Sprintf("Found %d recent image-bearing message(s)", len(images))
 		data := map[string]any{
 			"chat_id":  callCtx.Scope.ChatID,
 			"topic_id": callCtx.Scope.TopicID,
 			"images":   images,
+		}
+		if compact {
+			data["compact"] = true
 		}
 		if omitted > 0 {
 			summary += fmt.Sprintf(", omitted %d older due to result size", omitted)
@@ -131,35 +143,40 @@ func (r *Runtime) listRecentImages(_ context.Context, callCtx CallContext, args 
 		return toolResult{Status: "ok", Summary: summary, Data: data}
 	}
 
-	// Wire-budget fit: shrink the structured result (drop oldest entries
-	// first, then previews; identities always stay) until the marshaled JSON
-	// fits the budget, so the common marshaler never hard-cuts the JSON
-	// mid-string.
-	images := renderImages(recentImagesDescriptionCharLimit, recentImagesTextCharLimit)
+	// Wire-budget fit ladder, identities first: shrink previews (halving),
+	// then strip entries to compact identities — keeping every requested
+	// message_id so nothing becomes undiscoverable — and only as a true last
+	// resort drop the oldest entries with truthful counts. The common
+	// marshaler never has to hard-cut the JSON mid-string.
+	images := renderImages(recentImagesDescriptionCharLimit, recentImagesTextCharLimit, false)
 	descLimit, textLimit := recentImagesDescriptionCharLimit, recentImagesTextCharLimit
+	identityOnly := false
 	omitted := 0
-	for marshaledRunes(buildResult(images, omitted)) > listImagesResultCharBudget {
+	for marshaledRunes(buildResult(images, omitted, identityOnly)) > listImagesResultCharBudget {
 		switch {
-		case len(sources) > 1:
-			sources = sources[:len(sources)-1]
-			omitted++
-			images = renderImages(descLimit, textLimit)
 		case descLimit > 0 || textLimit > 0:
 			descLimit /= 2
 			textLimit /= 2
-			images = renderImages(descLimit, textLimit)
+			images = renderImages(descLimit, textLimit, identityOnly)
+		case !identityOnly:
+			identityOnly = true
+			images = renderImages(descLimit, textLimit, identityOnly)
+		case len(sources) > 1:
+			sources = sources[:len(sources)-1]
+			omitted++
+			images = renderImages(descLimit, textLimit, identityOnly)
 		default:
 			// Nothing left to shrink without losing the only identity; the
 			// common marshaler's hard cut is the last resort.
-			result := buildResult(images, omitted)
+			result := buildResult(images, omitted, identityOnly)
 			logToolResult(callCtx, result, "images_count", len(images), "omitted_count", omitted)
 
 			return result, nil
 		}
 	}
 
-	result := buildResult(images, omitted)
-	logToolResult(callCtx, result, "images_count", len(images), "omitted_count", omitted)
+	result := buildResult(images, omitted, identityOnly)
+	logToolResult(callCtx, result, "images_count", len(images), "omitted_count", omitted, "compact", identityOnly)
 
 	return result, nil
 }
@@ -220,11 +237,13 @@ func (r *Runtime) analyzeImage(ctx context.Context, callCtx CallContext, args js
 		return result, nil
 	}
 
-	// Wire-budget fit: shrink the analysis (identities and metadata always
-	// stay) until the marshaled JSON fits the budget, so the common marshaler
-	// never hard-cuts the JSON mid-string. Escaping overhead — quotes,
-	// backslashes, newlines, HTML-style characters — is discovered by the
-	// marshal check itself.
+	// Wire-budget fit: keep the LONGEST useful analysis prefix whose
+	// serialized result fits the budget, so the common marshaler never
+	// hard-cuts the JSON mid-string. Escaped runes cost several wire
+	// characters each (quotes, backslashes, newlines, HTML-style
+	// characters), so the largest fitting length is measured with a bounded
+	// binary search over the marshal check rather than derived from raw
+	// rune counts.
 	buildResult := func(analysis string) toolResult {
 		data := map[string]any{
 			"chat_id":    callCtx.Scope.ChatID,
@@ -240,19 +259,31 @@ func (r *Runtime) analyzeImage(ctx context.Context, callCtx CallContext, args js
 		return toolResult{Status: "ok", Summary: "Image analyzed under the requested prompt", Data: data}
 	}
 
+	fits := func(analysis string) bool {
+		return marshaledRunes(buildResult(analysis)) <= analyzeImageResultCharBudget
+	}
+
 	current := truncateUTF8(rawAnalysis, analyzeImageAnalysisCharLimit)
-	for marshaledRunes(buildResult(current)) > analyzeImageResultCharBudget {
-		overshoot := marshaledRunes(buildResult(current)) - analyzeImageResultCharBudget
-		next := utf8.RuneCountInString(current) - overshoot - analyzeImageFitHeadroom
-		if next < analyzeImageMinAnalysisChars {
-			next = analyzeImageMinAnalysisChars
+	if !fits(current) {
+		// Monotone in the prefix length: binary search the longest fitting
+		// prefix between 1 rune and one below the preview limit.
+		best := 0
+		for lo, hi := 1, utf8.RuneCountInString(current)-1; lo <= hi; {
+			mid := lo + (hi-lo)/2
+			if fits(truncateUTF8(rawAnalysis, mid)) {
+				best = mid
+				lo = mid + 1
+			} else {
+				hi = mid - 1
+			}
 		}
-		if next >= utf8.RuneCountInString(current) {
-			// Already at the floor; the common marshaler's hard cut is the
-			// last resort (unreachable with the shipped budget).
-			break
+		if best > 0 {
+			current = truncateUTF8(rawAnalysis, best)
+		} else {
+			// Pathological budget; the common marshaler's hard cut is the
+			// last resort.
+			current = truncateUTF8(rawAnalysis, analyzeImageMinAnalysisChars)
 		}
-		current = truncateUTF8(rawAnalysis, next)
 	}
 
 	result := buildResult(current)
