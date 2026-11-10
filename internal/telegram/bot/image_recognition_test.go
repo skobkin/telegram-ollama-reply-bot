@@ -57,11 +57,27 @@ type fakeDescriber struct {
 	describeErr error
 	calls       int
 	lastBytes   []byte
+
+	analyzeCalls   int
+	lastAnalyzeArg analyzeCall
+}
+
+// analyzeCall records what the Analyze path received.
+type analyzeCall struct {
+	bytes  []byte
+	prompt string
 }
 
 func (d *fakeDescriber) Describe(_ context.Context, imageData []byte) (vision.Recognition, error) {
 	d.calls++
 	d.lastBytes = imageData
+
+	return d.recognition, d.describeErr
+}
+
+func (d *fakeDescriber) Analyze(_ context.Context, imageData []byte, prompt string) (vision.Recognition, error) {
+	d.analyzeCalls++
+	d.lastAnalyzeArg = analyzeCall{bytes: imageData, prompt: prompt}
 
 	return d.recognition, d.describeErr
 }
@@ -239,6 +255,151 @@ func TestDownloadFileWithContext_TransportErrorSanitized(t *testing.T) {
 	if strings.Contains(err.Error(), sentinel) {
 		t.Fatalf("download error leaks the token-bearing URL: %q", err.Error())
 	}
+}
+
+// TestAnalyzeImage_AccountsUsageAndNeverTouchesCache is the model-prompted
+// path: the prompt reaches the vision layer verbatim, usage is accounted, and
+// the baseline description cache (and any stored message) stays untouched.
+func TestAnalyzeImage_AccountsUsageAndNeverTouchesCache(t *testing.T) {
+	t.Parallel()
+
+	b, describer, stats, _ := newImageTestBot(t, jpegTestBody)
+	b.imageRecognition = ImageRecognitionSettings{Enabled: true, MaxImageBytes: 1 << 20}
+	cache := &mapImageCache{entries: map[string]string{}}
+	b.imageCache = cache
+	describer.recognition = vision.Recognition{
+		Text:  "focused analysis",
+		Usage: &llm.TokenUsage{PromptTokens: 3, CompletionTokens: 5, TotalTokens: 8, Cost: 0.25},
+	}
+
+	analysis, err := b.AnalyzeImage(context.Background(), state.ImageMeta{FileID: "f", FileSize: len(jpegTestBody)}, "read the error text")
+	if err != nil {
+		t.Fatalf("AnalyzeImage: %v", err)
+	}
+
+	if analysis != "focused analysis" {
+		t.Fatalf("unexpected analysis: %q", analysis)
+	}
+	if describer.analyzeCalls != 1 || describer.calls != 0 {
+		t.Fatalf("expected exactly one Analyze call and no Describe calls, got analyze=%d describe=%d", describer.analyzeCalls, describer.calls)
+	}
+	if describer.lastAnalyzeArg.prompt != "read the error text" {
+		t.Fatalf("expected prompt forwarded verbatim, got %q", describer.lastAnalyzeArg.prompt)
+	}
+	if !strings.HasPrefix(string(describer.lastAnalyzeArg.bytes), "\xff\xd8\xff") {
+		t.Fatalf("expected downloaded bytes passed to vision")
+	}
+
+	if len(cache.entries) != 0 {
+		t.Fatalf("analysis must never write the description cache, got %v", cache.entries)
+	}
+
+	stats.mu.Lock()
+	defer stats.mu.Unlock()
+
+	if stats.addUsageCalls != 1 || stats.lastTotalTokens != 8 || stats.lastCost != 0.25 {
+		t.Fatalf("unexpected usage accounting: %+v", stats)
+	}
+}
+
+// TestAnalyzeImage_BlankPromptRefused asserts the vision-layer blank-prompt
+// guard surfaces through the bot with no fetch work performed.
+func TestAnalyzeImage_BlankPromptRefused(t *testing.T) {
+	t.Parallel()
+
+	b, describer, _, requests := newImageTestBot(t, jpegTestBody)
+	b.imageRecognition = ImageRecognitionSettings{Enabled: true, MaxImageBytes: 1 << 20}
+
+	_, err := b.AnalyzeImage(context.Background(), state.ImageMeta{FileID: "f", FileSize: 10}, "   ")
+	if !errors.Is(err, ErrImageRecognition) || !errors.Is(err, vision.ErrPromptEmpty) {
+		t.Fatalf("expected joined ErrPromptEmpty, got %v", err)
+	}
+	if describer.analyzeCalls != 0 || requests.Load() != 0 {
+		t.Fatalf("blank prompt must refuse before recognition (calls=%d requests=%d)", describer.analyzeCalls, requests.Load())
+	}
+}
+
+func TestAnalyzeImage_NilUsageSkipsAccounting(t *testing.T) {
+	t.Parallel()
+
+	b, describer, stats, _ := newImageTestBot(t, jpegTestBody)
+	b.imageRecognition = ImageRecognitionSettings{Enabled: true, MaxImageBytes: 1 << 20}
+	describer.recognition = vision.Recognition{Text: "model-free analysis"}
+
+	if _, err := b.AnalyzeImage(context.Background(), state.ImageMeta{FileID: "f", FileSize: len(jpegTestBody)}, "look"); err != nil {
+		t.Fatalf("AnalyzeImage: %v", err)
+	}
+
+	stats.mu.Lock()
+	defer stats.mu.Unlock()
+
+	if stats.addUsageCalls != 0 {
+		t.Fatalf("model-free analysis must not account usage, got %d calls", stats.addUsageCalls)
+	}
+}
+
+func TestAnalyzeImage_DisabledRefusesWithoutCalls(t *testing.T) {
+	t.Parallel()
+
+	b, describer, _, requests := newImageTestBot(t, jpegTestBody)
+	b.imageRecognition = ImageRecognitionSettings{Enabled: false, MaxImageBytes: 1 << 20}
+
+	_, err := b.AnalyzeImage(context.Background(), state.ImageMeta{FileID: "f", FileSize: 10}, "look")
+	if !errors.Is(err, ErrImageRecognition) {
+		t.Fatalf("expected ErrImageRecognition when disabled, got %v", err)
+	}
+	if describer.analyzeCalls != 0 || requests.Load() != 0 {
+		t.Fatalf("disabled analyzer must refuse before any work (calls=%d requests=%d)", describer.analyzeCalls, requests.Load())
+	}
+}
+
+func TestAnalyzeImage_FileSizePreCheckSkipsDownload(t *testing.T) {
+	t.Parallel()
+
+	b, describer, _, requests := newImageTestBot(t, jpegTestBody)
+	b.imageRecognition = ImageRecognitionSettings{Enabled: true, MaxImageBytes: 8}
+
+	_, err := b.AnalyzeImage(context.Background(), state.ImageMeta{FileID: "f", FileSize: 100}, "look")
+	if !errors.Is(err, ErrImageRecognition) || !errors.Is(err, vision.ErrImageTooLarge) {
+		t.Fatalf("expected joined size-bound error, got %v", err)
+	}
+	if requests.Load() != 0 || describer.analyzeCalls != 0 {
+		t.Fatalf("oversized file must not be fetched (requests=%d analyze=%d)", requests.Load(), describer.analyzeCalls)
+	}
+}
+
+// TestAnalyzeImage_GetFileErrorSanitized reuses the #113 guarantee on the
+// analysis path: a getFile transport error carries the token-bearing URL and
+// must be classified and discarded before the error escapes.
+func TestAnalyzeImage_GetFileErrorSanitized(t *testing.T) {
+	t.Parallel()
+
+	token := "1:" + strings.Repeat("A", 35)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return nil, errors.New("metadata transport failed at " + r.URL.String())
+	})}
+	api, err := tg.NewBot(token, tg.WithHTTPClient(client), tg.WithDiscardLogger())
+	if err != nil {
+		t.Fatalf("cannot create test bot api: %v", err)
+	}
+
+	b := &Bot{
+		api:              api,
+		logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ctx:              context.Background(),
+		vision:           &fakeDescriber{},
+		stats:            &stubStats{},
+		imageRecognition: ImageRecognitionSettings{Enabled: true, MaxImageBytes: 1 << 20},
+	}
+
+	_, err = b.AnalyzeImage(context.Background(), state.ImageMeta{FileID: "f", FileSize: 10}, "look")
+	if err == nil {
+		t.Fatalf("expected metadata error")
+	}
+	if !errors.Is(err, ErrImageRecognition) {
+		t.Fatalf("expected ErrImageRecognition joined, got %v", err)
+	}
+	assertImageErrorTreeClean(t, err, token)
 }
 
 // roundTripFunc adapts a function to http.RoundTripper.

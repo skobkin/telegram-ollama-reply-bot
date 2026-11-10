@@ -108,6 +108,8 @@ Ordinary chat replies always use the tool-capable chat workflow. `LLM__FEATURES_
 - `datetime_math` for exact datetime diff, shift, weekday, and timezone conversion
 - `datetime_format` for compact user-facing timestamp formatting
 - `fetch_url_content` for explicit link-analysis requests in free-form chat
+- `list_recent_images` for identifying recent image-bearing messages by `message_id` in the current chat/topic (while image recognition is enabled)
+- `analyze_image` for re-analyzing one of those images under the model's own focused prompt (while image recognition is enabled; each call is a paid recognition request)
 - `search_history` for indexed keyword and fuzzy full in-memory history lookup in the current chat/topic
 - `get_conversation_summary` for the current in-memory earlier summary
 - `get_chat_activity_window` for in-memory message cadence heuristics in the current chat/topic
@@ -269,6 +271,21 @@ as a recognition error. `LLM__IMAGE_RECOGNITION__MAX_IMAGE_BYTES` (default 10 Mi
 client-side bound on downloads and recognition input: the MiniMax API documents no image size limit (its official
 client transfers unbounded data), so no provider limit is claimed. The bound sits below Telegram's 20 MB bot file
 download ceiling. The `LLM__IMAGE_RECOGNITION_ENABLED` switch keeps working as before for both back-ends.
+
+#### Hybrid: cached baseline plus model-prompted re-analysis
+
+The baseline flow is unchanged: images are described once with the operator-managed prompt and the text description is
+cached and replayed in chat context. On top of that, while recognition is enabled, the model gets two tools:
+`list_recent_images` (local listing of image-bearing messages by `message_id`) and `analyze_image` (a fresh recognition
+of one retained image under the model's own focused prompt — e.g. "read the error text in the screenshot"). This works
+with both back-ends and never requires the conversational model to accept images.
+
+Image originals are **not stored locally**: the bot keeps only the bounded Telegram `file_id` reference inside the
+ephemeral in-memory history and re-fetches bytes from Telegram on demand. An image leaves scope when its message is
+trimmed from history or the process restarts — requests for it then fail predictably. A prompt-specific analysis is
+never cached and never replaces the baseline description; each `analyze_image` call is one paid recognition request
+(the MiniMax route reports no token usage for it). Resolution is scoped to the current chat/topic, the current message,
+and its reply chain only.
 
 ### Docker Compose
 

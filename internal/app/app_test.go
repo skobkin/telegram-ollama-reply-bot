@@ -12,6 +12,8 @@ import (
 
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/llm"
+	"telegram-ollama-reply-bot/internal/state"
+	"telegram-ollama-reply-bot/internal/tooluse"
 )
 
 // modelServer is a fake OpenAI-compatible backend serving /models. It counts
@@ -177,5 +179,33 @@ func TestImageModelLogValue(t *testing.T) {
 	disabled.LLM.Features.ImageRecognition.Model = "vision-model"
 	if got := imageModelLogValue(disabled); got != "" {
 		t.Fatalf("disabled recognition must not log an image model, got %q", got)
+	}
+}
+
+type stubAnalyzer struct{}
+
+func (stubAnalyzer) AnalyzeImage(context.Context, state.ImageMeta, string) (string, error) {
+	return "analysis", nil
+}
+
+// TestAttachImageToolsGatedOnEnabledFlag proves the model-prompted image
+// tools are registered exactly while image recognition is enabled.
+func TestAttachImageToolsGatedOnEnabledFlag(t *testing.T) {
+	t.Parallel()
+
+	newRuntime := func() *tooluse.Runtime {
+		return tooluse.New(nil, nil, nil, nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), tooluse.Config{})
+	}
+
+	disabled := newRuntime()
+	attachImageTools(disabled, stubAnalyzer{}, false)
+	if disabled.HasTool("analyze_image") || disabled.HasTool("list_recent_images") {
+		t.Fatal("image tools must stay unregistered while recognition is disabled")
+	}
+
+	enabled := newRuntime()
+	attachImageTools(enabled, stubAnalyzer{}, true)
+	if !enabled.HasTool("analyze_image") || !enabled.HasTool("list_recent_images") {
+		t.Fatal("image tools must be registered while recognition is enabled")
 	}
 }

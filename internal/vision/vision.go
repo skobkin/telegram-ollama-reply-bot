@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/logging"
@@ -98,24 +99,9 @@ func (s *Service) RequiresModel() bool { return s.recognizer.RequiresModel() }
 func (s *Service) Describe(ctx context.Context, imageData []byte) (Recognition, error) {
 	logger := logging.FromContext(ctx, s.logger)
 
-	if s.maxImageBytes > 0 && int64(len(imageData)) > s.maxImageBytes {
-		logger.Warn(
-			"image exceeds size bound",
-			"recognizer", s.recognizer.Name(),
-			"image_bytes", len(imageData),
-			"max_image_bytes", s.maxImageBytes,
-		)
-
-		return Recognition{}, fmt.Errorf("%w: %d bytes exceeds bound %d", ErrImageTooLarge, len(imageData), s.maxImageBytes)
-	}
-
-	mime, err := DetectMIME(imageData)
+	mime, err := s.validateImage(logger, imageData)
 	if err != nil {
 		return Recognition{}, err
-	}
-
-	if !s.recognizer.Supports(mime) {
-		return Recognition{}, fmt.Errorf("%w: %s is not supported by recognizer %s", ErrUnsupportedImageType, mime, s.recognizer.Name())
 	}
 
 	prompt, err := s.prompts.RenderImageRecognitionSystemPrompt(ctx, llm.PromptScope{})
@@ -129,6 +115,57 @@ func (s *Service) Describe(ctx context.Context, imageData []byte) (Recognition, 
 		return Recognition{}, llm.ErrTemplateProcessing
 	}
 
+	return s.dispatch(ctx, logger, imageData, mime, prompt)
+}
+
+// Analyze describes the image under an explicit caller-supplied prompt —
+// the model-authored re-recognition path. The same bounds and MIME checks as
+// Describe apply, but the operator-managed template is not rendered. A blank
+// prompt is rejected without any recognizer call.
+func (s *Service) Analyze(ctx context.Context, imageData []byte, prompt string) (Recognition, error) {
+	logger := logging.FromContext(ctx, s.logger)
+
+	if strings.TrimSpace(prompt) == "" {
+		return Recognition{}, ErrPromptEmpty
+	}
+
+	mime, err := s.validateImage(logger, imageData)
+	if err != nil {
+		return Recognition{}, err
+	}
+
+	return s.dispatch(ctx, logger, imageData, mime, prompt)
+}
+
+// validateImage enforces the client-side size bound and detects and checks
+// the image's MIME type against the recognizer's capabilities.
+func (s *Service) validateImage(logger *slog.Logger, imageData []byte) (string, error) {
+	if s.maxImageBytes > 0 && int64(len(imageData)) > s.maxImageBytes {
+		logger.Warn(
+			"image exceeds size bound",
+			"recognizer", s.recognizer.Name(),
+			"image_bytes", len(imageData),
+			"max_image_bytes", s.maxImageBytes,
+		)
+
+		return "", fmt.Errorf("%w: %d bytes exceeds bound %d", ErrImageTooLarge, len(imageData), s.maxImageBytes)
+	}
+
+	mime, err := DetectMIME(imageData)
+	if err != nil {
+		return "", err
+	}
+
+	if !s.recognizer.Supports(mime) {
+		return "", fmt.Errorf("%w: %s is not supported by recognizer %s", ErrUnsupportedImageType, mime, s.recognizer.Name())
+	}
+
+	return mime, nil
+}
+
+// dispatch hands the validated image and prompt to the recognizer and emits
+// the redacted debug log.
+func (s *Service) dispatch(ctx context.Context, logger *slog.Logger, imageData []byte, mime, prompt string) (Recognition, error) {
 	recognition, err := s.recognizer.Recognize(ctx, Image{Data: imageData, MIME: mime}, prompt)
 	if err != nil {
 		return Recognition{}, err

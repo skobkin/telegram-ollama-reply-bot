@@ -65,6 +65,17 @@ func imageModelLogValue(cfg *config.Config) string {
 	return cfg.LLM.Features.ImageRecognition.Model
 }
 
+// attachImageTools wires the model-prompted image analysis tools onto the
+// runtime only while image recognition is enabled; while disabled the tools
+// are absent from the registry and never advertised to the model.
+func attachImageTools(tools *tooluse.Runtime, analyzer tooluse.ImageAnalyzer, enabled bool) {
+	if !enabled {
+		return
+	}
+
+	tools.AttachImageAnalyzer(analyzer)
+}
+
 func Run(ctx context.Context) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -272,6 +283,8 @@ func Run(ctx context.Context) error {
 			MaxImageBytes: cfg.LLM.ImageRecognition.MaxImageBytes,
 		},
 	)
+
+	attachImageTools(tools, botService, cfg.LLM.ImageRecognitionEnabled)
 
 	if err := botService.Run(); err != nil {
 		logger.Error("bot exited with error", "error", err)

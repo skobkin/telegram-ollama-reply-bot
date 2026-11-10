@@ -301,20 +301,12 @@ func emptyFallback(value string) string {
 	return value
 }
 
-// describeImage downloads a Telegram image and returns its description from
-// the vision service. Downloads are bounded by the configured max image size
-// (checked against the reported file size before any bytes are transferred)
-// and transport errors are sanitized — the Telegram file URL embeds the bot
-// token — before they can reach logs or Sentry.
-func (b *Bot) describeImage(ctx context.Context, imageMeta *state.ImageMeta) (string, error) {
-	if imageMeta == nil {
-		return "", ErrImageRecognition
-	}
-
-	if ctx == nil {
-		ctx = b.ctx
-	}
-
+// fetchImageFile performs the shared Telegram image retrieval pipeline: the
+// reported-size pre-check against the configured bound (before any bytes are
+// transferred), the sanitized getFile metadata request, and the bounded,
+// sanitized file download. The Telegram file URL embeds the bot token, so no
+// raw transport cause ever reaches the returned error chain.
+func (b *Bot) fetchImageFile(ctx context.Context, imageMeta *state.ImageMeta) ([]byte, error) {
 	maxBytes := b.imageRecognition.MaxImageBytes
 	if maxBytes > 0 && int64(imageMeta.FileSize) > maxBytes {
 		b.loggerFromContext(ctx).Warn(
@@ -324,19 +316,46 @@ func (b *Bot) describeImage(ctx context.Context, imageMeta *state.ImageMeta) (st
 			"max_image_bytes", maxBytes,
 		)
 
-		return "", errors.Join(ErrImageRecognition, fmt.Errorf("%w: file reports %d bytes", vision.ErrImageTooLarge, imageMeta.FileSize))
+		return nil, errors.Join(ErrImageRecognition, fmt.Errorf("%w: file reports %d bytes", vision.ErrImageTooLarge, imageMeta.FileSize))
 	}
 
 	file, err := b.api.GetFile(ctx, &t.GetFileParams{FileID: imageMeta.FileID})
 	if err != nil {
 		// The getFile request URL embeds the bot token; classify-and-discard
 		// the raw cause before the error is joined and reaches logs or Sentry.
-		return "", errors.Join(ErrImageRecognition, safeerr.WrapTransport(errFileMetadata, err))
+		return nil, errors.Join(ErrImageRecognition, safeerr.WrapTransport(errFileMetadata, err))
 	}
 
 	fileBytes, err := downloadFileWithContext(ctx, b.api.FileDownloadURL(file.FilePath), maxBytes)
 	if err != nil {
-		return "", errors.Join(ErrImageRecognition, err)
+		return nil, errors.Join(ErrImageRecognition, err)
+	}
+
+	return fileBytes, nil
+}
+
+// accountRecognitionUsage records recognizer token usage when the back-end
+// reports it (model-free routes report none).
+func (b *Bot) accountRecognitionUsage(recognition vision.Recognition) {
+	if recognition.Usage != nil {
+		b.stats.AddUsage(recognition.Usage.PromptTokens, recognition.Usage.CompletionTokens, recognition.Usage.TotalTokens, recognition.Usage.Cost)
+	}
+}
+
+// describeImage downloads a Telegram image and returns its description from
+// the vision service, using the shared bounded and sanitized fetch pipeline.
+func (b *Bot) describeImage(ctx context.Context, imageMeta *state.ImageMeta) (string, error) {
+	if imageMeta == nil {
+		return "", ErrImageRecognition
+	}
+
+	if ctx == nil {
+		ctx = b.ctx
+	}
+
+	fileBytes, err := b.fetchImageFile(ctx, imageMeta)
+	if err != nil {
+		return "", err
 	}
 
 	recognition, err := b.vision.Describe(ctx, fileBytes)
@@ -344,9 +363,7 @@ func (b *Bot) describeImage(ctx context.Context, imageMeta *state.ImageMeta) (st
 		return "", errors.Join(ErrImageRecognition, err)
 	}
 
-	if recognition.Usage != nil {
-		b.stats.AddUsage(recognition.Usage.PromptTokens, recognition.Usage.CompletionTokens, recognition.Usage.TotalTokens, recognition.Usage.Cost)
-	}
+	b.accountRecognitionUsage(recognition)
 
 	b.loggerFromContext(ctx).Debug("image recognized", "file_id", imageMeta.FileID, "image_bytes", len(fileBytes), "description_length", len(recognition.Text))
 

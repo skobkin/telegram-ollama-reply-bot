@@ -35,6 +35,8 @@ const (
 	recentLinksResultCharBudget         = 1600
 	datetimeMathResultCharBudget        = 1200
 	datetimeFormatResultCharBudget      = 700
+	listImagesResultCharBudget          = 1600
+	analyzeImageResultCharBudget        = 2600
 )
 
 // ToolResult is the value a Handler returns to the runtime. It is exported

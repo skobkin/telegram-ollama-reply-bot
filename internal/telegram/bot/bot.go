@@ -41,9 +41,10 @@ type ImageRecognitionSettings struct {
 }
 
 // imageDescriber decouples the bot from the vision service so tests can fake
-// recognition.
+// recognition. Analyze is the model-prompted re-recognition path.
 type imageDescriber interface {
 	Describe(ctx context.Context, imageData []byte) (vision.Recognition, error)
+	Analyze(ctx context.Context, imageData []byte, prompt string) (vision.Recognition, error)
 }
 
 type Bot struct {

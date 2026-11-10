@@ -2,6 +2,7 @@ package tooluse
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -29,6 +30,15 @@ type TelegramActionSender interface {
 	SendDice(ctx context.Context, params *t.SendDiceParams) (*t.Message, error)
 }
 
+// ImageAnalyzer re-analyzes a retained image under a model-authored prompt.
+// It is implemented by the bot (which owns the Telegram fetch pipeline and
+// the vision wiring); the interface keeps Telegram specifics out of tooluse.
+// Results are ephemeral: the analyzer never touches the baseline description
+// cache or stored messages.
+type ImageAnalyzer interface {
+	AnalyzeImage(ctx context.Context, meta state.ImageMeta, prompt string) (string, error)
+}
+
 type Config struct {
 	MaxIterations      int
 	AdminIDs           []int64
@@ -43,16 +53,17 @@ type ChatRequest struct {
 }
 
 type Runtime struct {
-	llm       llmService
-	history   state.ConversationStore
-	extractor extractor.Extractor
-	searcher  search.Searcher
-	actions   TelegramActionSender
-	reminders *reminders.Service
-	logger    *slog.Logger
-	config    Config
-	registry  *Registry
-	closers   []registeredCloser
+	llm           llmService
+	history       state.ConversationStore
+	extractor     extractor.Extractor
+	searcher      search.Searcher
+	actions       TelegramActionSender
+	imageAnalyzer ImageAnalyzer
+	reminders     *reminders.Service
+	logger        *slog.Logger
+	config        Config
+	registry      *Registry
+	closers       []registeredCloser
 }
 
 type registeredCloser struct {
@@ -95,6 +106,36 @@ type MCPToolSource interface {
 	Close() error
 }
 
+// AttachImageAnalyzer wires the bot's image analyzer and registers the image
+// discovery/analysis tools. It is a no-op when `a` is nil so the application
+// layer can gate it on the image-recognition enable flag; while detached the
+// tools are absent from the registry and never advertised to the model. Like
+// AttachMCP, it runs after runtime construction because the bot is built
+// with the runtime as a dependency. Re-calling replaces the prior analyzer
+// and definitions.
+func (r *Runtime) AttachImageAnalyzer(a ImageAnalyzer) {
+	if a == nil {
+		return
+	}
+	r.imageAnalyzer = a
+	r.registry.Register(Definition{
+		Name:             "list_recent_images",
+		Description:      "List recent image-bearing messages in the current chat/topic so you can identify the right image by message_id before a detailed analysis.",
+		Parameters:       json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":10,"description":"Maximum number of images to return."}},"additionalProperties":false}`),
+		InvocationPolicy: InvocationPolicyDiscretionary,
+		ResultCharBudget: listImagesResultCharBudget,
+		Handler:          r.listRecentImages,
+	})
+	r.registry.Register(Definition{
+		Name:             "analyze_image",
+		Description:      "Re-analyze an image from a recent message under your own focused prompt when the cached baseline description is insufficient. Identify the message_id via list_recent_images or get_message_thread_context first. Each call is a paid recognition request; avoid casual or repeated use.",
+		Parameters:       json.RawMessage(`{"type":"object","properties":{"message_id":{"type":"integer","minimum":1,"description":"Telegram message_id of the image-bearing message, from tool results."},"prompt":{"type":"string","minLength":1,"maxLength":4000,"description":"Focused analysis prompt for this image, e.g. 'read the error text in the screenshot'."}},"required":["message_id","prompt"],"additionalProperties":false}`),
+		InvocationPolicy: InvocationPolicyDiscretionaryPaid,
+		ResultCharBudget: analyzeImageResultCharBudget,
+		Handler:          r.analyzeImage,
+	})
+}
+
 // AttachMCP registers every tool the source currently advertises and wires
 // a shutdown closer. It is a no-op when `source` is nil so the application
 // layer can call it unconditionally. Re-calling replaces the previous source.
@@ -106,6 +147,14 @@ func (r *Runtime) AttachMCP(name string, source MCPToolSource) {
 		r.registry.Register(def)
 	}
 	r.RegisterCloser(name, source.Close)
+}
+
+// HasTool reports whether a tool with the given name is currently registered
+// (and therefore advertised to the model).
+func (r *Runtime) HasTool(name string) bool {
+	_, ok := r.registry.Lookup(name)
+
+	return ok
 }
 
 // RegisterCloser adds a shutdown hook (e.g. closing an MCP session pool).

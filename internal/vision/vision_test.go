@@ -205,6 +205,79 @@ func TestServiceDescribe_RecognizerErrorPassesThrough(t *testing.T) {
 	}
 }
 
+// TestServiceAnalyze_PassesPromptVerbatimWithoutTemplate is the model-authored
+// re-recognition path: the prompt reaches the recognizer verbatim, the
+// operator template is never rendered (a renderer configured to fail proves
+// it is not consulted), and usage propagates.
+func TestServiceAnalyze_PassesPromptVerbatimWithoutTemplate(t *testing.T) {
+	t.Parallel()
+
+	// The renderer fails if Describe's template path is ever taken.
+	renderer := &fakeRenderer{renderErr: errors.New("template must not be rendered")}
+	recognizer := &fakeRecognizer{
+		name:          "fake",
+		recognition:   Recognition{Text: "targeted analysis", Usage: &llm.TokenUsage{TotalTokens: 9}},
+		requiresModel: false,
+	}
+	service := testService(t, recognizer, renderer, 1<<20)
+
+	data := append([]byte{0xFF, 0xD8, 0xFF}, []byte("body")...)
+
+	recognition, err := service.Analyze(context.Background(), data, "read the error text in the image")
+	if err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+
+	if recognizer.capturedPrompt != "read the error text in the image" {
+		t.Fatalf("expected model prompt passed verbatim, got %q", recognizer.capturedPrompt)
+	}
+	if recognizer.capturedImage.MIME != "image/jpeg" || string(recognizer.capturedImage.Data) != string(data) {
+		t.Fatalf("expected validated image forwarded unchanged")
+	}
+	if recognition.Text != "targeted analysis" || recognition.Usage == nil || recognition.Usage.TotalTokens != 9 {
+		t.Fatalf("unexpected recognition: %+v", recognition)
+	}
+}
+
+// TestServiceAnalyze_RejectsBlankPromptBeforeAnyWork ensures a blank prompt
+// fails fast without validation, rendering, or recognition.
+func TestServiceAnalyze_RejectsBlankPromptBeforeAnyWork(t *testing.T) {
+	t.Parallel()
+
+	recognizer := &fakeRecognizer{name: "fake"}
+	service := testService(t, recognizer, &fakeRenderer{}, 1<<20)
+
+	_, err := service.Analyze(context.Background(), append([]byte{0xFF, 0xD8, 0xFF}, []byte("body")...), "  ")
+	if !errors.Is(err, ErrPromptEmpty) {
+		t.Fatalf("expected ErrPromptEmpty, got %v", err)
+	}
+	if recognizer.capturedPrompt != "" {
+		t.Fatalf("expected no recognizer call for blank prompt")
+	}
+}
+
+// TestServiceAnalyze_SharesBoundAndMIMEChecks proves Analyze inherits
+// Describe's validation core: oversized data and unsupported signatures are
+// rejected before any recognizer call.
+func TestServiceAnalyze_SharesBoundAndMIMEChecks(t *testing.T) {
+	t.Parallel()
+
+	recognizer := &fakeRecognizer{name: "fake"}
+	service := testService(t, recognizer, &fakeRenderer{}, 8)
+
+	if _, err := service.Analyze(context.Background(), make([]byte, 9), "look"); !errors.Is(err, ErrImageTooLarge) {
+		t.Fatalf("expected ErrImageTooLarge, got %v", err)
+	}
+
+	if _, err := service.Analyze(context.Background(), []byte("GIF89a"), "look"); !errors.Is(err, ErrUnsupportedImageType) {
+		t.Fatalf("expected ErrUnsupportedImageType, got %v", err)
+	}
+
+	if recognizer.capturedPrompt != "" {
+		t.Fatalf("expected no recognizer calls for invalid input")
+	}
+}
+
 func TestService_MetadataDelegates(t *testing.T) {
 	t.Parallel()
 

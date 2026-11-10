@@ -1,5 +1,22 @@
 # Upgrade Notes
 
+## Model-prompted image re-analysis tools (#107/#90 hybrid)
+
+While image recognition is enabled, the model receives two new tools: `list_recent_images` (identify recent
+image-bearing messages by `message_id` in the current chat/topic) and `analyze_image` (re-analyze one of those images
+under the model's own focused prompt). The baseline cached-description flow is unchanged, and prompt-specific analyses
+are never cached or stored.
+
+- No configuration changes: the tools appear only while `LLM__IMAGE_RECOGNITION_ENABLED=true` and work with both
+  the `openai_compat` and `minimax_vlm` recognizers.
+- Image originals are not stored locally; the bot re-fetches them from Telegram through the `file_id` references
+  already kept in ephemeral in-memory history. When a message is trimmed from history (or after a restart), its image
+  is no longer analyzable and the tool reports that predictably.
+- Each `analyze_image` call performs exactly one recognition request (a paid call on both back-ends); the MiniMax
+  route reports no token usage for it.
+- Resolution only ever accepts the current message, its reply chain, and the current chat/topic history — never
+  model-supplied file IDs, URLs, or paths.
+
 ## Image recognition back-ends (MiniMax VLM support)
 
 Image recognition is extracted behind a dedicated recognizer layer. The default configuration is unchanged: the
