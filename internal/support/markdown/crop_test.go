@@ -169,3 +169,98 @@ func TestCropRichMarkdown_NewlineIsBoundary(t *testing.T) {
 		t.Fatalf("expected crop at newline boundary, got tail %q", got[len(got)-10:])
 	}
 }
+
+// TestCropRichMarkdown_HeadingThenUnspacedRun is a review regression: a short
+// heading or preface followed by a long unspaced CJK paragraph must keep a
+// near-full prefix; the boundary search may not backtrack past the window and
+// collapse the message back to the heading.
+func TestCropRichMarkdown_HeadingThenUnspacedRun(t *testing.T) {
+	const limit = 32768
+	text := "# 概要\n" + strings.Repeat("漢", 40000)
+
+	got, changed := CropRichMarkdown(text, limit)
+
+	if !changed {
+		t.Fatalf("expected crop to modify text")
+	}
+	if n := utf8.RuneCountInString(got); n != limit {
+		t.Fatalf("expected %d runes, got %d", limit, n)
+	}
+	if !strings.HasPrefix(got, "# 概要\n") {
+		t.Fatalf("expected heading preserved, got head %q", got[:20])
+	}
+	if !strings.HasSuffix(got, "漢…") {
+		t.Fatalf("expected hard cut inside the paragraph, got tail %q", got[len(got)-10:])
+	}
+}
+
+// TestCropRichMarkdown_HeadingThenUnspacedRunSmallLimit checks the same
+// protection when the limit is smaller than the backtrack window, so the
+// search floor is the start of the text rather than the window edge.
+func TestCropRichMarkdown_HeadingThenUnspacedRunSmallLimit(t *testing.T) {
+	const limit = 400
+	text := "# 概要\n" + strings.Repeat("漢", 600)
+
+	got, changed := CropRichMarkdown(text, limit)
+
+	if !changed {
+		t.Fatalf("expected crop to modify text")
+	}
+	if n := utf8.RuneCountInString(got); n != limit {
+		t.Fatalf("expected %d runes, got %d", limit, n)
+	}
+	if !strings.HasPrefix(got, "# 概要\n") {
+		t.Fatalf("expected heading preserved, got head %q", got[:20])
+	}
+	if !strings.HasSuffix(got, "漢…") {
+		t.Fatalf("expected hard cut inside the paragraph, got tail %q", got[len(got)-10:])
+	}
+}
+
+// TestCropRichMarkdown_FencedLongLine is a review regression: an oversized
+// single line inside a code fence must hard-cut inside the line rather than
+// backtracking to the fence opener and dropping the code content. The broken
+// fence is acceptable: GFM renders unclosed fences until the end of the
+// message.
+func TestCropRichMarkdown_FencedLongLine(t *testing.T) {
+	const limit = 32768
+	text := "```go\n" + strings.Repeat("漢", 40000) + "\n```"
+
+	got, changed := CropRichMarkdown(text, limit)
+
+	if !changed {
+		t.Fatalf("expected crop to modify text")
+	}
+	if n := utf8.RuneCountInString(got); n != limit {
+		t.Fatalf("expected %d runes, got %d", limit, n)
+	}
+	if !strings.HasPrefix(got, "```go\n") {
+		t.Fatalf("expected fence opener preserved, got head %q", got[:20])
+	}
+	if !strings.HasSuffix(got, "漢…") {
+		t.Fatalf("expected hard cut inside the code line, got tail %q", got[len(got)-10:])
+	}
+}
+
+// TestCropRichMarkdown_NearbyBoundaryStillWins ensures the window does not
+// break ordinary behavior: a whitespace boundary that sits within the window
+// of the budget still attracts the cut, rather than triggering a hard cut.
+func TestCropRichMarkdown_NearbyBoundaryStillWins(t *testing.T) {
+	const limit = 32768
+	// The only whitespace in the overshooting tail sits 300 runes before
+	// the budget — within the backtrack window.
+	boundary := limit - 1 - 300
+	text := strings.Repeat("漢", boundary) + "\n" + strings.Repeat("x", 800)
+
+	got, changed := CropRichMarkdown(text, limit)
+
+	if !changed {
+		t.Fatalf("expected crop to modify text")
+	}
+	if n := utf8.RuneCountInString(got); n != boundary+1 {
+		t.Fatalf("expected cut at the in-window boundary (%d runes), got %d", boundary+1, n)
+	}
+	if !strings.HasSuffix(got, "漢…") {
+		t.Fatalf("expected cut at the boundary, got tail %q", got[len(got)-10:])
+	}
+}
