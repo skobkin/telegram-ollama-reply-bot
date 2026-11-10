@@ -10,6 +10,43 @@ Access control is now an explicit policy instead of the old implicit rule "an em
 - **Scheduled reminders are affected**: reminders for chats denied by the new policy stop delivering (their occurrences are skipped and schedules advance); reminders to admin DMs keep working.
 - Remediation after upgrade: open `/admin` → *Access* in an admin DM, add the chats you serve, or confirm the switch to `allow_all` there.
 
+## Interactive admin UI replaces the admin commands
+
+The 16 IRC-style admin DM commands are removed. Administration now happens in a Telegram-native interactive panel:
+send `/admin` in a private chat with the bot (users listed in `BOT__ADMIN_IDS`).
+
+- Typing a removed command (e.g. `/config_show`) is silently ignored — it never reaches the model.
+- Unknown `/commands` are dropped in all chats (debug log only); they never reach the model either.
+- Expired, cancelled, or restart-orphaned replies to admin input prompts get a "no longer active" notice instead of
+  reaching the model; replies that cannot be classified in admin DMs are dropped the same way (fail closed).
+- `/stats` and `/reset` keep working with the same authorization (groups included) but are no longer recorded into
+  conversation history or ordinary request statistics. They are advertised only in admin DM command menus; `/admin`
+  never appears in group menus.
+- Chosen defaults: session lifetime 30 minutes (sliding), pending inputs 10 minutes, 3 attempts on invalid input,
+  catalog page size 8, prompt uploads capped at 32 KiB (enforced on actual bytes), prompt view sent as a document
+  above ~3500 characters, `/cancel` with nothing pending reopens the dashboard, unreachable added chats are labeled
+  "added manually (unverified)", admin screens render as plain text.
+
+Capability map:
+
+| Old command | New home |
+|------------|----------|
+| `/admin_help` | `/admin` dashboard |
+| `/chat_list` | Dashboard → Chats |
+| `/config_fields_global`, `/config_fields_chat` | Settings screens list every field inline |
+| `/config_show [chat_id]` | Global/chat settings screens and the chat card |
+| `/config_set_global <field> <value>` | Global settings → field editor (buttons or reply) |
+| `/config_set_chat <chat_id> <field> <value>` | Chat card → Edit settings, or the on-card interactivity buttons |
+| `/config_clear_chat <chat_id> <field\|all>` | Field editor `Inherit`, or the chat card's confirmed `Reset overrides` |
+| `/prompt_features` | Dashboard → Prompts |
+| `/prompt_show <feature> [chat_id]` | Prompt detail → View |
+| `/prompt_set_global <feature> <template>` | Prompt detail → Replace via text |
+| `/prompt_set_chat <chat_id> <feature> <template>` | Prompt detail (chat scope) → Replace via text / Upload |
+| `/prompt_clear_chat <chat_id> <feature>` | Prompt detail (chat scope) → Reset to global |
+| `/whitelist_add <chat_id>` | Chat card → Allowlist add; Access → Add chat (native picker or numeric ID) |
+| `/whitelist_remove <chat_id>` | Access screen or chat card → remove (confirmed) |
+| `/whitelist_list` | Access screen |
+
 ## DM restrictions (#62)
 
 New optional env var `BOT__DM_ADMINS_ONLY` (default `false` — unset means today's behavior):

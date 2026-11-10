@@ -195,13 +195,32 @@ supergroup chats are never affected; whitelist and interactivity rules keep appl
 before. Because admins are identified solely by `BOT__ADMIN_IDS`, enabling this flag with an empty
 `BOT__ADMIN_IDS` drops **all** private messages, including admin commands.
 
-### Admin panel
+### Admin UI
 
-Administration is a Telegram-native interactive UI: send `/admin` in a private chat with the bot (users listed in
-`BOT__ADMIN_IDS` only) to open the panel with inline keyboards. The legacy IRC-style admin commands were removed;
-`/cancel` dismisses a pending input and reopens the panel.
+Administration is a Telegram-native interactive panel. Send `/admin` in a private chat with the bot (users listed in
+`BOT__ADMIN_IDS` only) to open the dashboard; every screen is inline buttons — no commands to memorize. `/cancel`
+dismisses a pending input and reopens the panel. Sessions are ephemeral and expire after 30 minutes of inactivity.
 
-See [Admin UI](#admin-ui) for the walkthrough and access-policy semantics.
+- **Chats** — searchable catalog (8 per page, filter by groups/private). The chat card shows effective access,
+  interactivity, and settings; interactivity modes switch right on the card, `Inherit global` clears a chat override,
+  and `Reset overrides` (confirmed) clears everything the card overrides.
+- **Global settings / chat settings** — one editor per field: enum and boolean fields are buttons; text fields ask for
+  a reply (three attempts on invalid input, then the input is cancelled).
+- **Prompts** — per feature (chat, summarize, image recognition): view, download the active or built-in template,
+  replace via text, or upload a `.txt`/`.md` file (UTF-8, at most 32 KiB). Reset-to-global (chat scope) and
+  restore-built-in (global) are confirmed and visually marked as destructive.
+- **Access** — the explicit policy (`allowlist`, the default, or `allow_all`), allowlisted chats with removal
+  (confirmed), and Add chat: a native chat picker (the bot does not need to be a member) or a numeric chat ID;
+  unreachable chats are added as "unverified".
+- **Statistics** — the same usage stats as `/stats`.
+
+Access is never conflated with membership: each chat card shows one of four states — `allowlisted`,
+`blocked (allowlist policy)`, `allowlisted (policy already allows all)`, or `allowed via allow_all (not allowlisted)`.
+Switching the policy never modifies allowlist membership, and reminder delivery follows the same policy: reminders for
+denied chats are skipped (schedules advance), while reminders to admin DMs always deliver.
+
+The legacy IRC-style admin commands were removed; typing one is silently ignored. Unknown `/commands` are dropped in
+all chats and never reach the model.
 
 ## Running
 
