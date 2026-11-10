@@ -36,6 +36,10 @@ var (
 	ErrSeqStale = errors.New("callback sequence is stale")
 	// ErrDetached means the session was replaced by a newer /admin.
 	ErrDetached = errors.New("admin session was replaced")
+	// ErrPendingReplaced means the pending input a prompt send tried to
+	// correlate is no longer the live, awaiting pending — the send is
+	// dropped rather than correlating the wrong prompt message.
+	ErrPendingReplaced = errors.New("pending input was replaced")
 )
 
 // ScreenKind enumerates the admin UI screens.
@@ -91,8 +95,12 @@ const (
 	PendingChatPicker PendingKind = "chat_picker"
 )
 
-// Pending is an awaited correlated input.
+// Pending is an awaited correlated input. ID identifies one pending within
+// its session: prompt sends correlate by it, so a late send for a pending
+// that was already replaced can never stamp the wrong message ID onto the
+// live one.
 type Pending struct {
+	ID          uint64
 	Kind        PendingKind
 	Field       string
 	Feature     adminconfig.PromptFeature
@@ -138,14 +146,15 @@ type Session struct {
 	rerender bool
 	consumed bool
 
-	AdminID   int64
-	MsgID     int
-	Seq       uint32
-	Screen    ScreenState
-	Stack     []ScreenState
-	Pending   *Pending
-	Confirm   *PendingConfirm
-	ExpiresAt time.Time
+	AdminID    int64
+	MsgID      int
+	Seq        uint32
+	Screen     ScreenState
+	Stack      []ScreenState
+	Pending    *Pending
+	Confirm    *PendingConfirm
+	ExpiresAt  time.Time
+	pendingSeq uint64
 
 	// Epoch is the render epoch assigned to the latest committed screen
 	// change; renders carrying older epochs are skipped.
@@ -154,10 +163,13 @@ type Session struct {
 
 // Render is a committed screen snapshot plus the epoch that orders it. Built
 // is the presentation-ready screen for the state, attached by the controller
-// after the commit; the adapter renders it through the render gate.
+// after the commit; the adapter renders it through the render gate. Seq is
+// captured under the session lock at commit time so button data built after
+// the lock is released never races a concurrent commit.
 type Render struct {
 	AdminID int64
 	Epoch   uint64
+	Seq     uint32
 	MsgID   int
 	Screen  ScreenState
 	Built   *Screen
@@ -388,6 +400,25 @@ func (s *Session) DetachedSnapshot() (bool, ScreenState, int, uint64) {
 	return s.detached, s.Screen, s.MsgID, s.Epoch
 }
 
+// Snapshot returns the render-relevant state (under the lock): the sequence
+// buttons must encode, the committed screen, the menu message ID, and the
+// render epoch. OpenDashboard uses it right after publishing a fresh
+// session, when concurrent Apply commits may mutate the fields at any time.
+func (s *Session) Snapshot() (uint32, ScreenState, int, uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.Seq, s.Screen, s.MsgID, s.Epoch
+}
+
+// NextPendingID mints the identity of the next pending input (call under the
+// session lock, inside Apply).
+func (s *Session) NextPendingID() uint64 {
+	s.pendingSeq++
+
+	return s.pendingSeq
+}
+
 func renderOf(session *Session, include bool) *Render {
 	if !include {
 		return nil
@@ -396,6 +427,7 @@ func renderOf(session *Session, include bool) *Render {
 	return &Render{
 		AdminID: session.AdminID,
 		Epoch:   session.Epoch,
+		Seq:     session.Seq,
 		MsgID:   session.MsgID,
 		Screen:  session.Screen,
 	}
@@ -470,17 +502,28 @@ func (m *Manager) AdoptMsgID(adminID int64, msgID int) {
 }
 
 // SetPendingPromptMsgID records the message ID of a sent input prompt as the
-// very next statement after the API call, closing the correlation race (a
-// pending is never matched before its prompt message ID is known).
-func (m *Manager) SetPendingPromptMsgID(adminID int64, msgID int) error {
+// very next statement after the API call. It stamps ONLY the pending whose
+// identity the request carried: if the admin already replaced that pending
+// (double-tap on another field) or it moved on (chat selection consumed), the
+// late send is dropped instead of correlating the wrong prompt. Pendings are
+// stamped at most once.
+func (m *Manager) SetPendingPromptMsgID(adminID int64, pendingID uint64, msgID int) error {
 	_, err := m.Apply(adminID, 0, func(s *Session) error {
-		if s.Pending == nil {
-			return ErrSessionGone
+		p := s.Pending
+		switch {
+		case p == nil, p.ID != pendingID:
+			return ErrPendingReplaced
+		case p.PromptMsgID != 0:
+			return ErrPendingReplaced
+		case p.Kind == PendingChatPicker && p.RequestID == 0:
+			// Already morphed into the GetChat-completion state; its picker
+			// prompt is no longer an input target.
+			return ErrPendingReplaced
 		}
 		if msgID == 0 {
 			return errors.New("prompt message id must not be zero")
 		}
-		s.Pending.PromptMsgID = msgID
+		p.PromptMsgID = msgID
 
 		return nil
 	})

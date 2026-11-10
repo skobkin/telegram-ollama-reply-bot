@@ -88,8 +88,8 @@ func (a *Adapter) sendInputPrompt(ctx *th.Context, adminID int64, request *core.
 
 		return
 	}
-	if err := a.manager.SetPendingPromptMsgID(adminID, message.MessageID); err != nil {
-		a.logger.Warn("admin ui cannot correlate input prompt", "admin_id", adminID, "error", err)
+	if err := a.manager.SetPendingPromptMsgID(adminID, request.PendingID, message.MessageID); err != nil {
+		a.logger.Debug("admin ui input prompt not correlated", "admin_id", adminID, "error", err)
 	}
 }
 

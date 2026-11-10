@@ -340,7 +340,12 @@ func tap(t *testing.T, c *Controller, session *Session, verb string, args ...str
 func armPending(t *testing.T, c *Controller, msgID int) {
 	t.Helper()
 
-	if err := c.manager.SetPendingPromptMsgID(testAdminID, msgID); err != nil {
+	session := c.manager.Session(testAdminID)
+	if session == nil || session.Pending == nil {
+		t.Fatalf("arm pending: no live pending")
+	}
+
+	if err := c.manager.SetPendingPromptMsgID(testAdminID, session.Pending.ID, msgID); err != nil {
 		t.Fatalf("arm pending: %v", err)
 	}
 }
@@ -1038,4 +1043,40 @@ func TestNonAdminInputsAreIgnored(t *testing.T) {
 		t.Fatalf("non-admin reply must be ignored: %+v", outcome)
 	}
 	store.assertNoCallsAfter(t, 0)
+}
+
+// TestOpenDashboardConcurrentWithCommits pins the locking discipline of
+// OpenDashboard under the race detector: /admin publishes a fresh session
+// that is immediately visible to concurrent commits (stale button presses
+// landing as notices), so every field the dashboard render reads must come
+// from a locked snapshot.
+func TestOpenDashboardConcurrentWithCommits(t *testing.T) {
+	c, _ := newTestController(t)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			outcome, err := c.OpenDashboard(context.Background(), testAdminID)
+			if err != nil {
+				t.Errorf("open dashboard: %v", err)
+
+				return
+			}
+			if outcome.Render == nil || outcome.Render.Built == nil {
+				t.Errorf("dashboard render missing")
+
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 50; i++ {
+		// Stale/random sequence callbacks commit notice re-renders on the
+		// live session while OpenDashboard reads it.
+		if _, err := c.HandleCallback(context.Background(), testAdminID, 100, EncodeAction(VerbHome, uint32(i+1))); err != nil {
+			t.Errorf("callback: %v", err)
+		}
+	}
+	<-done
 }

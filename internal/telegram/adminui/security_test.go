@@ -202,3 +202,53 @@ func replyFrom(fromID int64, text string, replyTo tg.Message) tg.Update {
 
 	return update
 }
+
+// TestReplacedPendingPromptNeverCorrelates pins the pending-identity guard
+// end to end: after the admin arms a second input (replacing the first
+// pending), replying to the FIRST prompt must never write the second
+// field — the reply is consumed as inactive instead.
+func TestReplacedPendingPromptNeverCorrelates(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+	h.tap(t, core.VerbGlobalSet)
+
+	// First input: character name.
+	h.tap(t, core.VerbField, "cn")
+	h.tap(t, core.VerbString, "cn")
+	firstPromptMsgID := int(h.api.lastSendMessageID())
+	firstPrompt := botPromptMessage(firstPromptMsgID, core.AdminInputMarker+" — Character name")
+
+	// Second input replaces the pending before any reply arrives.
+	h.tap(t, core.VerbBack)
+	h.tap(t, core.VerbBack)
+	h.tap(t, core.VerbField, "lg")
+	h.tap(t, core.VerbString, "lg")
+	if pending := h.manager.Session(testAdmin).Pending; pending == nil || pending.Field != "language" {
+		t.Fatalf("the language pending must be live, got %+v", pending)
+	}
+	secondPromptMsgID := int(h.api.lastSendMessageID())
+
+	h.deliver(t, replyToBotUpdate("Alice", firstPrompt))
+
+	for _, call := range h.store.writeCalls() {
+		if strings.Contains(call, "SetGlobalField:character_name") || strings.Contains(call, "SetGlobalField:language") {
+			t.Fatalf("reply to a replaced pending's prompt must never write, got %v", call)
+		}
+	}
+	if text := h.api.lastSentText("sendMessage"); !strings.Contains(text, "no longer active") {
+		t.Fatalf("the orphaned reply must be consumed with a notice, got %q", text)
+	}
+
+	// The live pending still correlates only to its own prompt.
+	secondPrompt := botPromptMessage(secondPromptMsgID, core.AdminInputMarker+" — Language")
+	h.deliver(t, replyToBotUpdate("Русский", secondPrompt))
+	found := false
+	for _, call := range h.store.writeCalls() {
+		if strings.Contains(call, "SetGlobalField:language=Русский") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the live pending must still process its own reply, calls: %v", h.store.writeCalls())
+	}
+}

@@ -481,27 +481,57 @@ func TestSetPendingPromptMsgID(t *testing.T) {
 	session := m.Replace(7, ScreenState{Kind: ScreenCatalog})
 
 	// Before any prompt exists, recording must fail (no pending).
-	if err := m.SetPendingPromptMsgID(7, 55); err == nil {
+	if err := m.SetPendingPromptMsgID(7, 1, 55); err == nil {
 		t.Fatalf("recording without a pending must fail")
 	}
 
 	if _, err := m.Apply(7, session.Seq, func(s *Session) error {
-		s.Pending = &Pending{Kind: PendingStringInput, Field: "language"}
+		s.Pending = &Pending{ID: s.NextPendingID(), Kind: PendingStringInput, Field: "language"}
 
 		return nil
 	}); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 
-	if err := m.SetPendingPromptMsgID(7, 55); err != nil {
+	liveID := session.Pending.ID
+
+	if err := m.SetPendingPromptMsgID(7, liveID, 55); err != nil {
 		t.Fatalf("record prompt msg id: %v", err)
 	}
 	if session.Pending.PromptMsgID != 55 {
 		t.Fatalf("prompt message id must be recorded, got %d", session.Pending.PromptMsgID)
 	}
 
-	if err := m.SetPendingPromptMsgID(7, 0); err == nil {
+	if err := m.SetPendingPromptMsgID(7, liveID, 0); err == nil {
 		t.Fatalf("zero message id must be rejected (never visible as live)")
+	}
+
+	// A send for a pending that was already replaced must never stamp the
+	// live one (out-of-order double-tap on two fields).
+	replaced := session.Pending.ID + 1
+	if _, err := m.Apply(7, session.Seq, func(s *Session) error {
+		s.Pending = &Pending{ID: replaced, Kind: PendingStringInput, Field: "tone_mode"}
+
+		return nil
+	}); err != nil {
+		t.Fatalf("apply replacement: %v", err)
+	}
+	if err := m.SetPendingPromptMsgID(7, liveID, 77); err == nil {
+		t.Fatalf("stamping by a replaced pending's id must fail")
+	}
+	if session.Pending.PromptMsgID != 0 {
+		t.Fatalf("the replacement must stay unstamped, got %d", session.Pending.PromptMsgID)
+	}
+
+	// Re-stamping the same pending is refused (one prompt per pending).
+	if err := m.SetPendingPromptMsgID(7, replaced, 88); err != nil {
+		t.Fatalf("stamp replacement: %v", err)
+	}
+	if err := m.SetPendingPromptMsgID(7, replaced, 99); err == nil {
+		t.Fatalf("double stamping must be refused")
+	}
+	if session.Pending.PromptMsgID != 88 {
+		t.Fatalf("the first stamp must win, got %d", session.Pending.PromptMsgID)
 	}
 }
 

@@ -37,8 +37,8 @@ func (a *Adapter) sendPickerKeyboard(ctx *th.Context, adminID int64, picker *cor
 	}
 	// The picker prompt doubles as the pending-input anchor: the ChatShared
 	// response references its message, so correlate it like a ForceReply.
-	if err := a.manager.SetPendingPromptMsgID(adminID, message.MessageID); err != nil {
-		a.logger.Warn("admin ui cannot correlate picker prompt", "admin_id", adminID, "error", err)
+	if err := a.manager.SetPendingPromptMsgID(adminID, picker.PendingID, message.MessageID); err != nil {
+		a.logger.Debug("admin ui picker prompt not correlated", "admin_id", adminID, "error", err)
 	}
 }
 

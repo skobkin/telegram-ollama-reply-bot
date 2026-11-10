@@ -52,14 +52,18 @@ var (
 
 // InputRequest asks the adapter to send a correlated ForceReply prompt. The
 // message ID of the sent message must be recorded via
-// Manager.SetPendingPromptMsgID immediately after the send.
+// Manager.SetPendingPromptMsgID immediately after the send, keyed by
+// PendingID so a replaced pending can never be stamped by a late send.
 type InputRequest struct {
+	PendingID   uint64
 	Text        string
 	Placeholder string
 }
 
-// PickerRequest asks the adapter to send the chat-picker reply keyboard.
+// PickerRequest asks the adapter to send the chat-picker reply keyboard;
+// PendingID keys its correlation exactly like InputRequest.
 type PickerRequest struct {
+	PendingID uint64
 	RequestID int
 	Text      string
 }
@@ -193,16 +197,22 @@ func (c *Controller) OpenDashboard(ctx context.Context, adminID int64) (Outcome,
 
 	session := c.manager.Replace(adminID, ScreenState{Kind: ScreenDashboard})
 
-	screen, err := c.buildScreen(ctx, session.Seq, session.Screen)
+	// Snapshot under the session lock: the fresh session is already visible
+	// to concurrent updates (a stale button press can commit a notice and
+	// bump Seq/Epoch the moment Replace returns).
+	seq, state, _, epoch := session.Snapshot()
+
+	screen, err := c.buildScreen(ctx, seq, state)
 	if err != nil {
 		return Outcome{}, err
 	}
 
 	render := &Render{
 		AdminID: adminID,
-		Epoch:   session.Epoch,
+		Epoch:   epoch,
+		Seq:     seq,
 		MsgID:   oldMsgID,
-		Screen:  session.Screen,
+		Screen:  state,
 		Built:   screen,
 	}
 
@@ -432,7 +442,7 @@ func (c *Controller) attachRender(ctx context.Context, outcome *Outcome, result 
 		return
 	}
 
-	screen, err := c.buildScreen(ctx, result.Session.Seq, result.Render.Screen)
+	screen, err := c.buildScreen(ctx, result.Render.Seq, result.Render.Screen)
 	if err != nil {
 		return
 	}
@@ -516,12 +526,17 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 			return err
 		}
 		s.Pending = &Pending{
+			ID:          s.NextPendingID(),
 			Kind:        PendingStringInput,
 			Field:       name,
 			ScopeChatID: scopeFromScreen(s),
 			ExpiresAt:   now.Add(PendingTTL),
 		}
-		fx.input = &InputRequest{Text: stringInputPrompt(spec, current), Placeholder: "New " + spec.Label}
+		fx.input = &InputRequest{
+			PendingID:   s.Pending.ID,
+			Text:        stringInputPrompt(spec, current),
+			Placeholder: "New " + spec.Label,
+		}
 
 		return nil
 
@@ -613,12 +628,13 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 			return errInvalidArg
 		}
 		s.Pending = &Pending{
+			ID:          s.NextPendingID(),
 			Kind:        PendingPromptText,
 			Feature:     feature,
 			ScopeChatID: scopeFromScreen(s),
 			ExpiresAt:   now.Add(PendingTTL),
 		}
-		fx.input = &InputRequest{Text: promptTextInputPrompt(feature, s.Screen.ChatID)}
+		fx.input = &InputRequest{PendingID: s.Pending.ID, Text: promptTextInputPrompt(feature, s.Screen.ChatID)}
 
 		return nil
 
@@ -628,12 +644,13 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 			return errInvalidArg
 		}
 		s.Pending = &Pending{
+			ID:          s.NextPendingID(),
 			Kind:        PendingDocumentUpload,
 			Feature:     feature,
 			ScopeChatID: scopeFromScreen(s),
 			ExpiresAt:   now.Add(PendingTTL),
 		}
-		fx.input = &InputRequest{Text: promptUploadPrompt(feature, s.Screen.ChatID)}
+		fx.input = &InputRequest{PendingID: s.Pending.ID, Text: promptUploadPrompt(feature, s.Screen.ChatID)}
 
 		return nil
 
@@ -800,15 +817,24 @@ func (c *Controller) handleCatalogVerb(_ context.Context, s *Session, action Act
 
 	switch arg {
 	case "s":
-		s.Pending = &Pending{Kind: PendingSearchInput, ExpiresAt: now.Add(PendingTTL)}
-		fx.input = &InputRequest{Text: searchInputPrompt(), Placeholder: "Search query"}
+		s.Pending = &Pending{ID: s.NextPendingID(), Kind: PendingSearchInput, ExpiresAt: now.Add(PendingTTL)}
+		fx.input = &InputRequest{
+			PendingID:   s.Pending.ID,
+			Text:        searchInputPrompt(),
+			Placeholder: "Search query",
+		}
 
 		return nil
 
 	case "a":
 		requestID := randomRequestID()
-		s.Pending = &Pending{Kind: PendingChatPicker, RequestID: requestID, ExpiresAt: now.Add(PendingTTL)}
-		fx.picker = &PickerRequest{RequestID: requestID, Text: pickerPromptText()}
+		s.Pending = &Pending{
+			ID:        s.NextPendingID(),
+			Kind:      PendingChatPicker,
+			RequestID: requestID,
+			ExpiresAt: now.Add(PendingTTL),
+		}
+		fx.picker = &PickerRequest{PendingID: s.Pending.ID, RequestID: requestID, Text: pickerPromptText()}
 
 		return nil
 
@@ -972,8 +998,13 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 		return nil
 	}
 
+	// The matched prompt message is consumed from here on; releasing its ID
+	// lets a retry arm the SAME pending with its fresh prompt message.
+	promptMsgID := p.PromptMsgID
+	p.PromptMsgID = 0
+
 	deletePromptAndReply := func() {
-		fx.deletes = append(fx.deletes, p.PromptMsgID, in.ReplyMsgID)
+		fx.deletes = append(fx.deletes, promptMsgID, in.ReplyMsgID)
 	}
 
 	// invalid records the failed attempt, cleans up, and either requests a
