@@ -293,14 +293,6 @@ func chatDisplayName(chat t.Chat) string {
 	}
 }
 
-func emptyFallback(value string) string {
-	if value == "" {
-		return "<inherit>"
-	}
-
-	return value
-}
-
 // fetchImageFile performs the shared Telegram image retrieval pipeline: the
 // reported-size pre-check against the configured bound (before any bytes are
 // transferred), the sanitized getFile metadata request, and the bounded,

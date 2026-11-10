@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"strings"
 	"time"
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
@@ -107,9 +108,28 @@ func (b *Bot) collectChatCatalog(ctx *th.Context, update t.Update) error {
 	return ctx.Next(update)
 }
 
+// unknownCommandHandler drops commands outside the supported user-facing
+// set (including removed legacy admin commands) before the conversation
+// pipeline: they never reach history, statistics, or the LLM. The drop is
+// silent by operator decision — a reply would be an abuse vector.
+func (b *Bot) unknownCommandHandler(ctx *th.Context, message t.Message) error {
+	command := "unknown"
+	if matches := th.CommandRegexp.FindStringSubmatch(message.Text); len(matches) == th.CommandMatchGroupsLen {
+		command = "/" + matches[th.CommandMatchCmdGroup]
+	}
+
+	b.handlerLogger(ctx).Debug("dropping unknown command", "command", command)
+
+	return nil
+}
+
 func (b *Bot) accessGate(ctx *th.Context, update t.Update) error {
 	message := update.Message
 	if message == nil || b.admin == nil {
+		return ctx.Next(update)
+	}
+
+	if b.isBootstrapAdminCommand(message) {
 		return ctx.Next(update)
 	}
 
@@ -124,6 +144,26 @@ func (b *Bot) accessGate(ctx *th.Context, update t.Update) error {
 	b.handlerLogger(ctx).Info("ignoring non-whitelisted chat", "chat_id", message.Chat.ID)
 
 	return nil
+}
+
+// isBootstrapAdminCommand is the narrow empty-admin-list bootstrap exception:
+// with BOT__ADMIN_IDS empty and BOT__DM_ADMINS_ONLY off, a private /admin
+// command is admitted so the admin UI can answer with the setup diagnostic
+// (how to set BOT__ADMIN_IDS, including the sender's ID). Nothing else
+// qualifies, no administrative functionality exists without admins, and the
+// earlier dmAdminsOnlyGate still drops every private message when the
+// restriction is enabled — the exception cannot bypass it.
+func (b *Bot) isBootstrapAdminCommand(message *t.Message) bool {
+	if len(b.cfg.AdminIDs) > 0 || b.cfg.DMAdminsOnly || message.Chat.Type != t.ChatTypePrivate {
+		return false
+	}
+
+	matches := th.CommandRegexp.FindStringSubmatch(message.Text)
+	if len(matches) != th.CommandMatchGroupsLen {
+		return false
+	}
+
+	return strings.EqualFold(matches[th.CommandMatchCmdGroup], "admin")
 }
 
 func (b *Bot) chatHistory(ctx *th.Context, update t.Update) error {

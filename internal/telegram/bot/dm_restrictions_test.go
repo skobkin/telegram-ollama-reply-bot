@@ -72,13 +72,15 @@ func (s *dmCatalogSpy) GetAccessPolicy(context.Context) (adminconfig.AccessPolic
 	return adminconfig.AccessPolicyAllowAll, nil
 }
 
-// runDMGateChain pushes one update through the REAL registerMiddlewares chain
-// (request logger → DM gate → catalog → access gate → history → stats) with a
-// marker handler standing in for every command and conversation handler, then
-// reports whether the chain completed and which side effects fired. The base
-// group is driven synchronously via HandleUpdate: BotHandler.Start dispatches
-// updates in goroutines and returns on channel close, which would race the
-// completion checks.
+// runDMGateChain pushes one update through the REAL registerRoutes pipeline
+// (request logger → DM gate → catalog → access gate → admin routes → command
+// guards → history → stats → handlers) and reports which side effects fired.
+// "Reached" means the update made it past every gate into the ephemeral-state
+// middlewares — the DM-gate ordering concern — observed via the history spy
+// (the conversational catch-all terminates the chain, so a trailing marker
+// handler would never fire). The base group is driven synchronously via
+// HandleUpdate: BotHandler.Start dispatches updates in goroutines and returns
+// on channel close, which would race the completion checks.
 func runDMGateChain(t *testing.T, cfg config.BotConfig, update tg.Update) (reached bool, history *dmHistorySpy, stats *dmStatsSpy, catalog *dmCatalogSpy) {
 	t.Helper()
 
@@ -99,24 +101,13 @@ func runDMGateChain(t *testing.T, cfg config.BotConfig, update tg.Update) (reach
 		stats:   stats,
 		admin:   adminconfig.NewService(catalog, nil, nil),
 	}
-	testBot.registerMiddlewares(bh)
-
-	done := make(chan struct{})
-	bh.Handle(func(_ *th.Context, _ tg.Update) error {
-		close(done)
-
-		return nil
-	})
+	testBot.registerRoutes(bh)
 
 	if err := bh.BaseGroup().HandleUpdate(context.Background(), nil, update); err != nil {
 		t.Fatalf("HandleUpdate: %v", err)
 	}
 
-	select {
-	case <-done:
-		reached = true
-	default:
-	}
+	reached = history.appended.Load() > 0
 
 	return reached, history, stats, catalog
 }

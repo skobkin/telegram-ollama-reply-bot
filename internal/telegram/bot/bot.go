@@ -47,6 +47,15 @@ type imageDescriber interface {
 	Analyze(ctx context.Context, imageData []byte, prompt string) (vision.Recognition, error)
 }
 
+// AdminUI is the interactive admin interface hook. The adapter registers its
+// routes at the isolation point before the ephemeral-state middlewares, so
+// every administrative update (commands, callbacks, correlated replies,
+// chat-sharing events) terminates before conversation history and request
+// statistics.
+type AdminUI interface {
+	RegisterRoutes(bh *th.BotHandler, commandForMe th.Predicate)
+}
+
 type Bot struct {
 	api              *t.Bot
 	llm              *llm.Service
@@ -62,6 +71,7 @@ type Bot struct {
 	replyCtx         *llmcontext.ReplyBuilder
 	logger           *slog.Logger
 	admin            *adminconfig.Service
+	adminUI          AdminUI
 	tools            *tooluse.Runtime
 	imageRecognition ImageRecognitionSettings
 }
@@ -171,10 +181,9 @@ func (b *Bot) Run() error {
 		}
 	}()
 
-	logger.Debug("registering message handlers")
-	b.registerMiddlewares(bh)
-	b.registerMessageHandlers(bh)
-	logger.Debug("message handlers registered")
+	logger.Debug("registering routes")
+	b.registerRoutes(bh)
+	logger.Debug("routes registered")
 
 	logger.Debug("starting bot handler")
 	if err := bh.Start(); err != nil {
@@ -187,7 +196,12 @@ func (b *Bot) Run() error {
 	return nil
 }
 
-func (b *Bot) registerMiddlewares(bh *th.BotHandler) {
+// registerRoutes wires the whole update pipeline in one explicit order.
+// Route order is load-bearing: middlewares and handlers share one ordered
+// list and the first matching terminal route stops the chain.
+func (b *Bot) registerRoutes(bh *th.BotHandler) {
+	commandForMe := b.commandForThisBot()
+
 	// Request and access control. The DM restriction gate runs before the
 	// catalog so denied private messages leave no trace at all.
 	bh.Use(b.requestLogger)
@@ -195,38 +209,33 @@ func (b *Bot) registerMiddlewares(bh *th.BotHandler) {
 	bh.Use(b.collectChatCatalog)
 	bh.Use(b.accessGate)
 
+	// The interactive admin UI adapter registers its routes here (private
+	// admin commands, callbacks, correlated replies, chat sharing) so every
+	// administrative update terminates before the ephemeral-state
+	// middlewares. Wired in Run when the adapter is present.
+	if b.adminUI != nil {
+		b.adminUI.RegisterRoutes(bh, commandForMe)
+	}
+
+	// Administrative commands: same handlers and authorization as before,
+	// but registered before the ephemeral-state middlewares so they no
+	// longer land in conversation history or ordinary request statistics.
+	bh.HandleMessage(b.statsHandler, th.And(commandForMe, th.CommandEqual("stats")))
+	bh.HandleMessage(b.resetHandler, th.And(commandForMe, th.CommandEqual("reset")))
+
+	// Unknown commands are dropped before the conversation pipeline: a
+	// typo'd command or a removed legacy admin command must never reach the
+	// LLM, the history, or the request statistics.
+	bh.HandleMessage(b.unknownCommandHandler, th.And(commandForMe, b.notAUserCommand()))
+
 	// Ephemeral state.
 	bh.Use(b.chatHistory)
 	bh.Use(b.chatTypeStatsCounter)
-}
-
-func (b *Bot) registerMessageHandlers(bh *th.BotHandler) {
-	commandForMe := b.commandForThisBot()
 
 	// User-facing commands.
 	bh.HandleMessage(b.startHandler, th.And(commandForMe, th.CommandEqual("start")))
 	bh.HandleMessage(b.summarizeHandler, th.And(commandForMe, th.Or(th.CommandEqual("summarize"), th.CommandEqual("s"))))
-	bh.HandleMessage(b.statsHandler, th.And(commandForMe, th.CommandEqual("stats")))
 	bh.HandleMessage(b.helpHandler, th.And(commandForMe, th.CommandEqual("help")))
-	bh.HandleMessage(b.resetHandler, th.And(commandForMe, th.CommandEqual("reset")))
-
-	// Admin DM commands.
-	bh.HandleMessage(b.adminHelpHandler, th.And(commandForMe, th.CommandEqual("admin_help")))
-	bh.HandleMessage(b.chatListHandler, th.And(commandForMe, th.CommandEqual("chat_list")))
-	bh.HandleMessage(b.configFieldsGlobalHandler, th.And(commandForMe, th.CommandEqual("config_fields_global")))
-	bh.HandleMessage(b.configFieldsChatHandler, th.And(commandForMe, th.CommandEqual("config_fields_chat")))
-	bh.HandleMessage(b.promptFeaturesHandler, th.And(commandForMe, th.CommandEqual("prompt_features")))
-	bh.HandleMessage(b.configShowHandler, th.And(commandForMe, th.CommandEqual("config_show")))
-	bh.HandleMessage(b.configSetGlobalHandler, th.And(commandForMe, th.CommandEqual("config_set_global")))
-	bh.HandleMessage(b.configSetChatHandler, th.And(commandForMe, th.CommandEqual("config_set_chat")))
-	bh.HandleMessage(b.configClearChatHandler, th.And(commandForMe, th.CommandEqual("config_clear_chat")))
-	bh.HandleMessage(b.promptShowHandler, th.And(commandForMe, th.CommandEqual("prompt_show")))
-	bh.HandleMessage(b.promptSetGlobalHandler, th.And(commandForMe, th.CommandEqual("prompt_set_global")))
-	bh.HandleMessage(b.promptSetChatHandler, th.And(commandForMe, th.CommandEqual("prompt_set_chat")))
-	bh.HandleMessage(b.promptClearChatHandler, th.And(commandForMe, th.CommandEqual("prompt_clear_chat")))
-	bh.HandleMessage(b.whitelistAddHandler, th.And(commandForMe, th.CommandEqual("whitelist_add")))
-	bh.HandleMessage(b.whitelistRemoveHandler, th.And(commandForMe, th.CommandEqual("whitelist_remove")))
-	bh.HandleMessage(b.whitelistListHandler, th.And(commandForMe, th.CommandEqual("whitelist_list")))
 
 	// Conversational messages and image posts.
 	bh.Handle(b.textMessageHandler, th.Or(th.AnyMessageWithText(), AnyMessageWithPhoto()))
