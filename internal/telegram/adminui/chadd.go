@@ -9,6 +9,7 @@ import (
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	core "telegram-ollama-reply-bot/internal/adminui"
+	"telegram-ollama-reply-bot/internal/support/safeerr"
 )
 
 // sendPickerKeyboard sends the native chat picker: a reply keyboard with one
@@ -31,7 +32,8 @@ func (a *Adapter) sendPickerKeyboard(ctx *th.Context, session *core.Session, adm
 
 	message, err := a.api.SendMessage(ctx, params)
 	if err != nil {
-		a.logger.Warn("admin ui picker keyboard failed", "admin_id", adminID, "error", err)
+		a.logger.Warn("admin ui picker keyboard failed", "admin_id", adminID,
+			"error", safeerr.WrapTransport(errAdminPromptSend, err))
 
 		return
 	}
@@ -51,7 +53,8 @@ func (a *Adapter) removePickerKeyboard(ctx *th.Context, adminID int64) {
 	params.ReplyMarkup = tu.ReplyKeyboardRemove()
 
 	if _, err := a.api.SendMessage(ctx, params); err != nil {
-		a.logger.Warn("admin ui keyboard removal failed", "admin_id", adminID, "error", err)
+		a.logger.Warn("admin ui keyboard removal failed", "admin_id", adminID,
+			"error", safeerr.WrapTransport(errAdminMessageSend, err))
 	}
 }
 
@@ -95,7 +98,8 @@ func (a *Adapter) verifyChat(ctx *th.Context, adminID int64, verify *core.Verify
 	switch {
 	case err != nil:
 		a.logger.Warn("admin ui cannot verify chat, adding unverified",
-			"admin_id", adminID, "chat_id", verify.ChatID, "error", err)
+			"admin_id", adminID, "chat_id", verify.ChatID,
+			"error", safeerr.WrapTransport(errAdminChatVerify, err))
 		entry = adminconfig.ChatCatalogEntry{ChatID: verify.ChatID, ChatType: "unknown"}
 	case info == nil:
 		a.logger.Warn("admin ui empty chat info, adding unverified", "admin_id", adminID, "chat_id", verify.ChatID)

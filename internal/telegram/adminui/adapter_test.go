@@ -63,6 +63,7 @@ type memStore struct {
 	catalog   []adminconfig.ChatCatalogEntry
 	policy    adminconfig.AccessPolicy
 	whitelist map[int64]bool
+	failNext  map[string]error // first call to the named method fails once
 	calls     []string
 
 	// failPolicy makes GetAccessPolicy fail, to exercise error feedback.
@@ -75,7 +76,29 @@ func newMemStore() *memStore {
 		prompts:   make(map[string]string),
 		policy:    adminconfig.AccessPolicyAllowlist,
 		whitelist: make(map[int64]bool),
+		failNext:  make(map[string]error),
 	}
+}
+
+// failOnce arms a one-shot persistence failure: the first call to the named
+// store method returns err, later calls behave normally (a transient SQLite
+// outage).
+func (s *memStore) failOnce(method string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNext[method] = err
+}
+
+func (s *memStore) takeFailure(method string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	err, ok := s.failNext[method]
+	if ok {
+		delete(s.failNext, method)
+	}
+
+	return err
 }
 
 func (s *memStore) record(call string) {
@@ -99,6 +122,9 @@ func (s *memStore) GetGlobalSettings(context.Context) (adminconfig.GlobalSetting
 }
 
 func (s *memStore) SetGlobalField(_ context.Context, field, value string, _ int64) error {
+	if err := s.takeFailure("SetGlobalField"); err != nil {
+		return err
+	}
 	s.record("SetGlobalField:" + field + "=" + value)
 	s.mu.Lock()
 	switch field {
@@ -1460,5 +1486,105 @@ func TestEmptyPromptUploadRejected(t *testing.T) {
 	}
 	if text := h.api.lastSentText("sendMessage"); !strings.Contains(text, "must not be empty") {
 		t.Fatalf("actionable rejection expected, got %q", text)
+	}
+}
+
+// TestAdminAPITransportErrorsNeverLeakToken pins the log sanitizer across the
+// adapter's Telegram IO: raw transport errors carry the token-bearing Bot
+// API URL, and only the typed sentinel may reach the logs.
+func TestAdminAPITransportErrorsNeverLeakToken(t *testing.T) {
+	tokenErr := func(method string) error {
+		return errors.New(`Post "https://api.telegram.org/bot` + testToken + `/` + method + `": dial tcp 1.2.3.4:443: i/o timeout`)
+	}
+	assertSanitized := func(t *testing.T, h *harness, sentinel string) {
+		t.Helper()
+		logs := h.logs.String()
+		if !strings.Contains(logs, sentinel) {
+			t.Fatalf("the typed sentinel must be logged, got %q", logs)
+		}
+		if strings.Contains(logs, testToken) || strings.Contains(logs, "api.telegram.org") {
+			t.Fatalf("the token-bearing transport error must never appear in logs: %q", logs)
+		}
+	}
+
+	t.Run("screen update", func(t *testing.T) {
+		h := newHarness(t)
+		h.open(t)
+		h.api.mu.Lock()
+		h.api.failMethods["editMessageText"] = tokenErr("editMessageText")
+		h.api.mu.Unlock()
+
+		h.tap(t, core.VerbCatalog, "1")
+
+		assertSanitized(t, h, "admin ui screen update failed")
+	})
+
+	t.Run("input prompt send", func(t *testing.T) {
+		h := newHarness(t)
+		h.open(t)
+		h.tap(t, core.VerbGlobalSet)
+		h.tap(t, core.VerbField, "lg")
+		h.api.mu.Lock()
+		h.api.failMethods["sendMessage"] = tokenErr("sendMessage")
+		h.api.mu.Unlock()
+
+		h.tap(t, core.VerbString, "lg")
+
+		assertSanitized(t, h, "admin ui input prompt send failed")
+	})
+
+	t.Run("callback acknowledgement", func(t *testing.T) {
+		h := newHarness(t)
+		h.open(t)
+		h.api.mu.Lock()
+		h.api.failMethods["answerCallbackQuery"] = tokenErr("answerCallbackQuery")
+		h.api.mu.Unlock()
+
+		h.tap(t, core.VerbCatalog, "1")
+
+		assertSanitized(t, h, "admin ui callback acknowledgement failed")
+	})
+}
+
+// TestFailedSaveKeepsPromptReplyableEndToEnd drives the persistence-failure
+// recovery through the real handler chain: the failed save is surfaced as
+// feedback, the prompt and its reply stay in the chat, and a retry reply to
+// the SAME still-visible prompt message applies.
+func TestFailedSaveKeepsPromptReplyableEndToEnd(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+	h.tap(t, core.VerbGlobalSet)
+	h.tap(t, core.VerbField, "lg")
+	h.tap(t, core.VerbString, "lg")
+
+	prompt := botPromptMessage(int(h.api.lastSendMessageID()), core.AdminInputMarker+" — language")
+	h.store.failOnce("SetGlobalField", errors.New("sqlite busy"))
+
+	h.deliver(t, replyToBotUpdate("  Русский  ", prompt))
+
+	if text := h.api.lastSentText("sendMessage"); !strings.Contains(text, "Failed:") {
+		t.Fatalf("failure feedback expected, got %q", text)
+	}
+	if got := h.api.callCount("deleteMessage"); got != 0 {
+		t.Fatalf("a failed save must not clean up the prompt or reply, got %d deletes", got)
+	}
+	if calls := h.store.writeCalls(); len(calls) != 0 {
+		t.Fatalf("a failed save must not write, got %v", calls)
+	}
+
+	// Retry: reply to the SAME prompt message — it must still correlate.
+	h.deliver(t, replyToBotUpdate("  Русский  ", prompt))
+
+	found := false
+	for _, call := range h.store.writeCalls() {
+		if strings.Contains(call, "SetGlobalField:language=Русский") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the retried reply must save the value, calls: %v", h.store.writeCalls())
+	}
+	if text := h.api.lastSentText("editMessageText"); !strings.Contains(text, "Saved.") {
+		t.Fatalf("the retried save must refresh the screen, got %q", text)
 	}
 }

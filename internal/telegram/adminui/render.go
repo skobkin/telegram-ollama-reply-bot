@@ -8,6 +8,7 @@ import (
 	tu "github.com/mymmrac/telego/telegoutil"
 
 	core "telegram-ollama-reply-bot/internal/adminui"
+	"telegram-ollama-reply-bot/internal/support/safeerr"
 )
 
 // applyRender performs one visible menu update through the per-admin render
@@ -53,7 +54,10 @@ func (a *Adapter) applyRender(ctx *th.Context, adminID int64, render *core.Rende
 		return nil
 	})
 	if err != nil {
-		a.logger.Warn("admin ui render failed", "admin_id", adminID, "error", err)
+		// Transport failures can embed the token-bearing API URL — log the
+		// sanitized kind only.
+		a.logger.Warn("admin ui render failed", "admin_id", adminID,
+			"error", safeerr.WrapTransport(errAdminScreenUpdate, err))
 	}
 }
 
@@ -95,7 +99,8 @@ func (a *Adapter) sendInputPrompt(ctx *th.Context, session *core.Session, adminI
 
 	message, err := a.api.SendMessage(ctx, params)
 	if err != nil {
-		a.logger.Warn("admin ui input prompt failed", "admin_id", adminID, "error", err)
+		a.logger.Warn("admin ui input prompt failed", "admin_id", adminID,
+			"error", safeerr.WrapTransport(errAdminPromptSend, err))
 
 		return
 	}
@@ -107,7 +112,8 @@ func (a *Adapter) sendInputPrompt(ctx *th.Context, session *core.Session, adminI
 // sendPlain sends a plain text message without any keyboard.
 func (a *Adapter) sendPlain(ctx *th.Context, adminID int64, text string) {
 	if _, err := a.api.SendMessage(ctx, tu.Message(tu.ID(adminID), text)); err != nil {
-		a.logger.Warn("admin ui message send failed", "admin_id", adminID, "error", err)
+		a.logger.Warn("admin ui message send failed", "admin_id", adminID,
+			"error", safeerr.WrapTransport(errAdminMessageSend, err))
 	}
 }
 
@@ -116,7 +122,8 @@ func (a *Adapter) sendPlain(ctx *th.Context, adminID int64, text string) {
 func (a *Adapter) sendDocumentPayload(ctx *th.Context, adminID int64, payload *core.DocumentPayload) {
 	params := tu.Document(tu.ID(adminID), tu.FileFromBytes(payload.Content, payload.Filename))
 	if _, err := a.api.SendDocument(ctx, params); err != nil {
-		a.logger.Warn("admin ui document send failed", "admin_id", adminID, "error", err)
+		a.logger.Warn("admin ui document send failed", "admin_id", adminID,
+			"error", safeerr.WrapTransport(errAdminDocumentSend, err))
 	}
 }
 

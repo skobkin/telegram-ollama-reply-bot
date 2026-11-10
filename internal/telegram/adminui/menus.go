@@ -6,6 +6,8 @@ import (
 	t "github.com/mymmrac/telego"
 	th "github.com/mymmrac/telego/telegohandler"
 	tu "github.com/mymmrac/telego/telegoutil"
+
+	"telegram-ollama-reply-bot/internal/support/safeerr"
 )
 
 // Command menus: what each surface advertises. The default (all private
@@ -82,8 +84,13 @@ func (a *Adapter) retryAdminMenu(ctx *th.Context, adminID int64) {
 }
 
 func (a *Adapter) setCommands(ctx context.Context, scope t.BotCommandScope, commands []t.BotCommand) error {
-	return a.api.SetMyCommands(ctx, &t.SetMyCommandsParams{
+	if err := a.api.SetMyCommands(ctx, &t.SetMyCommandsParams{
 		Commands: commands,
 		Scope:    scope,
-	})
+	}); err != nil {
+		// Sanitized here once: every caller logs the returned error.
+		return safeerr.WrapTransport(errAdminMenuSync, err)
+	}
+
+	return nil
 }

@@ -186,6 +186,54 @@ func TestSessionTTLSlidesOnRerender(t *testing.T) {
 	}
 }
 
+// TestSessionTTLSlidesOnReadOnlyActions pins the sliding window for
+// interactions that never re-render: a successful read-only commit (a prompt
+// download or view) must refresh the session without changing Seq — the
+// visible keyboard stays valid — while failed and stale-seq applies must not
+// extend the session.
+func TestSessionTTLSlidesOnReadOnlyActions(t *testing.T) {
+	start := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	offset := atomic.Int64{}
+	m := NewManager(func() time.Time { return start.Add(time.Duration(offset.Load()) * time.Second) })
+
+	session := m.Replace(7, ScreenState{Kind: ScreenDashboard})
+	session.mu.Lock()
+	firstExpiry, seq := session.ExpiresAt, session.Seq
+	session.mu.Unlock()
+
+	offset.Store(int64((SessionTTL - time.Minute).Seconds()))
+	if _, err := m.Apply(7, seq, func(*Session) error { return nil }); err != nil {
+		t.Fatalf("read-only apply: %v", err)
+	}
+	session.mu.Lock()
+	if !session.ExpiresAt.After(firstExpiry) {
+		t.Fatalf("a successful read-only action must slide the TTL")
+	}
+	if session.Seq != seq {
+		t.Fatalf("a read-only action must not change Seq: got %d, want %d", session.Seq, seq)
+	}
+	failedExpiry := session.ExpiresAt
+	session.mu.Unlock()
+
+	// A failed commit is not activity.
+	if _, err := m.Apply(7, seq, func(*Session) error { return errors.New("store down") }); err == nil {
+		t.Fatalf("expected the injected failure")
+	}
+
+	// A stale-seq press is not activity either. seq+100 cannot alias seq;
+	// only an astronomically unlikely uint32 wraparound could land it on the
+	// correlation zero, and that would be a harmless no-op apply.
+	if _, err := m.Apply(7, seq+100, func(*Session) error { return nil }); !errors.Is(err, ErrSeqStale) {
+		t.Fatalf("expected stale error, got %v", err)
+	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if !session.ExpiresAt.Equal(failedExpiry) {
+		t.Fatalf("failed or stale applies must not slide the TTL")
+	}
+}
+
 func TestCloseDetachesAndDrops(t *testing.T) {
 	m := NewManager(nil)
 	session := m.Replace(7, ScreenState{Kind: ScreenDashboard})

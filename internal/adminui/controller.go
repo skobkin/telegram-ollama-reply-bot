@@ -1019,10 +1019,12 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 		return nil
 	}
 
-	// The matched prompt message is consumed from here on; releasing its ID
-	// lets a retry arm the SAME pending with its fresh prompt message.
+	// The matched prompt message stays correlated until the outcome is
+	// known: when persistence fails, the pending must keep matching its
+	// original prompt so the admin can simply reply again. invalid()
+	// releases the ID so its fresh retry prompt can re-arm the SAME
+	// pending; success paths clear the pending outright.
 	promptMsgID := p.PromptMsgID
-	p.PromptMsgID = 0
 
 	deletePromptAndReply := func() {
 		fx.deletes = append(fx.deletes, promptMsgID, in.ReplyMsgID)
@@ -1032,6 +1034,7 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 	// fresh prompt or cancels after MaxInputAttempts tries.
 	invalid := func(err error) error {
 		p.Attempts++
+		p.PromptMsgID = 0 // released: the fresh retry prompt re-arms this pending
 		deletePromptAndReply()
 
 		if p.Attempts >= MaxInputAttempts {
@@ -1115,17 +1118,21 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 		return nil
 
 	case PendingPromptText:
-		text, err := textOnly()
-		if err != nil {
-			return invalid(err)
+		if in.Document != nil {
+			return invalid(errors.New("send a text message, not a document"))
+		}
+		// Prompt bodies are stored verbatim: trimming is validation only
+		// (whitespace-only means empty — the service rejects it below).
+		if strings.TrimSpace(in.Text) == "" {
+			return invalid(errors.New("the template must not be empty"))
 		}
 		if len(in.Text) > PromptBodyLimit {
 			return invalid(fmt.Errorf("the template exceeds %d bytes", PromptBodyLimit))
 		}
-		if err := c.service.ValidatePromptBody(p.Feature, text); err != nil {
+		if err := c.service.ValidatePromptBody(p.Feature, in.Text); err != nil {
 			return invalid(err)
 		}
-		if err := c.service.SetPrompt(ctx, p.Feature, p.ScopeChatID, text, adminID); err != nil {
+		if err := c.service.SetPrompt(ctx, p.Feature, p.ScopeChatID, in.Text, adminID); err != nil {
 			return err
 		}
 		s.Pending = nil

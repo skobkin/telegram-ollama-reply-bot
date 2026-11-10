@@ -18,6 +18,7 @@ import (
 	tu "github.com/mymmrac/telego/telegoutil"
 
 	core "telegram-ollama-reply-bot/internal/adminui"
+	"telegram-ollama-reply-bot/internal/support/safeerr"
 )
 
 // msgAdminOnly mirrors the /stats denial text for non-admin /cancel and
@@ -163,7 +164,8 @@ func (a *Adapter) handleCallback(ctx *th.Context, query t.CallbackQuery) error {
 			params.Text = text
 		}
 		if err := ctx.Bot().AnswerCallbackQuery(ctx, params); err != nil {
-			a.logger.Warn("admin ui cannot answer callback query", "admin_id", query.From.ID, "error", err)
+			a.logger.Warn("admin ui cannot answer callback query", "admin_id", query.From.ID,
+				"error", safeerr.WrapTransport(errAdminCallbackAck, err))
 		}
 	}
 
@@ -245,7 +247,8 @@ func (a *Adapter) applyOutcome(ctx *th.Context, adminID int64, outcome core.Outc
 
 	for _, msgID := range outcome.DeleteMsgIDs {
 		if err := a.api.DeleteMessage(ctx, &t.DeleteMessageParams{ChatID: tu.ID(adminID), MessageID: msgID}); err != nil {
-			a.logger.Debug("admin ui message cleanup failed", "admin_id", adminID, "message_id", msgID, "error", err)
+			a.logger.Debug("admin ui message cleanup failed", "admin_id", adminID, "message_id", msgID,
+				"error", safeerr.WrapTransport(errAdminMessageCleanup, err))
 		}
 	}
 

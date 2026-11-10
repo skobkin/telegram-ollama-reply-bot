@@ -316,6 +316,9 @@ type ApplyResult struct {
 //     (document downloads, prompt views) must keep the already-visible
 //     keyboard valid, and replay protection for real mutations comes from
 //     the store write itself plus the Seq the NEXT render mints;
+//   - every successful commit refreshes the sliding TTL (the documented
+//     inactivity window), so read-only interactions keep the session alive
+//     without changing Seq; failed and stale-seq applies do not;
 //   - an error return aborts the commit — fn must arrange to touch session
 //     state only after its own operations succeed (the controller's
 //     discipline: mutate the store first, the session last).
@@ -347,13 +350,15 @@ func (m *Manager) Apply(adminID int64, seq uint32, fn func(s *Session) error) (A
 
 	if rerender {
 		session.Seq++
-	}
-	if rerender {
 		m.mu.Lock()
 		session.Epoch = m.nextEpochLocked()
 		m.mu.Unlock()
-		session.ExpiresAt = m.now().Add(SessionTTL)
 	}
+	// Sliding TTL: every commit reaching this point succeeded — failed and
+	// stale-seq applies returned above — so every successful interaction is
+	// activity, including read-only actions that leave Seq, and the visible
+	// keyboard, untouched.
+	session.ExpiresAt = m.now().Add(SessionTTL)
 
 	return ApplyResult{Session: session, Render: renderOf(session, rerender)}, nil
 }

@@ -26,6 +26,7 @@ type recordingStore struct {
 	catalog   []adminconfig.ChatCatalogEntry
 	policy    adminconfig.AccessPolicy
 	whitelist map[int64]adminconfig.WhitelistEntry
+	failNext  map[string]error // first call to the named method fails once
 	calls     []string
 }
 
@@ -40,6 +41,7 @@ func newRecordingStore() *recordingStore {
 		prompts:   make(map[promptKey]string),
 		policy:    adminconfig.AccessPolicyAllowlist,
 		whitelist: make(map[int64]adminconfig.WhitelistEntry),
+		failNext:  make(map[string]error),
 	}
 	store.global = adminconfig.GlobalSettings{
 		CharacterName:            "Ada",
@@ -67,6 +69,27 @@ func (s *recordingStore) writeCalls() []string {
 	return append([]string(nil), s.calls...)
 }
 
+// failOnce arms a one-shot persistence failure: the first call to the named
+// store method returns err, later calls behave normally (a transient SQLite
+// outage).
+func (s *recordingStore) failOnce(method string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failNext[method] = err
+}
+
+func (s *recordingStore) takeFailure(method string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	err, ok := s.failNext[method]
+	if ok {
+		delete(s.failNext, method)
+	}
+
+	return err
+}
+
 func (s *recordingStore) GetGlobalSettings(context.Context) (adminconfig.GlobalSettings, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -75,6 +98,9 @@ func (s *recordingStore) GetGlobalSettings(context.Context) (adminconfig.GlobalS
 }
 
 func (s *recordingStore) SetGlobalField(_ context.Context, field, value string, _ int64) error {
+	if err := s.takeFailure("SetGlobalField"); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.record("SetGlobalField:" + field + "=" + value)
@@ -123,6 +149,9 @@ func (s *recordingStore) GetChatSettings(_ context.Context, chatID int64) (admin
 }
 
 func (s *recordingStore) SetChatField(_ context.Context, chatID int64, field, value string, _ int64) error {
+	if err := s.takeFailure("SetChatField"); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.record("SetChatField:" + strconv.FormatInt(chatID, 10) + ":" + field + "=" + value)
@@ -162,6 +191,9 @@ func (s *recordingStore) GetPromptTemplate(_ context.Context, feature adminconfi
 }
 
 func (s *recordingStore) SetPromptTemplate(_ context.Context, feature adminconfig.PromptFeature, chatID int64, body string, _ int64) error {
+	if err := s.takeFailure("SetPromptTemplate"); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.record("SetPromptTemplate:" + strconv.FormatInt(chatID, 10) + ":" + string(feature))
@@ -576,6 +608,196 @@ func TestStringInputFlowSaveAndAttemptsCancel(t *testing.T) {
 
 	// Only the successful language write happened; no tone_mode write.
 	store.assertCalls(t, "SetGlobalField:language=Русский")
+}
+
+// TestFailedSettingSaveKeepsPendingCorrelated pins persistence-failure
+// recovery: a failed store write must leave the pending input matching its
+// ORIGINAL prompt message — no attempt consumed, no cleanup — so the admin
+// simply replies to the same prompt again instead of restarting the flow.
+func TestFailedSettingSaveKeepsPendingCorrelated(t *testing.T) {
+	c, store := newTestController(t)
+	session := mustOpen(t, c)
+
+	tap(t, c, session, VerbGlobalSet)
+	tap(t, c, session, VerbField, "lg")
+	tap(t, c, session, VerbString, "lg")
+
+	armPending(t, c, 70)
+	store.failOnce("SetGlobalField", errors.New("sqlite busy"))
+	outcome, err := c.HandleReply(context.Background(), testAdminID, ReplyInput{
+		ReplyToMsgID: 70, TextAvailable: true, Text: "  Русский  ", ReplyMsgID: 401,
+	})
+	if err != nil {
+		t.Fatalf("handle reply: %v", err)
+	}
+	if outcome.Message == nil || !strings.Contains(outcome.Message.Text, "Failed:") {
+		t.Fatalf("persistence failure must be surfaced: %+v", outcome.Message)
+	}
+	if outcome.Render != nil || len(outcome.DeleteMsgIDs) > 0 {
+		t.Fatalf("a failed save must not re-render or delete anything: %+v", outcome)
+	}
+	if calls := store.writeCalls(); len(calls) != 0 {
+		t.Fatalf("a failed write must not record a store write, got %v", calls)
+	}
+
+	session.mu.Lock()
+	if pending := session.Pending; pending == nil {
+		session.mu.Unlock()
+		t.Fatalf("a failed save must keep the pending input alive")
+	} else {
+		if pending.PromptMsgID != 70 {
+			t.Fatalf("failed save must keep the original prompt correlation, got %d", pending.PromptMsgID)
+		}
+		if pending.Attempts != 0 {
+			t.Fatalf("a transient failure must not consume an attempt, got %d", pending.Attempts)
+		}
+		session.mu.Unlock()
+	}
+
+	// The retry: same prompt message, same value — now the write succeeds.
+	outcome, err = c.HandleReply(context.Background(), testAdminID, ReplyInput{
+		ReplyToMsgID: 70, TextAvailable: true, Text: "  Русский  ", ReplyMsgID: 402,
+	})
+	if err != nil {
+		t.Fatalf("retry reply: %v", err)
+	}
+	store.assertCalls(t, "SetGlobalField:language=Русский")
+	if outcome.Render == nil || !strings.Contains(outcome.Render.Built.Text, "Saved.") {
+		t.Fatalf("the retried save must succeed with a notice: %+v", outcome.Render)
+	}
+	session.mu.Lock()
+	pending := session.Pending
+	session.mu.Unlock()
+	if pending != nil {
+		t.Fatalf("the successful retry must clear the pending")
+	}
+
+	// Chat-scoped writes take the same recovery path through SetChatField.
+	tap(t, c, session, VerbCatalog, "1")
+	tap(t, c, session, VerbChat, strconv.FormatInt(testGroupID, 10))
+	tap(t, c, session, VerbChatSet)
+	tap(t, c, session, VerbField, "lg")
+	tap(t, c, session, VerbString, "lg")
+
+	armPending(t, c, 75)
+	store.failOnce("SetChatField", errors.New("sqlite busy"))
+	outcome, err = c.HandleReply(context.Background(), testAdminID, ReplyInput{
+		ReplyToMsgID: 75, TextAvailable: true, Text: "Deutsch", ReplyMsgID: 403,
+	})
+	if err != nil {
+		t.Fatalf("chat-scoped reply: %v", err)
+	}
+	if outcome.Message == nil || !strings.Contains(outcome.Message.Text, "Failed:") {
+		t.Fatalf("chat-scope persistence failure must be surfaced: %+v", outcome.Message)
+	}
+	session.mu.Lock()
+	if chatPending := session.Pending; chatPending == nil || chatPending.PromptMsgID != 75 {
+		session.mu.Unlock()
+		t.Fatalf("chat-scoped failure must keep the pending correlated, got %+v", chatPending)
+	}
+	session.mu.Unlock()
+
+	outcome, err = c.HandleReply(context.Background(), testAdminID, ReplyInput{
+		ReplyToMsgID: 75, TextAvailable: true, Text: "Deutsch", ReplyMsgID: 404,
+	})
+	if err != nil {
+		t.Fatalf("chat-scoped retry: %v", err)
+	}
+	store.assertCalls(t,
+		"SetGlobalField:language=Русский",
+		"SetChatField:-100200300400:language=Deutsch",
+	)
+}
+
+// TestFailedPromptSaveKeepsBodyVerbatimAndCorrelated covers the same
+// persistence-failure recovery for prompt templates, including that the
+// retried body is persisted byte-for-byte.
+func TestFailedPromptSaveKeepsBodyVerbatimAndCorrelated(t *testing.T) {
+	c, store := newTestController(t)
+	session := mustOpen(t, c)
+
+	tap(t, c, session, VerbPrompts)
+	tap(t, c, session, VerbPromptFeat, "ch")
+	tap(t, c, session, VerbPromptText, "ch")
+
+	body := "\nYou are {{.CharacterName}}.\n\nStay playful.  \n"
+	armPending(t, c, 80)
+	store.failOnce("SetPromptTemplate", errors.New("disk I/O error"))
+	outcome, err := c.HandleReply(context.Background(), testAdminID, ReplyInput{
+		ReplyToMsgID: 80, TextAvailable: true, Text: body, ReplyMsgID: 410,
+	})
+	if err != nil {
+		t.Fatalf("handle reply: %v", err)
+	}
+	if outcome.Message == nil || !strings.Contains(outcome.Message.Text, "Failed:") {
+		t.Fatalf("persistence failure must be surfaced: %+v", outcome.Message)
+	}
+
+	session.mu.Lock()
+	pending := session.Pending
+	if pending == nil {
+		session.mu.Unlock()
+		t.Fatalf("a failed save must keep the pending input alive")
+	}
+	if pending.PromptMsgID != 80 {
+		t.Fatalf("failed save must keep the original prompt correlation, got %d", pending.PromptMsgID)
+	}
+	session.mu.Unlock()
+
+	outcome, err = c.HandleReply(context.Background(), testAdminID, ReplyInput{
+		ReplyToMsgID: 80, TextAvailable: true, Text: body, ReplyMsgID: 411,
+	})
+	if err != nil {
+		t.Fatalf("retry reply: %v", err)
+	}
+	store.assertCalls(t, "SetPromptTemplate:0:chat")
+	store.mu.Lock()
+	saved := store.prompts[promptKey{feature: adminconfig.PromptFeatureChat, chat: 0}]
+	store.mu.Unlock()
+	if saved != body {
+		t.Fatalf("prompt body must be stored verbatim:\ngot:  %q\nwant: %q", saved, body)
+	}
+}
+
+// TestPromptTextStoredVerbatim pins exact prompt-body preservation: the body
+// is stored byte-for-byte — trimming is validation only — and a
+// whitespace-only body is still rejected as empty.
+func TestPromptTextStoredVerbatim(t *testing.T) {
+	c, store := newTestController(t)
+	session := mustOpen(t, c)
+
+	tap(t, c, session, VerbPrompts)
+	tap(t, c, session, VerbPromptFeat, "ch")
+	tap(t, c, session, VerbPromptText, "ch")
+
+	body := "\n  You are {{.CharacterName}}.\n\nStay playful.  \n"
+	armPending(t, c, 85)
+	if _, err := c.HandleReply(context.Background(), testAdminID, ReplyInput{
+		ReplyToMsgID: 85, TextAvailable: true, Text: body, ReplyMsgID: 420,
+	}); err != nil {
+		t.Fatalf("handle reply: %v", err)
+	}
+	store.assertCalls(t, "SetPromptTemplate:0:chat")
+	store.mu.Lock()
+	saved := store.prompts[promptKey{feature: adminconfig.PromptFeatureChat, chat: 0}]
+	store.mu.Unlock()
+	if saved != body {
+		t.Fatalf("prompt body must be stored verbatim:\ngot:  %q\nwant: %q", saved, body)
+	}
+
+	// Whitespace-only remains an empty template: retry prompt, no new write.
+	tap(t, c, session, VerbPromptText, "ch")
+	armPending(t, c, 86)
+	outcome, err := c.HandleReply(context.Background(), testAdminID, ReplyInput{
+		ReplyToMsgID: 86, TextAvailable: true, Text: "   \n\t", ReplyMsgID: 421,
+	})
+	if err != nil {
+		t.Fatalf("handle empty reply: %v", err)
+	}
+	if outcome.Input == nil || !strings.Contains(outcome.Input.Text, "must not be empty") {
+		t.Fatalf("whitespace-only body must be rejected as empty: %+v", outcome.Input)
+	}
+	store.assertCalls(t, "SetPromptTemplate:0:chat")
 }
 
 func TestPromptSourcesDownloadsAndDistinctResets(t *testing.T) {
