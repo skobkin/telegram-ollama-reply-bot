@@ -262,9 +262,12 @@ func (r *countingReader) Read(p []byte) (int, error) {
 // TestDownloadFileWithContext_ErrorBodyNotDrained ensures a non-200 response
 // body is never consumed unboundedly: an endless error body must neither
 // bypass the size bound nor stall the caller before the HTTP error surfaces.
+//
+// Deliberately NOT parallel: it swaps the package-global fileDownloadClient,
+// which parallel package tests read. Sequential tests run one at a time while
+// parallel tests are paused, so the mutation is isolated; the cleanup still
+// restores the original client.
 func TestDownloadFileWithContext_ErrorBodyNotDrained(t *testing.T) {
-	t.Parallel()
-
 	body := &countingReader{r: strings.NewReader(strings.Repeat("x", 100_000))}
 	old := fileDownloadClient
 	fileDownloadClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
