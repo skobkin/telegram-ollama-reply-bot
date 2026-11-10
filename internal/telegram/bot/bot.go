@@ -188,8 +188,10 @@ func (b *Bot) Run() error {
 }
 
 func (b *Bot) registerMiddlewares(bh *th.BotHandler) {
-	// Request and access control.
+	// Request and access control. The DM restriction gate runs before the
+	// catalog so denied private messages leave no trace at all.
 	bh.Use(b.requestLogger)
+	bh.Use(b.dmAdminsOnlyGate)
 	bh.Use(b.collectChatCatalog)
 	bh.Use(b.accessGate)
 

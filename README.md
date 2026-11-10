@@ -56,6 +56,7 @@ The bot can be configured using the following environment variables:
 | `SENTRY__DSN`                                       | Sentry DSN for error tracking                                                                                     | No       | empty                    |
 | `PERSISTENT__STORE_PATH`                            | Path to the SQLite database used for durable bot data                                                             | No       | `/data/db.sqlite`        |
 | `BOT__ADMIN_IDS`                                    | Comma-separated list of admin user IDs                                                                            | No       | empty                    |
+| `BOT__DM_ADMINS_ONLY`                               | When `true`, private-chat messages from non-admin users are silently dropped before any processing (history, catalog, stats, commands, LLM). Group chats are unaffected. With an empty `BOT__ADMIN_IDS` this drops **all** private messages. | No       | `false`                  |
 | `MCP__ENABLED`                                     | Master switch for MCP tool servers; tools are registered only when `true`                                         | No       | `false`                  |
 | `MCP__SERVERS__<NAME>__URL`                        | Streamable HTTP endpoint of an MCP server (e.g. `https://mcp.example.com/mcp`)                                    | No       | empty                    |
 | `MCP__SERVERS__<NAME>__HEADERS__<SEG>[__<SEG>...]` | HTTP header sent to that MCP server (e.g. `Authorization=Bearer …`). Values are never logged.                     | No       | empty                    |
@@ -184,6 +185,15 @@ If `SEARCH__BACKEND` is unset or set to `none`, the `search_web` tool is not exp
 
 By default, chat interactivity is `disabled`. Configure it from an admin DM before expecting the bot to answer normal
 chat messages.
+
+### DM restrictions
+
+`BOT__DM_ADMINS_ONLY=true` makes private chats admin-only: messages from users not listed in
+`BOT__ADMIN_IDS` are silently dropped before any side effect — they are not stored in history,
+cataloged, counted, or answered, and no command (including `/summarize`) runs for them. Group and
+supergroup chats are never affected; whitelist and interactivity rules keep applying there as
+before. Because admins are identified solely by `BOT__ADMIN_IDS`, enabling this flag with an empty
+`BOT__ADMIN_IDS` drops **all** private messages, including admin commands.
 
 ### Admin DM commands
 

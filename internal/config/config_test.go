@@ -242,6 +242,56 @@ func TestLoadImageRecognitionEnabledCanBeDisabled(t *testing.T) {
 	}
 }
 
+func TestLoadDMAdminsOnlyDefaultsToFalse(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.Bot.DMAdminsOnly {
+		t.Fatalf("expected DM admins-only restriction to be disabled by default")
+	}
+}
+
+func TestLoadDMAdminsOnlyCanBeEnabled(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("BOT__DM_ADMINS_ONLY", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if !cfg.Bot.DMAdminsOnly {
+		t.Fatalf("expected DM admins-only restriction to be enabled")
+	}
+}
+
+func TestLoadDMAdminsOnlyExplicitFalse(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("BOT__DM_ADMINS_ONLY", "false")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.Bot.DMAdminsOnly {
+		t.Fatalf("expected explicit false to keep DM admins-only restriction disabled")
+	}
+}
+
+func TestLoadDMAdminsOnlyRejectsInvalidValue(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("BOT__DM_ADMINS_ONLY", "banana")
+
+	if _, err := Load(); err == nil {
+		t.Fatalf("expected invalid BOT__DM_ADMINS_ONLY value to fail the load")
+	}
+}
+
 func TestLoadIgnoresPlainEnvVarsWithoutDelimiter(t *testing.T) {
 	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
 	// Plain scalar variables whose lowercased names collide with top-level

@@ -76,7 +76,12 @@ type LoggingConfig struct {
 
 // BotConfig contains configuration for bot settings.
 type BotConfig struct {
-	AdminIDs                 []int64        `koanf:"admin_ids"`
+	AdminIDs []int64 `koanf:"admin_ids"`
+	// DMAdminsOnly (BOT__DM_ADMINS_ONLY) drops private-chat messages from
+	// non-admin users before any side effect. Admins are identified solely by
+	// AdminIDs; with an empty AdminIDs list the enabled flag drops all private
+	// messages. Group chats are never affected.
+	DMAdminsOnly             bool           `koanf:"dm_admins_only"`
 	Telegram                 TelegramConfig `koanf:"telegram"`
 	UncompressedHistoryLimit int            `koanf:"uncompressed_history_limit"`
 	HistorySummaryThreshold  int            `koanf:"history_summary_threshold"`

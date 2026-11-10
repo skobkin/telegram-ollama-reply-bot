@@ -1,5 +1,17 @@
 # Upgrade Notes
 
+## DM restrictions (#62)
+
+New optional env var `BOT__DM_ADMINS_ONLY` (default `false` — unset means today's behavior):
+
+- `true`: private-chat messages from users not listed in `BOT__ADMIN_IDS` are silently dropped
+  before any processing — nothing is stored in history, cataloged, counted, or answered, and no
+  command (including `/summarize`) runs for them. Group/supergroup chats and the existing
+  whitelist/interactivity rules are unaffected.
+- **Warning:** admins are identified solely by `BOT__ADMIN_IDS`, so enabling the flag with an empty
+  `BOT__ADMIN_IDS` drops **all** private messages, including admin commands sent from the operator's
+  own DMs. Set `BOT__ADMIN_IDS` first.
+
 ## Model-prompted image re-analysis tools (#107/#90 hybrid)
 
 While image recognition is enabled, the model receives two new tools: `list_recent_images` (identify recent

@@ -13,6 +13,27 @@ import (
 // requestContextMessageDataKey is the context key for storing processed message data in request context
 const requestContextMessageDataKey = "message_data"
 
+// dmAdminsOnlyGate enforces BOT__DM_ADMINS_ONLY: when enabled, private-chat
+// messages from non-admin users are dropped before any catalog, whitelist,
+// history, stats, command, or LLM side effect. Admins are identified solely by
+// the BOT__ADMIN_IDS trust root, so an empty admin list drops every private
+// message. The drop is silent: a reply would itself be a side effect and an
+// abuse vector for arbitrary DM users. Group chats are never affected.
+func (b *Bot) dmAdminsOnlyGate(ctx *th.Context, update t.Update) error {
+	message := update.Message
+	if message == nil || !b.cfg.DMAdminsOnly || message.Chat.Type != t.ChatTypePrivate || b.isFromAdmin(message) {
+		return ctx.Next(update)
+	}
+
+	logger := b.handlerLogger(ctx).With("chat_id", message.Chat.ID)
+	if message.From != nil {
+		logger = logger.With("from_id", message.From.ID)
+	}
+	logger.Info("dropping non-admin private message (BOT__DM_ADMINS_ONLY)")
+
+	return nil
+}
+
 func (b *Bot) requestLogger(ctx *th.Context, update t.Update) error {
 	requestID, err := logging.NewRequestID()
 	if err != nil {
