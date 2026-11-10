@@ -94,7 +94,7 @@ The bot supports the following commands:
 | `/summarize`, `/s` | Summarize text from the provided link     | `/summarize https://ex.co/article`, `/s https://ex.co/article concentrate on tech stuff` |
 | `/stats`           | Show bot statistics (admin only)          | `/stats`                                                                                 |
 | `/reset`           | Reset current chat history (admin only)   | `/reset`                                                                                 |
-| `/admin_help`      | Show DM admin commands                    | `/admin_help`                                                                            |
+| `/admin`           | Open the interactive admin panel          | `/admin` (admin DMs only)                                                                |
 
 You can also interact with the bot by:
 - Mentioning it in a message
@@ -195,27 +195,13 @@ supergroup chats are never affected; whitelist and interactivity rules keep appl
 before. Because admins are identified solely by `BOT__ADMIN_IDS`, enabling this flag with an empty
 `BOT__ADMIN_IDS` drops **all** private messages, including admin commands.
 
-### Admin DM commands
+### Admin panel
 
-These commands work only in private chat with the bot and only for users listed in `BOT__ADMIN_IDS`. If `BOT__ADMIN_IDS`
-is empty, admin controls are disabled.
+Administration is a Telegram-native interactive UI: send `/admin` in a private chat with the bot (users listed in
+`BOT__ADMIN_IDS` only) to open the panel with inline keyboards. The legacy IRC-style admin commands were removed;
+`/cancel` dismisses a pending input and reopens the panel.
 
-- `/admin_help`
-- `/chat_list`
-- `/config_fields_global`
-- `/config_fields_chat`
-- `/prompt_features`
-- `/config_show [chat_id]`
-- `/config_set_global <field> <value>`
-- `/config_set_chat <chat_id> <field> <value>`
-- `/config_clear_chat <chat_id> <field|all>`
-- `/prompt_show <feature> [chat_id]`
-- `/prompt_set_global <feature> <template>`
-- `/prompt_set_chat <chat_id> <feature> <template>`
-- `/prompt_clear_chat <chat_id> <feature>`
-- `/whitelist_add <chat_id>`
-- `/whitelist_remove <chat_id>`
-- `/whitelist_list`
+See [Admin UI](#admin-ui) for the walkthrough and access-policy semantics.
 
 ## Running
 

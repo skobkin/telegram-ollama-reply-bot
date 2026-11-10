@@ -131,7 +131,7 @@ Mention the bot, reply to it to chat; text and photos are supported.
 - /summarize <link> [extra notes] - Summarize a page (alias: /s)
 - /reset - Clear conversation history (admins only)
 - /stats - Show usage stats (admins only)
-- /admin_help - Show DM admin commands (admin DMs only)
+- /admin - Open the interactive admin panel (admin DMs only)
 - /help - Show this help`,
 	)))
 	if err != nil {
