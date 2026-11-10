@@ -3,6 +3,7 @@ package markdown
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestCropToMaxLengthMarkdownV2_SanitizesAfterCrop(t *testing.T) {
@@ -88,5 +89,83 @@ func TestSanitizeAndCrop_UnclosedFencedCode(t *testing.T) {
 			}
 			t.Fatalf("cropped text contains unescaped backtick: %q", cropped)
 		}
+	}
+}
+
+func TestCropRichMarkdown_UnderLimitReturnsUnchanged(t *testing.T) {
+	got, changed := CropRichMarkdown("short text", 100)
+	if changed || got != "short text" {
+		t.Fatalf("expected unchanged text, got changed=%v %q", changed, got)
+	}
+}
+
+func TestCropRichMarkdown_AtWhitespaceBoundary(t *testing.T) {
+	text := strings.Repeat("word ", 100)
+
+	got, changed := CropRichMarkdown(text, 50)
+
+	if !changed {
+		t.Fatalf("expected crop to modify text")
+	}
+	if n := utf8.RuneCountInString(got); n > 50 {
+		t.Fatalf("cropped text %d runes exceeds limit", n)
+	}
+	if !strings.HasSuffix(got, "word…") {
+		t.Fatalf("expected crop at word boundary, got tail %q", got[len(got)-10:])
+	}
+}
+
+func TestCropRichMarkdown_MultibyteRunesNeverSplit(t *testing.T) {
+	text := strings.Repeat("тест ", 100)
+
+	got, changed := CropRichMarkdown(text, 41)
+
+	if !changed {
+		t.Fatalf("expected crop to modify text")
+	}
+	if n := utf8.RuneCountInString(got); n > 41 {
+		t.Fatalf("cropped text %d runes exceeds limit", n)
+	}
+	if !strings.HasSuffix(got, "тест…") {
+		t.Fatalf("expected intact multibyte word before ellipsis, got tail %q", got[len(got)-10:])
+	}
+}
+
+// TestCropRichMarkdown_NoWhitespaceKeepsPrefix is a review regression: text
+// without any whitespace (e.g. CJK) must keep a full-length prefix instead of
+// the crop backing up to zero and collapsing the message to the ellipsis.
+func TestCropRichMarkdown_NoWhitespaceKeepsPrefix(t *testing.T) {
+	const limit = 32768
+	text := strings.Repeat("漢", limit+1)
+
+	got, changed := CropRichMarkdown(text, limit)
+
+	if !changed {
+		t.Fatalf("expected crop to modify text")
+	}
+	if n := utf8.RuneCountInString(got); n != limit {
+		t.Fatalf("expected %d runes, got %d", limit, n)
+	}
+	if want := strings.Repeat("漢", limit-1) + "…"; got != want {
+		t.Fatalf("unexpected crop result: tail %q", got[len(got)-10:])
+	}
+}
+
+// TestCropRichMarkdown_NewlineIsBoundary is a review regression: newlines and
+// other Unicode whitespace must count as crop boundaries, not just ASCII
+// spaces.
+func TestCropRichMarkdown_NewlineIsBoundary(t *testing.T) {
+	text := strings.Repeat("line\n", 100)
+
+	got, changed := CropRichMarkdown(text, 51)
+
+	if !changed {
+		t.Fatalf("expected crop to modify text")
+	}
+	if n := utf8.RuneCountInString(got); n > 51 {
+		t.Fatalf("cropped text %d runes exceeds limit", n)
+	}
+	if !strings.HasSuffix(got, "line…") {
+		t.Fatalf("expected crop at newline boundary, got tail %q", got[len(got)-10:])
 	}
 }

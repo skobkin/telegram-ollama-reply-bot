@@ -8,9 +8,10 @@ import "strings"
 // links, user mentions and custom emojis. It targets Telegram Markdown V2 only
 // and is not suitable for generic Markdown content.
 //
-// Rich Messages (see SanitizeRichMarkdown) are the primary output path; this
-// sanitizer backs the legacy MarkdownV2 fallback pipeline and EscapeURL, which
-// also remains valid for link destinations inside rich markdown.
+// Rich Messages are the primary output path and are sent as raw markdown
+// without escaping; this sanitizer backs the legacy MarkdownV2 fallback
+// pipeline, and EscapeURL also remains valid for link destinations appended
+// to rich markdown.
 type Sanitizer interface {
 	Sanitize(text string) string
 	EscapeURL(url string) string

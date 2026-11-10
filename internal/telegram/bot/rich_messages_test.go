@@ -140,12 +140,45 @@ func TestSendRichMarkdownReply_Success(t *testing.T) {
 
 	rich := requests[0].body["rich_message"].(map[string]any)
 	if rich["markdown"] != text {
-		t.Fatalf("expected sanitized markdown %q on the wire, got %q", text, rich["markdown"])
+		t.Fatalf("expected raw markdown %q on the wire, got %q", text, rich["markdown"])
 	}
 
 	reply := requests[0].body["reply_parameters"].(map[string]any)
 	if reply["message_id"] != float64(42) {
 		t.Fatalf("expected reply to message 42, got %v", reply["message_id"])
+	}
+}
+
+// TestSendRichMarkdownReply_PassesDocumentedMarkupThrough is a review
+// regression: documented Telegram inline syntax (tg://emoji, tg://time) and
+// markup inside code spans or four-backtick fences must reach the wire
+// untouched — rich markdown is sent raw, with no speculative rewriting.
+func TestSendRichMarkdownReply_PassesDocumentedMarkupThrough(t *testing.T) {
+	var requests []capturedRequest
+	var mu sync.Mutex
+	b := newRichTestBot(t, &requests, &mu, false, false)
+
+	message := tg.Message{MessageID: 42, Chat: tg.Chat{ID: 100}}
+	text := "![Image: 👍](tg://emoji?id=5368324170671202286)\n" +
+		"![22:45 tomorrow](tg://time?unix=1647531900&format=wDT)\n" +
+		"An example: `![icon](file.png)`\n" +
+		"````markdown\n```\n![icon](file.png)\n````"
+
+	err := b.sendRichMarkdownReply(context.Background(), message, text)
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(requests) != 1 {
+		t.Fatalf("expected exactly 1 request, got %d", len(requests))
+	}
+
+	rich := requests[0].body["rich_message"].(map[string]any)
+	if rich["markdown"] != text {
+		t.Fatalf("documented markup changed on the wire:\nin:  %q\nout: %q", text, rich["markdown"])
 	}
 }
 
@@ -234,5 +267,105 @@ func TestSendRichMarkdownReply_CropsOverLimit(t *testing.T) {
 	}
 	if !strings.HasSuffix(sent, "…") {
 		t.Fatalf("expected ellipsis suffix, got %q", sent[len(sent)-20:])
+	}
+}
+
+// TestSendRichMarkdownReply_CropsNoSpaceTextUsefully is a review regression:
+// over-length text without whitespace (e.g. CJK) must deliver a near-limit
+// payload on the wire, not an ellipsis alone.
+func TestSendRichMarkdownReply_CropsNoSpaceTextUsefully(t *testing.T) {
+	var requests []capturedRequest
+	var mu sync.Mutex
+	b := newRichTestBot(t, &requests, &mu, false, false)
+
+	message := tg.Message{MessageID: 42, Chat: tg.Chat{ID: 100}}
+	text := strings.Repeat("漢", RichMessageCharLimit+1)
+
+	err := b.sendRichMarkdownReply(context.Background(), message, text)
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(requests) != 1 {
+		t.Fatalf("expected exactly 1 request, got %d", len(requests))
+	}
+
+	rich := requests[0].body["rich_message"].(map[string]any)
+	sent, _ := rich["markdown"].(string)
+
+	runes := []rune(sent)
+	if len(runes) != RichMessageCharLimit {
+		t.Fatalf("expected %d runes on the wire, got %d", RichMessageCharLimit, len(runes))
+	}
+	if !strings.HasSuffix(sent, "漢…") {
+		t.Fatalf("expected cropped CJK prefix with ellipsis, got tail %q", sent[len(sent)-10:])
+	}
+}
+
+func TestSendRichMarkdownReplyWithSuffix_KeepsFooterOnRichPath(t *testing.T) {
+	var requests []capturedRequest
+	var mu sync.Mutex
+	b := newRichTestBot(t, &requests, &mu, false, false)
+
+	message := tg.Message{MessageID: 42, Chat: tg.Chat{ID: 100}}
+	body := strings.Repeat("word ", 10000)
+	footer := "\n\n[src](https://example.com/article)"
+
+	err := b.sendRichMarkdownReplyWithSuffix(context.Background(), message, body, footer)
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(requests) != 1 {
+		t.Fatalf("expected exactly 1 request, got %d", len(requests))
+	}
+
+	rich := requests[0].body["rich_message"].(map[string]any)
+	sent, _ := rich["markdown"].(string)
+
+	if runes := []rune(sent); len(runes) > RichMessageCharLimit {
+		t.Fatalf("wire payload %d runes exceeds limit %d", len(runes), RichMessageCharLimit)
+	}
+	if !strings.HasSuffix(sent, footer) {
+		t.Fatalf("expected reserved footer to survive cropping, got tail %q", sent[len(sent)-60:])
+	}
+}
+
+func TestSendRichMarkdownReplyWithSuffix_KeepsFooterOnLegacyFallback(t *testing.T) {
+	var requests []capturedRequest
+	var mu sync.Mutex
+	b := newRichTestBot(t, &requests, &mu, true, false)
+
+	message := tg.Message{MessageID: 42, Chat: tg.Chat{ID: 100}}
+	body := strings.Repeat("word ", 10000)
+	footer := "\n\n[src](https://example.com/article)"
+
+	err := b.sendRichMarkdownReplyWithSuffix(context.Background(), message, body, footer)
+	if err != nil {
+		t.Fatalf("expected fallback success, got %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(requests) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(requests))
+	}
+	if !strings.HasSuffix(requests[1].path, "/sendMessage") {
+		t.Fatalf("expected sendMessage fallback, got %s", requests[1].path)
+	}
+
+	sent, _ := requests[1].body["text"].(string)
+	if runes := []rune(sent); len(runes) > TelegramCharLimit {
+		t.Fatalf("fallback text %d runes exceeds limit %d", len(runes), TelegramCharLimit)
+	}
+	if !strings.HasSuffix(sent, footer) {
+		t.Fatalf("expected reserved footer to survive fallback crop, got tail %q", sent[len(sent)-60:])
 	}
 }

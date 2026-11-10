@@ -102,7 +102,9 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 	footer := "\n\n[src](" + footerURL + ")"
 	replyMarkdown := summarizeReply + footer
 
-	err = b.sendRichMarkdownReply(ctx.Context(), message, replyMarkdown)
+	// The footer is passed as a reserved suffix so cropping on either the
+	// rich or the legacy fallback path cannot drop the source link.
+	err = b.sendRichMarkdownReplyWithSuffix(ctx.Context(), message, summarizeReply, footer)
 	if err != nil {
 		logger.Error("cannot send summarize reply", "error", err, "reply_length", len(replyMarkdown))
 		sentry.CaptureException(err)
