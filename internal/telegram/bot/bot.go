@@ -16,6 +16,7 @@ import (
 	"telegram-ollama-reply-bot/internal/state"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/tooluse"
+	"telegram-ollama-reply-bot/internal/vision"
 
 	"github.com/getsentry/sentry-go"
 	t "github.com/mymmrac/telego"
@@ -32,28 +33,43 @@ var (
 
 const TelegramCharLimit = 4000
 
+// ImageRecognitionSettings carries the image-recognition switch and the
+// client-side download/processing bound into the bot.
+type ImageRecognitionSettings struct {
+	Enabled       bool
+	MaxImageBytes int64
+}
+
+// imageDescriber decouples the bot from the vision service so tests can fake
+// recognition.
+type imageDescriber interface {
+	Describe(ctx context.Context, imageData []byte) (vision.Recognition, error)
+}
+
 type Bot struct {
-	api                     *t.Bot
-	llm                     *llm.Service
-	extractor               extractor.Extractor
-	sanitizer               markdown.Sanitizer
-	stats                   state.StatsStore
-	history                 state.ConversationStore
-	me                      botInfo
-	cfg                     config.BotConfig
-	ctx                     context.Context
-	imageCache              state.ImageStore
-	replyCtx                *llmcontext.ReplyBuilder
-	logger                  *slog.Logger
-	admin                   *adminconfig.Service
-	tools                   *tooluse.Runtime
-	imageRecognitionEnabled bool
+	api              *t.Bot
+	llm              *llm.Service
+	vision           imageDescriber
+	extractor        extractor.Extractor
+	sanitizer        markdown.Sanitizer
+	stats            state.StatsStore
+	history          state.ConversationStore
+	me               botInfo
+	cfg              config.BotConfig
+	ctx              context.Context
+	imageCache       state.ImageStore
+	replyCtx         *llmcontext.ReplyBuilder
+	logger           *slog.Logger
+	admin            *adminconfig.Service
+	tools            *tooluse.Runtime
+	imageRecognition ImageRecognitionSettings
 }
 
 func NewBot(
 	ctx context.Context,
 	api *t.Bot,
 	llm *llm.Service,
+	vision imageDescriber,
 	extractor extractor.Extractor,
 	sanitizer markdown.Sanitizer,
 	history state.ConversationStore,
@@ -63,7 +79,7 @@ func NewBot(
 	admin *adminconfig.Service,
 	tools *tooluse.Runtime,
 	logger *slog.Logger,
-	imageRecognitionEnabled bool,
+	imageRecognition ImageRecognitionSettings,
 ) *Bot {
 	if history == nil {
 		panic("history store is required")
@@ -79,20 +95,21 @@ func NewBot(
 	}
 
 	bot := &Bot{
-		api:                     api,
-		llm:                     llm,
-		extractor:               extractor,
-		sanitizer:               sanitizer,
-		stats:                   stats,
-		history:                 history,
-		me:                      botInfo{},
-		cfg:                     cfg,
-		ctx:                     ctx,
-		imageCache:              imageCache,
-		logger:                  logger,
-		admin:                   admin,
-		tools:                   tools,
-		imageRecognitionEnabled: imageRecognitionEnabled,
+		api:              api,
+		llm:              llm,
+		vision:           vision,
+		extractor:        extractor,
+		sanitizer:        sanitizer,
+		stats:            stats,
+		history:          history,
+		me:               botInfo{},
+		cfg:              cfg,
+		ctx:              ctx,
+		imageCache:       imageCache,
+		logger:           logger,
+		admin:            admin,
+		tools:            tools,
+		imageRecognition: imageRecognition,
 	}
 
 	bot.replyCtx = llmcontext.NewReplyBuilder(history, bot.hydrateMessagesWithImageDescriptions, cfg.UncompressedHistoryLimit)

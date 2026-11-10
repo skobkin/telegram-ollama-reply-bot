@@ -11,9 +11,11 @@ import (
 	"slices"
 	"strings"
 	"telegram-ollama-reply-bot/internal/adminconfig"
-	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/logging"
 	"telegram-ollama-reply-bot/internal/state"
+	"telegram-ollama-reply-bot/internal/support/httpclient"
+	"telegram-ollama-reply-bot/internal/support/safeerr"
+	"telegram-ollama-reply-bot/internal/vision"
 	"time"
 
 	"github.com/getsentry/sentry-go"
@@ -146,7 +148,7 @@ func (b *Bot) ensureMessageImageDescription(ctx context.Context, msg *state.Mess
 	}
 
 	if msg.HasImage && msg.ImageMeta != nil && msg.Image == "" {
-		if b.imageRecognitionEnabled {
+		if b.imageRecognition.Enabled {
 			if desc, ok := b.imageCache.Get(msg.ImageMeta); ok {
 				msg.Image = desc
 			} else {
@@ -299,6 +301,11 @@ func emptyFallback(value string) string {
 	return value
 }
 
+// describeImage downloads a Telegram image and returns its description from
+// the vision service. Downloads are bounded by the configured max image size
+// (checked against the reported file size before any bytes are transferred)
+// and transport errors are sanitized — the Telegram file URL embeds the bot
+// token — before they can reach logs or Sentry.
 func (b *Bot) describeImage(ctx context.Context, imageMeta *state.ImageMeta) (string, error) {
 	if imageMeta == nil {
 		return "", ErrImageRecognition
@@ -308,28 +315,40 @@ func (b *Bot) describeImage(ctx context.Context, imageMeta *state.ImageMeta) (st
 		ctx = b.ctx
 	}
 
+	maxBytes := b.imageRecognition.MaxImageBytes
+	if maxBytes > 0 && int64(imageMeta.FileSize) > maxBytes {
+		b.loggerFromContext(ctx).Warn(
+			"image file exceeds size bound; skipping download",
+			"file_id", imageMeta.FileID,
+			"file_size", imageMeta.FileSize,
+			"max_image_bytes", maxBytes,
+		)
+
+		return "", errors.Join(ErrImageRecognition, fmt.Errorf("%w: file reports %d bytes", vision.ErrImageTooLarge, imageMeta.FileSize))
+	}
+
 	file, err := b.api.GetFile(ctx, &t.GetFileParams{FileID: imageMeta.FileID})
 	if err != nil {
 		return "", errors.Join(ErrImageRecognition, err)
 	}
 
-	fileBytes, err := downloadFileWithContext(ctx, b.api.FileDownloadURL(file.FilePath))
+	fileBytes, err := downloadFileWithContext(ctx, b.api.FileDownloadURL(file.FilePath), maxBytes)
 	if err != nil {
 		return "", errors.Join(ErrImageRecognition, err)
 	}
 
-	description, usage, err := b.llm.RecognizeImage(ctx, llm.PromptScope{}, fileBytes)
+	recognition, err := b.vision.Describe(ctx, fileBytes)
 	if err != nil {
 		return "", errors.Join(ErrImageRecognition, err)
 	}
 
-	if usage != nil {
-		b.stats.AddUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.Cost)
+	if recognition.Usage != nil {
+		b.stats.AddUsage(recognition.Usage.PromptTokens, recognition.Usage.CompletionTokens, recognition.Usage.TotalTokens, recognition.Usage.Cost)
 	}
 
-	b.loggerFromContext(ctx).Debug("image recognized", "file_id", imageMeta.FileID, "image_bytes", len(fileBytes), "description_length", len(description))
+	b.loggerFromContext(ctx).Debug("image recognized", "file_id", imageMeta.FileID, "image_bytes", len(fileBytes), "description_length", len(recognition.Text))
 
-	return description, nil
+	return recognition.Text, nil
 }
 
 func (b *Bot) shouldProcessChatMessage(ctx context.Context, message t.Message) bool {
@@ -373,15 +392,28 @@ func (b *Bot) hasSoftTrigger(message t.Message, resolved adminconfig.ResolvedCha
 	return false
 }
 
-func downloadFileWithContext(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// errFileDownload names Telegram file-download failures. Raw transport errors
+// are never surfaced: the download URL embeds the bot token, so causes are
+// discarded via safeerr and only the typed kind and HTTP status remain.
+var errFileDownload = errors.New("telegram file download failed")
+
+// fileDownloadClient is the shared client for Telegram file downloads:
+// environment-proxy aware, without http.DefaultClient's global sharing.
+var fileDownloadClient = httpclient.New()
+
+// downloadFileWithContext downloads a Telegram Bot API file URL bounded by
+// maxBytes. A non-positive maxBytes disables the bound (preserving the
+// pre-bound behavior for direct struct construction); production wiring always
+// passes the configured bound.
+func downloadFileWithContext(ctx context.Context, fileURL string, maxBytes int64) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: cannot build request", errFileDownload)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := fileDownloadClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, safeerr.WrapTransport(errFileDownload, err)
 	}
 	defer func() {
 		_ = resp.Body.Close()
@@ -390,12 +422,21 @@ func downloadFileWithContext(ctx context.Context, url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
 
-		return nil, fmt.Errorf("http request failed: %s", resp.Status)
+		return nil, fmt.Errorf("%w: http status %d", errFileDownload, resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	var reader io.Reader = resp.Body
+	if maxBytes > 0 {
+		reader = io.LimitReader(resp.Body, maxBytes+1)
+	}
+
+	data, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, err
+		return nil, safeerr.WrapTransport(errFileDownload, err)
+	}
+
+	if maxBytes > 0 && int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("%w: file exceeds bound of %d bytes", errFileDownload, maxBytes)
 	}
 
 	return data, nil

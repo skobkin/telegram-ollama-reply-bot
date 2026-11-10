@@ -33,6 +33,13 @@ The bot can be configured using the following environment variables:
 | `LLM__FEATURES__IMAGE_RECOGNITION__MODEL`           | Model name for image recognition                                                                                  | No       | chat model               |
 | `LLM__TOOL_LOOP_MAX_ITERATIONS`                     | Maximum tool-use loop iterations for one conversational reply                                                     | No       | `6`                      |
 | `LLM__IMAGE_RECOGNITION_ENABLED`                    | Toggle image recognition. Set to `false` to treat images as placeholders without making vision model calls.       | No       | `true`                   |
+| `LLM__IMAGE_RECOGNITION__RECOGNIZER`                | Image-recognition back-end: `openai_compat` (multimodal chat model) or `minimax_vlm` (MiniMax Coding Plan VLM).   | No       | `openai_compat`          |
+| `LLM__IMAGE_RECOGNITION__MAX_IMAGE_BYTES`           | Client-side bound on downloaded image size in bytes (this bot's own choice; see the back-ends section).            | No       | `10485760`               |
+| `LLM__IMAGE_RECOGNITION__MINIMAX_VLM__BASE_URL`     | MiniMax VLM endpoint base URL (`https://api.minimax.io` global, `https://api.minimaxi.com` China; must match key). | No       | `https://api.minimax.io` |
+| `LLM__IMAGE_RECOGNITION__MINIMAX_VLM__API_KEY`      | MiniMax API key. Required when the recognizer is `minimax_vlm`; never inherited from the OpenAI-compatible token.  | No       | -                        |
+| `LLM__IMAGE_RECOGNITION__MINIMAX_VLM__TIMEOUT`      | Per-request timeout for MiniMax VLM calls. Accepts Go duration strings.                                            | No       | `60s`                    |
+| `LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__BASE_URL`   | Optional dedicated OpenAI-compatible endpoint for image recognition. Empty reuses the conversational backend.      | No       | empty                    |
+| `LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__API_TOKEN`  | Token for the dedicated image endpoint. Only valid together with its `BASE_URL`.                                  | No       | empty                    |
 | `STATE__MAX_BYTES`                                  | Soft total in-memory state budget in bytes                                                                        | No       | `268435456`              |
 | `STATE__HISTORY_MAX_BYTES`                          | Soft history bucket budget in bytes                                                                               | No       | `167772160`              |
 | `STATE__HISTORY_STREAMS_MAX`                        | Maximum number of active conversation scopes kept in RAM                                                          | No       | `1024`                   |
@@ -234,10 +241,34 @@ docker run \
   skobkin/telegram-llm-bot
 ```
 
-The bot uses only the OpenAI-compatible LLM API. For Ollama deployments, use Ollama's `/v1` OpenAI-compatible endpoint rather than the native Ollama API.
+The conversational LLM uses only the OpenAI-compatible API. For Ollama deployments, use Ollama's `/v1` OpenAI-compatible endpoint rather than the native Ollama API.
 
 `LLM__FEATURES__SUMMARIZE__MODEL` and `LLM__FEATURES__IMAGE_RECOGNITION__MODEL` normally inherit `LLM__FEATURES__CHAT__MODEL`.
 Set them only when you intentionally want summarization or image recognition to use different models.
+
+### Image recognition back-ends
+
+Image recognition is extracted behind its own recognizer layer and supports two back-ends, selected with
+`LLM__IMAGE_RECOGNITION__RECOGNIZER`:
+
+- **`openai_compat` (default)** — the multimodal chat model on the OpenAI-compatible backend (`LLM__FEATURES__IMAGE_RECOGNITION__MODEL`,
+  inheriting the chat model). Optionally point recognition at a dedicated endpoint by setting
+  `LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__BASE_URL` (with an optional `API_TOKEN`); when unset, recognition shares the
+  conversational connection. The startup model check verifies the image model against whichever connection actually
+  serves it.
+- **`minimax_vlm`** — the MiniMax Coding Plan VLM API (`POST /v1/coding_plan/vlm`, no model selection; the M Plan
+  subscription tied to the key selects it). Requires `LLM__IMAGE_RECOGNITION__MINIMAX_VLM__API_KEY`, which is **never
+  inherited** from the OpenAI-compatible token — recognition credentials for an unrelated endpoint must be set
+  explicitly, and startup refuses the selection while the key is missing. The base URL must match the key's region
+  (`https://api.minimax.io` global, `https://api.minimaxi.com` China). The VLM API bills per request; the response
+  carries no token usage, so this route reports nothing to `/stats` usage accounting.
+
+Both routes accept JPEG, PNG, and WebP only. The format is detected from the image's byte signature (not from Telegram
+metadata or file names) — this is signature detection, not full image integrity validation; a corrupt image surfaces
+as a recognition error. `LLM__IMAGE_RECOGNITION__MAX_IMAGE_BYTES` (default 10 MiB) is this bot's own conservative
+client-side bound on downloads and recognition input: the MiniMax API documents no image size limit (its official
+client transfers unbounded data), so no provider limit is claimed. The bound sits below Telegram's 20 MB bot file
+download ceiling. The `LLM__IMAGE_RECOGNITION_ENABLED` switch keeps working as before for both back-ends.
 
 ### Docker Compose
 

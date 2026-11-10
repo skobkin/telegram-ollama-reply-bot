@@ -40,6 +40,15 @@ type Config struct {
 const (
 	LLMBackendOpenAICompat = "openai_compat"
 
+	// Image-recognition recognizer selection values
+	// (LLM__IMAGE_RECOGNITION__RECOGNIZER).
+	ImageRecognizerOpenAICompat = "openai_compat"
+	ImageRecognizerMiniMaxVLM   = "minimax_vlm"
+
+	// DefaultMiniMaxVLMBaseURL is the MiniMax global endpoint; China-region
+	// keys must use https://api.minimaxi.com instead.
+	DefaultMiniMaxVLMBaseURL = "https://api.minimax.io"
+
 	SearchBackendNone   = "none"
 	SearchBackendTavily = "tavily"
 	SearchBackendKagi   = "kagi"
@@ -48,10 +57,11 @@ const (
 
 // LLMConfig contains configuration for the LLM service.
 type LLMConfig struct {
-	Backends                BackendConfig `koanf:"backends"`
-	Features                FeatureConfig `koanf:"features"`
-	ToolLoopMaxIterations   int           `koanf:"tool_loop_max_iterations"`
-	ImageRecognitionEnabled bool          `koanf:"image_recognition_enabled"`
+	Backends                BackendConfig          `koanf:"backends"`
+	Features                FeatureConfig          `koanf:"features"`
+	ToolLoopMaxIterations   int                    `koanf:"tool_loop_max_iterations"`
+	ImageRecognitionEnabled bool                   `koanf:"image_recognition_enabled"`
+	ImageRecognition        ImageRecognitionConfig `koanf:"image_recognition"`
 }
 
 // SentryConfig contains configuration for Sentry error tracking.
@@ -201,6 +211,38 @@ type FeatureRouteConfig struct {
 	Model string `koanf:"model"`
 }
 
+// ImageRecognitionConfig configures the image-recognition recognizer: which
+// implementation answers, the client-side size bound for accepted image data,
+// and per-recognizer connection settings. It sits beside the
+// ImageRecognitionEnabled switch (LLM__IMAGE_RECOGNITION_ENABLED), which gates
+// the whole feature unchanged. MaxImageBytes is this bot's own conservative
+// bound — the MiniMax API documents no image size limit (its official client
+// reads unbounded), so no provider limit is claimed.
+type ImageRecognitionConfig struct {
+	Recognizer    string                  `koanf:"recognizer"`
+	MaxImageBytes int64                   `koanf:"max_image_bytes"`
+	MiniMaxVLM    MiniMaxVLMConfig        `koanf:"minimax_vlm"`
+	OpenAICompat  ImageOpenAICompatConfig `koanf:"openai_compat"`
+}
+
+// MiniMaxVLMConfig is the MiniMax Coding Plan VLM connection. APIKey is never
+// inherited from the OpenAI-compatible backend token: sending conversational
+// credentials to an unrelated optional endpoint must be impossible, and
+// validation rejects the selection while the key is missing.
+type MiniMaxVLMConfig struct {
+	BaseURL string        `koanf:"base_url"`
+	APIKey  string        `koanf:"api_key"`
+	Timeout time.Duration `koanf:"timeout"`
+}
+
+// ImageOpenAICompatConfig optionally points image recognition at a dedicated
+// OpenAI-compatible endpoint. Empty BaseURL means "reuse the conversational
+// backend"; a token without a base URL is rejected as ambiguous.
+type ImageOpenAICompatConfig struct {
+	BaseURL  string `koanf:"base_url"`
+	APIToken string `koanf:"api_token"`
+}
+
 // Load reads configuration from environment variables, applies defaults,
 // and returns a populated *Config. An error is returned when a value is
 // present but cannot be parsed (e.g. an integer that fails to convert).
@@ -294,6 +336,12 @@ func Load() (*Config, error) {
 		cfg.MCP.Servers[name] = server
 	}
 
+	// Endpoint URLs of the image-recognition section are trimmed like MCP
+	// endpoints: a value with surrounding spaces would otherwise pass
+	// validation and fail at connection time with a misleading error.
+	cfg.LLM.ImageRecognition.MiniMaxVLM.BaseURL = strings.TrimSpace(cfg.LLM.ImageRecognition.MiniMaxVLM.BaseURL)
+	cfg.LLM.ImageRecognition.OpenAICompat.BaseURL = strings.TrimSpace(cfg.LLM.ImageRecognition.OpenAICompat.BaseURL)
+
 	// Per-feature model fallback: summarize and image_recognition inherit the
 	// chat model when not explicitly set. This keeps the existing operator
 	// experience of "set CHAT and you're done" while still allowing overrides.
@@ -304,7 +352,18 @@ func Load() (*Config, error) {
 		cfg.LLM.Features.ImageRecognition.Model = cfg.LLM.Features.Chat.Model
 	}
 
+	// Recognizer normalization: the seeded default covers the env path, but a
+	// zero-value struct (tests, direct construction) also selects the
+	// OpenAI-compatible default.
+	if cfg.LLM.ImageRecognition.Recognizer == "" {
+		cfg.LLM.ImageRecognition.Recognizer = ImageRecognizerOpenAICompat
+	}
+
 	if err := cfg.MCP.Validate(); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+
+	if err := cfg.LLM.validateImageRecognition(); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 
@@ -316,19 +375,23 @@ func Load() (*Config, error) {
 // these defaults.
 func applyDefaults(k *koanf.Koanf) error {
 	defaults := map[string]any{
-		"llm.tool_loop_max_iterations":   6,
-		"llm.image_recognition_enabled":  true,
-		"bot.uncompressed_history_limit": 15,
-		"bot.history_summary_threshold":  5,
-		"bot.processing_timeout":         "30s",
-		"state.max_bytes":                int64(256 << 20),
-		"state.history_max_bytes":        int64(160 << 20),
-		"state.history_streams_max":      1024,
-		"state.image_cache_max_bytes":    int64(64 << 20),
-		"state.image_cache_ttl":          "24h",
-		"log.level":                      "info",
-		"persistent.store_path":          "/data/db.sqlite",
-		"search.backend":                 SearchBackendNone,
+		"llm.tool_loop_max_iterations":               6,
+		"llm.image_recognition_enabled":              true,
+		"llm.image_recognition.recognizer":           ImageRecognizerOpenAICompat,
+		"llm.image_recognition.max_image_bytes":      int64(10 << 20),
+		"llm.image_recognition.minimax_vlm.base_url": DefaultMiniMaxVLMBaseURL,
+		"llm.image_recognition.minimax_vlm.timeout":  "60s",
+		"bot.uncompressed_history_limit":             15,
+		"bot.history_summary_threshold":              5,
+		"bot.processing_timeout":                     "30s",
+		"state.max_bytes":                            int64(256 << 20),
+		"state.history_max_bytes":                    int64(160 << 20),
+		"state.history_streams_max":                  1024,
+		"state.image_cache_max_bytes":                int64(64 << 20),
+		"state.image_cache_ttl":                      "24h",
+		"log.level":                                  "info",
+		"persistent.store_path":                      "/data/db.sqlite",
+		"search.backend":                             SearchBackendNone,
 	}
 	for key, value := range defaults {
 		if err := k.Set(key, value); err != nil {
@@ -434,6 +497,89 @@ func (c LLMConfig) RouteForFeature(feature string) (FeatureRouteConfig, error) {
 		return c.Features.ImageRecognition, nil
 	default:
 		return FeatureRouteConfig{}, fmt.Errorf("unknown feature %q", feature)
+	}
+}
+
+// validateImageRecognition checks the image-recognition subsystem
+// configuration. Recognizer selection and numeric bounds are validated
+// whenever set; connection requirements are only enforced while recognition is
+// enabled, so a disabled feature never demands a MiniMax key. When MiniMax VLM
+// is selected the API key must be set explicitly: it is deliberately not
+// inherited from the OpenAI-compatible backend token, and the error names
+// both variables so inherited-credential misuse cannot pass silently.
+func (c LLMConfig) validateImageRecognition() error {
+	ir := c.ImageRecognition
+
+	switch ir.Recognizer {
+	case "", ImageRecognizerOpenAICompat:
+		// Default: the shared OpenAI-compatible route.
+	case ImageRecognizerMiniMaxVLM:
+		// Validated below.
+	default:
+		return fmt.Errorf(
+			"llm.image_recognition.recognizer %q is not a known recognizer (use %s or %s; env LLM__IMAGE_RECOGNITION__RECOGNIZER)",
+			ir.Recognizer, ImageRecognizerOpenAICompat, ImageRecognizerMiniMaxVLM,
+		)
+	}
+
+	if ir.MaxImageBytes <= 0 {
+		return fmt.Errorf(
+			"llm.image_recognition.max_image_bytes must be positive (env LLM__IMAGE_RECOGNITION__MAX_IMAGE_BYTES), got %d",
+			ir.MaxImageBytes,
+		)
+	}
+
+	if ir.MiniMaxVLM.Timeout <= 0 {
+		return fmt.Errorf(
+			"llm.image_recognition.minimax_vlm.timeout must be positive (env LLM__IMAGE_RECOGNITION__MINIMAX_VLM__TIMEOUT), got %s",
+			ir.MiniMaxVLM.Timeout,
+		)
+	}
+
+	if ir.MiniMaxVLM.BaseURL != "" {
+		if err := validateHTTPSEndpoint("llm.image_recognition.minimax_vlm.base_url", ir.MiniMaxVLM.BaseURL); err != nil {
+			return err
+		}
+	}
+
+	if ir.OpenAICompat.BaseURL != "" {
+		if err := validateHTTPSEndpoint("llm.image_recognition.openai_compat.base_url", ir.OpenAICompat.BaseURL); err != nil {
+			return err
+		}
+	} else if ir.OpenAICompat.APIToken != "" {
+		return fmt.Errorf(
+			"llm.image_recognition.openai_compat.api_token is set without base_url; set base_url to configure a separate image endpoint or remove the token (env LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__{BASE_URL,API_TOKEN})",
+		)
+	}
+
+	if !c.ImageRecognitionEnabled {
+		return nil
+	}
+
+	if ir.Recognizer == ImageRecognizerMiniMaxVLM && ir.MiniMaxVLM.APIKey == "" {
+		return fmt.Errorf(
+			"llm.image_recognition.minimax_vlm.api_key is required when recognizer is %s and image recognition is enabled (env LLM__IMAGE_RECOGNITION__MINIMAX_VLM__API_KEY); it is not inherited from llm.backends.openai_compat.api_token (LLM__BACKENDS__OPENAI_COMPAT__API_TOKEN)",
+			ImageRecognizerMiniMaxVLM,
+		)
+	}
+
+	return nil
+}
+
+// validateHTTPSEndpoint checks that rawURL parses as an http(s) URL. Errors
+// quote the endpoint only in redacted form: endpoint URLs can carry
+// credentials, and validation errors reach stderr and container logs.
+func validateHTTPSEndpoint(path, rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return fmt.Errorf("%s %q is not a valid url", path, urlredact.RedactOne(rawURL))
+	}
+
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		return nil
+	default:
+		return fmt.Errorf("%s %q must use http or https", path, urlredact.RedactOne(rawURL))
 	}
 }
 

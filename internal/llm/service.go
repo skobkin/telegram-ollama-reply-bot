@@ -8,6 +8,7 @@ import (
 	"slices"
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/logging"
+	"telegram-ollama-reply-bot/internal/support/safeerr"
 
 	"github.com/getsentry/sentry-go"
 )
@@ -57,6 +58,27 @@ func (s *Service) Generate(ctx context.Context, req Request) (Response, error) {
 
 	resp, err := s.backend.Generate(ctx, req)
 	if err != nil {
+		// Image-recognition backend errors are sanitized before they reach
+		// logs or Sentry: raw SDK errors can embed request URLs (which may
+		// carry credentials) and provider bodies (which can echo prompts or
+		// keys). The sanitized error discards the cause — Sentry traverses
+		// error chains — while cancellation/deadline stay matchable via the
+		// stdlib context sentinels. Chat and summarize keep their existing
+		// raw diagnostics.
+		if req.Feature == FeatureImageRecognition {
+			sanitized := safeerr.WrapTransport(ErrLlmBackendRequestFailed, err)
+			logger.Error(
+				"backend request failed",
+				"backend", s.backend.Name(),
+				"feature", req.Feature,
+				"model", req.Model,
+				"error", sanitized,
+			)
+			sentry.CaptureException(sanitized)
+
+			return Response{}, sanitized
+		}
+
 		logger.Error(
 			"backend request failed",
 			"backend", s.backend.Name(),
@@ -132,54 +154,16 @@ func (s *Service) Summarize(ctx context.Context, scope PromptScope, text string,
 	return resp.Message.Text(), &usage, nil
 }
 
-func (s *Service) RecognizeImage(ctx context.Context, scope PromptScope, imageData []byte) (string, *TokenUsage, error) {
-	logger := logging.FromContext(ctx, s.logger)
-
-	systemPrompt, err := s.prompts.RenderImageRecognitionSystemPrompt(ctx, scope)
-	if err != nil {
-		logger.Error("image recognition template processing failed", "error", err)
-		sentry.CaptureException(err)
-
-		return "", nil, ErrTemplateProcessing
-	}
-
-	resp, err := s.Generate(ctx, Request{
-		Feature: FeatureImageRecognition,
-		Messages: []Message{
-			TextMessage(RoleSystem, systemPrompt),
-			{
-				Role: RoleUser,
-				Parts: []Part{
-					{
-						Type:      PartTypeImage,
-						MIMEType:  "image/jpeg",
-						ImageData: imageData,
-					},
-				},
-			},
-		},
-	})
-	if err != nil {
-		return "", nil, err
-	}
-
-	if resp.Message.Text() == "" && len(resp.Message.ToolCalls) == 0 {
-		logger.Error("image recognition completion has no choices", "model", resp.Model, "backend", resp.Backend)
-		sentry.CaptureMessage("LLM back-end reply has no choices")
-
-		return "", nil, ErrNoChoices
-	}
-
-	usage := resp.Usage
-
-	return resp.Message.Text(), &usage, nil
-}
-
-func (s *Service) HasAllModels(ctx context.Context) (bool, map[string]bool) {
+// HasModelsFor reports whether every given feature's configured model is
+// offered by the backend, along with a per-feature result map. Callers decide
+// which features to gate on: the startup check passes chat and summarize
+// always, and image_recognition only for a model-routed recognizer on its
+// actual connection.
+func (s *Service) HasModelsFor(ctx context.Context, features ...Feature) (bool, map[string]bool) {
 	logger := logging.FromContext(ctx, s.logger)
 	result := make(map[string]bool)
 
-	for _, feature := range []Feature{FeatureChat, FeatureSummarize, FeatureImageRecognition} {
+	for _, feature := range features {
 		route, err := s.cfg.RouteForFeature(string(feature))
 		if err != nil {
 			result[string(feature)] = false
@@ -195,8 +179,17 @@ func (s *Service) HasAllModels(ctx context.Context) (bool, map[string]bool) {
 
 		models, err := s.backend.ListModels(ctx)
 		if err != nil {
-			logger.Error("model list request failed", "backend", s.backend.Name(), "feature", feature, "error", err)
-			sentry.CaptureException(err)
+			// Image-feature model-check failures are sanitized before the log
+			// and Sentry: raw transport errors carry the endpoint URL, which
+			// can hold credentials on the image-only connection. The cause is
+			// discarded; other features keep their existing diagnostics.
+			logErr := err
+			if feature == FeatureImageRecognition {
+				logErr = safeerr.WrapTransport(ErrLlmBackendRequestFailed, err)
+			}
+
+			logger.Error("model list request failed", "backend", s.backend.Name(), "feature", feature, "error", logErr)
+			sentry.CaptureException(logErr)
 			result[string(feature)] = false
 
 			continue

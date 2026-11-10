@@ -19,11 +19,51 @@ import (
 	"telegram-ollama-reply-bot/internal/telegram/bot"
 	"telegram-ollama-reply-bot/internal/telegram/transport"
 	"telegram-ollama-reply-bot/internal/tooluse"
+	"telegram-ollama-reply-bot/internal/vision"
 	"time"
 
 	"github.com/getsentry/sentry-go"
 	tg "github.com/mymmrac/telego"
 )
+
+// verifyStartupModels checks that every required feature model is available
+// on the service that will actually serve it. The main service always covers
+// chat and summarize. The image-recognition model is appended to the main
+// check when recognition shares the conversational connection (image is nil),
+// checked against the separately configured image service when one exists,
+// and not checked at all when imageCheck is false — a disabled feature or a
+// model-free recognizer must not require an unused image LLM model.
+func verifyStartupModels(ctx context.Context, main, image *llm.Service, imageCheck bool) (bool, map[string]bool) {
+	features := []llm.Feature{llm.FeatureChat, llm.FeatureSummarize}
+
+	if !imageCheck {
+		return main.HasModelsFor(ctx, features...)
+	}
+
+	if image == nil {
+		return main.HasModelsFor(ctx, append(features, llm.FeatureImageRecognition)...)
+	}
+
+	hasMain, mainResult := main.HasModelsFor(ctx, features...)
+	hasImage, imageResult := image.HasModelsFor(ctx, llm.FeatureImageRecognition)
+
+	for feature, available := range imageResult {
+		mainResult[feature] = available
+	}
+
+	return hasMain && hasImage, mainResult
+}
+
+// imageModelLogValue returns the value logged as image_model: the configured
+// model on an OpenAI-compatible route, or an empty string when the active
+// recognizer does not use one (the recognizer name is logged separately).
+func imageModelLogValue(cfg *config.Config) string {
+	if !cfg.LLM.ImageRecognitionEnabled || cfg.LLM.ImageRecognition.Recognizer != config.ImageRecognizerOpenAICompat {
+		return ""
+	}
+
+	return cfg.LLM.Features.ImageRecognition.Model
+}
 
 func Run(ctx context.Context) error {
 	cfg, err := config.Load()
@@ -62,7 +102,8 @@ func Run(ctx context.Context) error {
 		"backend", config.LLMBackendOpenAICompat,
 		"chat_model", cfg.LLM.Features.Chat.Model,
 		"summarize_model", cfg.LLM.Features.Summarize.Model,
-		"image_model", cfg.LLM.Features.ImageRecognition.Model,
+		"image_model", imageModelLogValue(cfg),
+		"image_recognizer", cfg.LLM.ImageRecognition.Recognizer,
 	)
 	transport.LogNetworkRouting(logger, cfg)
 
@@ -77,7 +118,9 @@ func Run(ctx context.Context) error {
 
 	adminService := adminconfig.NewService(persistentStore)
 
-	llmc, err := llm.NewService(cfg.LLM, llm.NewAdminPromptRenderer(adminService, cfg.LLM.ImageRecognitionEnabled), logManager.Logger("llm"))
+	prompts := llm.NewAdminPromptRenderer(adminService, cfg.LLM.ImageRecognitionEnabled)
+
+	llmc, err := llm.NewService(cfg.LLM, prompts, logManager.Logger("llm"))
 	if err != nil {
 		logger.Error("failed to initialize llm service", "error", err)
 		sentry.CaptureException(err)
@@ -85,9 +128,67 @@ func Run(ctx context.Context) error {
 		return err
 	}
 
+	// Image-recognition wiring: the recognizer is selected by configuration.
+	// The OpenAI-compatible route either shares the conversational service or
+	// gets a separately configured one; the MiniMax VLM route is model-free.
+	// Construction errors (missing key, bad URL) refuse the boot with
+	// config-path-naming errors, mirroring llm.NewService.
+	var imageLLM *llm.Service
+
+	var recognizer vision.Recognizer
+
+	switch {
+	case cfg.LLM.ImageRecognition.Recognizer == config.ImageRecognizerMiniMaxVLM && cfg.LLM.ImageRecognitionEnabled:
+		minimaxRecognizer, err := vision.NewMiniMaxRecognizer(
+			cfg.LLM.ImageRecognition.MiniMaxVLM.BaseURL,
+			cfg.LLM.ImageRecognition.MiniMaxVLM.APIKey,
+			cfg.LLM.ImageRecognition.MiniMaxVLM.Timeout,
+			logManager.Logger("vision/minimax"),
+		)
+		if err != nil {
+			logger.Error("failed to initialize minimax vlm recognizer", "error", err)
+			sentry.CaptureException(err)
+
+			return err
+		}
+
+		recognizer = minimaxRecognizer
+	case cfg.LLM.ImageRecognition.OpenAICompat.BaseURL != "":
+		imageCfg := cfg.LLM
+		imageCfg.Backends.OpenAICompat = config.OpenAICompatBackendConfig{
+			BaseURL:  cfg.LLM.ImageRecognition.OpenAICompat.BaseURL,
+			APIToken: cfg.LLM.ImageRecognition.OpenAICompat.APIToken,
+		}
+
+		imageLLM, err = llm.NewService(imageCfg, prompts, logManager.Logger("llm/image"))
+		if err != nil {
+			logger.Error("failed to initialize image llm service", "error", err)
+			sentry.CaptureException(err)
+
+			return err
+		}
+
+		recognizer = vision.NewOpenAIRecognizer(imageLLM)
+	default:
+		recognizer = vision.NewOpenAIRecognizer(llmc)
+	}
+
+	visionService := vision.NewService(
+		recognizer,
+		prompts,
+		cfg.LLM.ImageRecognition.MaxImageBytes,
+		logManager.Logger("vision"),
+	)
+
 	logger.Debug("checking models availability")
 
-	hasAll, searchResult := llmc.HasAllModels(ctx)
+	// The image-recognition model is only checked when the active recognizer
+	// routes through one (a disabled feature or the model-free MiniMax route
+	// must not require an unused image LLM model), and it is checked against
+	// the connection that will actually serve it.
+	imageModelCheck := cfg.LLM.ImageRecognitionEnabled && visionService.RequiresModel()
+
+	hasAll, searchResult := verifyStartupModels(ctx, llmc, imageLLM, imageModelCheck)
 	if !hasAll {
 		logger.Error("required models are unavailable", "result", searchResult)
 		sentry.CaptureMessage("Not all models are available")
@@ -156,6 +257,7 @@ func Run(ctx context.Context) error {
 		ctx,
 		telegramAPI,
 		llmc,
+		visionService,
 		ext,
 		sanitizer,
 		stores.Conversations(),
@@ -165,7 +267,10 @@ func Run(ctx context.Context) error {
 		adminService,
 		tools,
 		logManager.Logger("telegram/bot"),
-		cfg.LLM.ImageRecognitionEnabled,
+		bot.ImageRecognitionSettings{
+			Enabled:       cfg.LLM.ImageRecognitionEnabled,
+			MaxImageBytes: cfg.LLM.ImageRecognition.MaxImageBytes,
+		},
 	)
 
 	if err := botService.Run(); err != nil {

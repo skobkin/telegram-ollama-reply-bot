@@ -1,5 +1,36 @@
 # Upgrade Notes
 
+## Image recognition back-ends (MiniMax VLM support)
+
+Image recognition is extracted behind a dedicated recognizer layer. The default configuration is unchanged: the
+`openai_compat` recognizer keeps using the multimodal chat model (`LLM__FEATURES__IMAGE_RECOGNITION__MODEL`, inheriting
+the chat model) on the conversational backend, and `LLM__IMAGE_RECOGNITION_ENABLED` keeps working exactly as before.
+
+New optional env vars (all additive — unset means today's behavior):
+
+| Variable                                           | Description                                                                                            | Default                  |
+|----------------------------------------------------|--------------------------------------------------------------------------------------------------------|--------------------------|
+| `LLM__IMAGE_RECOGNITION__RECOGNIZER`               | `openai_compat` (default) or `minimax_vlm`                                                              | `openai_compat`          |
+| `LLM__IMAGE_RECOGNITION__MAX_IMAGE_BYTES`          | Client-side bound on downloaded image size                                                              | `10485760` (10 MiB)      |
+| `LLM__IMAGE_RECOGNITION__MINIMAX_VLM__BASE_URL`    | MiniMax endpoint base; must match the key's region                                                      | `https://api.minimax.io` |
+| `LLM__IMAGE_RECOGNITION__MINIMAX_VLM__API_KEY`     | MiniMax key; required when the recognizer is `minimax_vlm`, never inherited from the OpenAI-compat token | -                        |
+| `LLM__IMAGE_RECOGNITION__MINIMAX_VLM__TIMEOUT`     | Per-request timeout                                                                                     | `60s`                    |
+| `LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__BASE_URL`  | Optional dedicated OpenAI-compatible endpoint for recognition (empty reuses the conversational backend) | empty                    |
+| `LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__API_TOKEN` | Token for the dedicated endpoint (only valid with its `BASE_URL`)                                       | empty                    |
+
+Behavior changes to be aware of:
+
+- Image MIME types are now detected from the image's actual bytes (JPEG/PNG/WebP accepted; other formats are
+  rejected locally). Previously the bot hardcoded `image/jpeg`.
+- Telegram file downloads and recognition input are bounded by `LLM__IMAGE_RECOGNITION__MAX_IMAGE_BYTES`
+  (a client-side choice — the MiniMax API documents no image size limit); oversized files are skipped without
+  downloading.
+- With recognition disabled (`LLM__IMAGE_RECOGNITION_ENABLED=false`) or a model-free recognizer (`minimax_vlm`)
+  selected, the startup check no longer requires an image model to be present. Previously the bot refused to boot
+  when the image model was missing even with recognition disabled. With a dedicated image endpoint configured, the
+  image model is checked against that endpoint, not the conversational one.
+- The MiniMax route reports no token usage (`/stats` unchanged for the OpenAI-compatible route).
+
 ## Bot output now uses Telegram Rich Messages
 
 LLM replies, `/summarize` and `/stats` output are sent as [Rich Messages](https://core.telegram.org/bots/api)

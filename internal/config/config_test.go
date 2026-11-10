@@ -1000,3 +1000,173 @@ func TestLoadSucceedsWithInvalidMCPServersWhenDisabled(t *testing.T) {
 		t.Fatalf("expected mcp.enabled to default to false")
 	}
 }
+
+func TestLoadImageRecognitionDefaults(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "chat-model")
+	t.Setenv("LLM__BACKENDS__OPENAI_COMPAT__BASE_URL", "http://openai-compat.internal/v1")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	ir := cfg.LLM.ImageRecognition
+	if ir.Recognizer != ImageRecognizerOpenAICompat {
+		t.Fatalf("unexpected default recognizer: %q", ir.Recognizer)
+	}
+	if ir.MaxImageBytes != 10<<20 {
+		t.Fatalf("unexpected default max image bytes: %d", ir.MaxImageBytes)
+	}
+	if ir.MiniMaxVLM.BaseURL != DefaultMiniMaxVLMBaseURL {
+		t.Fatalf("unexpected default minimax base url: %q", ir.MiniMaxVLM.BaseURL)
+	}
+	if ir.MiniMaxVLM.Timeout != 60*time.Second {
+		t.Fatalf("unexpected default minimax timeout: %s", ir.MiniMaxVLM.Timeout)
+	}
+	if ir.OpenAICompat.BaseURL != "" || ir.OpenAICompat.APIToken != "" {
+		t.Fatalf("expected empty separate openai connection by default, got %+v", ir.OpenAICompat)
+	}
+	if !cfg.LLM.ImageRecognitionEnabled {
+		t.Fatalf("image recognition must stay enabled by default")
+	}
+}
+
+func TestLoadImageRecognitionExplicitConfig(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "chat-model")
+	t.Setenv("LLM__BACKENDS__OPENAI_COMPAT__BASE_URL", "http://openai-compat.internal/v1")
+	t.Setenv("LLM__IMAGE_RECOGNITION__RECOGNIZER", "minimax_vlm")
+	t.Setenv("LLM__IMAGE_RECOGNITION__MINIMAX_VLM__API_KEY", "mm-key")
+	t.Setenv("LLM__IMAGE_RECOGNITION__MINIMAX_VLM__BASE_URL", "https://api.minimaxi.com")
+	t.Setenv("LLM__IMAGE_RECOGNITION__MINIMAX_VLM__TIMEOUT", "45s")
+	t.Setenv("LLM__IMAGE_RECOGNITION__MAX_IMAGE_BYTES", "2048")
+	t.Setenv("LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__BASE_URL", "http://image-llm.internal/v1")
+	t.Setenv("LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__API_TOKEN", "image-token")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	ir := cfg.LLM.ImageRecognition
+	if ir.Recognizer != ImageRecognizerMiniMaxVLM {
+		t.Fatalf("unexpected recognizer: %q", ir.Recognizer)
+	}
+	if ir.MaxImageBytes != 2048 {
+		t.Fatalf("unexpected max image bytes: %d", ir.MaxImageBytes)
+	}
+	if ir.MiniMaxVLM.BaseURL != "https://api.minimaxi.com" {
+		t.Fatalf("unexpected minimax base url: %q", ir.MiniMaxVLM.BaseURL)
+	}
+	if ir.MiniMaxVLM.Timeout != 45*time.Second {
+		t.Fatalf("unexpected minimax timeout: %s", ir.MiniMaxVLM.Timeout)
+	}
+	if ir.MiniMaxVLM.APIKey != "mm-key" {
+		t.Fatalf("unexpected minimax api key")
+	}
+	if ir.OpenAICompat.BaseURL != "http://image-llm.internal/v1" || ir.OpenAICompat.APIToken != "image-token" {
+		t.Fatalf("unexpected separate openai config: %+v", ir.OpenAICompat)
+	}
+}
+
+func TestLoadRejectsUnknownImageRecognizer(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "chat-model")
+	t.Setenv("LLM__BACKENDS__OPENAI_COMPAT__BASE_URL", "http://openai-compat.internal/v1")
+	t.Setenv("LLM__IMAGE_RECOGNITION__RECOGNIZER", "google_vision")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatalf("expected load to fail for unknown recognizer")
+	}
+	if !strings.Contains(err.Error(), "LLM__IMAGE_RECOGNITION__RECOGNIZER") {
+		t.Fatalf("expected error to name the env var, got %q", err.Error())
+	}
+}
+
+func TestLoadRequiresMiniMaxKeyWhenSelected(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "chat-model")
+	t.Setenv("LLM__BACKENDS__OPENAI_COMPAT__BASE_URL", "http://openai-compat.internal/v1")
+	t.Setenv("LLM__BACKENDS__OPENAI_COMPAT__API_TOKEN", "conversational-token")
+	t.Setenv("LLM__IMAGE_RECOGNITION__RECOGNIZER", "minimax_vlm")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatalf("expected load to fail without a minimax key")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "LLM__IMAGE_RECOGNITION__MINIMAX_VLM__API_KEY") ||
+		!strings.Contains(msg, "LLM__BACKENDS__OPENAI_COMPAT__API_TOKEN") {
+		t.Fatalf("expected error to name both variables (no silent inheritance), got %q", msg)
+	}
+}
+
+func TestLoadMiniMaxWithoutKeyOKWhenDisabled(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "chat-model")
+	t.Setenv("LLM__BACKENDS__OPENAI_COMPAT__BASE_URL", "http://openai-compat.internal/v1")
+	t.Setenv("LLM__IMAGE_RECOGNITION_ENABLED", "false")
+	t.Setenv("LLM__IMAGE_RECOGNITION__RECOGNIZER", "minimax_vlm")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("disabled recognition must not require a minimax key: %v", err)
+	}
+	if cfg.LLM.ImageRecognitionEnabled {
+		t.Fatalf("expected recognition disabled")
+	}
+}
+
+func TestLoadRejectsImageTokenWithoutBaseURL(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "chat-model")
+	t.Setenv("LLM__BACKENDS__OPENAI_COMPAT__BASE_URL", "http://openai-compat.internal/v1")
+	t.Setenv("LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__API_TOKEN", "orphan-token")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatalf("expected load to fail for token without base url")
+	}
+	if !strings.Contains(err.Error(), "llm.image_recognition.openai_compat.api_token") {
+		t.Fatalf("expected error to name the config path, got %q", err.Error())
+	}
+}
+
+func TestLoadRejectsBadImageRecognitionValues(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{
+			name: "zero max image bytes",
+			env:  map[string]string{"LLM__IMAGE_RECOGNITION__MAX_IMAGE_BYTES": "0"},
+		},
+		{
+			name: "negative max image bytes",
+			env:  map[string]string{"LLM__IMAGE_RECOGNITION__MAX_IMAGE_BYTES": "-5"},
+		},
+		{
+			name: "zero minimax timeout",
+			env:  map[string]string{"LLM__IMAGE_RECOGNITION__MINIMAX_VLM__TIMEOUT": "0s"},
+		},
+		{
+			name: "non-http minimax base url",
+			env:  map[string]string{"LLM__IMAGE_RECOGNITION__MINIMAX_VLM__BASE_URL": "ftp://api.minimax.io"},
+		},
+		{
+			name: "garbage minimax base url",
+			env:  map[string]string{"LLM__IMAGE_RECOGNITION__MINIMAX_VLM__BASE_URL": "not a url"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LLM__FEATURES__CHAT__MODEL", "chat-model")
+			t.Setenv("LLM__BACKENDS__OPENAI_COMPAT__BASE_URL", "http://openai-compat.internal/v1")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected load to fail")
+			}
+		})
+	}
+}
