@@ -8,6 +8,7 @@ import (
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/config"
+	adminui "telegram-ollama-reply-bot/internal/telegram/adminui"
 
 	tg "github.com/mymmrac/telego"
 )
@@ -117,7 +118,7 @@ func TestShouldProcessChatMessageUsesCharacterNameTrigger(t *testing.T) {
 func TestAdminControlsDisabledTextIncludesUserID(t *testing.T) {
 	t.Parallel()
 
-	text := adminControlsDisabledText(&tg.User{ID: 123456789})
+	text := adminui.AdminControlsDisabledText(&tg.User{ID: 123456789})
 	expected := "Admin controls are disabled: BOT__ADMIN_IDS is empty.\nYour Telegram user ID: 123456789\nSet BOT__ADMIN_IDS=123456789"
 
 	if text != expected {
@@ -128,7 +129,7 @@ func TestAdminControlsDisabledTextIncludesUserID(t *testing.T) {
 func TestAdminControlsDisabledTextWithoutUser(t *testing.T) {
 	t.Parallel()
 
-	text := adminControlsDisabledText(nil)
+	text := adminui.AdminControlsDisabledText(nil)
 	expected := "Admin controls are disabled: BOT__ADMIN_IDS is empty."
 
 	if text != expected {

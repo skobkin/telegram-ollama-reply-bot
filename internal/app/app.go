@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"telegram-ollama-reply-bot/internal/adminconfig"
+	core "telegram-ollama-reply-bot/internal/adminui"
 	"telegram-ollama-reply-bot/internal/buildinfo"
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/content/extractor"
@@ -17,6 +18,7 @@ import (
 	"telegram-ollama-reply-bot/internal/state/memory"
 	"telegram-ollama-reply-bot/internal/support/httpclient"
 	"telegram-ollama-reply-bot/internal/support/markdown"
+	adminui "telegram-ollama-reply-bot/internal/telegram/adminui"
 	"telegram-ollama-reply-bot/internal/telegram/bot"
 	"telegram-ollama-reply-bot/internal/telegram/transport"
 	"telegram-ollama-reply-bot/internal/tooluse"
@@ -297,6 +299,20 @@ func Run(ctx context.Context) error {
 			MaxImageBytes: cfg.LLM.ImageRecognition.MaxImageBytes,
 		},
 	)
+
+	// Interactive admin UI: controller (sessions, screens) plus the Telegram
+	// adapter that renders it. Ephemeral by design — sessions and pendings
+	// live in memory only.
+	adminUIManager := core.NewManager(nil)
+	adminUIController := core.NewController(adminUIManager, adminService, cfg.Bot.AdminIDs, func() string {
+		return stores.Stats().Snapshot().String()
+	})
+	botService.SetAdminUI(adminui.NewAdapter(
+		adminUIController,
+		adminUIManager,
+		cfg.Bot.AdminIDs,
+		logManager.Logger("telegram/adminui"),
+	))
 
 	attachImageTools(tools, botService, cfg.LLM.ImageRecognitionEnabled)
 

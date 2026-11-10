@@ -51,9 +51,11 @@ type imageDescriber interface {
 // routes at the isolation point before the ephemeral-state middlewares, so
 // every administrative update (commands, callbacks, correlated replies,
 // chat-sharing events) terminates before conversation history and request
-// statistics.
+// statistics. SyncCommandMenus pushes the Telegram command menus (called once
+// from Run after GetMe resolves the bot identity).
 type AdminUI interface {
-	RegisterRoutes(bh *th.BotHandler, commandForMe th.Predicate)
+	RegisterRoutes(bh *th.BotHandler, api *t.Bot, botUserID int64, commandForMe th.Predicate)
+	SyncCommandMenus(ctx context.Context)
 }
 
 type Bot struct {
@@ -128,6 +130,12 @@ func NewBot(
 	return bot
 }
 
+// SetAdminUI wires the interactive admin UI adapter (app wiring; the hook is
+// inert until then).
+func (b *Bot) SetAdminUI(ui AdminUI) {
+	b.adminUI = ui
+}
+
 func (b *Bot) Run() error {
 	logger := b.loggerFromContext(b.ctx)
 
@@ -185,6 +193,11 @@ func (b *Bot) Run() error {
 	b.registerRoutes(bh)
 	logger.Debug("routes registered")
 
+	if b.adminUI != nil {
+		logger.Debug("syncing command menus")
+		b.adminUI.SyncCommandMenus(b.ctx)
+	}
+
 	logger.Debug("starting bot handler")
 	if err := bh.Start(); err != nil {
 		logger.Error("cannot start bot handler", "error", err)
@@ -214,7 +227,7 @@ func (b *Bot) registerRoutes(bh *th.BotHandler) {
 	// administrative update terminates before the ephemeral-state
 	// middlewares. Wired in Run when the adapter is present.
 	if b.adminUI != nil {
-		b.adminUI.RegisterRoutes(bh, commandForMe)
+		b.adminUI.RegisterRoutes(bh, b.api, b.me.ID, commandForMe)
 	}
 
 	// Administrative commands: same handlers and authorization as before,

@@ -451,10 +451,7 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 	switch action.Verb {
 	case VerbHome:
 		if s.Screen.Kind == ScreenDashboard {
-			s.Screen.Notice = ""
-			s.MarkRerender()
-
-			return nil
+			return rerenderInPlace(s)
 		}
 		s.PushScreen(ScreenState{Kind: ScreenDashboard})
 		s.MarkRerender()
@@ -757,8 +754,12 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 		return nil
 
 	case VerbBack:
+		previous := s.Screen
 		s.PopScreen()
 		s.Screen.Notice = ""
+		if s.Screen == previous && previous.Notice == "" {
+			return nil // byte-identical re-render: no API call, no seq bump
+		}
 		s.MarkRerender()
 
 		return nil
@@ -779,10 +780,7 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 
 	case VerbStats:
 		if s.Screen.Kind == ScreenStatistics {
-			s.Screen.Notice = ""
-			s.MarkRerender()
-
-			return nil
+			return rerenderInPlace(s)
 		}
 		s.PushScreen(ScreenState{Kind: ScreenStatistics})
 		s.MarkRerender()
@@ -1430,6 +1428,20 @@ func (c *Controller) policySwitchDescription(ctx context.Context, policy adminco
 
 func confirmState(description string, danger bool, chatID int64, feature adminconfig.PromptFeature) ScreenState {
 	return ScreenState{Kind: ScreenConfirm, ChatID: chatID, Feature: feature, Detail: description, Danger: danger}
+}
+
+// rerenderInPlace refreshes the current screen, skipping the render entirely
+// when the state is already clean and unchanged: a byte-identical re-render
+// is a pure no-op (no API call, no sequence bump — Telegram would reject the
+// identical edit anyway).
+func rerenderInPlace(s *Session) error {
+	if s.Screen.Notice == "" {
+		return nil
+	}
+	s.Screen.Notice = ""
+	s.MarkRerender()
+
+	return nil
 }
 
 // scopeFromScreen reports the chat scope (0 = global) the pressed button

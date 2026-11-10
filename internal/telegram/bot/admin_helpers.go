@@ -1,28 +1,15 @@
 package bot
 
 import (
-	"strconv"
 	"strings"
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
-
-	t "github.com/mymmrac/telego"
 )
 
 // Shared admin helpers kept for the interactive admin UI and its tests. The
 // legacy IRC-style command handlers were removed; their capabilities live in
-// the admin UI now.
-
-func adminControlsDisabledText(user *t.User) string {
-	text := "Admin controls are disabled: BOT__ADMIN_IDS is empty."
-	if user == nil {
-		return text
-	}
-
-	userID := strconv.FormatInt(user.ID, 10)
-
-	return text + "\nYour Telegram user ID: " + userID + "\nSet BOT__ADMIN_IDS=" + userID
-}
+// the admin UI now. The bootstrap diagnostic (empty BOT__ADMIN_IDS) moved to
+// the admin UI adapter package.
 
 func formatConfigFields(fields []string) string {
 	lines := make([]string, 0, len(fields))

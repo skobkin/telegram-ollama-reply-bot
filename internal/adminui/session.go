@@ -253,6 +253,25 @@ func (m *Manager) Session(adminID int64) *Session {
 	return m.sessions[adminID]
 }
 
+// ActiveSession returns the admin's session only when it exists, is not
+// detached, and has not expired — the adapter's fast validation before it
+// acknowledges a callback.
+func (m *Manager) ActiveSession(adminID int64) (*Session, bool) {
+	session := m.Session(adminID)
+	if session == nil {
+		return nil, false
+	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	if session.detached || m.now().After(session.ExpiresAt) {
+		return nil, false
+	}
+
+	return session, true
+}
+
 // Close drops the admin's session (detaching it), used by /cancel.
 func (m *Manager) Close(adminID int64) {
 	m.mu.Lock()

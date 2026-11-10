@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,26 +29,36 @@ type fakeAPIRequest struct {
 // fakeAPIServer records Bot API calls and answers with minimal valid
 // responses (telego requires {"ok":true,"result":...}).
 type fakeAPIServer struct {
-	server   *httptest.Server
-	mu       sync.Mutex
-	requests []fakeAPIRequest
+	server        *httptest.Server
+	mu            sync.Mutex
+	requests      []fakeAPIRequest
+	nextMessageID atomic.Int64
 }
 
 func newFakeAPIServer(t *testing.T) *fakeAPIServer {
 	t.Helper()
 
 	fake := &fakeAPIServer{}
+	fake.nextMessageID.Store(100)
 	fake.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		method := strings.TrimPrefix(r.URL.Path, "/bot1:"+strings.Repeat("A", 35)+"/")
 		fake.mu.Lock()
-		fake.requests = append(fake.requests, fakeAPIRequest{
-			Method: strings.TrimPrefix(r.URL.Path, "/bot1:"+strings.Repeat("A", 35)+"/"),
-			Body:   string(body),
-		})
+		fake.requests = append(fake.requests, fakeAPIRequest{Method: method, Body: string(body)})
 		fake.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+
+		switch method {
+		case "sendMessage", "editMessageText":
+			// Real message IDs so admin UI correlation flows work.
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":` +
+				strconv.FormatInt(fake.nextMessageID.Add(1), 10) + `}}`))
+		case "answerCallbackQuery", "deleteMessage", "setMyCommands":
+			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+		default:
+			_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+		}
 	}))
 	t.Cleanup(fake.server.Close)
 
