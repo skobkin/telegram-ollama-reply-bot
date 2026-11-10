@@ -741,6 +741,60 @@ func TestListRecentImages_RetainsAllIdentitiesUnderBudget(t *testing.T) {
 	}
 }
 
+// TestListRecentImages_IDOnlyKeepsAllIdentities is the review-3 wire-level
+// regression: ten valid images whose escaped names alone would overflow the
+// compact representation still keep ALL ten requested identities — the fit
+// ladder degrades entries to bare message_ids before any drop, with truthful
+// ids_only disclosure.
+func TestListRecentImages_IDOnlyKeepsAllIdentities(t *testing.T) {
+	t.Parallel()
+
+	runtime, _, store := newImageToolsRuntime(t)
+	scope := state.ConversationScope{ChatID: 7}
+
+	for i := 1; i <= maxRecentImagesResultLimit; i++ {
+		msg := imageMessage(i, 7, 0, "f")
+		msg.Name = strings.Repeat("<", recentImagesNameCharLimit) // 40 runes × ~6 wire chars each when escaped
+		store.AppendMessage(scope, msg)
+	}
+
+	req := ChatRequest{Scope: scope, RequestMessage: state.Message{ChatID: 7, MessageID: 99}}
+	wire := wireTextFor(t, runtime, req, llm.ToolCall{ID: "l", Name: "list_recent_images", Arguments: json.RawMessage(`{"limit":10}`)})
+
+	if got := len([]rune(wire)); got > listImagesResultCharBudget {
+		t.Fatalf("wire %d runes exceeds budget %d", got, listImagesResultCharBudget)
+	}
+	top, data := decodeWireResult(t, wire)
+	if top["status"] != "ok" {
+		t.Fatalf("unexpected status: %#v", top["status"])
+	}
+
+	images, ok := data["images"].([]any)
+	if !ok || len(images) != maxRecentImagesResultLimit {
+		t.Fatalf("expected all %d identities retained, got %d", maxRecentImagesResultLimit, len(images))
+	}
+	seen := map[int]bool{}
+	for _, raw := range images {
+		entry, _ := raw.(map[string]any)
+		id, _ := entry["message_id"].(float64)
+		if id <= 0 || seen[int(id)] {
+			t.Fatalf("unusable or duplicated identity: %#v", entry)
+		}
+		seen[int(id)] = true
+	}
+	for i := 1; i <= maxRecentImagesResultLimit; i++ {
+		if !seen[i] {
+			t.Fatalf("identity %d became undiscoverable under escaped names", i)
+		}
+	}
+	if _, has := data["omitted_count"]; has {
+		t.Fatalf("identities must be retained instead of omitted: %#v", data)
+	}
+	if data["ids_only"] != true {
+		t.Fatalf("ID-only degradation must be disclosed truthfully: %#v", data)
+	}
+}
+
 // TestSnapshotCandidateScopeContract is the EVERY-candidate helper contract:
 // snapshot nodes are scope-checked exactly like requester and reply-chain
 // nodes — a foreign node never supplies an image and never shadows an

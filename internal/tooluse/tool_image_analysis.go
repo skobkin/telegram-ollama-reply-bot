@@ -34,6 +34,18 @@ const (
 	analyzeErrorCodeRecognitionFailed = "recognition_failed"
 )
 
+// imageEntryDetail is the listRecentImages fit-ladder detail level: entries
+// degrade from full metadata to compact identities to bare message_ids so
+// every requested identity stays discoverable under the wire budget before
+// any entry is dropped.
+type imageEntryDetail int
+
+const (
+	imageEntryFull imageEntryDetail = iota
+	imageEntryCompact
+	imageEntryIDOnly
+)
+
 // listRecentImages lists recent image-bearing messages in the current
 // chat/topic so the model can pick the right message_id before a paid
 // analysis. It is strictly local: no cache wiring, no network fetch, no
@@ -83,20 +95,26 @@ func (r *Runtime) listRecentImages(_ context.Context, callCtx CallContext, args 
 
 	totalFound := len(sources)
 
-	// renderImages builds the wire entries. identityOnly strips optional
-	// metadata and previews down to a compact identity (bounded name, time,
-	// description presence) so every requested message_id stays discoverable
-	// under the wire budget.
-	renderImages := func(descLimit, textLimit int, identityOnly bool) []map[string]any {
+	// renderImages builds the wire entries at a detail level. Compact keeps
+	// a bounded identity (name, time, description presence); IDOnly keeps
+	// only the message_id — every requested identity stays discoverable
+	// under the wire budget before any entry is dropped.
+	renderImages := func(descLimit, textLimit int, detail imageEntryDetail) []map[string]any {
 		images := make([]map[string]any, 0, len(sources))
 		for _, msg := range sources {
 			entry := map[string]any{
-				"message_id":      msg.MessageID,
-				"created_at":      formatToolTime(msg.CreatedAt),
-				"has_description": msg.Image != "",
+				"message_id": msg.MessageID,
 			}
-			if identityOnly {
+
+			switch detail {
+			case imageEntryIDOnly:
+				images = append(images, entry)
+
+				continue
+			case imageEntryCompact:
 				entry["name"] = truncateUTF8(msg.Name, recentImagesNameCharLimit)
+				entry["created_at"] = formatToolTime(msg.CreatedAt)
+				entry["has_description"] = msg.Image != ""
 
 				images = append(images, entry)
 
@@ -107,6 +125,8 @@ func (r *Runtime) listRecentImages(_ context.Context, callCtx CallContext, args 
 			entry["from_id"] = msg.FromID
 			entry["name"] = msg.Name
 			entry["username"] = msg.Username
+			entry["created_at"] = formatToolTime(msg.CreatedAt)
+			entry["has_description"] = msg.Image != ""
 			// The description fields mirror the stored message only: hydration
 			// fills cloned prompt copies and caches text in the image cache, so
 			// the stored text is often empty — has_description:false is normal
@@ -124,15 +144,18 @@ func (r *Runtime) listRecentImages(_ context.Context, callCtx CallContext, args 
 		return images
 	}
 
-	buildResult := func(images []map[string]any, omitted int, compact bool) toolResult {
+	buildResult := func(images []map[string]any, omitted int, detail imageEntryDetail) toolResult {
 		summary := fmt.Sprintf("Found %d recent image-bearing message(s)", len(images))
 		data := map[string]any{
 			"chat_id":  callCtx.Scope.ChatID,
 			"topic_id": callCtx.Scope.TopicID,
 			"images":   images,
 		}
-		if compact {
+		if detail >= imageEntryCompact {
 			data["compact"] = true
+		}
+		if detail >= imageEntryIDOnly {
+			data["ids_only"] = true
 		}
 		if omitted > 0 {
 			summary += fmt.Sprintf(", omitted %d older due to result size", omitted)
@@ -144,39 +167,39 @@ func (r *Runtime) listRecentImages(_ context.Context, callCtx CallContext, args 
 	}
 
 	// Wire-budget fit ladder, identities first: shrink previews (halving),
-	// then strip entries to compact identities — keeping every requested
-	// message_id so nothing becomes undiscoverable — and only as a true last
-	// resort drop the oldest entries with truthful counts. The common
+	// then strip entries to compact identities, then to bare message_ids —
+	// keeping every requested identity discoverable — and only as a true
+	// last resort drop the oldest entries with truthful counts. The common
 	// marshaler never has to hard-cut the JSON mid-string.
-	images := renderImages(recentImagesDescriptionCharLimit, recentImagesTextCharLimit, false)
+	images := renderImages(recentImagesDescriptionCharLimit, recentImagesTextCharLimit, imageEntryFull)
 	descLimit, textLimit := recentImagesDescriptionCharLimit, recentImagesTextCharLimit
-	identityOnly := false
+	detail := imageEntryFull
 	omitted := 0
-	for marshaledRunes(buildResult(images, omitted, identityOnly)) > listImagesResultCharBudget {
+	for marshaledRunes(buildResult(images, omitted, detail)) > listImagesResultCharBudget {
 		switch {
 		case descLimit > 0 || textLimit > 0:
 			descLimit /= 2
 			textLimit /= 2
-			images = renderImages(descLimit, textLimit, identityOnly)
-		case !identityOnly:
-			identityOnly = true
-			images = renderImages(descLimit, textLimit, identityOnly)
+			images = renderImages(descLimit, textLimit, detail)
+		case detail < imageEntryIDOnly:
+			detail++
+			images = renderImages(descLimit, textLimit, detail)
 		case len(sources) > 1:
 			sources = sources[:len(sources)-1]
 			omitted++
-			images = renderImages(descLimit, textLimit, identityOnly)
+			images = renderImages(descLimit, textLimit, detail)
 		default:
 			// Nothing left to shrink without losing the only identity; the
 			// common marshaler's hard cut is the last resort.
-			result := buildResult(images, omitted, identityOnly)
+			result := buildResult(images, omitted, detail)
 			logToolResult(callCtx, result, "images_count", len(images), "omitted_count", omitted)
 
 			return result, nil
 		}
 	}
 
-	result := buildResult(images, omitted, identityOnly)
-	logToolResult(callCtx, result, "images_count", len(images), "omitted_count", omitted, "compact", identityOnly)
+	result := buildResult(images, omitted, detail)
+	logToolResult(callCtx, result, "images_count", len(images), "omitted_count", omitted, "compact", detail >= imageEntryCompact, "ids_only", detail >= imageEntryIDOnly)
 
 	return result, nil
 }
