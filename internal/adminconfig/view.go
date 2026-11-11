@@ -113,6 +113,11 @@ func effectiveChatField(spec FieldSpec, global GlobalSettings, chat ChatSettings
 		if found && chat.HasInteractivity && chat.InteractivityMode != "" {
 			field.Effective, field.Source, field.Overridden = string(chat.InteractivityMode), SourceChatOverride, true
 		}
+	case "auto_summary_enabled":
+		field.GlobalValue = strconv.FormatBool(global.DefaultAutoSummaryEnabled)
+		if found && chat.AutoSummaryEnabled != nil {
+			field.Effective, field.Source, field.Overridden = strconv.FormatBool(*chat.AutoSummaryEnabled), SourceChatOverride, true
+		}
 	}
 
 	if field.Effective == "" {

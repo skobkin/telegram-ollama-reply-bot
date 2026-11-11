@@ -77,8 +77,11 @@ type GlobalSettings struct {
 	ToneMode                 string
 	AllowTeasing             bool
 	DefaultInteractivityMode InteractivityMode
-	UpdatedAt                time.Time
-	UpdatedBy                int64
+	// DefaultAutoSummaryEnabled is the global default of the per-chat
+	// auto-summarizer toggle. Chats without an explicit override inherit it.
+	DefaultAutoSummaryEnabled bool
+	UpdatedAt                 time.Time
+	UpdatedBy                 int64
 }
 
 type ChatSettings struct {
@@ -90,8 +93,11 @@ type ChatSettings struct {
 	AllowTeasing      *bool
 	InteractivityMode InteractivityMode
 	HasInteractivity  bool
-	UpdatedAt         time.Time
-	UpdatedBy         int64
+	// AutoSummaryEnabled opts the chat into automatic summarization of
+	// linked long-form content. nil means inherit the global default.
+	AutoSummaryEnabled *bool
+	UpdatedAt          time.Time
+	UpdatedBy          int64
 }
 
 type PromptTemplate struct {
@@ -120,6 +126,9 @@ type ResolvedChatConfig struct {
 	ToneMode          string
 	AllowTeasing      bool
 	InteractivityMode InteractivityMode
+	// AutoSummaryEnabled is the effective auto-summarizer switch for the
+	// chat: the global default unless the chat overrides it.
+	AutoSummaryEnabled bool
 }
 
 type Store interface {

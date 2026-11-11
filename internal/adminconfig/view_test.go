@@ -60,11 +60,12 @@ func TestEffectiveChatConfigMarksOverridesExistenceBased(t *testing.T) {
 		global:    viewTestGlobal(),
 		chatFound: true,
 		chat: ChatSettings{
-			CharacterName:     "kitsune",
-			Language:          "Russian",
-			AllowTeasing:      BoolPointer(true),
-			InteractivityMode: InteractivityMentionsReplies,
-			HasInteractivity:  true,
+			CharacterName:      "kitsune",
+			Language:           "Russian",
+			AllowTeasing:       BoolPointer(true),
+			InteractivityMode:  InteractivityMentionsReplies,
+			HasInteractivity:   true,
+			AutoSummaryEnabled: BoolPointer(false),
 		},
 	}, nil, nil)
 
@@ -82,12 +83,50 @@ func TestEffectiveChatConfigMarksOverridesExistenceBased(t *testing.T) {
 	assertOverride(t, byName["language"], "Russian") // equal-valued override still flagged
 	assertOverride(t, byName["allow_teasing"], "true")
 	assertOverride(t, byName["interactivity_mode"], string(InteractivityMentionsReplies))
+	assertOverride(t, byName["auto_summary_enabled"], "false")
 
 	if field := byName["gender"]; field.Overridden || field.Source != SourceGlobal {
 		t.Fatalf("gender should be inherited, got %+v", field)
 	}
 	if field := byName["allow_teasing"]; field.GlobalValue != "false" {
 		t.Fatalf("allow_teasing global value should be false, got %q", field.GlobalValue)
+	}
+}
+
+func TestEffectiveChatConfigAutoSummaryInheritsGlobalDefault(t *testing.T) {
+	global := viewTestGlobal()
+	global.DefaultAutoSummaryEnabled = true
+	svc := NewService(&stubStore{
+		global:    global,
+		chatFound: true,
+		chat:      ChatSettings{AutoSummaryEnabled: BoolPointer(false)},
+	}, nil, nil)
+
+	view, err := svc.EffectiveChatConfig(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("effective chat config: %v", err)
+	}
+
+	byName := map[string]EffectiveField{}
+	for _, field := range view.Fields {
+		byName[field.Spec.Name] = field
+	}
+	if got := byName["auto_summary_enabled"]; got.GlobalValue != "true" || got.Effective != "false" {
+		t.Fatalf("auto_summary_enabled should show global true / effective false, got %+v", got)
+	}
+
+	// Without a chat row the effective value falls back to the global default.
+	svc = NewService(&stubStore{global: global}, nil, nil)
+	view, err = svc.EffectiveChatConfig(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("effective chat config: %v", err)
+	}
+	for _, field := range view.Fields {
+		if field.Spec.Name == "auto_summary_enabled" {
+			if field.Overridden || field.Effective != "true" {
+				t.Fatalf("auto_summary_enabled should inherit true, got %+v", field)
+			}
+		}
 	}
 }
 

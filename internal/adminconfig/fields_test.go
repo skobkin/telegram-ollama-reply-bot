@@ -35,6 +35,30 @@ func TestChatFieldSpecsMatchServiceFieldList(t *testing.T) {
 	}
 }
 
+func TestAutoSummaryFieldSpecKinds(t *testing.T) {
+	globalSpecs := GlobalFieldSpecs()
+	var globalAutoSummary FieldSpec
+	for _, spec := range globalSpecs {
+		if spec.Name == "default_auto_summary_enabled" {
+			globalAutoSummary = spec
+		}
+	}
+	if globalAutoSummary.Kind != KindBool {
+		t.Fatalf("default_auto_summary_enabled must be a plain bool field, got kind %d", globalAutoSummary.Kind)
+	}
+
+	chatSpecs := ChatFieldSpecs()
+	var chatAutoSummary FieldSpec
+	for _, spec := range chatSpecs {
+		if spec.Name == "auto_summary_enabled" {
+			chatAutoSummary = spec
+		}
+	}
+	if chatAutoSummary.Kind != KindBoolTriState {
+		t.Fatalf("auto_summary_enabled must be a tri-state bool field, got kind %d", chatAutoSummary.Kind)
+	}
+}
+
 func TestFieldSpecsExcludeAccessPolicy(t *testing.T) {
 	// access_policy must never be an ordinary editable field: it is only
 	// writable through the confirmation-gated Service.SetAccessPolicy.

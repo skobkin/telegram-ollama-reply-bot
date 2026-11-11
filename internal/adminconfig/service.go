@@ -32,11 +32,11 @@ func (s *Service) Store() Store {
 }
 
 func (s *Service) GlobalFields() []string {
-	return []string{"character_name", "language", "gender", "tone_mode", "allow_teasing", "default_interactivity_mode"}
+	return []string{"character_name", "language", "gender", "tone_mode", "allow_teasing", "default_interactivity_mode", "default_auto_summary_enabled"}
 }
 
 func (s *Service) ChatFields() []string {
-	return []string{"character_name", "language", "gender", "tone_mode", "allow_teasing", "interactivity_mode"}
+	return []string{"character_name", "language", "gender", "tone_mode", "allow_teasing", "interactivity_mode", "auto_summary_enabled"}
 }
 
 func (s *Service) PromptFeatures() []PromptFeature {
@@ -59,12 +59,13 @@ func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (Resolved
 	}
 
 	resolved := ResolvedChatConfig{
-		CharacterName:     global.CharacterName,
-		Language:          global.Language,
-		Gender:            global.Gender,
-		ToneMode:          global.ToneMode,
-		AllowTeasing:      global.AllowTeasing,
-		InteractivityMode: global.DefaultInteractivityMode,
+		CharacterName:      global.CharacterName,
+		Language:           global.Language,
+		Gender:             global.Gender,
+		ToneMode:           global.ToneMode,
+		AllowTeasing:       global.AllowTeasing,
+		InteractivityMode:  global.DefaultInteractivityMode,
+		AutoSummaryEnabled: global.DefaultAutoSummaryEnabled,
 	}
 
 	if chatID == 0 {
@@ -95,6 +96,9 @@ func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (Resolved
 	}
 	if chat.HasInteractivity && chat.InteractivityMode != "" {
 		resolved.InteractivityMode = chat.InteractivityMode
+	}
+	if chat.AutoSummaryEnabled != nil {
+		resolved.AutoSummaryEnabled = *chat.AutoSummaryEnabled
 	}
 
 	return resolved, nil

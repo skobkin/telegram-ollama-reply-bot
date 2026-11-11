@@ -165,6 +165,66 @@ func TestResolveChatConfigFallsBackToGlobalCharacterName(t *testing.T) {
 	}
 }
 
+func TestResolveChatConfigAutoSummaryInheritsAndOverrides(t *testing.T) {
+	tests := []struct {
+		name   string
+		global GlobalSettings
+		chat   ChatSettings
+		want   bool
+	}{
+		{
+			name:   "default off",
+			global: GlobalSettings{},
+			chat:   ChatSettings{},
+			want:   false,
+		},
+		{
+			name:   "global on, chat inherits",
+			global: GlobalSettings{DefaultAutoSummaryEnabled: true},
+			chat:   ChatSettings{},
+			want:   true,
+		},
+		{
+			name:   "global on, chat overrides off",
+			global: GlobalSettings{DefaultAutoSummaryEnabled: true},
+			chat:   ChatSettings{AutoSummaryEnabled: BoolPointer(false)},
+			want:   false,
+		},
+		{
+			name:   "global off, chat overrides on",
+			global: GlobalSettings{},
+			chat:   ChatSettings{AutoSummaryEnabled: BoolPointer(true)},
+			want:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := NewService(&stubStore{global: tt.global, chatFound: true, chat: tt.chat}, nil, nil)
+
+			resolved, err := svc.ResolveChatConfig(context.Background(), 1)
+			if err != nil {
+				t.Fatalf("resolve chat config: %v", err)
+			}
+			if resolved.AutoSummaryEnabled != tt.want {
+				t.Fatalf("AutoSummaryEnabled = %v, want %v", resolved.AutoSummaryEnabled, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveChatConfigAutoSummaryWithoutChatRowUsesGlobal(t *testing.T) {
+	svc := NewService(&stubStore{global: GlobalSettings{DefaultAutoSummaryEnabled: true}}, nil, nil)
+
+	resolved, err := svc.ResolveChatConfig(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("resolve chat config: %v", err)
+	}
+	if !resolved.AutoSummaryEnabled {
+		t.Fatalf("expected global default true when chat row is missing")
+	}
+}
+
 func TestShouldAllowChatBypassesWhitelistForAdminDM(t *testing.T) {
 	svc := NewService(&stubStore{whitelist: []int64{1}, whitelistHit: false}, nil, nil)
 
