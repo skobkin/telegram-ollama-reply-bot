@@ -160,6 +160,75 @@ func TestDomDistillerBackendExtractsFixture(t *testing.T) {
 	}
 }
 
+// --- regression fixture: Wikipedia-class pages (#132) -----------------------
+
+// testdata/wikipedia.html is the complete HTML of
+// https://en.wikipedia.org/wiki/Docker_(software) (retrieved 2026-11-12;
+// Wikipedia content is CC BY-SA 4.0, credited to its editors). It is the
+// hardest measured passing case for the #132 gate fix: readability extracts
+// it at ~21 links per 1000 chars of citation-scale prose, a density the
+// previous linear link penalty rejected on every backend.
+func wikipediaPage(t *testing.T) *fetch.Page {
+	t.Helper()
+
+	return &fetch.Page{
+		URL:         "https://en.wikipedia.org/wiki/Docker_(software)",
+		ContentType: "text/html; charset=utf-8",
+		Body:        mustFixture(t, "wikipedia.html"),
+	}
+}
+
+func TestReadabilityWikipediaFixturePassesGate(t *testing.T) {
+	t.Parallel()
+
+	backend := NewReadabilityExtractor(testLogger())
+
+	content, err := backend.Extract(context.Background(), wikipediaPage(t))
+	if err != nil {
+		t.Fatalf("Extract returned error: %v", err)
+	}
+	if content.Empty {
+		t.Fatal("expected non-empty extraction for Wikipedia fixture")
+	}
+	if content.Title == "" {
+		t.Fatal("expected non-empty title")
+	}
+	if !acceptable(content) {
+		t.Fatalf("expected Wikipedia fixture to pass the quality gate, score %f", contentScore(content))
+	}
+	if !strings.Contains(content.Text, "OS-level virtualization") {
+		t.Fatalf("expected lede text in extraction, got %.200q", content.Text)
+	}
+}
+
+// The fixture must be delivered by the first configured backend outright —
+// no fall-through, no rescue mode.
+func TestPipelineWikipediaFixtureAccepted(t *testing.T) {
+	t.Parallel()
+
+	backends, err := NewBackends([]string{
+		config.ExtractionBackendReadability,
+		config.ExtractionBackendTrafilatura,
+		config.ExtractionBackendDomDistiller,
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("NewBackends returned error: %v", err)
+	}
+
+	pipeline := NewPipeline(stubFetcher{page: wikipediaPage(t)}, backends, testLogger())
+
+	article, err := pipeline.GetArticleFromURL(context.Background(), "https://en.wikipedia.org/wiki/Docker_(software)")
+	if err != nil {
+		t.Fatalf("GetArticleFromURL returned error: %v", err)
+	}
+	if article.Backend != config.ExtractionBackendReadability {
+		t.Fatalf("expected readability to win at slot 1, got %q", article.Backend)
+	}
+	if article.Text == "" {
+		t.Fatal("expected non-empty article text")
+	}
+}
+
 // --- pipeline selection tests ----------------------------------------------
 
 func TestPipelineFirstAcceptableBackendWins(t *testing.T) {
@@ -517,6 +586,62 @@ func mildLinkFarmContent() Content {
 		Text: text,
 		HTML: "<div><p>" + text + "</p>" + links.String() + "</div>",
 	}
+}
+
+// referenceDenseContent is a Wikipedia-shaped extraction: ~10k runes of
+// prose at ~12 links per 1000 chars (citations scale with content). This is
+// the shape the linear gate rejected wholesale (#132).
+func referenceDenseContent() Content {
+	const paragraph = "The concept emerged from a long line of research that most histories " +
+		"attribute to the early mainframe era, and later systems refined the " +
+		"isolation primitives into the modern form. "
+
+	var text, html strings.Builder
+	html.WriteString("<article><h1>Reference-dense article</h1>")
+
+	for text.Len() < 10000 {
+		text.WriteString(paragraph)
+		html.WriteString("<p>" + paragraph + ` See <a href="/ref/a">1</a>, <a href="/ref/b">2</a>, and <a href="/ref/c">3</a>.</p>`)
+	}
+
+	html.WriteString("</article>")
+
+	return Content{
+		Title: "Reference-dense article",
+		Text:  text.String(),
+		HTML:  html.String(),
+	}
+}
+
+// longLinkFarmContent is a ~20k-rune spam page at ~50 links per 1000 chars:
+// length alone must not buy a link farm out of the gate.
+func longLinkFarmContent() Content {
+	const spam = "Buy the best widgets now with free shipping and daily deals "
+
+	var text, html strings.Builder
+
+	for text.Len() < 20000 {
+		text.WriteString(spam)
+		html.WriteString("<p>" + spam + `<a href="/deal/a">shop</a> <a href="/deal/b">sale</a> <a href="/deal/c">more</a></p>`)
+	}
+
+	return Content{Text: text.String(), HTML: html.String()}
+}
+
+// moderateLinkIndexContent is a ~10k-rune index page at ~33 links per 1000
+// chars: sparser than a farm, denser than any reference-heavy article.
+func moderateLinkIndexContent() Content {
+	const line = "Section overview with a short summary sentence for readers. "
+
+	var text, html strings.Builder
+
+	for text.Len() < 10000 {
+		text.WriteString(line)
+		html.WriteString("<p>" + line +
+			`<a href="/s/a">a</a> <a href="/s/b">b</a></p>`)
+	}
+
+	return Content{Text: text.String(), HTML: html.String()}
 }
 
 func testLogger() *slog.Logger {

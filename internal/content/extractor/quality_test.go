@@ -3,6 +3,7 @@ package extractor
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestContentScoreAcceptsShortCleanArticle(t *testing.T) {
@@ -39,6 +40,57 @@ func TestContentScoreRejectsLinkFarm(t *testing.T) {
 
 	if acceptable(content) {
 		t.Fatalf("expected link farm to be rejected, score %f", contentScore(content))
+	}
+}
+
+func TestContentScoreAcceptsReferenceDenseArticle(t *testing.T) {
+	t.Parallel()
+
+	// Wikipedia-class extraction: ~10k runes of prose at citation-scale link
+	// density. The previous linear penalty rejected every such page (#132);
+	// the saturating penalty must accept it.
+	content := referenceDenseContent()
+
+	// Pin the fixture's premise: it must actually be citation-scale dense,
+	// not accidentally link-light.
+	runes := utf8.RuneCountInString(content.Text)
+	hrefs := strings.Count(content.HTML, "href=")
+	linksPerK := float64(hrefs) * 1000 / float64(runes)
+	if linksPerK < 10 || linksPerK > 20 {
+		t.Fatalf("reference-dense fixture drifted: %.1f links/1000 chars", linksPerK)
+	}
+
+	if !acceptable(content) {
+		t.Fatalf("expected reference-dense article to be accepted, score %f", contentScore(content))
+	}
+}
+
+func TestContentScoreRejectsDenseLinkShapes(t *testing.T) {
+	t.Parallel()
+
+	// Long link farm: ~20k runes of spam at ~50 links/1000 chars — length
+	// must not buy a link farm out of the gate.
+	long := longLinkFarmContent()
+	if acceptable(long) {
+		t.Fatalf("expected long link farm to be rejected, score %f", contentScore(long))
+	}
+
+	// Dense index page: ~10k runes at ~33 links/1000 chars — sparser than a
+	// farm, denser than any reference-heavy article.
+	index := moderateLinkIndexContent()
+	if acceptable(index) {
+		t.Fatalf("expected dense link index to be rejected, score %f", contentScore(index))
+	}
+
+	// Short linky text (a nav/menu extraction): ~300 runes at ~29
+	// links/1000 chars must stay rejected — the saturating penalty still
+	// dominates short text.
+	menu := Content{
+		Text: strings.Repeat("Short menu text. ", 18),
+		HTML: "<nav>" + strings.Repeat(`<a href="/m">item</a> `, 9) + "</nav>",
+	}
+	if acceptable(menu) {
+		t.Fatalf("expected short linky text to be rejected, score %f", contentScore(menu))
 	}
 }
 
