@@ -1,6 +1,28 @@
 # Upgrade Notes
 
-## 0.24.0 (unreleased) — changes since 0.23.1 (breaking)
+## 0.26.0 (unreleased) — changes since 0.25.0
+
+### Extraction gate tolerates reference-dense pages; backend order is re-ranked per page
+
+Non-breaking behavior changes in article extraction (`/summarize`, `fetch_url_content`, #132):
+
+- The quality gate's link-density penalty now saturates — it grows with the square root of
+  the density excess above the allowance — instead of linearly. Reference-heavy pages
+  (Wikipedia articles, documentation wikis) legitimately extract at 8–24 links per 1000
+  characters, which the linear penalty rejected on every backend, so they always fell to
+  rescue mode; they now pass the gate directly. Boilerplate-dominated junk (nav menus, link
+  farms) is still rejected, by wider margins than before.
+- The configured backend order is re-ranked per page by built-in evaluators before
+  extraction: MediaWiki pages (body markers or a wiki host) favor `readability` over
+  `domdistiller`; fetched bodies of 128 KiB or more favor `domdistiller` over `trafilatura`
+  (long news pages used to lock in a first-backend truncation that passed the gate).
+  `CONTENT__EXTRACT__BACKENDS` keeps its meaning — the registered set, the base order, and
+  the tiebreak — and no operator action is needed.
+- Rescue-mode tie-break: when nothing passes the quality gate, the delivered result is still
+  the best-scoring non-empty extraction, but exact score ties between backends are now
+  resolved in the per-page voted order rather than the configured order.
+
+## 0.25.0 (2026-11-11) — changes since 0.23.1 (breaking)
 
 ### Auto-summarizer mode
 
