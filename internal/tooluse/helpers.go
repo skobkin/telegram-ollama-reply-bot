@@ -66,7 +66,12 @@ func normalizeWhitespace(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
-func extractHTTPURLs(text string) []string {
+// ExtractHTTPURLs returns the unique http(s) URLs mentioned in a message
+// text. Candidates are whitespace-separated fields with surrounding
+// punctuation trimmed; every returned URL has passed scheme validation and
+// round-trips through url.ParseRequestURI. Shared by the link-scanning tools
+// and the auto-summarizer.
+func ExtractHTTPURLs(text string) []string {
 	fields := strings.Fields(text)
 	if len(fields) == 0 {
 		return nil

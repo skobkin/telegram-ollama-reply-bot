@@ -27,7 +27,7 @@ func (r *Runtime) listRecentLinks(_ context.Context, callCtx CallContext, args j
 
 	for i := len(snapshot.Messages) - 1; i >= 0 && len(links) < payload.Limit; i-- {
 		msg := snapshot.Messages[i]
-		urls := extractHTTPURLs(msg.Text)
+		urls := ExtractHTTPURLs(msg.Text)
 		if len(urls) == 0 {
 			continue
 		}
