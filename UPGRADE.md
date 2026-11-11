@@ -1,5 +1,14 @@
 # Upgrade Notes
 
+## 0.23.0 (2026-11-11) — changes since 0.22.1 (breaking)
+
+All sections below, up to and including the Koanf migration, ship in 0.23.0 and break compatibility
+in two places: every environment variable is renamed to the `__`-delimited Koanf scheme, and chat
+access becomes an explicit policy. Rename your env vars (see the Koanf section) and review chat
+access (see the access policy section) before pulling the new image.
+0.23.1 (2026-11-11) re-releases the same application code with only the release pipeline fixed;
+there is nothing additional to do when upgrading from 0.23.0.
+
 ## Explicit access policy (breaking)
 
 Access control is now an explicit policy instead of the old implicit rule "an empty whitelist means allow everyone".
@@ -166,7 +175,7 @@ to the legacy 4000-character limit) before the plain error message. Crops on eit
 room for appended suffixes such as the `/summarize` source link, so the suffix always survives.
 There are no configuration changes.
 
-Requirements: `telego` upgraded v1.8.0 → v1.12.1; Go ≥ 1.26.7 is now needed to build.
+Requirements: `telego` upgraded v1.8.0 → v1.12.1; Go ≥ 1.27.3 is now needed to build.
 
 ## Optional external MCP tool servers (Streamable HTTP)
 
