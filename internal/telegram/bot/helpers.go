@@ -362,18 +362,27 @@ func (b *Bot) describeImage(ctx context.Context, imageMeta *state.ImageMeta) (st
 	return recognition.Text, nil
 }
 
-func (b *Bot) shouldProcessChatMessage(ctx context.Context, message t.Message) bool {
+// resolveChatConfig resolves the per-chat configuration for a message.
+// Without an admin service the zero configuration is returned with ok=true:
+// callers treat the message as processable, matching deployments that run
+// without operator-managed settings. Resolution failures skip the message
+// (ok=false) — the same fail-closed semantics as before the split.
+func (b *Bot) resolveChatConfig(ctx context.Context, message t.Message) (adminconfig.ResolvedChatConfig, bool) {
 	if b.admin == nil {
-		return true
+		return adminconfig.ResolvedChatConfig{}, true
 	}
 
 	resolved, err := b.admin.ResolveChatConfig(ctx, message.Chat.ID)
 	if err != nil {
 		b.loggerFromContext(ctx).Warn("failed to resolve chat config", "chat_id", message.Chat.ID, "error", err)
 
-		return false
+		return adminconfig.ResolvedChatConfig{}, false
 	}
 
+	return resolved, true
+}
+
+func (b *Bot) shouldProcessChatMessage(resolved adminconfig.ResolvedChatConfig, message t.Message) bool {
 	switch resolved.InteractivityMode {
 	case adminconfig.InteractivityMentionsOnly:
 		return b.isMentionOfMe(message) || b.hasSoftTrigger(message, resolved)

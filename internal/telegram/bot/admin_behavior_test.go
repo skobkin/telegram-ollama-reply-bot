@@ -90,7 +90,11 @@ func TestShouldProcessChatMessageDisabledByDefault(t *testing.T) {
 		From: &tg.User{ID: 2},
 	}
 
-	if b.shouldProcessChatMessage(context.Background(), message) {
+	resolved, ok := b.resolveChatConfig(context.Background(), message)
+	if !ok {
+		t.Fatalf("expected chat config to resolve")
+	}
+	if b.shouldProcessChatMessage(resolved, message) {
 		t.Fatalf("expected disabled interactivity to block processing")
 	}
 }
@@ -120,7 +124,11 @@ func TestShouldProcessChatMessageUsesCharacterNameTrigger(t *testing.T) {
 		From: &tg.User{ID: 2},
 	}
 
-	if !b.shouldProcessChatMessage(context.Background(), message) {
+	resolved, ok := b.resolveChatConfig(context.Background(), message)
+	if !ok {
+		t.Fatalf("expected chat config to resolve")
+	}
+	if !b.shouldProcessChatMessage(resolved, message) {
 		t.Fatalf("expected character name soft trigger to allow processing")
 	}
 }

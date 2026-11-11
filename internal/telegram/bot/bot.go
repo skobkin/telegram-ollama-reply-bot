@@ -261,7 +261,14 @@ func (b *Bot) textMessageHandler(ctx *th.Context, update t.Update) error {
 	message := *update.Message
 	logger := b.handlerLogger(ctx)
 
-	if !b.shouldProcessChatMessage(ctx.Context(), message) {
+	resolved, ok := b.resolveChatConfig(ctx.Context(), message)
+	if !ok {
+		logger.Debug("skipping message", "reason", "chat config resolution failed")
+
+		return nil
+	}
+
+	if !b.shouldProcessChatMessage(resolved, message) {
 		logger.Debug("skipping message", "reason", "interactivity mode")
 
 		return nil
