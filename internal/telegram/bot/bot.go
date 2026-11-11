@@ -60,7 +60,7 @@ type AdminUI interface {
 
 type Bot struct {
 	api              *t.Bot
-	llm              *llm.Service
+	llm              llmSummarizer
 	vision           imageDescriber
 	extractor        extractor.Extractor
 	sanitizer        markdown.Sanitizer
@@ -76,6 +76,7 @@ type Bot struct {
 	adminUI          AdminUI
 	tools            *tooluse.Runtime
 	imageRecognition ImageRecognitionSettings
+	autoSummaryURLs  *autoSummaryTracker
 }
 
 func NewBot(
@@ -123,6 +124,7 @@ func NewBot(
 		admin:            admin,
 		tools:            tools,
 		imageRecognition: imageRecognition,
+		autoSummaryURLs:  newAutoSummaryTracker(autoSummaryMaxTrackedURLsPerChat),
 	}
 
 	bot.replyCtx = llmcontext.NewReplyBuilder(history, bot.hydrateMessagesWithImageDescriptions, cfg.UncompressedHistoryLimit)
@@ -268,13 +270,23 @@ func (b *Bot) textMessageHandler(ctx *th.Context, update t.Update) error {
 		return nil
 	}
 
+	conversational := b.isMentionOfMe(message) || b.isReplyToMe(message) || b.isPrivateWithMe(message)
+
+	// The auto-summarizer is independent of the interactivity gate: it is
+	// its own per-chat opt-in, so it must see messages that the interactivity
+	// mode would ignore. Messages the bot already answers conversationally
+	// are excluded to avoid double answers for the same link.
+	if !conversational {
+		b.maybeAutoSummarize(ctx, message, resolved)
+	}
+
 	if !b.shouldProcessChatMessage(resolved, message) {
 		logger.Debug("skipping message", "reason", "interactivity mode")
 
 		return nil
 	}
 
-	if b.isMentionOfMe(message) || b.isReplyToMe(message) || b.isPrivateWithMe(message) {
+	if conversational {
 		messageType := "private"
 		if b.isMentionOfMe(message) {
 			messageType = "mention"
