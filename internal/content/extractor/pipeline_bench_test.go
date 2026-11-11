@@ -153,3 +153,30 @@ func BenchmarkPipeline(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkPipelineWikipedia(b *testing.B) {
+	// Full pipeline over the Wikipedia fixture (#132): both page evaluators
+	// fire (MediaWiki markers in the body, 383 KB body), the order is
+	// re-ranked, and readability delivers a gate-passing extraction.
+	page := benchPage(b, "wikipedia.html")
+	backends, err := NewBackends([]string{
+		config.ExtractionBackendReadability,
+		config.ExtractionBackendTrafilatura,
+		config.ExtractionBackendDomDistiller,
+	}, benchLogger())
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	pipeline := NewPipeline(stubFetcher{page: page}, backends, benchLogger())
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		if _, err := pipeline.GetArticleFromURL(ctx, "https://en.wikipedia.org/wiki/Docker_(software)"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

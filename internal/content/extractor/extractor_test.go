@@ -375,6 +375,69 @@ func TestPipelineBackendErrorsAreSkipped(t *testing.T) {
 	}
 }
 
+// Evaluator-voted reordering (selector.go) must change which configured
+// backend runs first for wiki pages: readability is promoted, domdistiller
+// demoted, and first-acceptable-wins means the winner proves the order.
+func TestPipelineReordersBackendsForWikiPage(t *testing.T) {
+	t.Parallel()
+
+	calls := atomic.Int32{}
+	pipeline := NewPipeline(
+		stubFetcher{page: &fetch.Page{
+			URL:         "https://en.wikipedia.org/wiki/Container",
+			ContentType: "text/html; charset=utf-8",
+			Body:        []byte(`<html><body><div id="mw-content-text"><p>x</p></div></body></html>`),
+		}},
+		[]Backend{
+			stubBackend{name: config.ExtractionBackendDomDistiller, content: cleanContent(), calls: &calls},
+			stubBackend{name: config.ExtractionBackendReadability, content: cleanContent()},
+		},
+		testLogger(),
+	)
+
+	article, err := pipeline.GetArticleFromURL(context.Background(), "https://en.wikipedia.org/wiki/Container")
+	if err != nil {
+		t.Fatalf("GetArticleFromURL returned error: %v", err)
+	}
+	if article.Backend != config.ExtractionBackendReadability {
+		t.Fatalf("expected readability to win the wiki page, got %q", article.Backend)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("demoted backend must not run when the promoted one passes, got %d calls", got)
+	}
+}
+
+// Very large pages must reorder to domdistiller first (#131): the long-page
+// evaluator promotes it over the truncation-prone trafilatura.
+func TestPipelineReordersBackendsForLongPage(t *testing.T) {
+	t.Parallel()
+
+	calls := atomic.Int32{}
+	pipeline := NewPipeline(
+		stubFetcher{page: &fetch.Page{
+			URL:         "https://arstechnica.com/long-review",
+			ContentType: "text/html; charset=utf-8",
+			Body:        []byte(strings.Repeat("x", 128<<10)),
+		}},
+		[]Backend{
+			stubBackend{name: config.ExtractionBackendTrafilatura, content: cleanContent(), calls: &calls},
+			stubBackend{name: config.ExtractionBackendDomDistiller, content: cleanContent()},
+		},
+		testLogger(),
+	)
+
+	article, err := pipeline.GetArticleFromURL(context.Background(), "https://arstechnica.com/long-review")
+	if err != nil {
+		t.Fatalf("GetArticleFromURL returned error: %v", err)
+	}
+	if article.Backend != config.ExtractionBackendDomDistiller {
+		t.Fatalf("expected domdistiller to win the long page, got %q", article.Backend)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("demoted backend must not run when the promoted one passes, got %d calls", got)
+	}
+}
+
 func TestPipelineFetchErrorFailsWithoutBackends(t *testing.T) {
 	t.Parallel()
 

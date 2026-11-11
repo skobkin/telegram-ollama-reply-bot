@@ -43,12 +43,15 @@ type Extractor interface {
 }
 
 // Pipeline fetches once and runs the configured extraction backends in order
-// over the fetched page. The first result passing the quality gate wins;
-// when none does, the highest-scoring non-empty result is delivered as a
-// rescue instead of failing.
+// over the fetched page. The configured order is the registered set, the
+// base order, and the tiebreak: built-in evaluators re-rank it per page from
+// cheap post-fetch signals (selector.go). The first result passing the
+// quality gate wins; when none does, the highest-scoring non-empty result is
+// delivered as a rescue instead of failing.
 type Pipeline struct {
 	fetcher  Fetcher
 	backends []Backend
+	selector *selector
 	logger   *slog.Logger
 }
 
@@ -61,6 +64,7 @@ func NewPipeline(fetcher Fetcher, backends []Backend, logger *slog.Logger) *Pipe
 	return &Pipeline{
 		fetcher:  fetcher,
 		backends: backends,
+		selector: newSelector(),
 		logger:   logger,
 	}
 }
@@ -93,7 +97,10 @@ func (p *Pipeline) GetArticleFromURL(ctx context.Context, url string) (Article, 
 		bestName  string
 	)
 
-	for _, backend := range p.backends {
+	order := p.selector.order(extractFeatures(page), p.backends)
+	logger.Debug("backend order selected", "order", order.names(), "votes", order.Votes, "evaluators", order.Fired)
+
+	for _, backend := range order.Backends {
 		// Cancellation surfaces between CPU stages; backends themselves do
 		// not spawn goroutines, so there is nothing to leak.
 		if err := ctx.Err(); err != nil {
