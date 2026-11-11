@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/content/fetch"
 )
 
@@ -131,7 +132,11 @@ func BenchmarkPipeline(b *testing.B) {
 	// configured order, and the winner is rendered to Markdown — the
 	// per-request CPU floor for /summarize and fetch_url_content.
 	page := benchPage(b, "article.html")
-	backends, err := NewBackends([]string{"readability", "trafilatura", "domdistiller"}, benchLogger())
+	backends, err := NewBackends([]string{
+		config.ExtractionBackendReadability,
+		config.ExtractionBackendTrafilatura,
+		config.ExtractionBackendDomDistiller,
+	}, benchLogger())
 	if err != nil {
 		b.Fatal(err)
 	}

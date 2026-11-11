@@ -83,10 +83,10 @@ func TestTrafilaturaBackendExtractsFixture(t *testing.T) {
 }
 
 // unextractablePage is a bare HTML shell with no article content at all.
-// (Navigation-only pages do not qualify: extractors legitimately distill
-// the nav text as the longest content — the pipeline's quality gate handles
-// that downstream.) Backends must report a bare shell as empty
-// (Content.Empty), not as a failure.
+// (Navigation-only pages do not qualify: readability and trafilatura
+// legitimately distill the nav text as the longest content — the pipeline's
+// quality gate handles that downstream.) Backends must report a bare shell
+// as empty (Content.Empty), not as a failure.
 func unextractablePage() *fetch.Page {
 	body := `<!DOCTYPE html>
 <html>
@@ -101,27 +101,33 @@ func unextractablePage() *fetch.Page {
 	}
 }
 
-func TestReadabilityBackendReportsEmptyPageAsEmpty(t *testing.T) {
-	t.Parallel()
-
-	content, err := NewReadabilityExtractor(testLogger()).Extract(context.Background(), unextractablePage())
-	if err != nil {
-		t.Fatalf("unextractable page must not be an error, got: %v", err)
+// Every backend must report an unextractable page as an empty result
+// (Content.Empty, nil error) rather than a failure.
+func TestBackendsReportUnextractablePageAsEmpty(t *testing.T) {
+	newBackend := map[string]func(*slog.Logger) Backend{
+		config.ExtractionBackendReadability: func(l *slog.Logger) Backend {
+			return NewReadabilityExtractor(l)
+		},
+		config.ExtractionBackendTrafilatura: func(l *slog.Logger) Backend {
+			return NewTrafilaturaExtractor(l)
+		},
+		config.ExtractionBackendDomDistiller: func(l *slog.Logger) Backend {
+			return NewDomDistillerExtractor(l)
+		},
 	}
-	if !content.Empty {
-		t.Fatalf("expected empty-flagged content, got %+v", content)
-	}
-}
 
-func TestTrafilaturaBackendReportsEmptyPageAsEmpty(t *testing.T) {
-	t.Parallel()
+	for name, constructor := range newBackend {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	content, err := NewTrafilaturaExtractor(testLogger()).Extract(context.Background(), unextractablePage())
-	if err != nil {
-		t.Fatalf("unextractable page must not be an error, got: %v", err)
-	}
-	if !content.Empty {
-		t.Fatalf("expected empty-flagged content, got %+v", content)
+			content, err := constructor(testLogger()).Extract(context.Background(), unextractablePage())
+			if err != nil {
+				t.Fatalf("unextractable page must not be an error, got: %v", err)
+			}
+			if !content.Empty {
+				t.Fatalf("expected empty-flagged content, got %+v", content)
+			}
+		})
 	}
 }
 
@@ -151,18 +157,6 @@ func TestDomDistillerBackendExtractsFixture(t *testing.T) {
 	}
 	if !strings.Contains(content.HTML, "<h2>") {
 		t.Fatal("expected structured HTML with headings")
-	}
-}
-
-func TestDomDistillerBackendReportsEmptyPageAsEmpty(t *testing.T) {
-	t.Parallel()
-
-	content, err := NewDomDistillerExtractor(testLogger()).Extract(context.Background(), unextractablePage())
-	if err != nil {
-		t.Fatalf("unextractable page must not be an error, got: %v", err)
-	}
-	if !content.Empty {
-		t.Fatalf("expected empty-flagged content despite wrapper markup, got %+v", content)
 	}
 }
 

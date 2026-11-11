@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
-	nurl "net/url"
 
 	"telegram-ollama-reply-bot/internal/content/fetch"
 	"telegram-ollama-reply-bot/internal/logging"
@@ -34,15 +33,7 @@ func (e *ReadabilityExtractor) Extract(ctx context.Context, page *fetch.Page) (C
 	logger := logging.FromContext(ctx, e.logger)
 	logger.Debug("extracting article from fetched page", "url", page.URL)
 
-	// The page URL is metadata context for the parser (link resolution,
-	// canonical URLs); a page whose final URL does not parse is still worth
-	// extracting, just without that context.
-	pageURL, err := nurl.Parse(page.URL)
-	if err != nil {
-		pageURL = nil
-	}
-
-	article, err := readability.FromReader(bytes.NewReader(page.Body), pageURL)
+	article, err := readability.FromReader(bytes.NewReader(page.Body), parsePageURL(page))
 	if err != nil {
 		logger.Warn("extraction failed", "url", page.URL, "error", err)
 		sentry.CaptureException(err)

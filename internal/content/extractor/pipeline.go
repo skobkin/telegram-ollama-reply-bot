@@ -105,8 +105,10 @@ func (p *Pipeline) GetArticleFromURL(ctx context.Context, url string) (Article, 
 		name := backend.Name()
 		content, err := backend.Extract(ctx, page)
 		if err != nil {
+			// The backend already logged and reported the underlying cause;
+			// the sentinel error carries no context, so capturing it here
+			// would only duplicate the event.
 			logger.Warn("backend extraction failed", "backend", name, "url", url, "error", err)
-			sentry.CaptureException(err)
 
 			continue
 		}

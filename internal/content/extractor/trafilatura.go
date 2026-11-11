@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
-	nurl "net/url"
 
 	"telegram-ollama-reply-bot/internal/content/fetch"
 	"telegram-ollama-reply-bot/internal/logging"
@@ -35,13 +34,8 @@ func (e *TrafilaturaExtractor) Extract(ctx context.Context, page *fetch.Page) (C
 	logger := logging.FromContext(ctx, e.logger)
 	logger.Debug("extracting article from fetched page", "url", page.URL)
 
-	pageURL, err := nurl.Parse(page.URL)
-	if err != nil {
-		pageURL = nil
-	}
-
 	result, err := trafilatura.Extract(bytes.NewReader(page.Body), trafilatura.Options{
-		OriginalURL: pageURL,
+		OriginalURL: parsePageURL(page),
 		// Keep links so the Markdown rendering preserves them.
 		IncludeLinks: true,
 		// Comments are rarely article content and dilute summaries.

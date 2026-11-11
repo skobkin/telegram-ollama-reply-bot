@@ -85,6 +85,9 @@ DOM Distiller).
   boilerplate into its output, while domdistiller posts the best mean F1 on non-Wikipedia
   pages. Pagination following is disabled in the backend — the pipeline never follows
   next-page links.
+- Pages where every configured backend abstains (no extractable text — near-empty stubs,
+  some media-only shells) now end in an extraction error, where GoOse previously delivered a
+  title-only remnant through the rescue path.
 
 ## 0.23.0 (2026-11-11) — changes since 0.22.1 (breaking)
 

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
-	nurl "net/url"
 
 	"telegram-ollama-reply-bot/internal/content/fetch"
 	"telegram-ollama-reply-bot/internal/logging"
@@ -33,16 +32,12 @@ func (e *DomDistillerExtractor) Extract(ctx context.Context, page *fetch.Page) (
 	logger := logging.FromContext(ctx, e.logger)
 	logger.Debug("extracting article from fetched page", "url", page.URL)
 
-	// The page URL is metadata context for the distiller (absolute-link
-	// rewriting, pagination heuristics); a page whose final URL does not
-	// parse is still worth extracting, just without that context.
-	pageURL, err := nurl.Parse(page.URL)
-	if err != nil {
-		pageURL = nil
-	}
-
+	// The page URL is metadata context for the distiller (image source
+	// resolution, pagination heuristics). The distiller does not absolutize
+	// text-link hrefs, so Content.HTML may carry relative links; Markdown
+	// rendering resolves them against the final URL.
 	result, err := domdistiller.ApplyForReader(bytes.NewReader(page.Body), &domdistiller.Options{
-		OriginalURL: pageURL,
+		OriginalURL: parsePageURL(page),
 		// The pipeline never follows next-page links, and pagination
 		// detection measurably slows small pages (#127).
 		SkipPagination: true,
@@ -54,9 +49,9 @@ func (e *DomDistillerExtractor) Extract(ctx context.Context, page *fetch.Page) (
 		return Content{}, ErrExtractFailed
 	}
 
-	// The library never returns a nil Node: empty results come back as an
-	// empty <div> wrapper, so the structural check alone would pass them.
-	// Empty text is the real nothing-found signal.
+	// Emptiness is gated on text: the library wraps even empty results in a
+	// non-nil <div> node, so the structural check alone would pass them.
+	// The nil guard is defense-in-depth only.
 	if result == nil || result.Text == "" {
 		logger.Debug("no content extracted", "url", page.URL)
 

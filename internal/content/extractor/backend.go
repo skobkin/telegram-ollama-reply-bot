@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	nurl "net/url"
 
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/content/fetch"
@@ -40,6 +41,18 @@ type Content struct {
 // nonEmpty reports whether the content carries anything usable.
 func (c Content) nonEmpty() bool {
 	return c.Text != "" || c.HTML != ""
+}
+
+// parsePageURL parses the page's final URL as backend metadata context.
+// A page whose URL does not parse is still worth extracting; the backend
+// just operates without that context.
+func parsePageURL(page *fetch.Page) *nurl.URL {
+	pageURL, err := nurl.Parse(page.URL)
+	if err != nil {
+		return nil
+	}
+
+	return pageURL
 }
 
 // NewBackends builds the extraction backends for the configured names, in
