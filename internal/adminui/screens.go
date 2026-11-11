@@ -306,6 +306,8 @@ func globalSettingsValue(settings adminconfig.GlobalSettings, spec adminconfig.F
 		return strconv.FormatBool(settings.AllowTeasing)
 	case "default_interactivity_mode":
 		return string(settings.DefaultInteractivityMode)
+	case "default_auto_summary_enabled":
+		return strconv.FormatBool(settings.DefaultAutoSummaryEnabled)
 	default:
 		return ""
 	}

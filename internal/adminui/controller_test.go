@@ -119,6 +119,8 @@ func (s *recordingStore) SetGlobalField(_ context.Context, field, value string, 
 		s.global.AllowTeasing = value == "true"
 	case "default_interactivity_mode":
 		s.global.DefaultInteractivityMode = adminconfig.InteractivityMode(value)
+	case "default_auto_summary_enabled":
+		s.global.DefaultAutoSummaryEnabled = value == "true"
 	}
 
 	return nil
@@ -144,6 +146,9 @@ func (s *recordingStore) GetChatSettings(_ context.Context, chatID int64) (admin
 	if value, ok := fields["interactivity_mode"]; ok && value != "" {
 		settings.HasInteractivity = true
 		settings.InteractivityMode = adminconfig.InteractivityMode(value)
+	}
+	if value, ok := fields["auto_summary_enabled"]; ok {
+		settings.AutoSummaryEnabled = adminconfig.BoolPointer(value == "true")
 	}
 
 	return settings, true, nil
@@ -535,6 +540,47 @@ func TestTriStateBoolEditor(t *testing.T) {
 	store.assertCalls(t,
 		"SetChatField:-100200300400:allow_teasing=true",
 		"ClearChatField:-100200300400:allow_teasing",
+	)
+}
+
+func TestAutoSummaryToggleEditors(t *testing.T) {
+	c, store := newTestController(t)
+	session := mustOpen(t, c)
+
+	// Chat tri-state editor: On and Inherit map to the right store calls.
+	tap(t, c, session, VerbCatalog, "1")
+	tap(t, c, session, VerbChat, strconv.FormatInt(testGroupID, 10))
+	tap(t, c, session, VerbChatSet)
+
+	outcome := tap(t, c, session, VerbField, "as")
+	if outcome.Render.Screen.Kind != ScreenFieldEditor || outcome.Render.Screen.Field != "auto_summary_enabled" {
+		t.Fatalf("field tap must open the auto-summary editor: %+v", outcome.Render.Screen)
+	}
+	if !strings.Contains(screenButtons(outcome.Render.Built), "Inherit") {
+		t.Fatalf("auto-summary editor must offer inherit: %q", screenButtons(outcome.Render.Built))
+	}
+
+	tap(t, c, session, VerbValue, "as", "on")
+	store.assertCalls(t, "SetChatField:-100200300400:auto_summary_enabled=true")
+
+	tap(t, c, session, VerbValue, "as", "inh")
+	store.assertCalls(t,
+		"SetChatField:-100200300400:auto_summary_enabled=true",
+		"ClearChatField:-100200300400:auto_summary_enabled",
+	)
+
+	// Global bool editor: On/Off writes the global default.
+	tap(t, c, session, VerbGlobalSet)
+	outcome = tap(t, c, session, VerbField, "as")
+	if outcome.Render.Screen.Kind != ScreenFieldEditor || outcome.Render.Screen.Field != "default_auto_summary_enabled" {
+		t.Fatalf("global field tap must open the default editor: %+v", outcome.Render.Screen)
+	}
+
+	tap(t, c, session, VerbValue, "as", "on")
+	store.assertCalls(t,
+		"SetChatField:-100200300400:auto_summary_enabled=true",
+		"ClearChatField:-100200300400:auto_summary_enabled",
+		"SetGlobalField:default_auto_summary_enabled=true",
 	)
 }
 

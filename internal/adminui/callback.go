@@ -117,21 +117,24 @@ func DecodeAction(data string) (Action, error) {
 // lives here (not in adminconfig) to keep the domain layer free of callback
 // encoding concerns.
 var fieldCodes = map[string]string{
-	"character_name":             "cn",
-	"language":                   "lg",
-	"gender":                     "gd",
-	"tone_mode":                  "tm",
-	"allow_teasing":              "at",
-	"interactivity_mode":         "im",
-	"default_interactivity_mode": "im",
+	"character_name":               "cn",
+	"language":                     "lg",
+	"gender":                       "gd",
+	"tone_mode":                    "tm",
+	"allow_teasing":                "at",
+	"interactivity_mode":           "im",
+	"default_interactivity_mode":   "im",
+	"auto_summary_enabled":         "as",
+	"default_auto_summary_enabled": "as",
 }
 
 var codeFields = func() map[string]string {
 	reversed := make(map[string]string, len(fieldCodes))
 	for name, code := range fieldCodes {
 		if existing, ok := reversed[code]; ok && existing != name {
-			// Both interactivity fields intentionally share "im": the scope
-			// (global vs chat screen) disambiguates them.
+			// The interactivity pair shares "im" and the auto-summary pair
+			// shares "as": the scope (global vs chat screen) disambiguates
+			// them, exactly like the interactivity fields.
 			continue
 		}
 		reversed[code] = name
@@ -140,6 +143,15 @@ var codeFields = func() map[string]string {
 	return reversed
 }()
 
+// scopedFieldNames maps a shared code to its per-scope field names.
+var scopedFieldNames = map[string]struct {
+	global string
+	chat   string
+}{
+	"im": {global: "default_interactivity_mode", chat: "interactivity_mode"},
+	"as": {global: "default_auto_summary_enabled", chat: "auto_summary_enabled"},
+}
+
 // FieldCode returns the short callback code for a settings field name.
 func FieldCode(field string) (string, bool) {
 	code, ok := fieldCodes[field]
@@ -147,16 +159,16 @@ func FieldCode(field string) (string, bool) {
 	return code, ok
 }
 
-// FieldName resolves a short callback code back to a field name. The "im"
-// code resolves per scope: global maps to default_interactivity_mode, chat
-// maps to interactivity_mode.
+// FieldName resolves a short callback code back to a field name. Codes
+// shared by a global/chat pair ("im", "as") resolve per scope: global maps
+// to the default_* field, chat maps to the per-chat field.
 func FieldName(code string, global bool) (string, bool) {
-	if code == "im" {
+	if scoped, ok := scopedFieldNames[code]; ok {
 		if global {
-			return "default_interactivity_mode", true
+			return scoped.global, true
 		}
 
-		return "interactivity_mode", true
+		return scoped.chat, true
 	}
 
 	name, ok := codeFields[code]

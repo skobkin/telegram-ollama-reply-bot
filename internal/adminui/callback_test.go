@@ -106,6 +106,16 @@ func TestFieldNameScopeDisambiguation(t *testing.T) {
 		t.Fatalf("chat im should map to interactivity_mode, got %q", chat)
 	}
 
+	summaryGlobal, ok := FieldName("as", true)
+	if !ok || summaryGlobal != "default_auto_summary_enabled" {
+		t.Fatalf("global as should map to default_auto_summary_enabled, got %q", summaryGlobal)
+	}
+
+	summaryChat, ok := FieldName("as", false)
+	if !ok || summaryChat != "auto_summary_enabled" {
+		t.Fatalf("chat as should map to auto_summary_enabled, got %q", summaryChat)
+	}
+
 	name, ok := FieldName("cn", false)
 	if !ok || name != "character_name" {
 		t.Fatalf("cn should map to character_name, got %q", name)
