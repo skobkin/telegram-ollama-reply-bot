@@ -66,9 +66,9 @@ func BenchmarkTrafilaturaBackend(b *testing.B) {
 	}
 }
 
-func BenchmarkGooseBackend(b *testing.B) {
+func BenchmarkDomDistillerBackend(b *testing.B) {
 	page := benchPage(b, "article.html")
-	backend := NewGoOseExtractor(benchLogger())
+	backend := NewDomDistillerExtractor(benchLogger())
 	ctx := context.Background()
 
 	b.ReportAllocs()
@@ -111,9 +111,9 @@ func BenchmarkTrafilaturaBackendLarge(b *testing.B) {
 	}
 }
 
-func BenchmarkGooseBackendLarge(b *testing.B) {
+func BenchmarkDomDistillerBackendLarge(b *testing.B) {
 	page := benchPage(b, "article_large.html")
-	backend := NewGoOseExtractor(benchLogger())
+	backend := NewDomDistillerExtractor(benchLogger())
 	ctx := context.Background()
 
 	b.ReportAllocs()
@@ -131,7 +131,7 @@ func BenchmarkPipeline(b *testing.B) {
 	// configured order, and the winner is rendered to Markdown — the
 	// per-request CPU floor for /summarize and fetch_url_content.
 	page := benchPage(b, "article.html")
-	backends, err := NewBackends([]string{"readability", "trafilatura", "goose"}, benchLogger())
+	backends, err := NewBackends([]string{"readability", "trafilatura", "domdistiller"}, benchLogger())
 	if err != nil {
 		b.Fatal(err)
 	}

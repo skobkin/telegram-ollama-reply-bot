@@ -57,9 +57,9 @@ const (
 	SearchBackendChain  = "chain"
 
 	// Extraction backend selection values (CONTENT__EXTRACT__BACKENDS).
-	ExtractionBackendReadability = "readability"
-	ExtractionBackendTrafilatura = "trafilatura"
-	ExtractionBackendGoose       = "goose"
+	ExtractionBackendReadability  = "readability"
+	ExtractionBackendTrafilatura  = "trafilatura"
+	ExtractionBackendDomDistiller = "domdistiller"
 
 	// DefaultContentUserAgent is the User-Agent the content fetcher presents
 	// to article sites. A desktop-browser-like string avoids the outright
@@ -259,12 +259,12 @@ func (c ContentConfig) Validate() error {
 	}
 	for _, backend := range c.Extract.Backends {
 		switch backend {
-		case ExtractionBackendReadability, ExtractionBackendTrafilatura, ExtractionBackendGoose:
+		case ExtractionBackendReadability, ExtractionBackendTrafilatura, ExtractionBackendDomDistiller:
 			// Known backend.
 		default:
 			return fmt.Errorf(
 				"content.extract.backends entry %q is not a known backend (use %s, %s, or %s; env CONTENT__EXTRACT__BACKENDS)",
-				backend, ExtractionBackendReadability, ExtractionBackendTrafilatura, ExtractionBackendGoose,
+				backend, ExtractionBackendReadability, ExtractionBackendTrafilatura, ExtractionBackendDomDistiller,
 			)
 		}
 	}
@@ -564,7 +564,7 @@ func applyDefaults(k *koanf.Koanf) error {
 		"content.fetch.max_body_bytes":               int64(2 << 20),
 		"content.fetch.max_redirects":                5,
 		"content.fetch.user_agent":                   DefaultContentUserAgent,
-		"content.extract.backends":                   "readability,trafilatura,goose",
+		"content.extract.backends":                   "readability,trafilatura,domdistiller",
 	}
 	for key, value := range defaults {
 		if err := k.Set(key, value); err != nil {

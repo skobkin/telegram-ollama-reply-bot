@@ -68,8 +68,8 @@ func newBackend(name string, logger *slog.Logger) (Backend, error) {
 		return NewReadabilityExtractor(logger), nil
 	case config.ExtractionBackendTrafilatura:
 		return NewTrafilaturaExtractor(logger), nil
-	case config.ExtractionBackendGoose:
-		return NewGoOseExtractor(logger), nil
+	case config.ExtractionBackendDomDistiller:
+		return NewDomDistillerExtractor(logger), nil
 	default:
 		return nil, fmt.Errorf("unknown extraction backend %q", name)
 	}

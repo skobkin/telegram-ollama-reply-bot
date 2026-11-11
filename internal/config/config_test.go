@@ -1336,7 +1336,7 @@ func TestLoadUsesContentDefaults(t *testing.T) {
 	}
 	if cfg.Content.Extract.Backends[0] != ExtractionBackendReadability ||
 		cfg.Content.Extract.Backends[1] != ExtractionBackendTrafilatura ||
-		cfg.Content.Extract.Backends[2] != ExtractionBackendGoose {
+		cfg.Content.Extract.Backends[2] != ExtractionBackendDomDistiller {
 		t.Fatalf("unexpected default backend order: %v", cfg.Content.Extract.Backends)
 	}
 }
@@ -1349,7 +1349,7 @@ func TestLoadUsesExplicitContentConfig(t *testing.T) {
 	t.Setenv("CONTENT__FETCH__USER_AGENT", "custom-agent/2.0")
 	t.Setenv("CONTENT__FETCH__DENY_DOMAINS", "example.org, internal.example.com")
 	t.Setenv("CONTENT__FETCH__DENY_CIDRS", "203.0.113.0/24,2001:db8::/32")
-	t.Setenv("CONTENT__EXTRACT__BACKENDS", "goose,readability")
+	t.Setenv("CONTENT__EXTRACT__BACKENDS", "domdistiller,readability")
 
 	cfg, err := Load()
 	if err != nil {
@@ -1376,7 +1376,7 @@ func TestLoadUsesExplicitContentConfig(t *testing.T) {
 	if !slices.Equal(cfg.Content.Fetch.DenyCIDRs, wantCIDRs) {
 		t.Fatalf("unexpected deny CIDRs: %v", cfg.Content.Fetch.DenyCIDRs)
 	}
-	wantBackends := []string{"goose", "readability"}
+	wantBackends := []string{"domdistiller", "readability"}
 	if !slices.Equal(cfg.Content.Extract.Backends, wantBackends) {
 		t.Fatalf("unexpected backends: %v", cfg.Content.Extract.Backends)
 	}
@@ -1394,6 +1394,12 @@ func TestLoadRejectsInvalidContentConfig(t *testing.T) {
 		{
 			name: "unknown backend",
 			env:  map[string]string{"CONTENT__EXTRACT__BACKENDS": "readability,unknown"},
+		},
+		{
+			// Goose was removed by #127; a configured list still naming it
+			// must fail validation at startup.
+			name: "removed goose backend",
+			env:  map[string]string{"CONTENT__EXTRACT__BACKENDS": "readability,goose"},
 		},
 		{
 			name: "zero max redirects",

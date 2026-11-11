@@ -125,21 +125,44 @@ func TestTrafilaturaBackendReportsEmptyPageAsEmpty(t *testing.T) {
 	}
 }
 
-func TestGoOseBackendExtractsFixture(t *testing.T) {
+func TestDomDistillerBackendExtractsFixture(t *testing.T) {
 	t.Parallel()
 
-	backend := NewGoOseExtractor(testLogger())
+	backend := NewDomDistillerExtractor(testLogger())
 
 	content, err := backend.Extract(context.Background(), testPage(t))
 	if err != nil {
 		t.Fatalf("Extract returned error: %v", err)
 	}
 
+	if content.Empty {
+		t.Fatal("expected non-empty extraction for article fixture")
+	}
 	if content.Title == "" {
 		t.Fatal("expected non-empty title")
 	}
-	if !strings.Contains(content.Text, "namespace") {
+	// The title may keep the "| Example Engineering" suffix depending on
+	// which candidate the distiller picks; assert the shared substring.
+	if !strings.Contains(content.Title, "container runtimes") {
+		t.Fatalf("expected article title, got %q", content.Title)
+	}
+	if !strings.Contains(content.Text, "ordinary Linux process") {
 		t.Fatalf("expected article text, got %q", content.Text)
+	}
+	if !strings.Contains(content.HTML, "<h2>") {
+		t.Fatal("expected structured HTML with headings")
+	}
+}
+
+func TestDomDistillerBackendReportsEmptyPageAsEmpty(t *testing.T) {
+	t.Parallel()
+
+	content, err := NewDomDistillerExtractor(testLogger()).Extract(context.Background(), unextractablePage())
+	if err != nil {
+		t.Fatalf("unextractable page must not be an error, got: %v", err)
+	}
+	if !content.Empty {
+		t.Fatalf("expected empty-flagged content despite wrapper markup, got %+v", content)
 	}
 }
 
@@ -381,13 +404,13 @@ func TestNewBackendsBuildsConfiguredOrder(t *testing.T) {
 	backends, err := NewBackends([]string{
 		config.ExtractionBackendTrafilatura,
 		config.ExtractionBackendReadability,
-		config.ExtractionBackendGoose,
+		config.ExtractionBackendDomDistiller,
 	}, testLogger())
 	if err != nil {
 		t.Fatalf("NewBackends returned error: %v", err)
 	}
 
-	want := []string{"trafilatura", "readability", "goose"}
+	want := []string{"trafilatura", "readability", "domdistiller"}
 	got := make([]string, 0, len(backends))
 	for _, b := range backends {
 		got = append(got, b.Name())
