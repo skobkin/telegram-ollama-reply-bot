@@ -60,7 +60,7 @@ The bot can be configured using the following environment variables:
 | `CONTENT__FETCH__USER_AGENT`                        | User-Agent sent with article fetch requests.                                                                      | No       | Firefox-like desktop UA  |
 | `CONTENT__FETCH__DENY_DOMAINS`                      | Comma-separated domains (with subdomains, IDN supported) blocked in addition to the built-in SSRF policy.          | No       | empty                    |
 | `CONTENT__FETCH__DENY_CIDRS`                        | Comma-separated IPv4/IPv6 addresses or CIDR ranges blocked in addition to the built-in SSRF policy.               | No       | empty                    |
-| `CONTENT__EXTRACT__BACKENDS`                        | Comma-separated extraction backend order: `readability`, `trafilatura`, or `goose`.                               | No       | `readability,trafilatura,goose` |
+| `CONTENT__EXTRACT__BACKENDS`                        | Comma-separated extraction backend order: `readability`, `trafilatura`, or `domdistiller`.                        | No       | `readability,trafilatura,domdistiller` |
 | `PROVIDERS__TAVILY__API_KEY`                        | Tavily provider API key                                                                                           | No       | empty                    |
 | `PROVIDERS__KAGI__API_KEY`                          | Kagi provider API key                                                                                             | No       | empty                    |
 | `LOG__LEVEL`                                        | Structured log verbosity: `debug`, `info`, `warn`, or `error`                                                     | No       | `info`                   |

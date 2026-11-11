@@ -44,13 +44,11 @@ SSRF-hardened fetcher instead of each extraction backend performing its own HTTP
   is delegated to the proxy (scheme and deny-domain checks still apply locally); direct
   connections (including `NO_PROXY` matches) always get the full dial-level IP policy. Closing
   this gap is tracked in the issue tracker.
-- The GoOse fallback no longer spawns an abandoned goroutine on timeout (a leak on every
-  timed-out extraction).
 
 ### Extraction pipeline, quality gating, and Markdown output (breaking)
 
 Extraction is now a configurable pipeline (`CONTENT__EXTRACT__BACKENDS`, default
-`readability,trafilatura,goose`) run over one fetched page per request, replacing the fixed
+`readability,trafilatura,domdistiller`) run over one fetched page per request, replacing the fixed
 "readability primary, GoOse fallback" pair.
 
 - **Breaking**: `/summarize` and `fetch_url_content` now feed the model Markdown rendered from
@@ -70,10 +68,23 @@ Extraction is now a configurable pipeline (`CONTENT__EXTRACT__BACKENDS`, default
   engines disabled (the pipeline itself is the fallback chain).
 - `fetch_url_content` keeps its `text` field name and 2600-rune truncation; the content it
   carries is Markdown when available.
-- Fixture benchmarks show GoOse degrading badly on long articles (seconds of CPU and gigabytes
-  of allocations on a 142 KB page, versus tens of milliseconds for readability and
-  trafilatura). Keep it last in `CONTENT__EXTRACT__BACKENDS`, or drop it, unless your article
-  set is small-page-heavy; a backend research follow-up tracks the long-term replacement.
+- The GoOse backend was removed entirely after benchmarking (see the next section); the
+  extraction benchmark that drove the decision is tracked in issue #127.
+
+### GoOse extraction backend removed (breaking)
+
+The `goose` extraction backend is gone, replaced by a new `domdistiller` backend
+([go-domdistiller](https://github.com/markusmobius/go-domdistiller), a Go port of Chromium's
+DOM Distiller).
+
+- **Breaking**: `CONTENT__EXTRACT__BACKENDS` no longer accepts `goose`; a configured list
+  containing it fails validation at startup (the error lists the valid names). Drop `goose`
+  from the value — the default chain is now `readability,trafilatura,domdistiller`.
+- Why: the #127 extraction benchmark shows GoOse pathological on large pages (~1.7 s CPU and
+  ~9.6 GB of allocations on a 142 KB fixture) and systematically leaking navigation/comment
+  boilerplate into its output, while domdistiller posts the best mean F1 on non-Wikipedia
+  pages. Pagination following is disabled in the backend — the pipeline never follows
+  next-page links.
 
 ## 0.23.0 (2026-11-11) — changes since 0.22.1 (breaking)
 
