@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 	"text/template"
+	"time"
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
 )
@@ -167,9 +168,18 @@ func (s *recordingStore) SetChatField(_ context.Context, chatID int64, field, va
 }
 
 func (s *recordingStore) ClearChatField(_ context.Context, chatID int64, field string, _ int64) error {
+	if err := s.takeFailure("ClearChatField"); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.record("ClearChatField:" + strconv.FormatInt(chatID, 10) + ":" + field)
+
+	if field == "all" {
+		delete(s.chatRows, chatID) // atomic reset: the whole override row goes
+
+		return nil
+	}
 
 	if row := s.chatRows[chatID]; row != nil {
 		delete(row, field)
@@ -1145,14 +1155,21 @@ func TestChatPickerFlowVerifiesAndCompletes(t *testing.T) {
 	if result.Verify == nil || result.Verify.ChatID != -100999 {
 		t.Fatalf("accepted selection must request verification: %+v", result.Verify)
 	}
+	if result.DropPicker != MsgPickerReceived {
+		t.Fatalf("accepted selection must remove the reply keyboard: %q", result.DropPicker)
+	}
 
-	// A duplicate of the same request is consumed with a distinct message.
+	// A duplicate of the same request is consumed with a distinct message and
+	// no second keyboard removal.
 	duplicate, _ := c.HandleChatShared(context.Background(), testAdminID, shared)
 	if duplicate.Message == nil || duplicate.Message.Text != msgChatSharedDone {
 		t.Fatalf("duplicate selection must be reported as processed: %+v", duplicate.Message)
 	}
 	if duplicate.Verify != nil {
 		t.Fatalf("duplicate selection must not verify again")
+	}
+	if duplicate.DropPicker != "" {
+		t.Fatalf("duplicate selection must not remove a keyboard again: %q", duplicate.DropPicker)
 	}
 
 	// Completion with the wrong chat fails closed without writes.
@@ -1193,6 +1210,9 @@ func TestManualChatIDUnverifiedAdd(t *testing.T) {
 	if outcome.Verify == nil || outcome.Verify.ChatID != -100888 {
 		t.Fatalf("manual id must request verification: %+v", outcome.Verify)
 	}
+	if outcome.DropPicker != MsgPickerClosed {
+		t.Fatalf("manual chat-ID completion must remove the picker keyboard: %q", outcome.DropPicker)
+	}
 
 	done, _ := c.CompleteChatAdd(context.Background(), testAdminID, adminconfig.ChatCatalogEntry{
 		ChatID: -100888, ChatType: "unknown",
@@ -1200,6 +1220,274 @@ func TestManualChatIDUnverifiedAdd(t *testing.T) {
 	store.assertCalls(t, "UpsertChatCatalog:-100888", "AddWhitelistChat:-100888")
 	if !strings.Contains(done.Render.Built.Text, "unverified") {
 		t.Fatalf("unverified add must be labeled: %q", done.Render.Built.Text)
+	}
+}
+
+// TestPickerKeyboardLifecycleTransitions pins every transition that must
+// remove the picker reply keyboard: session replacement (/admin), /cancel,
+// abandonment by navigation or another input, and picker supersession (which
+// must NOT remove — the fresh keyboard send replaces it in place).
+func TestPickerKeyboardLifecycleTransitions(t *testing.T) {
+	armPicker := func(t *testing.T, c *Controller) {
+		t.Helper()
+
+		session := c.manager.Session(testAdminID)
+		outcome := tap(t, c, session, VerbCatalog, "a")
+		if outcome.Picker == nil {
+			t.Fatalf("add chat must arm a picker")
+		}
+		armPending(t, c, 80)
+	}
+
+	t.Run("replaced by /admin", func(t *testing.T) {
+		c, _ := newTestController(t)
+		mustOpen(t, c)
+		armPicker(t, c)
+
+		reopen, err := c.OpenDashboard(context.Background(), testAdminID)
+		if err != nil {
+			t.Fatalf("reopen: %v", err)
+		}
+		if reopen.DropPicker != MsgPickerClosed {
+			t.Fatalf("/admin must remove the replaced session's picker keyboard: %q", reopen.DropPicker)
+		}
+
+		// A reopen with no live picker must not send a removal.
+		clean, err := c.OpenDashboard(context.Background(), testAdminID)
+		if err != nil {
+			t.Fatalf("clean reopen: %v", err)
+		}
+		if clean.DropPicker != "" {
+			t.Fatalf("reopen without a picker must keep the keyboard alone: %q", clean.DropPicker)
+		}
+	})
+
+	t.Run("cancelled", func(t *testing.T) {
+		c, _ := newTestController(t)
+		mustOpen(t, c)
+		armPicker(t, c)
+
+		cancel, err := c.Cancel(context.Background(), testAdminID)
+		if err != nil {
+			t.Fatalf("cancel: %v", err)
+		}
+		if cancel.DropPicker != "Cancelled." {
+			t.Fatalf("cancel must remove the picker keyboard, ack = %q", cancel.DropPicker)
+		}
+		if cancel.Message != nil {
+			t.Fatalf("the removal acknowledgement doubles as the cancel line, got an extra message: %+v", cancel.Message)
+		}
+	})
+
+	t.Run("abandoned by navigation", func(t *testing.T) {
+		c, _ := newTestController(t)
+		session := mustOpen(t, c)
+		tap(t, c, session, VerbCatalog, "1") // the Add chat button lives on the catalog
+		armPicker(t, c)
+
+		abandon := tap(t, c, c.manager.Session(testAdminID), VerbBack)
+		if abandon.DropPicker != MsgPickerClosed {
+			t.Fatalf("navigation away must remove the picker keyboard: %q", abandon.DropPicker)
+		}
+
+		// The forward direction too: opening a chat card is a screen push and
+		// drops the pending the same way.
+		armPicker(t, c)
+		card := tap(t, c, c.manager.Session(testAdminID), VerbChat, "-100200300400")
+		if card.DropPicker != MsgPickerClosed {
+			t.Fatalf("pushing another screen must remove the picker keyboard: %q", card.DropPicker)
+		}
+	})
+
+	t.Run("abandoned by another input", func(t *testing.T) {
+		c, _ := newTestController(t)
+		session := mustOpen(t, c)
+		tap(t, c, session, VerbCatalog, "1")
+		armPicker(t, c)
+
+		search := tap(t, c, c.manager.Session(testAdminID), VerbCatalog, "s")
+		if search.Input == nil {
+			t.Fatalf("search must arm its input")
+		}
+		if search.DropPicker != MsgPickerClosed {
+			t.Fatalf("starting another input must remove the picker keyboard: %q", search.DropPicker)
+		}
+	})
+
+	t.Run("superseded by a newer picker", func(t *testing.T) {
+		c, _ := newTestController(t)
+		session := mustOpen(t, c)
+		tap(t, c, session, VerbCatalog, "1")
+		armPicker(t, c)
+
+		fresh := tap(t, c, c.manager.Session(testAdminID), VerbCatalog, "a")
+		if fresh.Picker == nil {
+			t.Fatalf("second add chat must arm a picker")
+		}
+		if fresh.DropPicker != "" {
+			t.Fatalf("a new picker keyboard supersedes the old one in place; must not send a removal: %q", fresh.DropPicker)
+		}
+	})
+}
+
+// TestStaleChatSharedKeepsNewPickerKeyboard pins the dismissal guard: a chat
+// selection with a mismatched RequestID is consumed with a notice, but the
+// live picker's keyboard survives — and the matching selection still
+// completes afterwards.
+func TestStaleChatSharedKeepsNewPickerKeyboard(t *testing.T) {
+	c, _ := newTestController(t)
+	session := mustOpen(t, c)
+
+	outcome := tap(t, c, session, VerbCatalog, "a")
+	liveRequestID := outcome.Picker.RequestID
+	armPending(t, c, 82)
+
+	stale, err := c.HandleChatShared(context.Background(), testAdminID, ChatSharedInput{
+		RequestID: liveRequestID + 1, ChatID: -100777, Title: "Stale",
+	})
+	if err != nil {
+		t.Fatalf("stale selection: %v", err)
+	}
+	if stale.Message == nil || stale.Message.Text != msgChatSharedInactive {
+		t.Fatalf("stale selection must be consumed with a notice: %+v", stale.Message)
+	}
+	if stale.DropPicker != "" {
+		t.Fatalf("a stale selection must not dismiss the live picker's keyboard: %q", stale.DropPicker)
+	}
+	if !c.manager.PickerKeyboardLive(testAdminID) {
+		t.Fatalf("the live picker must remain keyboard-armed after a stale selection")
+	}
+
+	accepted, err := c.HandleChatShared(context.Background(), testAdminID, ChatSharedInput{
+		RequestID: liveRequestID, ChatID: -100999, Title: "New Group",
+	})
+	if err != nil {
+		t.Fatalf("live selection: %v", err)
+	}
+	if accepted.Verify == nil || accepted.DropPicker != MsgPickerReceived {
+		t.Fatalf("the matching selection must still complete: verify=%+v drop=%q", accepted.Verify, accepted.DropPicker)
+	}
+}
+
+// TestChatSharedExpiredPendingBranch pins the pending-expiry branch of
+// HandleChatShared: an expired picker pending consumes the selection with the
+// keyboard-removal acknowledgement, while an expired non-picker pending gets
+// the plain inactive notice without any keyboard removal.
+func TestChatSharedExpiredPendingBranch(t *testing.T) {
+	t.Run("expired picker removes the keyboard", func(t *testing.T) {
+		c, _ := newTestController(t)
+		session := mustOpen(t, c)
+		tap(t, c, session, VerbCatalog, "a")
+		armPending(t, c, 80)
+		session = c.manager.Session(testAdminID)
+		session.Pending.ExpiresAt = time.Now().Add(-time.Second)
+
+		expired, err := c.HandleChatShared(context.Background(), testAdminID, ChatSharedInput{
+			RequestID: 12345, ChatID: -100555, Title: "Late",
+		})
+		if err != nil {
+			t.Fatalf("expired selection: %v", err)
+		}
+		if expired.DropPicker != msgChatSharedInactive {
+			t.Fatalf("expired picker must fold the notice into the keyboard removal: %q", expired.DropPicker)
+		}
+		if expired.Message != nil {
+			t.Fatalf("the notice must be the removal ack, not a separate message: %+v", expired.Message)
+		}
+		if expired.Verify != nil {
+			t.Fatalf("an expired pending must not start verification: %+v", expired.Verify)
+		}
+		if c.manager.PickerKeyboardLive(testAdminID) {
+			t.Fatalf("the expired pending must be gone after the selection")
+		}
+	})
+
+	t.Run("expired non-picker pending sends no removal", func(t *testing.T) {
+		c, _ := newTestController(t)
+		session := mustOpen(t, c)
+		tap(t, c, session, VerbCatalog, "s") // arms a search input, no picker keyboard
+		session = c.manager.Session(testAdminID)
+		session.Pending.ExpiresAt = time.Now().Add(-time.Second)
+
+		expired, err := c.HandleChatShared(context.Background(), testAdminID, ChatSharedInput{
+			RequestID: 12345, ChatID: -100555, Title: "Late",
+		})
+		if err != nil {
+			t.Fatalf("expired selection: %v", err)
+		}
+		if expired.DropPicker != "" {
+			t.Fatalf("no picker keyboard exists, must not send a removal: %q", expired.DropPicker)
+		}
+		if expired.Message == nil || expired.Message.Text != msgChatSharedInactive {
+			t.Fatalf("expired pending must be consumed with a notice: %+v", expired.Message)
+		}
+	})
+}
+
+// TestResetAllOverridesIsAtomic pins the confirm execution for
+// chat_overrides_reset: exactly one "all" store operation, and the whole
+// override row disappears.
+func TestResetAllOverridesIsAtomic(t *testing.T) {
+	c, store := newTestController(t)
+	session := mustOpen(t, c)
+
+	// Two overrides seeded directly in the store (the recording store persists
+	// them as the chat's override row).
+	if err := store.SetChatField(context.Background(), testGroupID, "character_name", "fox", 1); err != nil {
+		t.Fatalf("seed override: %v", err)
+	}
+	if err := store.SetChatField(context.Background(), testGroupID, "language", "Deutsch", 1); err != nil {
+		t.Fatalf("seed override: %v", err)
+	}
+	tap(t, c, session, VerbChat, "-100200300400")
+	store.calls = nil
+
+	outcome := tap(t, c, session, VerbResetChat)
+	if outcome.Render == nil || outcome.Render.Screen.Kind != ScreenConfirm {
+		t.Fatalf("reset must confirm first: %+v", outcome.Render)
+	}
+
+	done := tap(t, c, c.manager.Session(testAdminID), VerbConfirmYes)
+	if !strings.Contains(done.Render.Built.Text, "All overrides cleared") {
+		t.Fatalf("reset must confirm success: %q", done.Render.Built.Text)
+	}
+	store.assertCalls(t, "ClearChatField:-100200300400:all")
+
+	if _, found, err := store.GetChatSettings(context.Background(), testGroupID); err != nil || found {
+		t.Fatalf("reset-all must delete the override row: found=%v err=%v", found, err)
+	}
+}
+
+// TestResetAllOverridesFailureLeavesChatIntact verifies a transient store
+// failure cannot partially reset the chat: the atomic operation fails as a
+// whole, the failure is surfaced, and both overrides survive.
+func TestResetAllOverridesFailureLeavesChatIntact(t *testing.T) {
+	c, store := newTestController(t)
+	session := mustOpen(t, c)
+
+	for _, seed := range []struct{ field, value string }{
+		{"character_name", "fox"}, {"language", "Deutsch"},
+	} {
+		if err := store.SetChatField(context.Background(), testGroupID, seed.field, seed.value, 1); err != nil {
+			t.Fatalf("seed override %s: %v", seed.field, err)
+		}
+	}
+
+	tap(t, c, session, VerbChat, "-100200300400")
+	tap(t, c, session, VerbResetChat)
+	store.failOnce("ClearChatField", context.DeadlineExceeded)
+
+	done := tap(t, c, c.manager.Session(testAdminID), VerbConfirmYes)
+	if !strings.Contains(done.Render.Built.Text, "Failed:") {
+		t.Fatalf("the failed reset must be surfaced: %q", done.Render.Built.Text)
+	}
+
+	row, found, err := store.GetChatSettings(context.Background(), testGroupID)
+	if err != nil || !found {
+		t.Fatalf("a failed reset must leave the overrides readable: found=%v err=%v", found, err)
+	}
+	if row.CharacterName != "fox" || row.Language != "Deutsch" {
+		t.Fatalf("a failed reset must not touch any override: %+v", row)
 	}
 }
 

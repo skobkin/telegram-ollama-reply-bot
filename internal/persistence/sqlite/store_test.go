@@ -170,6 +170,37 @@ func TestStoreChatLanguageAndGenderOverrides(t *testing.T) {
 	}
 }
 
+// TestStoreClearAllChatOverridesDeletesRow pins the atomic reset-all: the
+// ClearChatField "all" operation is a single DELETE, so the whole override
+// row disappears. A per-field loop would leave a NULLed row behind — a
+// failed reset between writes could then land half-way.
+func TestStoreClearAllChatOverridesDeletesRow(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	for field, value := range map[string]string{
+		"character_name": "kitsune",
+		"language":       "English",
+		"tone_mode":      "playful",
+	} {
+		if err := store.SetChatField(ctx, 123, field, value, 42); err != nil {
+			t.Fatalf("set chat %s: %v", field, err)
+		}
+	}
+
+	if err := store.ClearChatField(ctx, 123, "all", 42); err != nil {
+		t.Fatalf("clear all overrides: %v", err)
+	}
+
+	_, found, err := store.GetChatSettings(ctx, 123)
+	if err != nil {
+		t.Fatalf("get chat settings after reset: %v", err)
+	}
+	if found {
+		t.Fatalf("reset-all must delete the whole override row, not NULL it field by field")
+	}
+}
+
 func TestStoreChatCatalogAndWhitelist(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)

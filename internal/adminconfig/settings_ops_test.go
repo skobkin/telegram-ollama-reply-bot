@@ -11,8 +11,9 @@ import (
 type recordingSettingsStore struct {
 	*stubStore
 
-	mu    sync.Mutex
-	calls []string
+	mu       sync.Mutex
+	failNext map[string]error // first call to the named method fails once
+	calls    []string
 }
 
 func (s *recordingSettingsStore) SetGlobalField(_ context.Context, field, value string, actorID int64) error {
@@ -33,10 +34,30 @@ func (s *recordingSettingsStore) SetChatField(_ context.Context, chatID int64, f
 
 func (s *recordingSettingsStore) ClearChatField(_ context.Context, chatID int64, field string, actorID int64) error {
 	s.mu.Lock()
-	s.calls = append(s.calls, "ClearChatField:"+field)
+	err, ok := s.failNext["ClearChatField"]
+	if ok {
+		delete(s.failNext, "ClearChatField")
+	} else {
+		s.calls = append(s.calls, "ClearChatField:"+field)
+	}
 	s.mu.Unlock()
 
+	if err != nil {
+		return err
+	}
+
 	return s.stubStore.ClearChatField(context.Background(), chatID, field, actorID)
+}
+
+// failOnce arms a one-shot persistence failure on ClearChatField.
+func (s *recordingSettingsStore) failOnce(method string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.failNext == nil {
+		s.failNext = make(map[string]error)
+	}
+	s.failNext[method] = err
 }
 
 func (s *recordingSettingsStore) writeCalls() []string {
@@ -123,24 +144,37 @@ func TestSetChatSettingAndClearOverride(t *testing.T) {
 	}
 }
 
-func TestClearAllChatOverridesClearsEveryChatField(t *testing.T) {
+// TestClearAllChatOverridesIsSingleAtomicWrite pins the atomic reset: the
+// whole override set goes in ONE store operation backed by a single SQL
+// DELETE — never a per-field loop that could leave the chat partially reset
+// when a middle write fails.
+func TestClearAllChatOverridesIsSingleAtomicWrite(t *testing.T) {
 	service, store := newSettingsTestService(t)
 
 	if err := service.ClearAllChatOverrides(context.Background(), -100, 1); err != nil {
 		t.Fatalf("clear all: %v", err)
 	}
 
+	want := []string{"ClearChatField:all"}
 	got := store.writeCalls()
-	if len(got) != len(ChatFieldSpecs()) {
-		t.Fatalf("expected %d clears, got %v", len(ChatFieldSpecs()), got)
+	if strings.Join(got, ";") != strings.Join(want, ";") {
+		t.Fatalf("reset-all must be one atomic store call, got %v", got)
 	}
-	cleared := make(map[string]bool)
-	for _, call := range got {
-		cleared[strings.TrimPrefix(call, "ClearChatField:")] = true
+}
+
+// TestClearAllChatOverridesFailureLeavesNothingWritten verifies the failure
+// mode of the atomic reset: the one store call fails, the error surfaces, and
+// no other write of any kind is attempted — a transient SQLite outage cannot
+// produce a partially reset chat configuration.
+func TestClearAllChatOverridesFailureLeavesNothingWritten(t *testing.T) {
+	service, store := newSettingsTestService(t)
+	store.failOnce("ClearChatField", context.DeadlineExceeded)
+
+	if err := service.ClearAllChatOverrides(context.Background(), -100, 1); err == nil {
+		t.Fatalf("the failed reset must surface its error")
 	}
-	for _, spec := range ChatFieldSpecs() {
-		if !cleared[spec.Name] {
-			t.Fatalf("field %s was not cleared", spec.Name)
-		}
+
+	if got := store.writeCalls(); len(got) != 0 {
+		t.Fatalf("a failed reset must not write anything, got %v", got)
 	}
 }

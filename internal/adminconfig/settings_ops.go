@@ -49,16 +49,13 @@ func (s *Service) ClearChatOverride(ctx context.Context, chatID int64, field str
 	return s.store.ClearChatField(ctx, chatID, field, actorID)
 }
 
-// ClearAllChatOverrides removes every chat settings override for a chat
-// (fields only — prompt templates have their own reset operations).
+// ClearAllChatOverrides removes every chat settings override for a chat in a
+// single atomic store operation (fields only — prompt templates have their
+// own reset operations). The store implementation is one SQL DELETE, so a
+// failed reset cannot leave the chat partially reset: either every override
+// is gone or none is.
 func (s *Service) ClearAllChatOverrides(ctx context.Context, chatID int64, actorID int64) error {
-	for _, spec := range ChatFieldSpecs() {
-		if err := s.store.ClearChatField(ctx, chatID, spec.Name, actorID); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return s.store.ClearChatField(ctx, chatID, "all", actorID)
 }
 
 func globalFieldSpecByName(field string) (FieldSpec, error) {

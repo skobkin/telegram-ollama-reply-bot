@@ -96,7 +96,10 @@ func fusedCallback(fromID int64, msgID int, data string) tg.Update {
 		From: tg.User{ID: fromID},
 		Message: &tg.Message{
 			MessageID: msgID,
-			Chat:      tg.Chat{ID: 100500, Type: tg.ChatTypePrivate},
+			// A bot DM's chat ID equals the user's own ID: the callback
+			// origin check (callbackOrigin) requires exactly that, so the
+			// callback is processed for real instead of bounced as gone.
+			Chat: tg.Chat{ID: fromID, Type: tg.ChatTypePrivate},
 		},
 		Data: data,
 	}}
@@ -132,6 +135,89 @@ func fusedChatShared(requestID int, chatID int64) tg.Update {
 			Title:     "Shared Group",
 		},
 	}}
+}
+
+// tap fires a callback on the live fused session.
+func (c *adminChainBot) tap(t *testing.T, verb string, args ...string) {
+	t.Helper()
+
+	session := c.manager.Session(fusedAdmin)
+	if session == nil {
+		t.Fatalf("no fused session to tap")
+	}
+	_, _, msgID, _ := session.DetachedSnapshot()
+	c.deliver(t, fusedCallback(fusedAdmin, msgID, core.EncodeAction(verb, session.Seq, args...)))
+}
+
+// TestUnmarkedReplyToLivePendingNeverReachesPipeline pins the classification
+// order in the real pipeline: pending correlation beats marker
+// classification, so a reply matching the live pending's prompt message is
+// consumed as ADMIN INPUT — applied to the store and isolated from history
+// and stats — even when the marker text is absent or altered. Without this
+// ordering an altered marker turned the reply into ordinary conversation
+// text and leaked it to the LLM.
+func TestUnmarkedReplyToLivePendingNeverReachesPipeline(t *testing.T) {
+	armLanguageInput := func(t *testing.T, c *adminChainBot) int {
+		t.Helper()
+
+		c.deliver(t, fusedPrivate(fusedAdmin, "/admin"))
+		c.tap(t, core.VerbGlobalSet)
+		c.tap(t, core.VerbField, "lg")
+		c.tap(t, core.VerbString, "lg")
+
+		session := c.manager.Session(fusedAdmin)
+		if session.Pending == nil || session.Pending.PromptMsgID == 0 {
+			t.Fatalf("pending input must be armed and correlated")
+		}
+
+		return session.Pending.PromptMsgID
+	}
+
+	t.Run("altered marker", func(t *testing.T) {
+		spy := &dmCatalogSpy{}
+		c := newAdminChainBot(t, config.BotConfig{AdminIDs: []int64{fusedAdmin}}, spy)
+		promptID := armLanguageInput(t, c)
+
+		c.deliver(t, fusedReply("Русский", fusedBotMessage(promptID, "someone edited this text away")))
+
+		if got := spy.writes.Load(); got != 1 {
+			t.Fatalf("the unmarked reply must be applied as admin input, got %d writes", got)
+		}
+		c.assertIsolated(t, "altered-marker reply")
+	})
+
+	t.Run("stripped marker text", func(t *testing.T) {
+		spy := &dmCatalogSpy{}
+		c := newAdminChainBot(t, config.BotConfig{AdminIDs: []int64{fusedAdmin}}, spy)
+		promptID := armLanguageInput(t, c)
+
+		// Telegram strips replied-to content entirely for some message kinds:
+		// no text to classify by, but the pending still matches.
+		c.deliver(t, fusedReply("Русский", fusedBotMessage(promptID, "")))
+
+		if got := spy.writes.Load(); got != 1 {
+			t.Fatalf("the reply matched by the pending must be applied, got %d writes", got)
+		}
+		c.assertIsolated(t, "stripped-marker reply")
+	})
+
+	t.Run("altered text without pending falls through", func(t *testing.T) {
+		spy := &dmCatalogSpy{}
+		c := newAdminChainBot(t, config.BotConfig{AdminIDs: []int64{fusedAdmin}}, spy)
+
+		ordinary := fusedBotMessage(73, "some ordinary bot answer, no marker left")
+		c.deliver(t, fusedReply("thanks!", ordinary))
+
+		if got := spy.writes.Load(); got != 0 {
+			t.Fatalf("an ordinary reply must not be consumed as admin input, got %d writes", got)
+		}
+		if got := c.history.appended.Load(); got != 1 {
+			t.Fatalf("ordinary replies must keep reaching the pipeline, got %d appends", got)
+		}
+		if got := c.stats.privateRequests.Load(); got != 1 {
+			t.Fatalf("ordinary replies must keep being counted, got %d", got)
+		}
+	})
 }
 
 // TestAdminUIUpdatesNeverReachConversationPipeline proves every

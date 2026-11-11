@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync/atomic"
 	"testing"
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
@@ -17,12 +18,19 @@ type adminStoreStub struct {
 	adminconfig.GlobalSettings
 	chatSettings adminconfig.ChatSettings
 	chatFound    bool
+	// writes counts settings/prompt writes, so isolation tests can prove an
+	// admin input was actually consumed and applied.
+	writes atomic.Int32
 }
 
 func (s *adminStoreStub) GetGlobalSettings(context.Context) (adminconfig.GlobalSettings, error) {
 	return s.GlobalSettings, nil
 }
-func (s *adminStoreStub) SetGlobalField(context.Context, string, string, int64) error { return nil }
+func (s *adminStoreStub) SetGlobalField(context.Context, string, string, int64) error {
+	s.writes.Add(1)
+
+	return nil
+}
 func (s *adminStoreStub) GetChatSettings(context.Context, int64) (adminconfig.ChatSettings, bool, error) {
 	return s.chatSettings, s.chatFound, nil
 }
@@ -34,6 +42,8 @@ func (s *adminStoreStub) GetPromptTemplate(context.Context, adminconfig.PromptFe
 	return "", false, nil
 }
 func (s *adminStoreStub) SetPromptTemplate(context.Context, adminconfig.PromptFeature, int64, string, int64) error {
+	s.writes.Add(1)
+
 	return nil
 }
 func (s *adminStoreStub) ClearPromptTemplate(context.Context, adminconfig.PromptFeature, int64) error {

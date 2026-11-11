@@ -252,6 +252,13 @@ func (a *Adapter) applyOutcome(ctx *th.Context, adminID int64, outcome core.Outc
 		}
 	}
 
+	// Keyboard removal precedes verification and any other outcome IO: the
+	// keyboard must be dismissed before GetChat verification runs, so the
+	// selection cannot be confirmed twice.
+	if outcome.DropPicker != "" {
+		a.removePickerKeyboard(ctx, adminID, outcome.DropPicker)
+	}
+
 	if outcome.Message != nil {
 		a.sendPlain(ctx, adminID, outcome.Message.Text)
 	}

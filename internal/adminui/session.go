@@ -154,6 +154,9 @@ type Session struct {
 	Confirm    *PendingConfirm
 	ExpiresAt  time.Time
 	pendingSeq uint64
+	// pickerOrphaned marks that a commit stopped a live chat-picker pending;
+	// harvested into ApplyResult.PickerOrphaned on success (kept on error).
+	pickerOrphaned bool
 
 	// Epoch is the render epoch assigned to the latest committed screen
 	// change; renders carrying older epochs are skipped.
@@ -302,6 +305,11 @@ func (m *Manager) Close(adminID int64) {
 type ApplyResult struct {
 	Session *Session
 	Render  *Render
+	// PickerOrphaned reports that the commit stopped a chat-picker pending
+	// whose reply keyboard is still shown on the admin's client — the adapter
+	// must remove it. Best-effort: a commit that errors keeps the marker, so
+	// a later successful commit still removes the lingering keyboard.
+	PickerOrphaned bool
 }
 
 // Apply runs fn atomically against the admin's session:
@@ -345,8 +353,12 @@ func (m *Manager) Apply(adminID int64, seq uint32, fn func(s *Session) error) (A
 	rerender := session.rerender
 	session.rerender = false
 	if err != nil {
+		// pickerOrphaned is deliberately NOT reset: the keyboard marker
+		// survives the failed commit and a later successful one removes it.
 		return ApplyResult{}, err
 	}
+	orphaned := session.pickerOrphaned
+	session.pickerOrphaned = false
 
 	if rerender {
 		session.Seq++
@@ -360,21 +372,22 @@ func (m *Manager) Apply(adminID int64, seq uint32, fn func(s *Session) error) (A
 	// keyboard, untouched.
 	session.ExpiresAt = m.now().Add(SessionTTL)
 
-	return ApplyResult{Session: session, Render: renderOf(session, rerender)}, nil
+	return ApplyResult{Session: session, Render: renderOf(session, rerender), PickerOrphaned: orphaned}, nil
 }
 
 // MarkRerender flags the session for a screen refresh on commit.
 func (s *Session) MarkRerender() { s.rerender = true }
 
 // PushScreen navigates: the current screen goes onto the back stack (capped)
-// and the new screen becomes current.
+// and the new screen becomes current. Dropping the pending marks an orphaned
+// picker keyboard for removal.
 func (s *Session) PushScreen(next ScreenState) {
 	if len(s.Stack) >= MaxStackDepth {
 		s.Stack = s.Stack[1:]
 	}
 	s.Stack = append(s.Stack, s.Screen)
 	s.Screen = next
-	s.Pending = nil
+	s.dropPending()
 	s.Confirm = nil
 }
 
@@ -385,8 +398,42 @@ func (s *Session) PopScreen() {
 	}
 	s.Screen = s.Stack[len(s.Stack)-1]
 	s.Stack = s.Stack[:len(s.Stack)-1]
-	s.Pending = nil
+	s.dropPending()
 	s.Confirm = nil
+}
+
+// orphanPickerKeyboard marks a live chat-picker reply keyboard for removal:
+// call when the session stops awaiting a selection (pending dropped,
+// replaced, or morphed into the completion state). Must run while the
+// pending still reflects the picker state. A stale or mismatched ChatShared
+// event never reaches here for a NEWER picker — its pending stays untouched,
+// so the newer keyboard survives.
+func (s *Session) orphanPickerKeyboard() {
+	p := s.Pending
+	if p != nil && p.Kind == PendingChatPicker && p.RequestID != 0 {
+		s.pickerOrphaned = true
+	}
+}
+
+// dropPending clears the pending input, orphaning a live picker keyboard
+// (call under the session lock, inside Apply).
+func (s *Session) dropPending() {
+	s.orphanPickerKeyboard()
+	s.Pending = nil
+}
+
+// LivePickerKeyboard reports whether the session awaits a chat selection
+// whose reply keyboard is live on the admin's client: a picker pending not
+// yet consumed into the GetChat-completion state. Expired-but-uncleared
+// pendings still count — the keyboard lingers on the client until something
+// removes it.
+func (s *Session) LivePickerKeyboard() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p := s.Pending
+
+	return p != nil && p.Kind == PendingChatPicker && p.RequestID != 0
 }
 
 // DetachedSnapshot reports (under the lock) whether the session is detached
@@ -544,4 +591,42 @@ func (m *Manager) SetPendingPromptMsgID(session *Session, pendingID uint64, msgI
 	})
 
 	return err
+}
+
+// PickerKeyboardLive reports whether the admin's live session currently
+// awaits a chat selection with its reply keyboard still shown. The delayed
+// completion of a replaced session's picker send consults it: the keyboard is
+// removed only when no newer picker already owns the reply keyboard.
+func (m *Manager) PickerKeyboardLive(adminID int64) bool {
+	session, ok := m.ActiveSession(adminID)
+	if !ok {
+		return false
+	}
+
+	return session.LivePickerKeyboard()
+}
+
+// MatchesPendingInput reports whether the admin's live session awaits an
+// input whose prompt message is msgID. The adapter consults it BEFORE
+// classifying a reply by the replied-to message's marker text: pending
+// correlation is the authoritative signal that a reply is administrative
+// input, so it stays binding even when the marker text is absent or altered.
+// Expired pendings still match — the reply is consumed as input and answered
+// with the expired notice, never released to the conversation pipeline.
+func (m *Manager) MatchesPendingInput(adminID int64, msgID int) bool {
+	if msgID == 0 {
+		return false
+	}
+
+	session, ok := m.ActiveSession(adminID)
+	if !ok {
+		return false
+	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	p := session.Pending
+
+	return p != nil && p.PromptMsgID != 0 && p.PromptMsgID == msgID
 }

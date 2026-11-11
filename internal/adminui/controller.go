@@ -38,7 +38,13 @@ const (
 	msgUnmatchedReply     = "This reply could not be matched to an active admin input and was not processed."
 	msgChatSharedInactive = "This chat selection is no longer active. Open /admin to continue."
 	msgChatSharedDone     = "This chat selection was already processed."
-	noticeMenuUpdated     = "Menu updated."
+	// Chat-picker keyboard removal acknowledgements: the removal rides on a
+	// short message (sendMessage requires non-empty text), so its text doubles
+	// as the feedback line. Exported: the adapter needs the closure line for
+	// a picker send whose pending died in flight.
+	MsgPickerReceived = "Chat selection received."
+	MsgPickerClosed   = "Chat selection closed."
+	noticeMenuUpdated = "Menu updated."
 )
 
 var (
@@ -97,17 +103,22 @@ type Outcome struct {
 	Message      *TextMessage
 	Verify       *VerifyChat
 	DeleteMsgIDs []int
+	// DropPicker removes the chat-picker reply keyboard, with the text as the
+	// acknowledgement line. Empty keeps the keyboard: in particular, a stale
+	// or mismatched chat selection must never dismiss a newer active picker.
+	DropPicker string
 }
 
 // fx accumulates the side effects a verb handler requests; it is discarded
 // when the handler fails.
 type fx struct {
-	input    *InputRequest
-	picker   *PickerRequest
-	document *DocumentPayload
-	message  *TextMessage
-	verify   *VerifyChat
-	deletes  []int
+	input      *InputRequest
+	picker     *PickerRequest
+	document   *DocumentPayload
+	message    *TextMessage
+	verify     *VerifyChat
+	deletes    []int
+	dropPicker string
 }
 
 func (f fx) outcome() Outcome {
@@ -118,7 +129,28 @@ func (f fx) outcome() Outcome {
 		Message:      f.message,
 		Verify:       f.verify,
 		DeleteMsgIDs: f.deletes,
+		DropPicker:   f.dropPicker,
 	}
+}
+
+// foldPickerRemoval turns an orphaned chat-picker keyboard marker into the
+// removal effect. The removal must carry non-empty text, so a feedback line
+// already queued for the outcome doubles as the acknowledgement; otherwise a
+// neutral closure line is used. An explicitly set DropPicker (the acceptance
+// acknowledgement) wins.
+func foldPickerRemoval(outcome *Outcome, orphaned bool) {
+	if !orphaned || outcome.DropPicker != "" {
+		return
+	}
+
+	if outcome.Message != nil {
+		outcome.DropPicker = outcome.Message.Text
+		outcome.Message = nil
+
+		return
+	}
+
+	outcome.DropPicker = MsgPickerClosed
 }
 
 // ReplyInput is one reply in an admin DM to a bot message, already
@@ -191,10 +223,14 @@ func (c *Controller) IsAdmin(userID int64) bool {
 // OpenDashboard starts a fresh admin session (replacing any previous one) and
 // returns its first render. Render.MsgID carries the previous session's
 // message ID (0 when unknown) so the adapter can edit instead of sending.
+// A live picker keyboard of the replaced session is orphaned by the
+// replacement (its pending dies with the session), so the outcome removes it.
 func (c *Controller) OpenDashboard(ctx context.Context, adminID int64) (Outcome, error) {
 	oldMsgID := 0
+	pickerLive := false
 	if old := c.manager.Session(adminID); old != nil {
 		_, _, oldMsgID, _ = old.DetachedSnapshot()
+		pickerLive = old.LivePickerKeyboard()
 	}
 
 	session := c.manager.Replace(adminID, ScreenState{Kind: ScreenDashboard})
@@ -218,7 +254,12 @@ func (c *Controller) OpenDashboard(ctx context.Context, adminID int64) (Outcome,
 		Built:   screen,
 	}
 
-	return Outcome{Session: session, Render: render}, nil
+	outcome := Outcome{Session: session, Render: render}
+	if pickerLive {
+		outcome.DropPicker = MsgPickerClosed
+	}
+
+	return outcome, nil
 }
 
 // Cancel cancels any live pending input or confirmation; with nothing
@@ -238,7 +279,7 @@ func (c *Controller) Cancel(ctx context.Context, adminID int64) (Outcome, error)
 		if s.Pending != nil && s.Pending.PromptMsgID != 0 {
 			effects.deletes = append(effects.deletes, s.Pending.PromptMsgID)
 		}
-		s.Pending = nil
+		s.dropPending()
 		s.Confirm = nil
 		s.Screen.Notice = "Cancelled."
 		s.MarkRerender()
@@ -324,18 +365,27 @@ func (c *Controller) HandleReply(ctx context.Context, adminID int64, in ReplyInp
 
 // HandleChatShared processes a chat-selection response in an admin DM. All
 // such responses are consumed: a live matching pending triggers GetChat
-// verification (Verify effect), everything else gets an inactive notice.
+// verification (Verify effect), everything else gets an inactive notice. The
+// reply keyboard is removed only when the selection is accepted or its
+// pending has expired — a stale or mismatched selection must not dismiss a
+// newer, still-active picker.
 func (c *Controller) HandleChatShared(_ context.Context, adminID int64, in ChatSharedInput) (Outcome, error) {
 	if !c.IsAdmin(adminID) {
 		return Outcome{}, nil
 	}
 
 	var effects fx
-	_, err := c.manager.Apply(adminID, 0, func(s *Session) error {
+	result, err := c.manager.Apply(adminID, 0, func(s *Session) error {
 		p := s.Pending
 		if p != nil && p.Expired(c.manager.Now()) {
-			s.Pending = nil
-			p = nil
+			// Expired pendings still consume the selection. dropPending
+			// orphans a live picker keyboard, and foldPickerRemoval turns the
+			// notice into that keyboard's removal acknowledgement; for any
+			// other pending the notice stands alone.
+			s.dropPending()
+			effects.message = &TextMessage{Text: msgChatSharedInactive}
+
+			return nil
 		}
 
 		switch {
@@ -347,10 +397,13 @@ func (c *Controller) HandleChatShared(_ context.Context, adminID int64, in ChatS
 			effects.message = &TextMessage{Text: msgChatSharedInactive}
 		default:
 			// Accepted: consume the request one-shot so duplicates fall into
-			// the "already processed" branch above.
+			// the "already processed" branch above, and remove the reply
+			// keyboard before the verification runs.
+			s.orphanPickerKeyboard()
 			p.RequestID = 0
 			p.ScopeChatID = in.ChatID
 			p.PromptMsgID = 0
+			effects.dropPicker = MsgPickerReceived
 			effects.verify = &VerifyChat{ChatID: in.ChatID}
 		}
 
@@ -364,7 +417,10 @@ func (c *Controller) HandleChatShared(_ context.Context, adminID int64, in ChatS
 		return Outcome{Message: &TextMessage{Text: "Failed: " + err.Error()}}, nil
 	}
 
-	return effects.outcome(), nil
+	outcome := effects.outcome()
+	foldPickerRemoval(&outcome, result.PickerOrphaned)
+
+	return outcome, nil
 }
 
 // CompleteChatAdd finishes an add-chat flow after GetChat verification:
@@ -392,7 +448,7 @@ func (c *Controller) CompleteChatAdd(ctx context.Context, adminID int64, entry a
 			return err
 		}
 
-		s.Pending = nil
+		s.dropPending() // the pending is consumed; dropPending keeps the discipline uniform
 		s.PushScreen(ScreenState{Kind: ScreenChatCard, ChatID: entry.ChatID})
 		if verified {
 			s.Screen.Notice = "Added to allowlist."
@@ -446,6 +502,7 @@ func (c *Controller) attachRender(ctx context.Context, outcome *Outcome, result 
 	if result.Session != nil {
 		outcome.Session = result.Session
 	}
+	foldPickerRemoval(outcome, result.PickerOrphaned)
 	if result.Render == nil {
 		return
 	}
@@ -534,6 +591,7 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 		if err != nil {
 			return err
 		}
+		s.orphanPickerKeyboard() // a new input abandons a live picker keyboard
 		s.Pending = &Pending{
 			ID:          s.NextPendingID(),
 			Kind:        PendingStringInput,
@@ -633,6 +691,7 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 		if !ok {
 			return errInvalidArg
 		}
+		s.orphanPickerKeyboard() // a new input abandons a live picker keyboard
 		s.Pending = &Pending{
 			ID:          s.NextPendingID(),
 			Kind:        PendingPromptText,
@@ -649,6 +708,7 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 		if !ok {
 			return errInvalidArg
 		}
+		s.orphanPickerKeyboard() // a new input abandons a live picker keyboard
 		s.Pending = &Pending{
 			ID:          s.NextPendingID(),
 			Kind:        PendingDocumentUpload,
@@ -838,6 +898,7 @@ func (c *Controller) handleCatalogVerb(_ context.Context, s *Session, action Act
 
 	switch arg {
 	case "s":
+		s.orphanPickerKeyboard() // a new input abandons a live picker keyboard
 		s.Pending = &Pending{ID: s.NextPendingID(), Kind: PendingSearchInput, ExpiresAt: now.Add(PendingTTL)}
 		fx.input = &InputRequest{
 			PendingID:   s.Pending.ID,
@@ -849,6 +910,8 @@ func (c *Controller) handleCatalogVerb(_ context.Context, s *Session, action Act
 
 	case "a":
 		requestID := randomRequestID()
+		// No orphan on purpose: a NEW picker supersedes the reply keyboard in
+		// place (the fresh keyboard send replaces the old one on the client).
 		s.Pending = &Pending{
 			ID:        s.NextPendingID(),
 			Kind:      PendingChatPicker,
@@ -1003,7 +1066,7 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 
 	if p == nil || p.PromptMsgID == 0 || p.PromptMsgID != in.ReplyToMsgID {
 		if p != nil && p.Expired(now) {
-			s.Pending = nil
+			s.dropPending()
 		}
 		fx.message = unmatchedFeedback(in)
 
@@ -1011,7 +1074,7 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 	}
 
 	if p.Expired(now) {
-		s.Pending = nil
+		s.dropPending()
 		s.Screen.Notice = "Input request expired."
 		s.MarkRerender()
 		fx.message = &TextMessage{Text: msgInputInactive}
@@ -1038,7 +1101,7 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 		deletePromptAndReply()
 
 		if p.Attempts >= MaxInputAttempts {
-			s.Pending = nil
+			s.dropPending()
 			s.Screen.Notice = "Input cancelled after too many invalid attempts."
 			s.MarkRerender()
 			fx.message = &TextMessage{Text: fmt.Sprintf("Input cancelled after %d invalid attempts: %v", MaxInputAttempts, err)}
@@ -1086,7 +1149,7 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 		if err != nil {
 			return err
 		}
-		s.Pending = nil
+		s.dropPending()
 		s.Screen.Notice = "Saved."
 		s.MarkRerender()
 		deletePromptAndReply()
@@ -1104,7 +1167,7 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 		if text == "-" {
 			text = ""
 		}
-		s.Pending = nil
+		s.dropPending()
 		deletePromptAndReply()
 		if s.Screen.Kind == ScreenCatalog {
 			s.Screen.Search = text
@@ -1135,7 +1198,7 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 		if err := c.service.SetPrompt(ctx, p.Feature, p.ScopeChatID, in.Text, adminID); err != nil {
 			return err
 		}
-		s.Pending = nil
+		s.dropPending()
 		s.Screen.Notice = "Template saved."
 		s.MarkRerender()
 		deletePromptAndReply()
@@ -1160,7 +1223,7 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 		if err := c.service.SetPrompt(ctx, p.Feature, p.ScopeChatID, string(doc.Content), adminID); err != nil {
 			return err
 		}
-		s.Pending = nil
+		s.dropPending()
 		s.Screen.Notice = "Template saved."
 		s.MarkRerender()
 		deletePromptAndReply()
@@ -1183,7 +1246,7 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 
 	case PendingChatPicker:
 		// The picker helper message also accepts a numeric reply as the
-		// manual chat-ID fallback.
+		// manual chat-ID fallback. The reply keyboard dies with the selection.
 		if in.Document != nil {
 			return invalid(errors.New("select a chat with the keyboard button, or reply with a numeric chat ID"))
 		}
@@ -1191,6 +1254,7 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 		if err != nil {
 			return invalid(errors.New("select a chat with the keyboard button, or reply with a numeric chat ID"))
 		}
+		s.orphanPickerKeyboard()
 		beginChatCompletion(p, chatID)
 		deletePromptAndReply()
 		fx.verify = &VerifyChat{ChatID: chatID}

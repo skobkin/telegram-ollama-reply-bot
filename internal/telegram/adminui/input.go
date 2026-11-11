@@ -20,20 +20,29 @@ import (
 var downloadClient = &http.Client{Timeout: 30 * time.Second}
 
 // handleAdminInput consumes replies to the bot's messages in admin DMs. The
-// anti-leak contract: a reply to an admin input prompt never falls through to
-// the conversation pipeline, whatever happened to its pending state; an
-// ordinary reply (replied-to text present, no input marker) is positively
-// distinguished and resumes the ordinary chain unchanged; anything
-// unclassifiable fails closed.
+// anti-leak contract, in load-bearing classification order:
+//
+//  1. Pending correlation first — a replied-to message ID matching the
+//     session's pending prompt is the authoritative admin-input signal, so
+//     the reply is consumed as input even when the marker text is absent or
+//     altered, and can never fall through to the conversation pipeline.
+//  2. The marker second — it covers replies to prompts whose pending is gone
+//     (expired, cancelled, replaced, restart-orphaned): consumed safely.
+//  3. An unmarked reply with visible replied-to text is positively ordinary
+//     and resumes the chain unchanged.
+//  4. Anything unclassifiable fails closed — never the LLM.
 func (a *Adapter) handleAdminInput(ctx *th.Context, message t.Message) error {
 	adminID := message.From.ID
 	reply := message.ReplyToMessage
 
+	matched := a.manager.MatchesPendingInput(adminID, reply.MessageID)
+	marked := strings.HasPrefix(reply.Text, core.AdminInputMarker)
+
 	switch {
-	case strings.HasPrefix(reply.Text, core.AdminInputMarker):
+	case matched || marked:
 		input := core.ReplyInput{
 			ReplyToMsgID:  reply.MessageID,
-			TextAvailable: true,
+			TextAvailable: marked,
 			Text:          message.Text,
 			ReplyMsgID:    message.MessageID,
 		}

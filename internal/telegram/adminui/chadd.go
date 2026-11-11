@@ -15,8 +15,10 @@ import (
 // sendPickerKeyboard sends the native chat picker: a reply keyboard with one
 // request-chat button. The request is deliberately unconstrained — BotIsMember
 // stays nil so chats the bot has never joined are selectable too; channels are
-// excluded via ChatIsChannel=false. The keyboard is removed before the first
-// shared chat is processed (handleChatShared).
+// excluded via ChatIsChannel=false. Removing the keyboard is the controller's
+// decision, not this function's: it goes out only when the selection is
+// accepted or the picker abandoned (Outcome.DropPicker) — a stale or
+// mismatched ChatShared must never dismiss it (handleChatShared).
 func (a *Adapter) sendPickerKeyboard(ctx *th.Context, session *core.Session, adminID int64, picker *core.PickerRequest) {
 	button := tu.KeyboardButton("Choose a chat")
 	// The controller generates request IDs within the positive int32 range;
@@ -42,14 +44,20 @@ func (a *Adapter) sendPickerKeyboard(ctx *th.Context, session *core.Session, adm
 	// scoped to the committing session exactly like sendInputPrompt.
 	if err := a.manager.SetPendingPromptMsgID(session, picker.PendingID, message.MessageID); err != nil {
 		a.logger.Debug("admin ui picker prompt not correlated", "admin_id", adminID, "error", err)
+		// The pending died while the keyboard was in flight (replaced by
+		// another input, or the session was replaced by /admin): the keyboard
+		// would linger forever. Remove it — unless a newer picker already
+		// owns the reply keyboard, which must survive.
+		if !a.manager.PickerKeyboardLive(adminID) {
+			a.removePickerKeyboard(ctx, adminID, core.MsgPickerClosed)
+		}
 	}
 }
 
-// removePickerKeyboard removes the reply keyboard right after a chat was
-// selected; sendMessage requires non-empty text, so it rides on a short
-// acknowledgement line.
-func (a *Adapter) removePickerKeyboard(ctx *th.Context, adminID int64) {
-	params := tu.Message(tu.ID(adminID), "Chat selection received.")
+// removePickerKeyboard removes the reply keyboard; sendMessage requires
+// non-empty text, so the text doubles as the acknowledgement line.
+func (a *Adapter) removePickerKeyboard(ctx *th.Context, adminID int64, text string) {
+	params := tu.Message(tu.ID(adminID), text)
 	params.ReplyMarkup = tu.ReplyKeyboardRemove()
 
 	if _, err := a.api.SendMessage(ctx, params); err != nil {
@@ -60,13 +68,12 @@ func (a *Adapter) removePickerKeyboard(ctx *th.Context, adminID int64) {
 
 // handleChatShared consumes EVERY chat-selection response in an admin DM —
 // unmatched, expired, cancelled, or duplicated selections never fall through
-// to the conversation pipeline. The reply keyboard disappears before the
-// first event is processed.
+// to the conversation pipeline. The keyboard removal is the controller's
+// DropPicker effect: gated on acceptance or pending expiry, so a stale or
+// mismatched selection never dismisses a newer, still-active picker.
 func (a *Adapter) handleChatShared(ctx *th.Context, message t.Message) error {
 	adminID := message.From.ID
 	shared := message.ChatShared
-
-	a.removePickerKeyboard(ctx, adminID)
 
 	outcome, err := a.controller.HandleChatShared(ctx, adminID, core.ChatSharedInput{
 		RequestID: shared.RequestID,

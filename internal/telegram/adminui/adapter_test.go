@@ -185,9 +185,16 @@ func (s *memStore) SetChatField(_ context.Context, chatID int64, field, value st
 }
 
 func (s *memStore) ClearChatField(_ context.Context, chatID int64, field string, _ int64) error {
+	if err := s.takeFailure("ClearChatField"); err != nil {
+		return err
+	}
 	s.record("ClearChatField:" + field)
 	s.mu.Lock()
-	delete(s.chatRows[chatID], field)
+	if field == "all" {
+		delete(s.chatRows, chatID) // atomic reset: the whole override row goes
+	} else {
+		delete(s.chatRows[chatID], field)
+	}
 	s.mu.Unlock()
 
 	return nil
@@ -246,6 +253,20 @@ func (s *memStore) ListChats(context.Context) ([]adminconfig.ChatCatalogEntry, e
 	defer s.mu.Unlock()
 
 	return append([]adminconfig.ChatCatalogEntry(nil), s.catalog...), nil
+}
+
+// HasCatalogChat reports whether the chat is registered in the catalog.
+func (s *memStore) HasCatalogChat(chatID int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, entry := range s.catalog {
+		if entry.ChatID == chatID {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (s *memStore) GetAccessPolicy(context.Context) (adminconfig.AccessPolicy, error) {
@@ -734,6 +755,66 @@ func botPromptMessage(msgID int, text string) tg.Message {
 		From:      &tg.User{ID: testBotID, IsBot: true},
 		Text:      text,
 	}
+}
+
+// replyKeyboards splits the sent messages by reply-markup kind: picker
+// keyboards (with a request-chat button) versus keyboard removals.
+func replyKeyboards(h *harness) (pickers, removals []map[string]any) {
+	for _, request := range h.api.requestsOf("sendMessage") {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(request.Body), &payload); err != nil {
+			continue
+		}
+		markup, _ := payload["reply_markup"].(map[string]any)
+		if markup == nil {
+			continue
+		}
+		if _, ok := markup["keyboard"]; ok {
+			pickers = append(pickers, payload)
+		}
+		if _, ok := markup["remove_keyboard"]; ok {
+			removals = append(removals, payload)
+		}
+	}
+
+	return pickers, removals
+}
+
+// keyboardRemovalSequence reports the sendMessage order positions of the
+// picker keyboard and of every keyboard removal, so tests can assert that a
+// removal lands AFTER a late keyboard delivery.
+func keyboardRemovalSequence(h *harness) (pickerIdx int, removalIdxs []int) {
+	for i, request := range h.api.requestsOf("sendMessage") {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(request.Body), &payload); err != nil {
+			continue
+		}
+		markup, _ := payload["reply_markup"].(map[string]any)
+		if markup == nil {
+			continue
+		}
+		if _, ok := markup["keyboard"]; ok && pickerIdx == 0 {
+			pickerIdx = i + 1 // 1-based; 0 = no keyboard seen
+		}
+		if _, ok := markup["remove_keyboard"]; ok {
+			removalIdxs = append(removalIdxs, i+1)
+		}
+	}
+
+	return pickerIdx, removalIdxs
+}
+
+// requestChatID extracts the request-chat button's request_id from a picker
+// keyboard payload.
+func requestChatID(payload map[string]any) int64 {
+	markup := payload["reply_markup"].(map[string]any)
+	rows := markup["keyboard"].([]any)
+	buttons := rows[0].([]any)
+	button := buttons[0].(map[string]any)
+	requestChat := button["request_chat"].(map[string]any)
+	id, _ := requestChat["request_id"].(float64)
+
+	return int64(id)
 }
 
 // ---- tests ----
@@ -1586,5 +1667,263 @@ func TestFailedSaveKeepsPromptReplyableEndToEnd(t *testing.T) {
 	}
 	if text := h.api.lastSentText("editMessageText"); !strings.Contains(text, "Saved.") {
 		t.Fatalf("the retried save must refresh the screen, got %q", text)
+	}
+}
+
+// TestPickerKeyboardLifecycleEndToEnd drives the chat-picker reply keyboard
+// through the real handler chain: every transition that must remove it
+// (acceptance, cancel, /admin reopen, manual chat-ID completion, delayed
+// send completing after a session replacement) and the one that must not
+// (a stale or mismatched selection).
+func TestPickerKeyboardLifecycleEndToEnd(t *testing.T) {
+	armPicker := func(t *testing.T, h *harness) int {
+		t.Helper()
+
+		requestID := h.beginPicker(t)
+
+		pickers, removals := replyKeyboards(h)
+		if len(pickers) != 1 || len(removals) != 0 {
+			t.Fatalf("picker keyboard expected, pickers=%d removals=%d", len(pickers), len(removals))
+		}
+		if got := requestChatID(pickers[0]); got != int64(requestID)&0x7fffffff {
+			t.Fatalf("request id mismatch: wire %d pending %d", got, requestID)
+		}
+
+		return requestID
+	}
+
+	t.Run("acceptance removes the keyboard before verification", func(t *testing.T) {
+		h := newHarness(t)
+		requestID := armPicker(t, h)
+		h.api.chats[sharedGroupID] = sharedGroupInfo()
+
+		h.deliver(t, chatSharedUpdate(requestID))
+
+		_, removals := replyKeyboards(h)
+		if len(removals) != 1 {
+			t.Fatalf("exactly one keyboard removal expected, got %d", len(removals))
+		}
+		if text := lastJSONText(removals[0]); text != core.MsgPickerReceived {
+			t.Fatalf("acceptance acknowledgement expected, got %q", text)
+		}
+		if got := h.api.callCount("getChat"); got != 1 {
+			t.Fatalf("verification must run after the removal, got %d getChat calls", got)
+		}
+		if !h.store.HasCatalogChat(sharedGroupID) {
+			t.Fatalf("the accepted chat must be registered, calls: %v", h.store.writeCalls())
+		}
+
+		// A duplicate selection is consumed without a second removal.
+		h.deliver(t, chatSharedUpdate(requestID))
+		if _, removals = replyKeyboards(h); len(removals) != 1 {
+			t.Fatalf("duplicate selection must not remove a keyboard again, got %d", len(removals))
+		}
+		if text := h.api.lastSentText("sendMessage"); !strings.Contains(text, "no longer active") {
+			t.Fatalf("duplicate must be consumed with a notice, got %q", text)
+		}
+	})
+
+	t.Run("stale selection never dismisses the live keyboard", func(t *testing.T) {
+		h := newHarness(t)
+		requestID := armPicker(t, h)
+
+		h.deliver(t, chatSharedUpdate(requestIDOther()))
+
+		_, removals := replyKeyboards(h)
+		if len(removals) != 0 {
+			t.Fatalf("a stale selection must not dismiss the newer picker's keyboard, got %d removals", len(removals))
+		}
+		if text := h.api.lastSentText("sendMessage"); !strings.Contains(text, "no longer active") {
+			t.Fatalf("the stale selection must be consumed with a notice, got %q", text)
+		}
+		if !h.manager.PickerKeyboardLive(testAdmin) {
+			t.Fatalf("the live picker must survive the stale selection")
+		}
+
+		// The matching selection still completes normally afterwards.
+		h.api.chats[sharedGroupID] = sharedGroupInfo()
+		h.deliver(t, chatSharedUpdate(requestID))
+		if _, removals = replyKeyboards(h); len(removals) != 1 {
+			t.Fatalf("the matching selection must remove the keyboard, got %d removals", len(removals))
+		}
+	})
+
+	t.Run("cancel removes the keyboard", func(t *testing.T) {
+		h := newHarness(t)
+		armPicker(t, h)
+
+		h.deliver(t, privateUpdate(testAdmin, "/cancel"))
+
+		_, removals := replyKeyboards(h)
+		if len(removals) != 1 {
+			t.Fatalf("cancel must remove the picker keyboard, got %d removals", len(removals))
+		}
+		if text := lastJSONText(removals[0]); !strings.Contains(text, "Cancelled") {
+			t.Fatalf("the removal acknowledgement doubles as the cancel line, got %q", text)
+		}
+		if got := h.api.callCount("deleteMessage"); got != 1 {
+			t.Fatalf("cancel must delete the picker prompt, got %d deletes", got)
+		}
+	})
+
+	t.Run("reopen removes the keyboard", func(t *testing.T) {
+		h := newHarness(t)
+		armPicker(t, h)
+
+		h.deliver(t, privateUpdate(testAdmin, "/admin"))
+
+		_, removals := replyKeyboards(h)
+		if len(removals) != 1 {
+			t.Fatalf("reopen must remove the replaced session's picker keyboard, got %d removals", len(removals))
+		}
+		if text := lastJSONText(removals[0]); text != core.MsgPickerClosed {
+			t.Fatalf("closure acknowledgement expected, got %q", text)
+		}
+	})
+
+	t.Run("manual chat id completes and removes the keyboard", func(t *testing.T) {
+		h := newHarness(t)
+		armPicker(t, h)
+		h.api.chats[sharedGroupID] = sharedGroupInfo()
+
+		prompt := botPromptMessage(int(h.api.lastSendMessageID()), core.AdminInputMarker+" — Add chat")
+		h.deliver(t, replyToBotUpdate(strconv.FormatInt(sharedGroupID, 10), prompt))
+
+		_, removals := replyKeyboards(h)
+		if len(removals) != 1 {
+			t.Fatalf("manual completion must remove the picker keyboard, got %d removals", len(removals))
+		}
+		if got := h.api.callCount("getChat"); got != 1 {
+			t.Fatalf("manual completion must verify the chat, got %d getChat calls", got)
+		}
+		if !h.store.HasCatalogChat(sharedGroupID) {
+			t.Fatalf("the manual chat must be registered, calls: %v", h.store.writeCalls())
+		}
+	})
+
+	t.Run("delayed send after replacement removes the keyboard", func(t *testing.T) {
+		h := newHarness(t)
+		h.open(t)
+		h.tap(t, core.VerbCatalog, "1")
+
+		// The picker keyboard send parks inside the fake API.
+		entered, release := h.api.armGate("sendMessage")
+		var releaseOnce sync.Once
+		releaseGate := func() { releaseOnce.Do(func() { close(release) }) }
+		t.Cleanup(releaseGate)
+
+		session := h.manager.Session(testAdmin)
+		_, _, msgID, _ := session.DetachedSnapshot()
+		data := core.EncodeAction(core.VerbCatalog, session.Seq, "a")
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := h.bh.BaseGroup().HandleUpdate(context.Background(), h.botAPI, callbackUpdate(testAdmin, msgID, data)); err != nil {
+				t.Errorf("handle update: %v", err)
+			}
+		}()
+		<-entered // the picker send is in flight
+
+		// /admin replaces the session while the keyboard is being delivered.
+		h.deliver(t, privateUpdate(testAdmin, "/admin"))
+		releaseGate()
+		wg.Wait()
+
+		pickers, removals := replyKeyboards(h)
+		if len(pickers) != 1 {
+			t.Fatalf("the keyboard must have been delivered, got %d", len(pickers))
+		}
+		// Two removals: the reopen cleans up the replaced session's picker,
+		// and the delayed send removes the keyboard again AFTER its delivery —
+		// the reopen's removal message raced the keyboard itself. Without the
+		// delayed-send cleanup the keyboard delivered last would linger.
+		if len(removals) != 2 {
+			t.Fatalf("reopen + delayed-send removals expected, got %d", len(removals))
+		}
+		for _, removal := range removals {
+			if text := lastJSONText(removal); text != core.MsgPickerClosed {
+				t.Fatalf("closure acknowledgement expected, got %q", text)
+			}
+		}
+		pickerIdx, removalIdxs := keyboardRemovalSequence(h)
+		if pickerIdx == 0 || len(removalIdxs) != 2 || removalIdxs[len(removalIdxs)-1] < pickerIdx {
+			t.Fatalf("the last removal must land after the late keyboard delivery: picker=%d removals=%v",
+				pickerIdx, removalIdxs)
+		}
+		if pending := h.manager.Session(testAdmin).Pending; pending != nil {
+			t.Fatalf("the replacement session must not inherit a picker pending, got %+v", pending)
+		}
+	})
+
+	t.Run("superseding picker sends no removal", func(t *testing.T) {
+		h := newHarness(t)
+		armPicker(t, h)
+
+		h.tap(t, core.VerbCatalog, "a")
+
+		pickers, removals := replyKeyboards(h)
+		if len(pickers) != 2 || len(removals) != 0 {
+			t.Fatalf("a new picker supersedes the keyboard in place: pickers=%d removals=%d", len(pickers), len(removals))
+		}
+	})
+}
+
+// TestUnmarkedReplyToPendingIsInputEndToEnd pins the classification order:
+// pending correlation beats marker classification, so a reply to the live
+// pending is consumed as input even when the marker text is absent or
+// altered — it can never slip into the ordinary conversation pipeline.
+func TestUnmarkedReplyToPendingIsInputEndToEnd(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+	h.tap(t, core.VerbGlobalSet)
+	h.tap(t, core.VerbField, "lg")
+	h.tap(t, core.VerbString, "lg")
+
+	// The replied-to message's marker text has been altered beyond recognition.
+	prompt := botPromptMessage(int(h.api.lastSendMessageID()), "definitely not an admin input marker")
+	h.deliver(t, replyToBotUpdate("Русский", prompt))
+
+	found := false
+	for _, call := range h.store.writeCalls() {
+		if strings.Contains(call, "SetGlobalField:language=Русский") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the unmarked reply must be applied as admin input, calls: %v", h.store.writeCalls())
+	}
+	if got := h.api.callCount("deleteMessage"); got != 2 {
+		t.Fatalf("processed input cleans up prompt and reply, got %d deletes", got)
+	}
+	if text := h.api.lastSentText("editMessageText"); !strings.Contains(text, "Saved.") {
+		t.Fatalf("the save must refresh the screen, got %q", text)
+	}
+}
+
+// TestDocumentReplyWithAlteredMarkerUploadsEndToEnd extends the pending-first
+// classification to document uploads: a document reply matched by the pending
+// is downloaded and applied although the marker text is gone.
+func TestDocumentReplyWithAlteredMarkerUploadsEndToEnd(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+	h.tap(t, core.VerbPrompts)
+	h.tap(t, core.VerbPromptFeat, "ch")
+	h.tap(t, core.VerbPromptUp, "ch")
+
+	h.api.files["uploads/prompt.md"] = []byte("custom chat {{.Language}}")
+
+	prompt := botPromptMessage(int(h.api.lastSendMessageID()), "") // text stripped entirely
+	h.deliver(t, documentReplyToBotUpdate(prompt))
+
+	found := false
+	for _, call := range h.store.writeCalls() {
+		if strings.Contains(call, "SetPromptTemplate:chat:") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the unmarked document reply must be uploaded as admin input, calls: %v", h.store.writeCalls())
 	}
 }

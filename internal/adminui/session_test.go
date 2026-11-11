@@ -698,3 +698,198 @@ func TestPendingExpiry(t *testing.T) {
 		t.Fatalf("pending must expire after its ttl")
 	}
 }
+
+// TestPickerOrphanHarvestedOnCommit pins the picker-keyboard lifecycle
+// marker: dropping a live picker pending arms ApplyResult.PickerOrphaned for
+// that commit only, a failing commit keeps the marker for a later one, and
+// non-picker pendings never arm it.
+func TestPickerOrphanHarvestedOnCommit(t *testing.T) {
+	m := NewManager(nil)
+	session := m.Replace(7, ScreenState{Kind: ScreenCatalog})
+
+	armPicker := func(s *Session, requestID int) {
+		s.Pending = &Pending{
+			ID:        s.NextPendingID(),
+			Kind:      PendingChatPicker,
+			RequestID: requestID,
+			ExpiresAt: s.ExpiresAt,
+		}
+	}
+
+	// Dropping a LIVE picker pending arms the marker exactly once.
+	_, err := m.Apply(7, session.Seq, func(s *Session) error {
+		armPicker(s, 5)
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("arm picker: %v", err)
+	}
+	result, err := m.Apply(7, session.Seq, func(s *Session) error {
+		s.dropPending()
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("drop picker: %v", err)
+	}
+	if !result.PickerOrphaned {
+		t.Fatalf("dropping a live picker pending must orphan its keyboard")
+	}
+	result, err = m.Apply(7, session.Seq, func(*Session) error { return nil })
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if result.PickerOrphaned {
+		t.Fatalf("the orphan marker must be consumed by the commit that reported it")
+	}
+
+	// A CONSUMED picker (awaiting GetChat completion; keyboard already
+	// removed) and a non-picker pending never orphan anything.
+	_, err = m.Apply(7, session.Seq, func(s *Session) error {
+		armPicker(s, 7)
+		s.Pending.RequestID = 0
+		s.dropPending()
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("drop consumed picker: %v", err)
+	}
+	if session.pickerOrphaned {
+		t.Fatalf("a consumed picker keyboard is not orphaned by its pending drop")
+	}
+	_, err = m.Apply(7, session.Seq, func(s *Session) error {
+		s.Pending = &Pending{ID: s.NextPendingID(), Kind: PendingStringInput, Field: "language"}
+		s.dropPending()
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("drop string pending: %v", err)
+	}
+	if session.pickerOrphaned {
+		t.Fatalf("a string input pending has no keyboard to orphan")
+	}
+
+	// A failing commit keeps the marker: the keyboard lingers until a later
+	// successful commit removes it.
+	_, err = m.Apply(7, session.Seq, func(s *Session) error {
+		armPicker(s, 9)
+		s.dropPending()
+
+		return errors.New("boom")
+	})
+	if err == nil {
+		t.Fatalf("expected the failing commit to error")
+	}
+	result, err = m.Apply(7, session.Seq, func(*Session) error { return nil })
+	if err != nil {
+		t.Fatalf("apply after failure: %v", err)
+	}
+	if !result.PickerOrphaned {
+		t.Fatalf("the orphan marker must survive a failed commit so the keyboard is still removed later")
+	}
+}
+
+// TestLivePickerKeyboardStates pins the keyboard-liveness predicate the
+// adapter's delayed-send path consults: a fresh picker counts, a consumed one
+// does not, and other pending kinds never do.
+func TestLivePickerKeyboardStates(t *testing.T) {
+	m := NewManager(nil)
+	session := m.Replace(7, ScreenState{Kind: ScreenCatalog})
+
+	if session.LivePickerKeyboard() {
+		t.Fatalf("a session without pendings has no live picker keyboard")
+	}
+
+	_, err := m.Apply(7, session.Seq, func(s *Session) error {
+		s.Pending = &Pending{ID: s.NextPendingID(), Kind: PendingChatPicker, RequestID: 42, ExpiresAt: s.ExpiresAt}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("arm picker: %v", err)
+	}
+	if !session.LivePickerKeyboard() {
+		t.Fatalf("an unconsumed picker pending means the keyboard is live")
+	}
+
+	_, err = m.Apply(7, session.Seq, func(s *Session) error {
+		s.Pending.RequestID = 0 // consumed into the GetChat-completion state
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("consume picker: %v", err)
+	}
+	if session.LivePickerKeyboard() {
+		t.Fatalf("a consumed picker awaits verification only; its keyboard was removed at acceptance")
+	}
+}
+
+// TestMatchesPendingInput pins the adapter's authoritative reply-classification
+// signal: the stamped prompt message ID of the live session's pending —
+// binding regardless of the marker text, including for expired pendings
+// (whose replies must be consumed, never released to the pipeline).
+func TestMatchesPendingInput(t *testing.T) {
+	m := NewManager(nil)
+	session := m.Replace(7, ScreenState{Kind: ScreenGlobalSet})
+
+	if m.MatchesPendingInput(7, 55) {
+		t.Fatalf("no pending armed yet, nothing may match")
+	}
+
+	_, err := m.Apply(7, session.Seq, func(s *Session) error {
+		s.Pending = &Pending{ID: s.NextPendingID(), Kind: PendingStringInput, Field: "language", ExpiresAt: s.ExpiresAt}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("arm pending: %v", err)
+	}
+	if m.MatchesPendingInput(7, 55) {
+		t.Fatalf("an unstamped pending matches nothing")
+	}
+
+	_, err = m.Apply(7, session.Seq, func(s *Session) error {
+		s.Pending.PromptMsgID = 55
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stamp pending: %v", err)
+	}
+	if !m.MatchesPendingInput(7, 55) {
+		t.Fatalf("the stamped prompt message must match")
+	}
+	if m.MatchesPendingInput(7, 56) || m.MatchesPendingInput(7, 0) {
+		t.Fatalf("other message ids must not match")
+	}
+
+	// Expired pendings still match: the reply is consumed and answered with
+	// the expired notice instead of falling through to the LLM.
+	_, err = m.Apply(7, session.Seq, func(s *Session) error {
+		s.Pending.ExpiresAt = m.Now().Add(-time.Minute)
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("expire pending: %v", err)
+	}
+	if !m.MatchesPendingInput(7, 55) {
+		t.Fatalf("an expired pending must still match so its replies stay consumed")
+	}
+
+	// A replaced session (fresh, pending-less) matches nothing.
+	m.Replace(7, ScreenState{Kind: ScreenDashboard})
+	if m.MatchesPendingInput(7, 55) {
+		t.Fatalf("a replaced session has no pending to match")
+	}
+
+	// No session at all matches nothing.
+	m.Close(7)
+	if m.MatchesPendingInput(7, 55) {
+		t.Fatalf("no session, no match")
+	}
+}
