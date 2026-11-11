@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/goreleaser/goreleaser/v2.15.4/www/docs/static/schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/goreleaser/goreleaser/v2.20.1/www/docs/static/schema.json
 version: 2
 
 project_name: telegram-llm-bot

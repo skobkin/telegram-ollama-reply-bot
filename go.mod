@@ -1,6 +1,6 @@
 module telegram-ollama-reply-bot
 
-go 1.26.7
+go 1.27.3
 
 require (
 	codeberg.org/readeck/go-readability/v2 v2.1.1

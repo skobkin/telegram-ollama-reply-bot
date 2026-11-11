@@ -9,33 +9,33 @@ clone:
 
 steps:
   fmt:
-    image: golangci/golangci-lint:v2.12-alpine
+    image: golangci/golangci-lint:v2.15-alpine
     commands:
       - golangci-lint fmt --diff ./cmd/bot ./internal
 
   lint:
-    image: golangci/golangci-lint:v2.12-alpine
+    image: golangci/golangci-lint:v2.15-alpine
     environment:
       XDG_CACHE_HOME: /tmp/.cache
     commands:
       - golangci-lint run ./cmd/bot/... ./internal/...
 
   vet:
-    image: golang:1.26-alpine
+    image: golang:1.27-alpine
     environment:
       GOCACHE: /tmp/.gocache
     commands:
       - go vet ./cmd/bot/... ./internal/...
 
   test:
-    image: golang:1.26-alpine
+    image: golang:1.27-alpine
     environment:
       GOCACHE: /tmp/.gocache
     commands:
       - go test ./...
 
   build:
-    image: golang:1.26-alpine
+    image: golang:1.27-alpine
     depends_on:
       - fmt
       - lint
@@ -49,7 +49,7 @@ steps:
       - event: [push, pull_request]
 
   release-forgejo:
-    image: goreleaser/goreleaser:v2.15.4
+    image: goreleaser/goreleaser:v2.20.1
     depends_on:
       - fmt
       - lint
