@@ -170,6 +170,68 @@ func TestStoreChatLanguageAndGenderOverrides(t *testing.T) {
 	}
 }
 
+// TestStoreAutoSummaryEnabledRoundTrip covers the tri-state chat toggle and
+// the global default: set keeps the value, clear restores NULL (inherit),
+// and the global default round-trips through SetGlobalField.
+func TestStoreAutoSummaryEnabledRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	global, err := store.GetGlobalSettings(ctx)
+	if err != nil {
+		t.Fatalf("get global settings: %v", err)
+	}
+	if global.DefaultAutoSummaryEnabled {
+		t.Fatalf("expected feature off on a fresh store")
+	}
+
+	if err := store.SetGlobalField(ctx, "default_auto_summary_enabled", "true", 42); err != nil {
+		t.Fatalf("set global default_auto_summary_enabled: %v", err)
+	}
+	global, err = store.GetGlobalSettings(ctx)
+	if err != nil {
+		t.Fatalf("get updated global settings: %v", err)
+	}
+	if !global.DefaultAutoSummaryEnabled {
+		t.Fatalf("expected global default to flip on")
+	}
+
+	if err := store.SetChatField(ctx, 123, "auto_summary_enabled", "false", 42); err != nil {
+		t.Fatalf("set chat auto_summary_enabled: %v", err)
+	}
+	chat, ok, err := store.GetChatSettings(ctx, 123)
+	if err != nil || !ok {
+		t.Fatalf("get chat settings: ok=%v err=%v", ok, err)
+	}
+	if chat.AutoSummaryEnabled == nil || *chat.AutoSummaryEnabled {
+		t.Fatalf("expected explicit false override, got %+v", chat.AutoSummaryEnabled)
+	}
+
+	if err := store.ClearChatField(ctx, 123, "auto_summary_enabled", 42); err != nil {
+		t.Fatalf("clear chat auto_summary_enabled: %v", err)
+	}
+	chat, ok, err = store.GetChatSettings(ctx, 123)
+	if err != nil || !ok {
+		t.Fatalf("get cleared chat settings: ok=%v err=%v", ok, err)
+	}
+	if chat.AutoSummaryEnabled != nil {
+		t.Fatalf("expected NULL (inherit) after clear, got %+v", chat.AutoSummaryEnabled)
+	}
+
+	// Setting another field afterwards must keep auto_summary_enabled NULL
+	// (bootstrap INSERT must not touch it).
+	if err := store.SetChatField(ctx, 123, "language", "English", 42); err != nil {
+		t.Fatalf("set chat language: %v", err)
+	}
+	chat, ok, err = store.GetChatSettings(ctx, 123)
+	if err != nil || !ok {
+		t.Fatalf("get chat settings after language set: ok=%v err=%v", ok, err)
+	}
+	if chat.AutoSummaryEnabled != nil {
+		t.Fatalf("expected auto_summary_enabled to stay NULL after unrelated field set, got %+v", chat.AutoSummaryEnabled)
+	}
+}
+
 // TestStoreClearAllChatOverridesDeletesRow pins the atomic reset-all: the
 // ClearChatField "all" operation is a single DELETE, so the whole override
 // row disappears. A per-field loop would leave a NULLed row behind — a
