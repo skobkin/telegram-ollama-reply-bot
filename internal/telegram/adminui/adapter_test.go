@@ -757,6 +757,18 @@ func botPromptMessage(msgID int, text string) tg.Message {
 	}
 }
 
+// botRichMessage builds a bot rich message as received on the wire: content
+// lives in rich_message blocks and the text field is absent. LLM replies are
+// sent this way.
+func botRichMessage(msgID int) tg.Message {
+	return tg.Message{
+		MessageID:   msgID,
+		Chat:        tg.Chat{ID: testAdmin, Type: tg.ChatTypePrivate},
+		From:        &tg.User{ID: testBotID, IsBot: true},
+		RichMessage: &tg.RichMessage{Blocks: []tg.RichBlock{}},
+	}
+}
+
 // replyKeyboards splits the sent messages by reply-markup kind: picker
 // keyboards (with a request-chat button) versus keyboard removals.
 func replyKeyboards(h *harness) (pickers, removals []map[string]any) {
@@ -1280,11 +1292,25 @@ func TestReplyWithoutMarkerResumesChain(t *testing.T) {
 	}
 }
 
+func TestReplyToRichMessageResumesChain(t *testing.T) {
+	h := newHarness(t)
+
+	// Replies to LLM answers (rich messages, no text field) are ordinary
+	// conversation, not unclassifiable admin input.
+	rich := botRichMessage(79)
+	h.deliver(t, replyToBotUpdate("thanks!", rich))
+
+	if got := h.api.callCount("sendMessage"); got != 0 {
+		t.Fatalf("reply to rich message must not trigger admin IO, got %d sends", got)
+	}
+}
+
 func TestUnclassifiableReplyFailsClosed(t *testing.T) {
 	h := newHarness(t)
 	h.open(t)
 
-	mediaMessage := botPromptMessage(78, "") // bot media message: no text
+	// Textless, content-less bot message stub: genuinely unclassifiable.
+	mediaMessage := botPromptMessage(78, "")
 	h.deliver(t, replyToBotUpdate("nice pic", mediaMessage))
 
 	if got := h.api.callCount("sendMessage"); got != 2 { // dashboard + notice

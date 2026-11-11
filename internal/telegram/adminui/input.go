@@ -29,7 +29,10 @@ var downloadClient = &http.Client{Timeout: 30 * time.Second}
 //  2. The marker second — it covers replies to prompts whose pending is gone
 //     (expired, cancelled, replaced, restart-orphaned): consumed safely.
 //  3. An unmarked reply with visible replied-to text is positively ordinary
-//     and resumes the chain unchanged.
+//     and resumes the chain unchanged. A rich message counts as visible: all
+//     admin UI IO is plain text, so a rich message from the bot is always a
+//     conversation reply (LLM answers are rich messages, and their wire form
+//     carries no text field at all).
 //  4. Anything unclassifiable fails closed — never the LLM.
 func (a *Adapter) handleAdminInput(ctx *th.Context, message t.Message) error {
 	adminID := message.From.ID
@@ -67,12 +70,12 @@ func (a *Adapter) handleAdminInput(ctx *th.Context, message t.Message) error {
 		a.applyOutcome(ctx, adminID, outcome)
 
 		return nil
-	case reply.Text != "":
+	case reply.Text != "" || reply.RichMessage != nil:
 		// Ordinary conversation: resume the chain (history, stats, LLM).
 		return ctx.Next(t.Update{Message: &message})
 	default:
-		// The replied-to message's text is unavailable (stripped content,
-		// bot media/document messages): fail closed — never the LLM.
+		// The replied-to message's content is unavailable (stripped content,
+		// textless media stubs): fail closed — never the LLM.
 		outcome, err := a.controller.HandleReply(ctx, adminID, core.ReplyInput{
 			ReplyToMsgID:  reply.MessageID,
 			TextAvailable: false,
