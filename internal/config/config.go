@@ -94,11 +94,56 @@ type BotConfig struct {
 	// non-admin users before any side effect. Admins are identified solely by
 	// AdminIDs; with an empty AdminIDs list the enabled flag drops all private
 	// messages. Group chats are never affected.
-	DMAdminsOnly             bool           `koanf:"dm_admins_only"`
-	Telegram                 TelegramConfig `koanf:"telegram"`
-	UncompressedHistoryLimit int            `koanf:"uncompressed_history_limit"`
-	HistorySummaryThreshold  int            `koanf:"history_summary_threshold"`
-	ProcessingTimeout        time.Duration  `koanf:"processing_timeout"`
+	DMAdminsOnly             bool              `koanf:"dm_admins_only"`
+	Telegram                 TelegramConfig    `koanf:"telegram"`
+	UncompressedHistoryLimit int               `koanf:"uncompressed_history_limit"`
+	HistorySummaryThreshold  int               `koanf:"history_summary_threshold"`
+	ProcessingTimeout        time.Duration     `koanf:"processing_timeout"`
+	AutoSummary              AutoSummaryConfig `koanf:"auto_summary"`
+}
+
+// AutoSummaryConfig is the BOT__AUTO_SUMMARY__* section: operational
+// parameters of the auto-summarizer mode. The on/off switch itself is not
+// configured here — it is the per-chat auto_summary_enabled setting (with a
+// global default) managed through the admin UI and stored in SQLite.
+type AutoSummaryConfig struct {
+	// MinTextLength is the minimum extracted article length (in runes) for a
+	// link to be worth an automatic summary. Shorter content is skipped
+	// without calling the model.
+	MinTextLength int `koanf:"min_text_length"`
+	// URLCooldown is how long a URL stays suppressed in a chat after an
+	// automatic summary (or a deliberate skip), so reposts do not re-trigger
+	// work. The cooldown is in-memory and resets on restart.
+	URLCooldown time.Duration `koanf:"url_cooldown"`
+	// MaxLinksPerMessage caps how many distinct links of one message are
+	// processed automatically.
+	MaxLinksPerMessage int `koanf:"max_links_per_message"`
+}
+
+// Validate checks the section so a mistyped value refuses the boot instead
+// of misbehaving at request time. Error messages name the environment
+// variable of the offending parameter.
+func (c AutoSummaryConfig) Validate() error {
+	if c.MinTextLength <= 0 {
+		return fmt.Errorf(
+			"bot.auto_summary.min_text_length must be positive (env BOT__AUTO_SUMMARY__MIN_TEXT_LENGTH), got %d",
+			c.MinTextLength,
+		)
+	}
+	if c.URLCooldown <= 0 {
+		return fmt.Errorf(
+			"bot.auto_summary.url_cooldown must be positive (env BOT__AUTO_SUMMARY__URL_COOLDOWN), got %s",
+			c.URLCooldown,
+		)
+	}
+	if c.MaxLinksPerMessage <= 0 {
+		return fmt.Errorf(
+			"bot.auto_summary.max_links_per_message must be positive (env BOT__AUTO_SUMMARY__MAX_LINKS_PER_MESSAGE), got %d",
+			c.MaxLinksPerMessage,
+		)
+	}
+
+	return nil
 }
 
 // TelegramConfig contains configuration for the Telegram bot transport.
@@ -483,6 +528,10 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 
+	if err := cfg.Bot.AutoSummary.Validate(); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+
 	return &cfg, nil
 }
 
@@ -500,6 +549,9 @@ func applyDefaults(k *koanf.Koanf) error {
 		"bot.uncompressed_history_limit":             15,
 		"bot.history_summary_threshold":              5,
 		"bot.processing_timeout":                     "30s",
+		"bot.auto_summary.min_text_length":           2000,
+		"bot.auto_summary.url_cooldown":              "12h",
+		"bot.auto_summary.max_links_per_message":     3,
 		"state.max_bytes":                            int64(256 << 20),
 		"state.history_max_bytes":                    int64(160 << 20),
 		"state.history_streams_max":                  1024,

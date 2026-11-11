@@ -333,6 +333,95 @@ func TestLoadUsesBotHistoryLimitDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadUsesAutoSummaryDefaults(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.Bot.AutoSummary.MinTextLength != 2000 {
+		t.Fatalf("expected min text length default of 2000, got %d", cfg.Bot.AutoSummary.MinTextLength)
+	}
+	if cfg.Bot.AutoSummary.URLCooldown != 12*time.Hour {
+		t.Fatalf("expected url cooldown default of 12h, got %s", cfg.Bot.AutoSummary.URLCooldown)
+	}
+	if cfg.Bot.AutoSummary.MaxLinksPerMessage != 3 {
+		t.Fatalf("expected max links per message default of 3, got %d", cfg.Bot.AutoSummary.MaxLinksPerMessage)
+	}
+}
+
+func TestLoadUsesExplicitAutoSummaryConfig(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("BOT__AUTO_SUMMARY__MIN_TEXT_LENGTH", "500")
+	t.Setenv("BOT__AUTO_SUMMARY__URL_COOLDOWN", "30m")
+	t.Setenv("BOT__AUTO_SUMMARY__MAX_LINKS_PER_MESSAGE", "1")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.Bot.AutoSummary.MinTextLength != 500 {
+		t.Fatalf("unexpected min text length: %d", cfg.Bot.AutoSummary.MinTextLength)
+	}
+	if cfg.Bot.AutoSummary.URLCooldown != 30*time.Minute {
+		t.Fatalf("unexpected url cooldown: %s", cfg.Bot.AutoSummary.URLCooldown)
+	}
+	if cfg.Bot.AutoSummary.MaxLinksPerMessage != 1 {
+		t.Fatalf("unexpected max links per message: %d", cfg.Bot.AutoSummary.MaxLinksPerMessage)
+	}
+}
+
+func TestLoadRejectsInvalidAutoSummaryConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{
+			name: "zero min text length",
+			env:  map[string]string{"BOT__AUTO_SUMMARY__MIN_TEXT_LENGTH": "0"},
+		},
+		{
+			name: "negative min text length",
+			env:  map[string]string{"BOT__AUTO_SUMMARY__MIN_TEXT_LENGTH": "-5"},
+		},
+		{
+			name: "zero url cooldown",
+			env:  map[string]string{"BOT__AUTO_SUMMARY__URL_COOLDOWN": "0s"},
+		},
+		{
+			name: "invalid url cooldown",
+			env:  map[string]string{"BOT__AUTO_SUMMARY__URL_COOLDOWN": "soon"},
+		},
+		{
+			name: "zero max links per message",
+			env:  map[string]string{"BOT__AUTO_SUMMARY__MAX_LINKS_PER_MESSAGE": "0"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected load to fail for %s", tc.name)
+			}
+			// Validation errors name the env var; unmarshal errors (e.g. an
+			// invalid duration) name the config path before Validate runs.
+			if !strings.Contains(err.Error(), "BOT__AUTO_SUMMARY__") &&
+				!strings.Contains(err.Error(), "bot.auto_summary.") {
+				t.Fatalf("error should point at the auto-summary section, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadUsesDocumentedLLMPrefixedHistoryLimitOverrides(t *testing.T) {
 	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
 	t.Setenv("LLM__UNCOMPRESSED_HISTORY_LIMIT", "20")
