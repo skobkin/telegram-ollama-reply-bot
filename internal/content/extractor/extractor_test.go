@@ -82,6 +82,49 @@ func TestTrafilaturaBackendExtractsFixture(t *testing.T) {
 	}
 }
 
+// unextractablePage is a bare HTML shell with no article content at all.
+// (Navigation-only pages do not qualify: extractors legitimately distill
+// the nav text as the longest content — the pipeline's quality gate handles
+// that downstream.) Backends must report a bare shell as empty
+// (Content.Empty), not as a failure.
+func unextractablePage() *fetch.Page {
+	body := `<!DOCTYPE html>
+<html>
+<head></head>
+<body><div id="app"></div></body>
+</html>`
+
+	return &fetch.Page{
+		URL:         "https://example.com/empty",
+		ContentType: "text/html; charset=utf-8",
+		Body:        []byte(body),
+	}
+}
+
+func TestReadabilityBackendReportsEmptyPageAsEmpty(t *testing.T) {
+	t.Parallel()
+
+	content, err := NewReadabilityExtractor(testLogger()).Extract(context.Background(), unextractablePage())
+	if err != nil {
+		t.Fatalf("unextractable page must not be an error, got: %v", err)
+	}
+	if !content.Empty {
+		t.Fatalf("expected empty-flagged content, got %+v", content)
+	}
+}
+
+func TestTrafilaturaBackendReportsEmptyPageAsEmpty(t *testing.T) {
+	t.Parallel()
+
+	content, err := NewTrafilaturaExtractor(testLogger()).Extract(context.Background(), unextractablePage())
+	if err != nil {
+		t.Fatalf("unextractable page must not be an error, got: %v", err)
+	}
+	if !content.Empty {
+		t.Fatalf("expected empty-flagged content, got %+v", content)
+	}
+}
+
 func TestGoOseBackendExtractsFixture(t *testing.T) {
 	t.Parallel()
 
@@ -147,6 +190,36 @@ func TestPipelineFallsThroughLowQualityResult(t *testing.T) {
 
 	if article.Backend != "good" {
 		t.Fatalf("expected fall-through to good backend, got %q", article.Backend)
+	}
+}
+
+// The Empty flag must trump the structural check: content carrying wrapper
+// markup (non-empty Text/HTML) is still skipped when the backend declared it
+// empty, and the next backend gets its turn.
+func TestPipelineSkipsDeclaredEmptyContent(t *testing.T) {
+	t.Parallel()
+
+	pipeline := NewPipeline(
+		stubFetcher{},
+		[]Backend{
+			stubBackend{name: "wrapper", content: Content{
+				Title: "Nothing here",
+				Text:  "leftover",
+				HTML:  "<div></div>",
+				Empty: true,
+			}},
+			stubBackend{name: "good", content: cleanContent()},
+		},
+		testLogger(),
+	)
+
+	article, err := pipeline.GetArticleFromURL(context.Background(), "https://example.com/article")
+	if err != nil {
+		t.Fatalf("GetArticleFromURL returned error: %v", err)
+	}
+
+	if article.Backend != "good" {
+		t.Fatalf("expected declared-empty content to be skipped, got backend %q", article.Backend)
 	}
 }
 

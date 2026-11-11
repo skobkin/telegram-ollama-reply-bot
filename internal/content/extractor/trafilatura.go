@@ -9,7 +9,6 @@ import (
 	"telegram-ollama-reply-bot/internal/content/fetch"
 	"telegram-ollama-reply-bot/internal/logging"
 
-	"github.com/getsentry/sentry-go"
 	trafilatura "github.com/markusmobius/go-trafilatura"
 	xhtml "golang.org/x/net/html"
 )
@@ -49,15 +48,20 @@ func (e *TrafilaturaExtractor) Extract(ctx context.Context, page *fetch.Page) (C
 		ExcludeComments: true,
 	})
 	if err != nil {
-		logger.Warn("extraction failed", "url", page.URL, "error", err)
-		sentry.CaptureException(err)
+		// Every go-trafilatura error is a content judgment — the library
+		// declining a document below its quality floor ("text and comments
+		// are not long enough", "output tree to long", ...) — never an
+		// infrastructure failure: the input is an in-memory copy of an
+		// already-fetched page. Report the refusal as an empty result and
+		// let the pipeline try the next backend.
+		logger.Debug("extraction declined", "url", page.URL, "reason", err)
 
-		return Content{}, ErrExtractFailed
+		return Content{Empty: true}, nil
 	}
 	if result == nil || result.ContentNode == nil {
 		logger.Debug("no content extracted", "url", page.URL)
 
-		return Content{}, ErrExtractFailed
+		return Content{Empty: true}, nil
 	}
 
 	var html bytes.Buffer

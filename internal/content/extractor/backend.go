@@ -27,6 +27,14 @@ type Content struct {
 	Title string
 	Text  string
 	HTML  string
+
+	// Empty is set by the producing backend when it determines, by its own
+	// standard, that nothing extractable was found. Backends whose libraries
+	// still render wrapper markup for empty results (so Text/HTML alone do
+	// not prove emptiness) rely on this flag. The pipeline checks it first;
+	// the structural nonEmpty() check below remains as defense for results
+	// that leave the flag unset.
+	Empty bool
 }
 
 // nonEmpty reports whether the content carries anything usable.

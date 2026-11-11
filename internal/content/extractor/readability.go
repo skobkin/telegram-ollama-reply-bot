@@ -50,6 +50,15 @@ func (e *ReadabilityExtractor) Extract(ctx context.Context, page *fetch.Page) (C
 		return Content{}, ErrExtractFailed
 	}
 
+	// An unextractable page (the parser found no article) comes back with a
+	// nil Node and nil error. That is a normal outcome, not a failure:
+	// report it as empty and let the pipeline try the next backend.
+	if article.Node == nil {
+		logger.Debug("no content extracted", "url", page.URL)
+
+		return Content{Empty: true}, nil
+	}
+
 	var text bytes.Buffer
 	if err := article.RenderText(&text); err != nil {
 		logger.Warn("extracted article text rendering failed", "url", page.URL, "error", err)

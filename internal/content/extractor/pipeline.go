@@ -110,7 +110,10 @@ func (p *Pipeline) GetArticleFromURL(ctx context.Context, url string) (Article, 
 
 			continue
 		}
-		if !content.nonEmpty() {
+		// Emptiness is the producing backend's call first (some engines render
+		// wrapper markup even for empty pages); structure is the fallback
+		// check for results that leave the flag unset.
+		if content.Empty || !content.nonEmpty() {
 			logger.Debug("backend produced empty content", "backend", name, "url", url)
 
 			continue
