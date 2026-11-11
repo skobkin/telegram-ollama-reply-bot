@@ -2,6 +2,21 @@
 
 ## 0.24.0 (unreleased) — changes since 0.23.1 (breaking)
 
+### Auto-summarizer mode
+
+New optional per-chat mode: the bot watches ordinary chat messages for links to long-form content and posts an
+automatic summary as a reply to the linking message.
+
+- The database gains `chat_settings.auto_summary_enabled` (nullable) and
+  `global_settings.default_auto_summary_enabled` columns (schema version 7). The migration applies automatically at
+  startup; no operator action is needed.
+- The feature is **off everywhere** after upgrade — enabling it is an explicit per-chat (or global-default) decision
+  made in the admin UI.
+- New operational variables `BOT__AUTO_SUMMARY__MIN_TEXT_LENGTH` (default `2000`),
+  `BOT__AUTO_SUMMARY__URL_COOLDOWN` (default `12h`), and `BOT__AUTO_SUMMARY__MAX_LINKS_PER_MESSAGE` (default `3`).
+- In groups, Telegram's BotFather privacy mode must be disabled (or the bot promoted to admin) — otherwise the bot
+  never receives ordinary group messages and the mode silently no-ops. See the README "Auto-summarizer" section.
+
 ### Web content fetching is SSRF-protected by default (breaking)
 
 Article fetching (`/summarize` and the `fetch_url_content` tool) now goes through one shared,

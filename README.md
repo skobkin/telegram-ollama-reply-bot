@@ -8,6 +8,7 @@
 
 - Context-dependent dialogue in chats
 - Summarization of articles by provided link (SSRF-protected fetching, quality-scored extraction backends, Markdown output)
+- Optional per-chat auto-summarizer mode: linked long-form articles in ordinary chat messages are summarized automatically
 - Image recognition and description
 - Tool-assisted free-form chat with
   - URL retrieval
@@ -48,6 +49,9 @@ The bot can be configured using the following environment variables:
 | `LLM__UNCOMPRESSED_HISTORY_LIMIT`                   | Recent chat messages sent verbatim to LLM; older ones summarized. Set to `0` to disable summarization             | No       | 15                       |
 | `LLM__HISTORY_SUMMARY_THRESHOLD`                    | Extra messages beyond the limit before summarization triggers again                                               | No       | 5                        |
 | `BOT__PROCESSING_TIMEOUT`                           | Timeout for processing incoming requests (includes LLM calls). Accepts Go duration strings (e.g. `45s`, `1m30s`). | No       | `30s`                    |
+| `BOT__AUTO_SUMMARY__MIN_TEXT_LENGTH`                | Minimum extracted article length (in runes) for the auto-summarizer to summarize a link.                          | No       | `2000`                   |
+| `BOT__AUTO_SUMMARY__URL_COOLDOWN`                   | How long a URL stays suppressed per chat after an automatic summary. Go duration string.                          | No       | `12h`                    |
+| `BOT__AUTO_SUMMARY__MAX_LINKS_PER_MESSAGE`          | How many distinct links of one message the auto-summarizer processes.                                             | No       | `3`                      |
 | `SEARCH__BACKEND`                                   | External search backend for the `search_web` tool: `none`, `tavily`, `kagi`, or `chain`                           | No       | `none`                   |
 | `SEARCH__CHAIN`                                     | Comma-separated backend order used when `SEARCH__BACKEND=chain`                                                   | No       | empty                    |
 | `CONTENT__FETCH__TIMEOUT`                           | Whole-exchange budget per article fetch (dial to last body byte). Go duration string.                             | No       | `10s`                    |
@@ -87,8 +91,8 @@ Stored prompt templates use Go's [`text/template`](https://pkg.go.dev/text/templ
 - `summarize` – `{{.Language}}`, `{{.MaxLength}}`
 - `image_recognition` – `{{.Language}}`
 
-Global fields: `character_name`, `language`, `gender`, `tone_mode`, `allow_teasing`, `default_interactivity_mode`.
-Per-chat fields: `character_name`, `language`, `gender`, `tone_mode`, `allow_teasing`, `interactivity_mode`.
+Global fields: `character_name`, `language`, `gender`, `tone_mode`, `allow_teasing`, `default_interactivity_mode`, `default_auto_summary_enabled`.
+Per-chat fields: `character_name`, `language`, `gender`, `tone_mode`, `allow_teasing`, `interactivity_mode`, `auto_summary_enabled`.
 
 ## Usage
 
@@ -202,6 +206,30 @@ supergroup chats are never affected; whitelist and interactivity rules keep appl
 before. Because admins are identified solely by `BOT__ADMIN_IDS`, enabling this flag with an empty
 `BOT__ADMIN_IDS` drops **all** private messages, including admin commands.
 
+### Auto-summarizer
+
+The auto-summarizer is an optional per-chat mode: when enabled for a chat, the bot watches **ordinary** chat messages
+(the ones it would otherwise ignore), and when such a message contains one or more links to long-form content, it
+fetches the article and posts an automatic summary as a reply to the linking message.
+
+- **Enable it per chat** from the admin UI (chat card or chat settings, `Auto summary`), or flip the global default
+  (`Default auto summary`) and let chats inherit it. The feature is off everywhere by default.
+- The mode is **independent of the interactivity mode**: a chat with interactivity `disabled` but auto-summary on still
+  gets automatic summaries. Messages the bot already answers conversationally (mentions, replies to it, private DMs)
+  are never auto-summarized — no double answers. As a consequence, fully interactive private chats never trigger it.
+- Content counts as "long" at `BOT__AUTO_SUMMARY__MIN_TEXT_LENGTH` runes (default `2000`); shorter articles are
+  skipped without a model call. Markdown extraction is preferred for the summary, falling back to plain text.
+- The per-message link budget is `BOT__AUTO_SUMMARY__MAX_LINKS_PER_MESSAGE` (default `3`); each distinct qualifying
+  link gets its own summary reply.
+- A per-chat, in-memory URL cooldown (`BOT__AUTO_SUMMARY__URL_COOLDOWN`, default `12h`) suppresses reposts of the same
+  link. It resets on restart. Failed attempts release the cooldown so a repost can retry; deliberately skipped
+  (too-short) links stay suppressed.
+- Failures are silent: automatic summaries never post error messages, they are only logged (and reported to Sentry).
+- The `/stats` summarize counter includes automatic runs.
+- **Telegram privacy mode matters**: with BotFather privacy mode enabled, the bot never receives ordinary group
+  messages at all, so the mode silently no-ops in groups. Disable privacy mode for the bot (or promote it to a group
+  admin) for auto-summarizer use.
+
 ### Admin UI
 
 Administration is a Telegram-native interactive panel. Send `/admin` in a private chat with the bot (users listed in
@@ -211,6 +239,8 @@ dismisses a pending input and reopens the panel. Sessions are ephemeral and expi
 - **Chats** — searchable catalog (8 per page, filter by groups/private). The chat card shows effective access,
   interactivity, and settings; interactivity modes switch right on the card, `Inherit global` clears a chat override,
   and `Reset overrides` (confirmed) clears everything the card overrides.
+- **Auto-summary toggle** — per chat (`Auto summary`, tri-state with inherit) and global (`Default auto summary`),
+  edited like any other boolean field.
 - **Global settings / chat settings** — one editor per field: enum and boolean fields are buttons; text fields ask for
   a reply (three attempts on invalid input, then the input is cancelled).
 - **Prompts** — per feature (chat, summarize, image recognition): view, download the active or built-in template,
