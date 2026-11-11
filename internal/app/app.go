@@ -9,6 +9,7 @@ import (
 	"telegram-ollama-reply-bot/internal/buildinfo"
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/content/extractor"
+	"telegram-ollama-reply-bot/internal/content/fetch"
 	"telegram-ollama-reply-bot/internal/content/search"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/logging"
@@ -216,7 +217,22 @@ func Run(ctx context.Context) error {
 
 	logger.Info("all required models are available")
 
-	ext := extractor.NewExtractor(logManager.Logger("content/extractor"))
+	contentFetcher, err := fetch.New(fetch.Options{
+		Timeout:      cfg.Content.Fetch.Timeout,
+		MaxBodyBytes: cfg.Content.Fetch.MaxBodyBytes,
+		MaxRedirects: cfg.Content.Fetch.MaxRedirects,
+		UserAgent:    cfg.Content.Fetch.UserAgent,
+		DenyDomains:  cfg.Content.Fetch.DenyDomains,
+		DenyCIDRs:    cfg.Content.Fetch.DenyCIDRs,
+	}, logManager.Logger("content/fetch"))
+	if err != nil {
+		logger.Error("failed to initialize content fetcher", "error", err)
+		sentry.CaptureException(err)
+
+		return err
+	}
+
+	ext := extractor.NewExtractor(contentFetcher, logManager.Logger("content/extractor"))
 	searcher, err := search.NewFromConfig(*cfg, httpclient.New(), logManager.Logger("content/search"))
 	if err != nil {
 		logger.Error("failed to initialize search capability", "error", err)

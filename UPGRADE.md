@@ -1,5 +1,37 @@
 # Upgrade Notes
 
+## 0.24.0 (unreleased) — changes since 0.23.1 (breaking)
+
+### Web content fetching is SSRF-protected by default (breaking)
+
+Article fetching (`/summarize` and the `fetch_url_content` tool) now goes through one shared,
+SSRF-hardened fetcher instead of each extraction backend performing its own HTTP requests.
+
+- **Breaking**: URLs pointing into internal networks are refused by default — loopback, private
+  ranges (RFC 1918 and IPv6 equivalents), link-local (including cloud metadata endpoints
+  `169.254.169.254`), CGNAT (`100.64.0.0/10`), multicast, and unspecified addresses are blocked.
+  Installs that previously let the bot read articles from LAN/internal URLs must rework that
+  flow; there is no allow-list. Deny lists (`CONTENT__FETCH__DENY_DOMAINS`,
+  `CONTENT__FETCH__DENY_CIDRS`) only extend the built-in policy.
+- DNS is validated before connecting: every address a host resolves to must pass the policy, so
+  DNS rebinding to a private address fails closed.
+- Redirects are re-validated per hop and capped at `CONTENT__FETCH__MAX_REDIRECTS` (default `5`);
+  exceeding the budget fails the fetch instead of returning the last response.
+- Response bodies are capped at `CONTENT__FETCH__MAX_BODY_BYTES` (default 2 MiB) and decoded to
+  UTF-8 before extraction (windows-1251/1252, KOI8-R and other legacy encodings now extract
+  correctly). Non-HTML responses are rejected early.
+- New fetch-related variables: `CONTENT__FETCH__TIMEOUT` (default `10s`, previously a hardcoded
+  constant), `CONTENT__FETCH__MAX_BODY_BYTES`, `CONTENT__FETCH__MAX_REDIRECTS`,
+  `CONTENT__FETCH__USER_AGENT` (previously unset: Go's default for readability, a desktop Safari
+  string for GoOse).
+- Proxies are honored via the standard `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` environment
+  variables. Note the documented tradeoff: when a proxy is used, destination IP/CIDR validation
+  is delegated to the proxy (scheme and deny-domain checks still apply locally); direct
+  connections (including `NO_PROXY` matches) always get the full dial-level IP policy. Closing
+  this gap is tracked in the issue tracker.
+- The GoOse fallback no longer spawns an abandoned goroutine on timeout (a leak on every
+  timed-out extraction).
+
 ## 0.23.0 (2026-11-11) — changes since 0.22.1 (breaking)
 
 All sections below, up to and including the Koanf migration, ship in 0.23.0 and break compatibility

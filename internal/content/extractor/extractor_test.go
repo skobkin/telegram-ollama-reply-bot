@@ -5,18 +5,14 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"telegram-ollama-reply-bot/internal/content/fetch"
 )
 
-func TestReadabilityExtractorGetArticleFromURL(t *testing.T) {
-	t.Parallel()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `<!doctype html>
+const readablePage = `<!doctype html>
 <html>
 <head><title>Readable title</title></head>
 <body>
@@ -26,22 +22,26 @@ func TestReadabilityExtractorGetArticleFromURL(t *testing.T) {
 <p>Second paragraph.</p>
 </article>
 </body>
-</html>`)
-	}))
-	defer server.Close()
+</html>`
+
+func TestReadabilityExtractorExtractsPage(t *testing.T) {
+	t.Parallel()
 
 	extractor := NewReadabilityExtractor(testLogger())
 
-	article, err := extractor.GetArticleFromURL(context.Background(), server.URL)
+	article, err := extractor.extractPage(context.Background(), &fetch.Page{
+		URL:  "https://example.com/article",
+		Body: []byte(readablePage),
+	})
 	if err != nil {
-		t.Fatalf("GetArticleFromURL returned error: %v", err)
+		t.Fatalf("extractPage returned error: %v", err)
 	}
 
 	if article.Title != "Readable title" {
 		t.Fatalf("unexpected title: %q", article.Title)
 	}
 
-	if article.URL != server.URL {
+	if article.URL != "https://example.com/article" {
 		t.Fatalf("unexpected url: %q", article.URL)
 	}
 
@@ -54,15 +54,42 @@ func TestReadabilityExtractorGetArticleFromURL(t *testing.T) {
 	}
 }
 
+func TestGoOseExtractorExtractsPage(t *testing.T) {
+	t.Parallel()
+
+	extractor := NewGoOseExtractor(testLogger())
+
+	article, err := extractor.extractPage(context.Background(), &fetch.Page{
+		URL:  "https://example.com/article",
+		Body: []byte(readablePage),
+	})
+	if err != nil {
+		t.Fatalf("extractPage returned error: %v", err)
+	}
+
+	if article.Title != "Readable title" {
+		t.Fatalf("unexpected title: %q", article.Title)
+	}
+
+	if article.URL != "https://example.com/article" {
+		t.Fatalf("unexpected url: %q", article.URL)
+	}
+
+	if !strings.Contains(article.Text, "First paragraph.") {
+		t.Fatalf("expected extracted text to contain first paragraph, got %q", article.Text)
+	}
+}
+
 func TestMultiExtractorReturnsPrimaryArticle(t *testing.T) {
 	t.Parallel()
 
 	fallbackCalls := atomic.Int32{}
 	extractor := &MultiExtractor{
-		primary: stubExtractor{
+		fetcher: stubFetcher{},
+		primary: stubBackend{
 			article: Article{Title: "primary", Text: "primary text", URL: "https://example.com"},
 		},
-		fallback: stubExtractor{
+		fallback: stubBackend{
 			calls:   &fallbackCalls,
 			article: Article{Title: "fallback", Text: "fallback text", URL: "https://example.com"},
 		},
@@ -88,10 +115,11 @@ func TestMultiExtractorFallsBackWhenPrimaryFails(t *testing.T) {
 
 	fallbackCalls := atomic.Int32{}
 	extractor := &MultiExtractor{
-		primary: stubExtractor{
+		fetcher: stubFetcher{},
+		primary: stubBackend{
 			err: errors.New("boom"),
 		},
-		fallback: stubExtractor{
+		fallback: stubBackend{
 			calls:   &fallbackCalls,
 			article: Article{Title: "fallback", Text: "fallback text", URL: "https://example.com"},
 		},
@@ -117,10 +145,11 @@ func TestMultiExtractorFallsBackWhenPrimaryTextIsEmpty(t *testing.T) {
 
 	fallbackCalls := atomic.Int32{}
 	extractor := &MultiExtractor{
-		primary: stubExtractor{
+		fetcher: stubFetcher{},
+		primary: stubBackend{
 			article: Article{Title: "primary", Text: "", URL: "https://example.com"},
 		},
-		fallback: stubExtractor{
+		fallback: stubBackend{
 			calls:   &fallbackCalls,
 			article: Article{Title: "fallback", Text: "fallback text", URL: "https://example.com"},
 		},
@@ -141,13 +170,64 @@ func TestMultiExtractorFallsBackWhenPrimaryTextIsEmpty(t *testing.T) {
 	}
 }
 
-type stubExtractor struct {
+func TestMultiExtractorFetchErrorPropagates(t *testing.T) {
+	t.Parallel()
+
+	primaryCalls := atomic.Int32{}
+	extractor := &MultiExtractor{
+		fetcher: stubFetcher{
+			err: fetch.ErrBlocked,
+		},
+		primary: stubBackend{
+			calls: &primaryCalls,
+		},
+		fallback: stubBackend{},
+		logger:   testLogger(),
+	}
+
+	article, err := extractor.GetArticleFromURL(context.Background(), "https://example.com")
+	if !errors.Is(err, ErrExtractFailed) {
+		t.Fatalf("expected ErrExtractFailed, got %v", err)
+	}
+
+	if article != (Article{}) {
+		t.Fatalf("expected empty article, got %+v", article)
+	}
+
+	if got := primaryCalls.Load(); got != 0 {
+		t.Fatalf("backends must not run when the fetch fails, got %d primary calls", got)
+	}
+}
+
+// stubFetcher is an in-memory pageFetcher for pipeline tests.
+type stubFetcher struct {
+	page *fetch.Page
+	err  error
+}
+
+func (s stubFetcher) Fetch(_ context.Context, rawURL string) (*fetch.Page, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.page != nil {
+		return s.page, nil
+	}
+
+	return &fetch.Page{URL: rawURL, Body: []byte(readablePage)}, nil
+}
+
+// stubBackend is a canned pageBackend for pipeline tests.
+type stubBackend struct {
 	article Article
 	err     error
 	calls   *atomic.Int32
 }
 
-func (s stubExtractor) GetArticleFromURL(context.Context, string) (Article, error) {
+func (s stubBackend) name() string {
+	return "stub"
+}
+
+func (s stubBackend) extractPage(_ context.Context, _ *fetch.Page) (Article, error) {
 	if s.calls != nil {
 		s.calls.Add(1)
 	}

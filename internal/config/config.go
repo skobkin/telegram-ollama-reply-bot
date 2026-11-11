@@ -10,6 +10,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"reflect"
@@ -34,6 +35,7 @@ type Config struct {
 	Persistence PersistenceConfig `koanf:"persistent"`
 	Providers   ProvidersConfig   `koanf:"providers"`
 	Search      SearchConfig      `koanf:"search"`
+	Content     ContentConfig     `koanf:"content"`
 	MCP         MCPConfig         `koanf:"mcp"`
 }
 
@@ -53,6 +55,17 @@ const (
 	SearchBackendTavily = "tavily"
 	SearchBackendKagi   = "kagi"
 	SearchBackendChain  = "chain"
+
+	// Extraction backend selection values (CONTENT__EXTRACT__BACKENDS).
+	ExtractionBackendReadability = "readability"
+	ExtractionBackendTrafilatura = "trafilatura"
+	ExtractionBackendGoose       = "goose"
+
+	// DefaultContentUserAgent is the User-Agent the content fetcher presents
+	// to article sites. A desktop-browser-like string avoids the outright
+	// blocks and cloaked responses some sites serve to non-browser agents;
+	// it is configurable via CONTENT__FETCH__USER_AGENT.
+	DefaultContentUserAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"
 )
 
 // LLMConfig contains configuration for the LLM service.
@@ -118,6 +131,100 @@ type KagiProviderConfig struct {
 type SearchConfig struct {
 	Backend string   `koanf:"backend"`
 	Chain   []string `koanf:"chain"`
+}
+
+// ContentConfig contains web content fetching and extraction settings.
+//
+// Fetch controls the shared HTTP fetcher that downloads article pages for
+// both the /summarize command and the fetch_url_content tool. Fetching is
+// SSRF-protected by default: internal, link-local (including cloud metadata),
+// and otherwise non-public destinations are refused in addition to anything
+// matched by DenyDomains/DenyCIDRs — the deny lists extend the built-in
+// policy, they never replace it, and there is no allow-list. Proxies come
+// from the standard HTTP_PROXY/HTTPS_PROXY/NO_PROXY environment variables.
+//
+// Extract selects and orders the extraction backends that run over each
+// fetched page.
+type ContentConfig struct {
+	Fetch   ContentFetchConfig   `koanf:"fetch"`
+	Extract ContentExtractConfig `koanf:"extract"`
+}
+
+// ContentFetchConfig is the CONTENT__FETCH__* section.
+type ContentFetchConfig struct {
+	// Timeout is the whole-exchange budget per fetch (dial to last body byte).
+	Timeout time.Duration `koanf:"timeout"`
+	// MaxBodyBytes caps the decoded response body per fetched page.
+	MaxBodyBytes int64 `koanf:"max_body_bytes"`
+	// MaxRedirects caps redirect hops per fetch; exceeding it fails the fetch.
+	MaxRedirects int `koanf:"max_redirects"`
+	// UserAgent is sent with every fetch request.
+	UserAgent string `koanf:"user_agent"`
+	// DenyDomains blocks hosts (including their subdomains, case-insensitive,
+	// IDN-normalized) in addition to the built-in policy.
+	DenyDomains []string `koanf:"deny_domains"`
+	// DenyCIDRs blocks IPv4/IPv6 addresses or ranges in addition to the
+	// built-in policy.
+	DenyCIDRs []string `koanf:"deny_cidrs"`
+}
+
+// ContentExtractConfig is the CONTENT__EXTRACT__* section.
+type ContentExtractConfig struct {
+	// Backends names the extraction backends in the order they are tried.
+	Backends []string `koanf:"backends"`
+}
+
+// Validate checks the content section for semantic problems so a mistyped
+// value refuses the boot instead of misbehaving at request time. Values are
+// always populated here: Load() seeds defaults before validating, and the
+// error messages name the config path and its environment variable.
+func (c ContentConfig) Validate() error {
+	if c.Fetch.Timeout <= 0 {
+		return fmt.Errorf(
+			"content.fetch.timeout must be positive (env CONTENT__FETCH__TIMEOUT), got %s",
+			c.Fetch.Timeout,
+		)
+	}
+	if c.Fetch.MaxBodyBytes <= 0 {
+		return fmt.Errorf(
+			"content.fetch.max_body_bytes must be positive (env CONTENT__FETCH__MAX_BODY_BYTES), got %d",
+			c.Fetch.MaxBodyBytes,
+		)
+	}
+	if c.Fetch.MaxRedirects <= 0 {
+		return fmt.Errorf(
+			"content.fetch.max_redirects must be positive (env CONTENT__FETCH__MAX_REDIRECTS), got %d",
+			c.Fetch.MaxRedirects,
+		)
+	}
+
+	for _, raw := range c.Fetch.DenyCIDRs {
+		if _, _, err := net.ParseCIDR(strings.TrimSpace(raw)); err != nil {
+			return fmt.Errorf(
+				"content.fetch.deny_cidrs entry %q is not a valid CIDR or address (env CONTENT__FETCH__DENY_CIDRS): %w",
+				raw, err,
+			)
+		}
+	}
+
+	if len(c.Extract.Backends) == 0 {
+		return fmt.Errorf(
+			"content.extract.backends must list at least one backend (env CONTENT__EXTRACT__BACKENDS)",
+		)
+	}
+	for _, backend := range c.Extract.Backends {
+		switch backend {
+		case ExtractionBackendReadability, ExtractionBackendTrafilatura, ExtractionBackendGoose:
+			// Known backend.
+		default:
+			return fmt.Errorf(
+				"content.extract.backends entry %q is not a known backend (use %s, %s, or %s; env CONTENT__EXTRACT__BACKENDS)",
+				backend, ExtractionBackendReadability, ExtractionBackendTrafilatura, ExtractionBackendGoose,
+			)
+		}
+	}
+
+	return nil
 }
 
 // MCPConfig contains configuration for Model Context Protocol (MCP) tool servers.
@@ -372,6 +479,10 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 
+	if err := cfg.Content.Validate(); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+
 	return &cfg, nil
 }
 
@@ -397,6 +508,11 @@ func applyDefaults(k *koanf.Koanf) error {
 		"log.level":                                  "info",
 		"persistent.store_path":                      "/data/db.sqlite",
 		"search.backend":                             SearchBackendNone,
+		"content.fetch.timeout":                      "10s",
+		"content.fetch.max_body_bytes":               int64(2 << 20),
+		"content.fetch.max_redirects":                5,
+		"content.fetch.user_agent":                   DefaultContentUserAgent,
+		"content.extract.backends":                   "readability,trafilatura,goose",
 	}
 	for key, value := range defaults {
 		if err := k.Set(key, value); err != nil {

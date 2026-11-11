@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1218,5 +1219,154 @@ func TestLoadRejectsBadImageRecognitionValues(t *testing.T) {
 				t.Fatalf("expected load to fail")
 			}
 		})
+	}
+}
+
+func TestLoadUsesContentDefaults(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.Content.Fetch.Timeout != 10*time.Second {
+		t.Fatalf("unexpected fetch timeout: %s", cfg.Content.Fetch.Timeout)
+	}
+	if cfg.Content.Fetch.MaxBodyBytes != int64(2<<20) {
+		t.Fatalf("unexpected fetch max body bytes: %d", cfg.Content.Fetch.MaxBodyBytes)
+	}
+	if cfg.Content.Fetch.MaxRedirects != 5 {
+		t.Fatalf("unexpected fetch max redirects: %d", cfg.Content.Fetch.MaxRedirects)
+	}
+	if cfg.Content.Fetch.UserAgent == "" {
+		t.Fatal("expected non-empty default user agent")
+	}
+	if len(cfg.Content.Extract.Backends) != 3 {
+		t.Fatalf("unexpected default backends: %v", cfg.Content.Extract.Backends)
+	}
+	if cfg.Content.Extract.Backends[0] != ExtractionBackendReadability ||
+		cfg.Content.Extract.Backends[1] != ExtractionBackendTrafilatura ||
+		cfg.Content.Extract.Backends[2] != ExtractionBackendGoose {
+		t.Fatalf("unexpected default backend order: %v", cfg.Content.Extract.Backends)
+	}
+}
+
+func TestLoadUsesExplicitContentConfig(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("CONTENT__FETCH__TIMEOUT", "15s")
+	t.Setenv("CONTENT__FETCH__MAX_BODY_BYTES", "5242880")
+	t.Setenv("CONTENT__FETCH__MAX_REDIRECTS", "3")
+	t.Setenv("CONTENT__FETCH__USER_AGENT", "custom-agent/2.0")
+	t.Setenv("CONTENT__FETCH__DENY_DOMAINS", "example.org, internal.example.com")
+	t.Setenv("CONTENT__FETCH__DENY_CIDRS", "203.0.113.0/24,2001:db8::/32")
+	t.Setenv("CONTENT__EXTRACT__BACKENDS", "goose,readability")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.Content.Fetch.Timeout != 15*time.Second {
+		t.Fatalf("unexpected fetch timeout: %s", cfg.Content.Fetch.Timeout)
+	}
+	if cfg.Content.Fetch.MaxBodyBytes != 5242880 {
+		t.Fatalf("unexpected fetch max body bytes: %d", cfg.Content.Fetch.MaxBodyBytes)
+	}
+	if cfg.Content.Fetch.MaxRedirects != 3 {
+		t.Fatalf("unexpected fetch max redirects: %d", cfg.Content.Fetch.MaxRedirects)
+	}
+	if cfg.Content.Fetch.UserAgent != "custom-agent/2.0" {
+		t.Fatalf("unexpected user agent: %q", cfg.Content.Fetch.UserAgent)
+	}
+	wantDomains := []string{"example.org", "internal.example.com"}
+	if !slices.Equal(cfg.Content.Fetch.DenyDomains, wantDomains) {
+		t.Fatalf("unexpected deny domains: %v", cfg.Content.Fetch.DenyDomains)
+	}
+	wantCIDRs := []string{"203.0.113.0/24", "2001:db8::/32"}
+	if !slices.Equal(cfg.Content.Fetch.DenyCIDRs, wantCIDRs) {
+		t.Fatalf("unexpected deny CIDRs: %v", cfg.Content.Fetch.DenyCIDRs)
+	}
+	wantBackends := []string{"goose", "readability"}
+	if !slices.Equal(cfg.Content.Extract.Backends, wantBackends) {
+		t.Fatalf("unexpected backends: %v", cfg.Content.Extract.Backends)
+	}
+}
+
+func TestLoadRejectsInvalidContentConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{
+			name: "invalid deny cidr",
+			env:  map[string]string{"CONTENT__FETCH__DENY_CIDRS": "203.0.113.0/24,not-a-cidr"},
+		},
+		{
+			name: "unknown backend",
+			env:  map[string]string{"CONTENT__EXTRACT__BACKENDS": "readability,unknown"},
+		},
+		{
+			name: "zero max redirects",
+			env:  map[string]string{"CONTENT__FETCH__MAX_REDIRECTS": "0"},
+		},
+		{
+			name: "negative max body bytes",
+			env:  map[string]string{"CONTENT__FETCH__MAX_BODY_BYTES": "-1"},
+		},
+		{
+			name: "zero timeout",
+			env:  map[string]string{"CONTENT__FETCH__TIMEOUT": "0s"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected load to fail for %s", tc.name)
+			}
+		})
+	}
+}
+
+func TestContentConfigValidateAcceptsValidValues(t *testing.T) {
+	cfg := ContentConfig{
+		Fetch: ContentFetchConfig{
+			Timeout:      10 * time.Second,
+			MaxBodyBytes: 2 << 20,
+			MaxRedirects: 5,
+			DenyDomains:  []string{"example.org"},
+			DenyCIDRs:    []string{"203.0.113.0/24"},
+		},
+		Extract: ContentExtractConfig{
+			Backends: []string{ExtractionBackendReadability},
+		},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected validation to pass, got %v", err)
+	}
+}
+
+func TestContentConfigValidateRejectsEmptyBackends(t *testing.T) {
+	// The zero-value struct has no backends; env cannot express this (blank
+	// values mean "unset" and keep the defaults), so it is validated on the
+	// struct level.
+	cfg := ContentConfig{
+		Fetch: ContentFetchConfig{
+			Timeout:      10 * time.Second,
+			MaxBodyBytes: 2 << 20,
+			MaxRedirects: 5,
+		},
+	}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected empty backend list to fail validation")
 	}
 }
