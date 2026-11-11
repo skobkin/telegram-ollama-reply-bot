@@ -90,7 +90,7 @@ func TestApplyLogsEachMigrationAtInfo(t *testing.T) {
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "msg=\"applying sqlite migration\"") || !strings.Contains(output, "name=bootstrap_admin_config") || !strings.Contains(output, "name=add_chat_language_and_gender") || !strings.Contains(output, "name=add_reminders") || !strings.Contains(output, "name=make_tools_mandatory_for_chat") || !strings.Contains(output, "name=rename_chat_alias_to_character_name") {
+	if !strings.Contains(output, "msg=\"applying sqlite migration\"") || !strings.Contains(output, "name=bootstrap_admin_config") || !strings.Contains(output, "name=add_chat_language_and_gender") || !strings.Contains(output, "name=add_reminders") || !strings.Contains(output, "name=make_tools_mandatory_for_chat") || !strings.Contains(output, "name=rename_chat_alias_to_character_name") || !strings.Contains(output, "name=refresh_chat_prompt_image_section") {
 		t.Fatalf("expected migration log output, got %q", output)
 	}
 }
@@ -129,6 +129,43 @@ WHERE scope_type = 'global' AND scope_id = 0 AND feature = 'chat'
 	}
 	if body != llm.DefaultChatPromptTemplate {
 		t.Fatalf("expected upgraded default chat prompt")
+	}
+}
+
+func TestApplyRefreshesStaleImageSectionChatPrompt(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", "file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	for _, migration := range schemaMigrations[:9] {
+		if err := applyMigration(ctx, db, migration, nil); err != nil {
+			t.Fatalf("apply migration %s: %v", migration.name, err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+UPDATE prompt_templates
+SET template_text = ?
+WHERE scope_type = 'global' AND scope_id = 0 AND feature = 'chat'
+`, llm.OldImageSectionChatPromptTemplate); err != nil {
+		t.Fatalf("set stale default chat prompt: %v", err)
+	}
+
+	if err := Apply(ctx, db, nil); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	var body string
+	if err := db.QueryRowContext(ctx, `
+SELECT template_text FROM prompt_templates
+WHERE scope_type = 'global' AND scope_id = 0 AND feature = 'chat'
+`).Scan(&body); err != nil {
+		t.Fatalf("read chat prompt: %v", err)
+	}
+	if body != llm.DefaultChatPromptTemplate {
+		t.Fatalf("expected refreshed default chat prompt")
 	}
 }
 
