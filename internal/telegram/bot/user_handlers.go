@@ -56,7 +56,15 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 		return nil
 	}
 
-	if article.Text == "" {
+	// Markdown is the preferred content: it preserves the article structure
+	// (headings, lists, links, tables) for the summarization model. Plain
+	// text is the fallback for pages extracted without usable structure.
+	content := article.Markdown
+	if content == "" {
+		content = article.Text
+	}
+
+	if content == "" {
 		logger.Warn("article text is empty", "url", url)
 		sentry.CaptureMessage("Article text is empty")
 		_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(chatID, "No text extracted from the article. This resource is not supported at the moment.")))
@@ -72,7 +80,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 		defer cancel()
 
 		var llmErr error
-		summarizeReply, summarizeUsage, llmErr = b.llm.Summarize(llmCtx, llm.PromptScope{ChatID: message.Chat.ID}, article.Text, additionalInstructions)
+		summarizeReply, summarizeUsage, llmErr = b.llm.Summarize(llmCtx, llm.PromptScope{ChatID: message.Chat.ID}, content, additionalInstructions)
 
 		return llmErr
 	})

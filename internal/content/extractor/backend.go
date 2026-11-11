@@ -1,0 +1,68 @@
+package extractor
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+
+	"telegram-ollama-reply-bot/internal/config"
+	"telegram-ollama-reply-bot/internal/content/fetch"
+)
+
+// Backend is one extraction engine: a CPU-only pass over an already-fetched
+// page. Backends never perform network IO — the shared fetcher (with its SSRF
+// policy) is the only network boundary.
+type Backend interface {
+	// Name identifies the backend in configuration and logs.
+	Name() string
+	// Extract parses the page and returns the raw content candidates.
+	Extract(ctx context.Context, page *fetch.Page) (Content, error)
+}
+
+// Content is a backend's raw extraction result before pipeline selection.
+// Text and HTML are two renderings of the same content: Text is what
+// consumers historically received, HTML keeps structure (headings, lists,
+// links, tables, code) and is the source for Markdown rendering.
+type Content struct {
+	Title string
+	Text  string
+	HTML  string
+}
+
+// nonEmpty reports whether the content carries anything usable.
+func (c Content) nonEmpty() bool {
+	return c.Text != "" || c.HTML != ""
+}
+
+// NewBackends builds the extraction backends for the configured names, in
+// order. Unknown names are an error (config validation normally catches this
+// earlier; the check here keeps construction total).
+func NewBackends(names []string, logger *slog.Logger) ([]Backend, error) {
+	if logger == nil {
+		logger = slog.Default().With("pkg", "content/extractor")
+	}
+
+	backends := make([]Backend, 0, len(names))
+	for _, name := range names {
+		backend, err := newBackend(name, logger.With("backend", name))
+		if err != nil {
+			return nil, err
+		}
+		backends = append(backends, backend)
+	}
+
+	return backends, nil
+}
+
+func newBackend(name string, logger *slog.Logger) (Backend, error) {
+	switch name {
+	case config.ExtractionBackendReadability:
+		return NewReadabilityExtractor(logger), nil
+	case config.ExtractionBackendTrafilatura:
+		return NewTrafilaturaExtractor(logger), nil
+	case config.ExtractionBackendGoose:
+		return NewGoOseExtractor(logger), nil
+	default:
+		return nil, fmt.Errorf("unknown extraction backend %q", name)
+	}
+}

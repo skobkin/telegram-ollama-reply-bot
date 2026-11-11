@@ -7,7 +7,7 @@
 ## Functionality
 
 - Context-dependent dialogue in chats
-- Summarization of articles by provided link
+- Summarization of articles by provided link (SSRF-protected fetching, quality-scored extraction backends, Markdown output)
 - Image recognition and description
 - Tool-assisted free-form chat with
   - URL retrieval
@@ -115,7 +115,7 @@ Ordinary chat replies always use the tool-capable chat workflow. `LLM__FEATURES_
 - `get_current_time` for time-sensitive reasoning and schedule anchoring
 - `datetime_math` for exact datetime diff, shift, weekday, and timezone conversion
 - `datetime_format` for compact user-facing timestamp formatting
-- `fetch_url_content` for explicit link-analysis requests in free-form chat
+- `fetch_url_content` for explicit link-analysis requests in free-form chat (returns the article as Markdown when structure is available)
 - `list_recent_images` for identifying recent image-bearing messages by `message_id` in the current chat/topic (while image recognition is enabled)
 - `analyze_image` for re-analyzing one of those images under the model's own focused prompt (while image recognition is enabled; each call is a paid recognition request)
 - `search_history` for indexed keyword and fuzzy full in-memory history lookup in the current chat/topic

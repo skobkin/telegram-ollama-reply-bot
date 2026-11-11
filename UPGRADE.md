@@ -32,6 +32,34 @@ SSRF-hardened fetcher instead of each extraction backend performing its own HTTP
 - The GoOse fallback no longer spawns an abandoned goroutine on timeout (a leak on every
   timed-out extraction).
 
+### Extraction pipeline, quality gating, and Markdown output (breaking)
+
+Extraction is now a configurable pipeline (`CONTENT__EXTRACT__BACKENDS`, default
+`readability,trafilatura,goose`) run over one fetched page per request, replacing the fixed
+"readability primary, GoOse fallback" pair.
+
+- **Breaking**: `/summarize` and `fetch_url_content` now feed the model Markdown rendered from
+  the winning extraction (headings, lists, links, tables, code preserved; relative links
+  resolved against the final URL) instead of plain text. Summaries of structured articles
+  change in character; the plain text rendering is kept as fallback and remains available on
+  the result.
+- A lightweight quality gate replaces "any non-empty text is success": results dominated by
+  navigation/link boilerplate fall through to the next backend; the best-scoring non-empty
+  result is still delivered as a rescue when nothing passes, and legitimately short articles
+  are never rejected on length alone.
+- The readability backend now runs on
+  [go-readabilityV2](https://github.com/markusmobius/go-readabilityV2) (the same
+  mozilla/readability lineage as the previous Readeck package, tracked against its v2.1.2).
+- The new `trafilatura` backend ([go-trafilatura](https://github.com/markusmobius/go-trafilatura))
+  adds the strongest extractor in upstream quality benchmarks with its internal fallback
+  engines disabled (the pipeline itself is the fallback chain).
+- `fetch_url_content` keeps its `text` field name and 2600-rune truncation; the content it
+  carries is Markdown when available.
+- Fixture benchmarks show GoOse degrading badly on long articles (seconds of CPU and gigabytes
+  of allocations on a 142 KB page, versus tens of milliseconds for readability and
+  trafilatura). Keep it last in `CONTENT__EXTRACT__BACKENDS`, or drop it, unless your article
+  set is small-page-heavy; a backend research follow-up tracks the long-term replacement.
+
 ## 0.23.0 (2026-11-11) — changes since 0.22.1 (breaking)
 
 All sections below, up to and including the Koanf migration, ship in 0.23.0 and break compatibility

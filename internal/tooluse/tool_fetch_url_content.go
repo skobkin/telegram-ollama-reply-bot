@@ -24,6 +24,15 @@ func (r *Runtime) fetchURLContent(ctx context.Context, callCtx CallContext, args
 		return toolResult{}, err
 	}
 
+	// The text field carries the Markdown rendering when available: it
+	// preserves article structure within the same budget and field name the
+	// model already knows. Plain text is the fallback.
+	content := article.Markdown
+	if content == "" {
+		content = article.Text
+	}
+	content = strings.TrimSpace(content)
+
 	result := toolResult{
 		Status:  "ok",
 		Summary: "URL content fetched",
@@ -32,14 +41,14 @@ func (r *Runtime) fetchURLContent(ctx context.Context, callCtx CallContext, args
 			"topic_id":    callCtx.Scope.TopicID,
 			"url":         article.URL,
 			"title":       article.Title,
-			"text":        truncateUTF8(strings.TrimSpace(article.Text), fetchURLContentTextCharLimit),
+			"text":        truncateUTF8(content, fetchURLContentTextCharLimit),
 			"extractedAt": time.Now().UTC().Format(time.RFC3339),
 		},
 	}
 	logToolResult(callCtx, result,
 		"url", article.URL,
 		"title", article.Title,
-		"text_length", len(strings.TrimSpace(article.Text)),
+		"text_length", len(content),
 	)
 
 	return result, nil

@@ -5,16 +5,19 @@ import (
 	"context"
 	"log/slog"
 	nurl "net/url"
+
 	"telegram-ollama-reply-bot/internal/content/fetch"
 	"telegram-ollama-reply-bot/internal/logging"
 
-	readability "codeberg.org/readeck/go-readability/v2"
 	"github.com/getsentry/sentry-go"
+	readability "github.com/markusmobius/go-readabilityV2"
 )
 
-// ReadabilityExtractor is the primary extraction backend. It parses the
-// fetched page with the Readeck readability implementation (the fetching
-// happens upstream, in the shared policy fetcher).
+// ReadabilityExtractor extracts article content with go-readabilityV2, the
+// core-only fork of the Readeck readability implementation (the same
+// mozilla/readability lineage as before). Fetching happens upstream in the
+// shared policy fetcher; each call parses its own copy of the page, so
+// concurrent extractions are safe.
 type ReadabilityExtractor struct {
 	logger *slog.Logger
 }
@@ -23,11 +26,11 @@ func NewReadabilityExtractor(logger *slog.Logger) *ReadabilityExtractor {
 	return &ReadabilityExtractor{logger: logger}
 }
 
-func (e *ReadabilityExtractor) name() string {
+func (e *ReadabilityExtractor) Name() string {
 	return "readability"
 }
 
-func (e *ReadabilityExtractor) extractPage(ctx context.Context, page *fetch.Page) (Article, error) {
+func (e *ReadabilityExtractor) Extract(ctx context.Context, page *fetch.Page) (Content, error) {
 	logger := logging.FromContext(ctx, e.logger)
 	logger.Debug("extracting article from fetched page", "url", page.URL)
 
@@ -44,7 +47,7 @@ func (e *ReadabilityExtractor) extractPage(ctx context.Context, page *fetch.Page
 		logger.Warn("extraction failed", "url", page.URL, "error", err)
 		sentry.CaptureException(err)
 
-		return Article{}, ErrExtractFailed
+		return Content{}, ErrExtractFailed
 	}
 
 	var text bytes.Buffer
@@ -52,14 +55,20 @@ func (e *ReadabilityExtractor) extractPage(ctx context.Context, page *fetch.Page
 		logger.Warn("extracted article text rendering failed", "url", page.URL, "error", err)
 		sentry.CaptureException(err)
 
-		return Article{}, ErrExtractFailed
+		return Content{}, ErrExtractFailed
+	}
+
+	var html bytes.Buffer
+	if err := article.RenderHTML(&html); err != nil {
+		// Text is still usable; structure is optional for this backend.
+		logger.Debug("extracted article html rendering failed", "url", page.URL, "error", err)
 	}
 
 	logger.Debug("article extracted", "url", page.URL, "text_length", len(text.String()))
 
-	return Article{
+	return Content{
 		Title: article.Title(),
 		Text:  text.String(),
-		URL:   page.URL,
+		HTML:  html.String(),
 	}, nil
 }

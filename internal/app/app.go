@@ -232,7 +232,15 @@ func Run(ctx context.Context) error {
 		return err
 	}
 
-	ext := extractor.NewExtractor(contentFetcher, logManager.Logger("content/extractor"))
+	extractBackends, err := extractor.NewBackends(cfg.Content.Extract.Backends, logManager.Logger("content/extractor"))
+	if err != nil {
+		logger.Error("failed to initialize extraction backends", "error", err)
+		sentry.CaptureException(err)
+
+		return err
+	}
+
+	ext := extractor.NewPipeline(contentFetcher, extractBackends, logManager.Logger("content/extractor"))
 	searcher, err := search.NewFromConfig(*cfg, httpclient.New(), logManager.Logger("content/search"))
 	if err != nil {
 		logger.Error("failed to initialize search capability", "error", err)

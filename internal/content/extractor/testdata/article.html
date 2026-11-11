@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>How container runtimes actually work | Example Engineering</title>
+<meta name="author" content="Jordan Lee">
+<meta name="description" content="A guided tour through namespaces, cgroups, and the runtime shim layer.">
+</head>
+<body>
+<header class="site-nav">
+<nav>
+<a href="/">Home</a>
+<a href="/blog">Blog</a>
+<a href="/docs">Docs</a>
+<a href="/about">About</a>
+<a href="/jobs">Jobs</a>
+<a href="/contact">Contact</a>
+</nav>
+</header>
+<main>
+<article>
+<h1>How container runtimes actually work</h1>
+<p class="byline">By Jordan Lee · 8 min read</p>
+<p>When you run <code>docker run alpine sh</code>, a surprising amount of machinery
+springs into action. The container image is unpacked, a set of kernel
+primitives is assembled around the new process, and only then does your
+shell start.</p>
+<h2>Namespaces: the illusion of isolation</h2>
+<p>Namespaces give a process its own view of the system: its own process tree,
+its own network interfaces, its own mount table. The kernel exposes roughly
+eight namespace types, and a runtime picks the ones it needs.</p>
+<p>The <a href="/docs/namespaces">namespace documentation</a> walks through
+each type in detail. The two most visible are the PID namespace, which makes
+your container process think it is PID&nbsp;1, and the network namespace,
+which hands the container a private stack.</p>
+<h2>Cgroups: the accounting layer</h2>
+<p>Control groups bound what a container may consume: CPU shares, memory
+ceilings, IO budgets. Without them, one noisy container starves its
+neighbors.</p>
+<ul>
+<li>CPU bandwidth via <code>cpu.max</code></li>
+<li>Memory limits via <code>memory.max</code></li>
+<li>Device throughput via the IO controller</li>
+</ul>
+<h2>The shim layer</h2>
+<p>High-level runtimes do not talk to the kernel directly. They hand a fully
+specified bundle to a low-level runtime such as <code>runc</code>, which
+performs the actual <code>clone</code> and <code>execve</code> dance.</p>
+<p>The split matters for operations: the shim keeps the container's stdio
+flowing even when the daemon restarts. The relevant RFC-style
+<a href="https://example.com/specs/runtime">runtime specification</a> spells
+out the bundle format.</p>
+<h3>Quick reference</h3>
+<table>
+<tr><th>Layer</th><th>Component</th><th>Role</th></tr>
+<tr><td>High level</td><td>containerd</td><td>Image and lifecycle management</td></tr>
+<tr><td>Low level</td><td>runc</td><td>Namespace and cgroup setup</td></tr>
+<tr><td>Kernel</td><td>namespaces + cgroups</td><td>Isolation primitives</td></tr>
+</table>
+<h2>Takeaways</h2>
+<p>A container is not a virtual machine. It is an ordinary Linux process
+wrapped in kernel-enforced boundaries, and every tool in the ecosystem is a
+different convenience layer over those same primitives.</p>
+<p>If you want to go deeper, the <a href="https://example.com/series/containers">rest of
+the series</a> covers networking, storage, and security.</p>
+</article>
+</main>
+<footer class="site-footer">
+<p>© 2026 Example Engineering · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p>
+</footer>
+</body>
+</html>
