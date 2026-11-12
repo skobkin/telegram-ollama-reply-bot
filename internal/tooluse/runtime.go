@@ -124,6 +124,7 @@ func (r *Runtime) AttachImageAnalyzer(a ImageAnalyzer) {
 		Parameters:       json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":10,"description":"Maximum number of images to return."}},"additionalProperties":false}`),
 		InvocationPolicy: InvocationPolicyDiscretionary,
 		ResultCharBudget: listImagesResultCharBudget,
+		Visibility:       VisibilityStandard,
 		Handler:          r.listRecentImages,
 	})
 	r.registry.Register(Definition{
@@ -132,6 +133,7 @@ func (r *Runtime) AttachImageAnalyzer(a ImageAnalyzer) {
 		Parameters:       json.RawMessage(`{"type":"object","properties":{"message_id":{"type":"integer","minimum":1,"description":"Telegram message_id of the image-bearing message, from tool results."},"prompt":{"type":"string","minLength":1,"maxLength":4000,"description":"Focused analysis prompt for this image, e.g. 'read the error text in the screenshot'."}},"required":["message_id","prompt"],"additionalProperties":false}`),
 		InvocationPolicy: InvocationPolicyDiscretionaryPaid,
 		ResultCharBudget: analyzeImageResultCharBudget,
+		Visibility:       VisibilityStandard,
 		Handler:          r.analyzeImage,
 	})
 }

@@ -241,3 +241,63 @@ func TestRegistryRegisterDoesNotBreakLookupByUnknownName(t *testing.T) {
 		t.Fatalf("expected lookup of unknown name to fail")
 	}
 }
+
+func TestRegistryClassifiesVisibilityForAllBuiltins(t *testing.T) {
+	runtime := newRegistryForTest(t)
+
+	internalWant := map[string]bool{
+		"get_conversation_summary":   true,
+		"get_history_bounds":         true,
+		"get_message_thread_context": true,
+		"get_chat_activity_window":   true,
+	}
+
+	definitions := runtime.registry.DefaultDefinitions()
+	if len(definitions) == 0 {
+		t.Fatal("no default definitions")
+	}
+
+	for _, def := range definitions {
+		if def.Visibility == "" {
+			t.Fatalf("tool %s has no explicit Visibility", def.Name)
+		}
+		if def.Visibility != VisibilityInternal && def.Visibility != VisibilityStandard {
+			t.Fatalf("tool %s has unknown Visibility %q", def.Name, def.Visibility)
+		}
+
+		isInternal := def.EffectiveVisibility() == VisibilityInternal
+		if internalWant[def.Name] && !isInternal {
+			t.Fatalf("tool %s must be internal, got %s", def.Name, def.Visibility)
+		}
+		if !internalWant[def.Name] && isInternal {
+			t.Fatalf("tool %s must be standard, got %s", def.Name, def.Visibility)
+		}
+	}
+
+	// User-facing lookups over the bot's own memory stay visible in tools mode.
+	for _, name := range []string{"search_history", "list_recent_links", "fetch_url_content", "get_current_time"} {
+		def, ok := runtime.registry.Lookup(name)
+		if !ok {
+			t.Fatalf("expected builtin %s to be registered", name)
+		}
+		if def.EffectiveVisibility() != VisibilityStandard {
+			t.Fatalf("tool %s must be standard, got %s", name, def.Visibility)
+		}
+	}
+
+	if runtime.HasTool("search_web") {
+		def, _ := runtime.registry.Lookup("search_web")
+		if def.EffectiveVisibility() != VisibilityStandard {
+			t.Fatalf("search_web must be standard, got %s", def.Visibility)
+		}
+	}
+}
+
+func TestEffectiveVisibilityDefaultsToStandard(t *testing.T) {
+	if got := (Definition{}).EffectiveVisibility(); got != VisibilityStandard {
+		t.Fatalf("empty visibility resolved to %q, want standard", got)
+	}
+	if got := (Definition{Visibility: VisibilityInternal}).EffectiveVisibility(); got != VisibilityInternal {
+		t.Fatalf("explicit internal resolved to %q, want internal", got)
+	}
+}

@@ -270,6 +270,7 @@ func translateDefinition(serverName string, server config.MCPServerConfig, tool 
 		InvocationPolicy: resolveInvocationPolicy(server, annotations),
 		ResultCharBudget: resolveResultCharBudget(server),
 		SideEffecting:    resolveSideEffecting(server, annotations),
+		Visibility:       tooluse.VisibilityStandard,
 	}, nil
 }
 
