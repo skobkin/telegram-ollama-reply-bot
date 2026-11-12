@@ -44,6 +44,19 @@ type Message struct {
 	MessageID     int
 	FromID        int64
 	CreatedAt     time.Time
+	Reactions     []Reaction
+}
+
+// Reaction is a single user's reaction on one of the bot's own messages.
+// Only reactions on bot messages are observable by bots, and Telegram
+// reports each user's current reaction set in full, so reactions are
+// stored per user and replaced wholesale on every update.
+type Reaction struct {
+	UserID    int64
+	Name      string
+	Username  string
+	Emoji     string
+	UpdatedAt time.Time
 }
 
 type ConversationSnapshot struct {
@@ -60,6 +73,14 @@ type ConversationStore interface {
 	Snapshot(scope ConversationScope) ConversationSnapshot
 	Search(scope ConversationScope, query HistorySearchQuery) []HistorySearchMatch
 	SetEarlierSummary(scope ConversationScope, text string, summaryMessageCount int)
+	// SetMessageReactions atomically replaces all reactions of a single user
+	// on one of the bot's own messages (IsMe) identified by its Telegram
+	// message ID within the chat. Reaction updates carry no topic, so all
+	// topic streams of the chat are searched; Telegram message IDs are
+	// unique per chat. An empty reactions slice removes that user's
+	// reactions. Returns false when the target message is not in history
+	// (restart, trim, reset, or a reaction on a non-bot message).
+	SetMessageReactions(chatID int64, messageID int, userID int64, reactions []Reaction) bool
 	Reset(scope ConversationScope)
 	ResetChat(chatID int64)
 }

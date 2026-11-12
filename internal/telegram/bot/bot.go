@@ -33,6 +33,11 @@ var (
 
 const TelegramCharLimit = 4000
 
+// longPollingTimeoutSeconds is the explicit GetUpdates long-polling timeout
+// required when update params are non-nil (telego's default applies only to
+// nil params).
+const longPollingTimeoutSeconds = 8
+
 // ImageRecognitionSettings carries the image-recognition switch and the
 // client-side download/processing bound into the bot.
 type ImageRecognitionSettings struct {
@@ -166,7 +171,15 @@ func (b *Bot) Run() error {
 		Level:    sentry.LevelInfo,
 	})
 
-	updates, err := b.api.UpdatesViaLongPolling(b.ctx, nil)
+	// The update set is enumerated explicitly: with no allowed_updates list
+	// Telegram uses its default set, which excludes message_reaction. Only
+	// consumed types are requested — anything else was already ignored by
+	// the route table. With non-nil params the timeout must be set
+	// explicitly (telego applies its default only to nil params).
+	updates, err := b.api.UpdatesViaLongPolling(b.ctx, &t.GetUpdatesParams{
+		Timeout:        longPollingTimeoutSeconds,
+		AllowedUpdates: []string{t.MessageUpdates, t.CallbackQueryUpdates, t.MessageReactionUpdates},
+	})
 	if err != nil {
 		logger.Error("cannot get updates channel", "error", err)
 		sentry.CaptureException(err)
@@ -246,6 +259,11 @@ func (b *Bot) registerRoutes(bh *th.BotHandler) {
 	// Ephemeral state.
 	bh.Use(b.chatHistory)
 	bh.Use(b.chatTypeStatsCounter)
+
+	// Reactions on the bot's own messages. Reaction updates carry no Message
+	// payload, so the shared middlewares above all no-op for them (including
+	// the access gate) — the handler enforces the gate itself.
+	bh.HandleMessageReaction(b.messageReactionHandler)
 
 	// User-facing commands.
 	bh.HandleMessage(b.startHandler, th.And(commandForMe, th.CommandEqual("start")))
@@ -389,7 +407,7 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 		return
 	}
 
-	err = b.sendRichMarkdownReply(baseCtx, message, llmReply)
+	sent, err := b.sendRichMarkdownReply(baseCtx, message, llmReply)
 	if err != nil {
 		logger.Error("cannot send reply message", "error", err, "reply_length", len(llmReply))
 		sentry.CaptureException(err)
@@ -399,7 +417,12 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 		return
 	}
 
-	b.saveBotReplyToHistory(baseCtx, message, llmReply)
+	replyMessageID := 0
+	if sent != nil {
+		replyMessageID = sent.MessageID
+	}
+
+	b.saveBotReplyToHistory(baseCtx, message, llmReply, replyMessageID)
 }
 
 func (b *Bot) replyTriggerKind(message t.Message) llmcontext.TriggerKind {

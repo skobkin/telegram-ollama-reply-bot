@@ -9,6 +9,7 @@
 - Context-dependent dialogue in chats
 - Summarization of articles by provided link (SSRF-protected fetching, quality-scored extraction backends, Markdown output)
 - Optional per-chat auto-summarizer mode: linked long-form articles in ordinary chat messages are summarized automatically
+- Reactions to the bot's messages are recorded in conversation history and shown to the model as per-user feedback
 - Image recognition and description
 - Tool-assisted free-form chat with
   - URL retrieval
@@ -229,6 +230,22 @@ fetches the article and posts an automatic summary as a reply to the linking mes
 - **Telegram privacy mode matters**: with BotFather privacy mode enabled, the bot never receives ordinary group
   messages at all, so the mode silently no-ops in groups. Disable privacy mode for the bot (or promote it to a group
   admin) for auto-summarizer use.
+
+### Reactions on bot replies
+
+The bot watches for reactions to its own messages and stores them on the conversation history entry, so later replies
+can take the feedback into account. The next model request sees each bot message that carries reactions with reactor
+names, e.g. `[reactions: 👍 Alice, 👎 Bob]`, and the same rendering feeds history summaries, so the signal survives
+compaction.
+
+- Receive-only: the bot never sets reactions itself.
+- A fixed set of common emoji is tracked (chosen for model comprehension); other simple emoji, premium custom emoji,
+  and paid reactions are ignored. The set is not configurable.
+- **Group chats require the bot to be an administrator** — Telegram delivers per-user reaction updates to admin bots
+  only; without that, reactions are silently unavailable. Private chats work as-is. Chats blocked by the whitelist or
+  DM restrictions are ignored for reactions too.
+- Reaction changes and removals are applied per user; after a restart, a history reset, or history trimming, older
+  replies can no longer be matched and such reactions are dropped (logged at DEBUG level).
 
 ### Admin UI
 

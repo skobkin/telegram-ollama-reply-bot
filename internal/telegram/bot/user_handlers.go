@@ -112,14 +112,20 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 
 	// The footer is passed as a reserved suffix so cropping on either the
 	// rich or the legacy fallback path cannot drop the source link.
-	err = b.sendRichMarkdownReplyWithSuffix(ctx.Context(), message, summarizeReply, footer)
+	sent, err := b.sendRichMarkdownReplyWithSuffix(ctx.Context(), message, summarizeReply, footer)
 	if err != nil {
 		logger.Error("cannot send summarize reply", "error", err, "reply_length", len(replyMarkdown))
 		sentry.CaptureException(err)
 		b.trySendReplyError(ctx.Context(), message)
 	}
 
-	b.saveBotReplyToHistory(ctx.Context(), message, replyMarkdown)
+	// On send failure the reply is still saved to history (existing
+	// behavior), without a message ID: nothing was delivered to react to.
+	replyMessageID := 0
+	if sent != nil {
+		replyMessageID = sent.MessageID
+	}
+	b.saveBotReplyToHistory(ctx.Context(), message, replyMarkdown, replyMessageID)
 
 	return nil
 }
@@ -186,7 +192,7 @@ func (b *Bot) statsHandler(ctx *th.Context, message t.Message) error {
 	b.sendTyping(ctx.Context(), chatID)
 
 	statsJSON := "```json\n" + b.stats.String() + "\n```"
-	err := b.sendRichMarkdownReply(ctx.Context(), message, "Current bot stats:\n"+statsJSON)
+	_, err := b.sendRichMarkdownReply(ctx.Context(), message, "Current bot stats:\n"+statsJSON)
 	if err != nil {
 		logger.Error("cannot send stats message", "error", err)
 		sentry.CaptureException(err)

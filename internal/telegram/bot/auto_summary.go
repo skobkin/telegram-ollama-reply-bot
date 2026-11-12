@@ -277,13 +277,18 @@ func (b *Bot) autoSummarizeLink(baseCtx context.Context, logger *slog.Logger, me
 		}
 
 		footer := "\n\n[src](" + b.sanitizer.EscapeURL(article.URL) + ")"
-		if err := b.sendRichMarkdownReplyWithSuffix(ctx, message, summary, footer); err != nil {
+		sent, err := b.sendRichMarkdownReplyWithSuffix(ctx, message, summary, footer)
+		if err != nil {
 			logger.Warn("auto-summary send failed", "chat_id", chatID, "error", err, "url_host", autoSummaryURLHost(url))
 			sentry.CaptureException(err)
 
 			return nil
 		}
-		b.saveBotReplyToHistory(ctx, message, summary+footer)
+		replyMessageID := 0
+		if sent != nil {
+			replyMessageID = sent.MessageID
+		}
+		b.saveBotReplyToHistory(ctx, message, summary+footer, replyMessageID)
 		logger.Info("auto-summary posted",
 			"chat_id", chatID, "url_host", autoSummaryURLHost(url),
 			"text_length", contentLength, "summary_length", len([]rune(summary)))

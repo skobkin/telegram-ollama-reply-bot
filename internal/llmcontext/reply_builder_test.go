@@ -235,3 +235,47 @@ func TestReplyBuilderUsesUnsummarizedTailWhenSummaryExists(t *testing.T) {
 		t.Fatalf("unexpected second tail message: %q", got)
 	}
 }
+
+func TestAssistantMessagesRenderReactionsForModel(t *testing.T) {
+	t.Parallel()
+
+	message := state.Message{
+		Text: "here is the answer",
+		IsMe: true,
+		Reactions: []state.Reaction{
+			{UserID: 1, Name: "Alice", Emoji: "👍"},
+			{UserID: 2, Name: "", Username: "bob", Emoji: "👎"},
+			{UserID: 3, Name: "", Username: "", Emoji: "🔥"},
+		},
+	}
+
+	rendered := renderAssistantMessage(message)
+	if !strings.HasSuffix(rendered, "\n[reactions: 👍 Alice, 👎 @bob, 🔥 user #3]") {
+		t.Fatalf("expected reaction suffix with name fallbacks, got %q", rendered)
+	}
+}
+
+func TestPlainTextRenderingIncludesBotReactions(t *testing.T) {
+	t.Parallel()
+
+	text := RenderMessagesPlainText([]state.Message{
+		{IsMe: true, Text: "bot answer", Reactions: []state.Reaction{
+			{UserID: 7, Name: "Alice", Emoji: "👎"},
+		}},
+	})
+
+	if !strings.Contains(text, "👎 Alice") {
+		t.Fatalf("expected reactions to survive plain-text rendering for summaries, got %q", text)
+	}
+}
+
+func TestNoReactionsRendersNoSuffix(t *testing.T) {
+	t.Parallel()
+
+	if strings.Contains(renderAssistantMessage(state.Message{Text: "plain", IsMe: true}), "[reactions") {
+		t.Fatalf("no reaction suffix expected without reactions")
+	}
+	if strings.Contains(presentMessage(state.Message{Name: "A", Text: "x"}), "[reactions") {
+		t.Fatalf("no reaction suffix expected without reactions")
+	}
+}

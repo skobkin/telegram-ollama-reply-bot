@@ -33,8 +33,9 @@ func buildRichMessageParams(chatID t.ChatID, message t.Message, markdownText str
 // sendRichMarkdownReply sends raw markdown from the model as a Telegram rich
 // message (GitHub Flavored Markdown rendering). Over-length text is cropped to
 // RichMessageCharLimit. When the rich send fails, it falls back to the legacy
-// MarkdownV2 pipeline; it returns an error only when that fails too.
-func (b *Bot) sendRichMarkdownReply(ctx context.Context, message t.Message, rawMarkdown string) error {
+// MarkdownV2 pipeline; it returns an error only when that fails too. The
+// returned message is Telegram's copy of the sent message (nil on error).
+func (b *Bot) sendRichMarkdownReply(ctx context.Context, message t.Message, rawMarkdown string) (*t.Message, error) {
 	return b.sendRichMarkdownReplyWithSuffix(ctx, message, rawMarkdown, "")
 }
 
@@ -45,8 +46,9 @@ func (b *Bot) sendRichMarkdownReply(ctx context.Context, message t.Message, rawM
 // references, so nothing is rewritten pre-send; the MarkdownV2 fallback below
 // is the safety net when Telegram rejects a message. Both the rich crop and
 // the legacy fallback crop reserve room for the suffix so it always reaches
-// the wire.
-func (b *Bot) sendRichMarkdownReplyWithSuffix(ctx context.Context, message t.Message, rawMarkdown, suffix string) error {
+// the wire. The returned message comes from the pipeline that actually
+// delivered the text (nil on error).
+func (b *Bot) sendRichMarkdownReplyWithSuffix(ctx context.Context, message t.Message, rawMarkdown, suffix string) (*t.Message, error) {
 	logger := b.loggerFromContext(ctx)
 
 	body := rawMarkdown
@@ -56,9 +58,9 @@ func (b *Bot) sendRichMarkdownReplyWithSuffix(ctx context.Context, message t.Mes
 		body = cropped
 	}
 
-	_, err := b.api.SendRichMessage(ctx, buildRichMessageParams(tu.ID(message.Chat.ID), message, body+suffix))
+	sent, err := b.api.SendRichMessage(ctx, buildRichMessageParams(tu.ID(message.Chat.ID), message, body+suffix))
 	if err == nil {
-		return nil
+		return sent, nil
 	}
 
 	logger.Warn("cannot send rich message, falling back to MarkdownV2",
@@ -70,7 +72,7 @@ func (b *Bot) sendRichMarkdownReplyWithSuffix(ctx context.Context, message t.Mes
 // sendLegacyMarkdownV2 sends text (plus an optional reserved suffix appended
 // verbatim after cropping) through the legacy MarkdownV2 sanitizer pipeline
 // with the plain message character limit.
-func (b *Bot) sendLegacyMarkdownV2(ctx context.Context, message t.Message, text, suffix string) error {
+func (b *Bot) sendLegacyMarkdownV2(ctx context.Context, message t.Message, text, suffix string) (*t.Message, error) {
 	sanitized := b.sanitizer.Sanitize(text)
 
 	limit := TelegramCharLimit
@@ -83,8 +85,6 @@ func (b *Bot) sendLegacyMarkdownV2(ctx context.Context, message t.Message, text,
 		cropped = b.sanitizer.Sanitize(cropped)
 	}
 
-	_, err := b.api.SendMessage(ctx, b.reply(message,
+	return b.api.SendMessage(ctx, b.reply(message,
 		tu.Message(tu.ID(message.Chat.ID), cropped+suffix).WithParseMode(t.ModeMarkdownV2)))
-
-	return err
 }

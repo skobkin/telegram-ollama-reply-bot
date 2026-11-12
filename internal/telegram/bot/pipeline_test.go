@@ -50,7 +50,7 @@ func newFakeAPIServer(t *testing.T) *fakeAPIServer {
 		w.Header().Set("Content-Type", "application/json")
 
 		switch method {
-		case "sendMessage", "editMessageText":
+		case "sendMessage", "sendRichMessage", "editMessageText":
 			// Real message IDs so admin UI correlation flows work.
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":` +
 				strconv.FormatInt(fake.nextMessageID.Add(1), 10) + `}}`))

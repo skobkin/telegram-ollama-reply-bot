@@ -1,5 +1,21 @@
 # Upgrade Notes
 
+## 0.27.0 (unreleased) — changes since 0.26.0
+
+### Reactions to bot replies are recorded and shown to the model (#100)
+
+The bot now subscribes to `message_reaction` updates and stores reactions to its own replies on the
+conversation history entry; later model requests and history summaries include them with reactor names
+(`[reactions: 👍 Alice, 👎 Bob]`). Receive-only, fixed emoji set, no configuration.
+
+- The update stream is now requested explicitly (`message`, `callback_query`, `message_reaction`) instead of
+  Telegram's default set. Previously-delivered-but-ignored update types stop arriving; nothing in the old behavior is
+  lost, since no handler consumed them.
+- **Group chats**: Telegram delivers per-user reaction updates only to bots that are administrators in the chat.
+  Deployments where the bot is a plain group member silently see no reactions; private chats are unaffected.
+- Rollback is a plain redeploy of the old version: its long polling sends no `allowed_updates`, so Telegram returns to
+  the default delivery set.
+
 ## 0.26.0 (unreleased) — changes since 0.25.0
 
 ### Extraction gate tolerates reference-dense pages; backend order is re-ranked per page

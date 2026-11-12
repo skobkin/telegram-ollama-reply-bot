@@ -27,7 +27,7 @@ func (b *Bot) saveChatMessageToHistory(msg state.Message) {
 	}, msg)
 }
 
-func (b *Bot) saveBotReplyToHistory(ctx context.Context, replyTo t.Message, text string) {
+func (b *Bot) saveBotReplyToHistory(ctx context.Context, replyTo t.Message, text string, messageID int) {
 	scope := scopeFromMessage(replyTo)
 	b.loggerFromContext(ctx).Debug("saving bot reply to history", "chat_id", scope.ChatID, "topic_id", scope.TopicID, "reply_length", len(text))
 
@@ -43,6 +43,7 @@ func (b *Bot) saveBotReplyToHistory(ctx context.Context, replyTo t.Message, text
 		IsMe:      true,
 		ChatID:    scope.ChatID,
 		TopicID:   scope.TopicID,
+		MessageID: messageID,
 		CreatedAt: time.Now().UTC(),
 	}
 

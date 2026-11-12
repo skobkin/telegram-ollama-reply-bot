@@ -123,7 +123,7 @@ func TestSendRichMarkdownReply_Success(t *testing.T) {
 
 	message, text := richMessageTestInput()
 
-	err := b.sendRichMarkdownReply(context.Background(), message, text)
+	_, err := b.sendRichMarkdownReply(context.Background(), message, text)
 	if err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
@@ -164,7 +164,7 @@ func TestSendRichMarkdownReply_PassesDocumentedMarkupThrough(t *testing.T) {
 		"An example: `![icon](file.png)`\n" +
 		"````markdown\n```\n![icon](file.png)\n````"
 
-	err := b.sendRichMarkdownReply(context.Background(), message, text)
+	_, err := b.sendRichMarkdownReply(context.Background(), message, text)
 	if err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
@@ -189,7 +189,7 @@ func TestSendRichMarkdownReply_FallsBackToMarkdownV2(t *testing.T) {
 
 	message, text := richMessageTestInput()
 
-	err := b.sendRichMarkdownReply(context.Background(), message, text)
+	_, err := b.sendRichMarkdownReply(context.Background(), message, text)
 	if err != nil {
 		t.Fatalf("expected fallback success, got %v", err)
 	}
@@ -222,7 +222,7 @@ func TestSendRichMarkdownReply_BothFail(t *testing.T) {
 
 	message, text := richMessageTestInput()
 
-	err := b.sendRichMarkdownReply(context.Background(), message, text)
+	_, err := b.sendRichMarkdownReply(context.Background(), message, text)
 	if err == nil {
 		t.Fatalf("expected error when both sends fail")
 	}
@@ -243,7 +243,7 @@ func TestSendRichMarkdownReply_CropsOverLimit(t *testing.T) {
 	message := tg.Message{MessageID: 42, Chat: tg.Chat{ID: 100}}
 	text := strings.Repeat("word ", RichMessageCharLimit/3)
 
-	err := b.sendRichMarkdownReply(context.Background(), message, text)
+	_, err := b.sendRichMarkdownReply(context.Background(), message, text)
 	if err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
@@ -281,7 +281,7 @@ func TestSendRichMarkdownReply_CropsNoSpaceTextUsefully(t *testing.T) {
 	message := tg.Message{MessageID: 42, Chat: tg.Chat{ID: 100}}
 	text := strings.Repeat("漢", RichMessageCharLimit+1)
 
-	err := b.sendRichMarkdownReply(context.Background(), message, text)
+	_, err := b.sendRichMarkdownReply(context.Background(), message, text)
 	if err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
@@ -314,7 +314,7 @@ func TestSendRichMarkdownReplyWithSuffix_KeepsFooterOnRichPath(t *testing.T) {
 	body := strings.Repeat("word ", 10000)
 	footer := "\n\n[src](https://example.com/article)"
 
-	err := b.sendRichMarkdownReplyWithSuffix(context.Background(), message, body, footer)
+	_, err := b.sendRichMarkdownReplyWithSuffix(context.Background(), message, body, footer)
 	if err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
@@ -346,7 +346,7 @@ func TestSendRichMarkdownReplyWithSuffix_KeepsFooterOnLegacyFallback(t *testing.
 	body := strings.Repeat("word ", 10000)
 	footer := "\n\n[src](https://example.com/article)"
 
-	err := b.sendRichMarkdownReplyWithSuffix(context.Background(), message, body, footer)
+	_, err := b.sendRichMarkdownReplyWithSuffix(context.Background(), message, body, footer)
 	if err != nil {
 		t.Fatalf("expected fallback success, got %v", err)
 	}

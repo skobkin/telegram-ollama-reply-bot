@@ -2,6 +2,7 @@ package llmcontext
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"telegram-ollama-reply-bot/internal/llm"
@@ -204,8 +205,35 @@ func renderAssistantMessage(message state.Message) string {
 	}
 
 	sb.WriteString(message.Text)
+	sb.WriteString(renderReactionsSuffix(message.Reactions))
 
 	return sb.String()
+}
+
+// renderReactionsSuffix renders the feedback users left on a bot message so
+// the model can take it into account, e.g. "\n[reactions: 👍 Alice, 👎 Bob]".
+func renderReactionsSuffix(reactions []state.Reaction) string {
+	if len(reactions) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(reactions))
+	for _, reaction := range reactions {
+		parts = append(parts, reaction.Emoji+" "+reactionDisplayName(reaction))
+	}
+
+	return "\n[reactions: " + strings.Join(parts, ", ") + "]"
+}
+
+func reactionDisplayName(reaction state.Reaction) string {
+	if name := strings.TrimSpace(reaction.Name); name != "" {
+		return name
+	}
+	if reaction.Username != "" {
+		return "@" + reaction.Username
+	}
+
+	return fmt.Sprintf("user #%d", reaction.UserID)
 }
 
 func renderMessagePlainText(message state.Message) string {
@@ -244,6 +272,7 @@ func presentMessage(message state.Message) string {
 	}
 
 	sb.WriteString(message.Text)
+	sb.WriteString(renderReactionsSuffix(message.Reactions))
 
 	return sb.String()
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -18,6 +19,21 @@ import (
 // dmHistorySpy counts history appends without storing anything.
 type dmHistorySpy struct {
 	appended atomic.Int32
+
+	reactionMu    sync.Mutex
+	reactionCalls int
+	lastReaction  reactionRecord
+	// reactionFound is what SetMessageReactions reports; false by default so
+	// every reaction counts as unmapped unless a test opts in.
+	reactionFound bool
+}
+
+// reactionRecord captures one SetMessageReactions call.
+type reactionRecord struct {
+	chatID    int64
+	messageID int
+	userID    int64
+	reactions []state.Reaction
 }
 
 func (s *dmHistorySpy) AppendMessage(state.ConversationScope, state.Message) {
@@ -35,6 +51,30 @@ func (s *dmHistorySpy) Search(state.ConversationScope, state.HistorySearchQuery)
 func (s *dmHistorySpy) SetEarlierSummary(state.ConversationScope, string, int) {}
 func (s *dmHistorySpy) Reset(state.ConversationScope)                          {}
 func (s *dmHistorySpy) ResetChat(int64)                                        {}
+
+func (s *dmHistorySpy) SetMessageReactions(chatID int64, messageID int, userID int64, reactions []state.Reaction) bool {
+	s.reactionMu.Lock()
+	defer s.reactionMu.Unlock()
+
+	s.reactionCalls++
+	s.lastReaction = reactionRecord{chatID: chatID, messageID: messageID, userID: userID, reactions: reactions}
+
+	return s.reactionFound
+}
+
+func (s *dmHistorySpy) reactionCallCount() int {
+	s.reactionMu.Lock()
+	defer s.reactionMu.Unlock()
+
+	return s.reactionCalls
+}
+
+func (s *dmHistorySpy) lastReactionCall() reactionRecord {
+	s.reactionMu.Lock()
+	defer s.reactionMu.Unlock()
+
+	return s.lastReaction
+}
 
 // dmStatsSpy counts the request counters the middleware chain touches.
 type dmStatsSpy struct {

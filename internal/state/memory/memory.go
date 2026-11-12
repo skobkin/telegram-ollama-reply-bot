@@ -210,6 +210,57 @@ func (s *ConversationStore) SetEarlierSummary(scope state.ConversationScope, tex
 	s.budget.Set("conversation", s.totalBytes)
 }
 
+func (s *ConversationStore) SetMessageReactions(chatID int64, messageID int, userID int64, reactions []state.Reaction) bool {
+	if messageID <= 0 {
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for key := range s.chatIndex[chatID] {
+		bucket, ok := s.streams[key]
+		if !ok {
+			continue
+		}
+
+		// Telegram message IDs are unique per chat, so scanning backwards finds
+		// the target fastest: reactions overwhelmingly land on recent replies.
+		for i := len(bucket.messages) - 1; i >= 0; i-- {
+			msg := &bucket.messages[i]
+			if msg.MessageID != messageID || !msg.IsMe {
+				continue
+			}
+
+			now := time.Now().UTC()
+			kept := make([]state.Reaction, 0, len(msg.Reactions)+len(reactions))
+			for _, existing := range msg.Reactions {
+				if existing.UserID != userID {
+					kept = append(kept, existing)
+				}
+			}
+			for _, reaction := range reactions {
+				reaction.UpdatedAt = now
+				kept = append(kept, reaction)
+			}
+
+			before := messageApproxBytes(*msg)
+			msg.Reactions = kept
+			after := messageApproxBytes(*msg)
+			bucket.bytes += after - before
+			s.totalBytes += after - before
+			bucket.lastUpdatedAt = now
+			s.touchStreamOrder(key)
+			s.evictIfNeeded()
+			s.budget.Set("conversation", s.totalBytes)
+
+			return true
+		}
+	}
+
+	return false
+}
+
 func (s *ConversationStore) Reset(scope state.ConversationScope) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -671,6 +722,10 @@ func cloneMessage(msg state.Message) state.Message {
 		meta := *msg.ImageMeta
 		cloned.ImageMeta = &meta
 	}
+	if msg.Reactions != nil {
+		cloned.Reactions = make([]state.Reaction, len(msg.Reactions))
+		copy(cloned.Reactions, msg.Reactions)
+	}
 
 	return cloned
 }
@@ -679,6 +734,9 @@ func messageApproxBytes(msg state.Message) int64 {
 	size := int64(len(msg.Name) + len(msg.Username) + len(msg.Text) + len(msg.Image) + 64)
 	if msg.ImageMeta != nil {
 		size += int64(len(msg.ImageMeta.FileID) + len(msg.ImageMeta.FileUniqueID) + 32)
+	}
+	for _, reaction := range msg.Reactions {
+		size += int64(len(reaction.Name) + len(reaction.Username) + len(reaction.Emoji) + 48)
 	}
 	if msg.ReplyTo != nil {
 		size += messageApproxBytes(*msg.ReplyTo)
