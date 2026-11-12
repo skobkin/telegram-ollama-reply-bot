@@ -10,6 +10,7 @@
 - Summarization of articles by provided link (SSRF-protected fetching, quality-scored extraction backends, Markdown output)
 - Optional per-chat auto-summarizer mode: linked long-form articles in ordinary chat messages are summarized automatically
 - Reactions to the bot's messages are recorded in conversation history and shown to the model as per-user feedback
+- Optional live tool-execution previews while a reply is being generated (temporary message in groups, message draft in private chats), with a collapsible tool-history section appended to the final reply
 - Image recognition and description
 - Tool-assisted free-form chat with
   - URL retrieval
@@ -92,8 +93,8 @@ Stored prompt templates use Go's [`text/template`](https://pkg.go.dev/text/templ
 - `summarize` – `{{.Language}}`, `{{.MaxLength}}`
 - `image_recognition` – `{{.Language}}`
 
-Global fields: `character_name`, `language`, `gender`, `tone_mode`, `allow_teasing`, `default_interactivity_mode`, `default_auto_summary_enabled`.
-Per-chat fields: `character_name`, `language`, `gender`, `tone_mode`, `allow_teasing`, `interactivity_mode`, `auto_summary_enabled`.
+Global fields: `character_name`, `language`, `gender`, `tone_mode`, `allow_teasing`, `default_interactivity_mode`, `default_auto_summary_enabled`, `show_reply_previews`, `default_preview_mode`, `keep_tool_history`.
+Per-chat fields: `character_name`, `language`, `gender`, `tone_mode`, `allow_teasing`, `interactivity_mode`, `auto_summary_enabled`, `preview_mode`, `keep_tool_history`.
 
 ## Usage
 
@@ -247,6 +248,35 @@ compaction.
 - Reaction changes and removals are applied per user; after a restart, a history reset, or history trimming, older
   replies can no longer be matched and such reactions are dropped (logged at DEBUG level).
 
+### Live reply previews
+
+While the bot works on a reply, chats can show a live progress preview: a neutral indicator plus the list of tool
+calls as they start and finish. It never contains answer text or tool payloads — only tool names, their outcome,
+and (in the widest mode) how long each call took.
+
+- **Groups and supergroups** get a temporary silent message replying to the trigger message, updated in place and
+  deleted after the final reply has been delivered. Short runs (under ~1.5 seconds) never create one at all.
+- **Private chats** get a rich-message draft in the message input area (the ephemeral "typing a draft" surface).
+  The draft is refreshed internally so it stays alive during long runs and is dismissed by the final reply itself;
+  if drafts are unavailable, the plain typing indicator takes over.
+- Wire updates are paced per chat: a minimum spacing per run plus a shared per-chat backoff after Telegram rate
+  limits, so several concurrent requests in one chat do not flood the API (one run hitting the limit delays the
+  others' preview updates, not their execution). After repeated delivery failures the preview for that run disables
+  itself and the typing indicator takes over; the final reply is never affected.
+- **Modes** (per chat, with a global default):
+  - `off` — no preview; the plain typing indicator as before. Forced whenever the master switch is off.
+  - `tools` — standard user-facing tools only (search, URL fetching, history and media lookups, polls, reminders,
+    time utilities, MCP tools).
+  - `all_tools` — additionally shows the bot's internal context-management helpers and per-tool execution durations.
+- When previews are active, the final reply appends a collapsible **tool history** section (`Tool calls (N)`) built
+  from the same data — compacted or omitted when the answer needs the space, and never recorded into conversation
+  history. `Keep tool history` (global, with a per-chat override) turns the section off without touching previews.
+- Settings live in the admin UI: global `Show reply previews` (master switch, off by default), `Default preview
+  mode`, `Keep tool history`, and per-chat overrides for both mode and retention. With the master switch off, chat
+  screens hide the preview rows; stored overrides survive re-enabling.
+- LLM token streaming (partial answer text inside the preview) is planned as a follow-up; previews currently show
+  only progress indicators and tool execution events.
+
 ### Admin UI
 
 Administration is a Telegram-native interactive panel. Send `/admin` in a private chat with the bot (users listed in
@@ -258,6 +288,9 @@ dismisses a pending input and reopens the panel. Sessions are ephemeral and expi
   and `Reset overrides` (confirmed) clears everything the card overrides.
 - **Auto-summary toggle** — per chat (`Auto summary`, tri-state with inherit) and global (`Default auto summary`),
   edited like any other boolean field.
+- **Preview settings** — global (`Show reply previews` master switch, `Default preview mode`, `Keep tool history`)
+  and per-chat (`Preview mode` enum with explicit inherit while overridden, `Keep tool history` tri-state). While
+  the master switch is off, chat screens hide the preview rows — stored overrides stay untouched.
 - **Global settings / chat settings** — one editor per field: enum and boolean fields are buttons; text fields ask for
   a reply (three attempts on invalid input, then the input is cancelled).
 - **Prompts** — per feature (chat, summarize, image recognition): view, download the active or built-in template,

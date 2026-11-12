@@ -16,6 +16,24 @@ conversation history entry; later model requests and history summaries include t
 - Rollback is a plain redeploy of the old version: its long polling sends no `allowed_updates`, so Telegram returns to
   the default delivery set.
 
+### Live reply previews and collapsible tool history
+
+The bot can now show a live tool-execution preview while generating a reply — a silent temporary message in groups,
+a rich-message draft in private chats — and append a collapsible tool-history section to the final reply. See
+README.md ("Live reply previews") for behavior details.
+
+- New persistent settings, added by an automatic SQLite migration: global `show_reply_previews` (default **off**),
+  `default_preview_mode` (default `tools`), `keep_tool_history` (default **on**); per-chat `preview_mode` and
+  `keep_tool_history` (unset = inherit the global value).
+- With the master switch off (the migrated default), runtime behavior is unchanged from the previous release: the
+  plain typing indicator, no previews, no tool-history block.
+- The master switch governs the per-chat fields: overrides stay stored but inert while it is off, and the chat
+  admin screens hide the preview rows until it is enabled again.
+- LLM token streaming (partial answer text inside the preview) is intentionally **not** part of this release and is
+  planned as a follow-up; the internal event infrastructure already carries the event type for it.
+- Rollback: redeploying the previous version leaves the new columns in place (they are simply ignored); no manual
+  data migration is needed.
+
 ## 0.26.0 (unreleased) — changes since 0.25.0
 
 ### Extraction gate tolerates reference-dense pages; backend order is re-ranked per page
