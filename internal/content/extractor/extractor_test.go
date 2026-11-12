@@ -193,7 +193,7 @@ func TestReadabilityWikipediaFixturePassesGate(t *testing.T) {
 	if content.Title == "" {
 		t.Fatal("expected non-empty title")
 	}
-	if !acceptable(content) {
+	if !acceptable(content, contentScore(content)) {
 		t.Fatalf("expected Wikipedia fixture to pass the quality gate, score %f", contentScore(content))
 	}
 	if !strings.Contains(content.Text, "OS-level virtualization") {
@@ -206,14 +206,11 @@ func TestReadabilityWikipediaFixturePassesGate(t *testing.T) {
 func TestPipelineWikipediaFixtureAccepted(t *testing.T) {
 	t.Parallel()
 
-	backends, err := NewBackends([]string{
+	backends := realBackends(t, []string{
 		config.ExtractionBackendReadability,
 		config.ExtractionBackendTrafilatura,
 		config.ExtractionBackendDomDistiller,
-	}, testLogger())
-	if err != nil {
-		t.Fatalf("NewBackends returned error: %v", err)
-	}
+	})
 
 	pipeline := NewPipeline(stubFetcher{page: wikipediaPage(t)}, backends, testLogger())
 
@@ -333,6 +330,36 @@ func TestPipelineRescuesBestScoreWhenNothingAcceptable(t *testing.T) {
 	}
 	if article.Text == "" {
 		t.Fatal("rescue result must carry text")
+	}
+}
+
+// Exact score ties in the rescue must resolve in the per-page voted order,
+// not the configured order: on a wiki page the selector demotes domdistiller
+// below readability, so the identical-content tie goes to readability even
+// though domdistiller is configured first.
+func TestPipelineRescueTieBreaksInVotedOrder(t *testing.T) {
+	t.Parallel()
+
+	pipeline := NewPipeline(
+		stubFetcher{page: &fetch.Page{
+			URL:         "https://en.wikipedia.org/wiki/Tie",
+			ContentType: "text/html; charset=utf-8",
+			Body:        []byte(`<html><body><div id="mw-content-text"><p>x</p></div></body></html>`),
+		}},
+		[]Backend{
+			stubBackend{name: config.ExtractionBackendDomDistiller, content: mildLinkFarmContent()},
+			stubBackend{name: config.ExtractionBackendReadability, content: mildLinkFarmContent()},
+		},
+		testLogger(),
+	)
+
+	article, err := pipeline.GetArticleFromURL(context.Background(), "https://en.wikipedia.org/wiki/Tie")
+	if err != nil {
+		t.Fatalf("GetArticleFromURL returned error: %v", err)
+	}
+
+	if article.Backend != config.ExtractionBackendReadability {
+		t.Fatalf("expected voted-order backend to win the rescue tie, got %q", article.Backend)
 	}
 }
 
@@ -652,7 +679,7 @@ func mildLinkFarmContent() Content {
 }
 
 // referenceDenseContent is a Wikipedia-shaped extraction: ~10k runes of
-// prose at ~12 links per 1000 chars (citations scale with content). This is
+// prose at ~17 links per 1000 chars (citations scale with content). This is
 // the shape the linear gate rejected wholesale (#132).
 func referenceDenseContent() Content {
 	const paragraph = "The concept emerged from a long line of research that most histories " +

@@ -47,7 +47,8 @@ type Extractor interface {
 // base order, and the tiebreak: built-in evaluators re-rank it per page from
 // cheap post-fetch signals (selector.go). The first result passing the
 // quality gate wins; when none does, the highest-scoring non-empty result is
-// delivered as a rescue instead of failing.
+// delivered as a rescue instead of failing, with exact score ties resolved
+// in the per-page voted order.
 type Pipeline struct {
 	fetcher  Fetcher
 	backends []Backend
@@ -98,7 +99,11 @@ func (p *Pipeline) GetArticleFromURL(ctx context.Context, url string) (Article, 
 	)
 
 	order := p.selector.order(extractFeatures(page), p.backends)
-	logger.Debug("backend order selected", "order", order.names(), "votes", order.Votes, "evaluators", order.Fired)
+	// Guarded: slog evaluates arguments before the level check, and
+	// order.names() would otherwise allocate on every request.
+	if logger.Enabled(ctx, slog.LevelDebug) {
+		logger.Debug("backend order selected", "order", order.names(), "votes", order.Votes, "evaluators", order.Fired)
+	}
 
 	for _, backend := range order.Backends {
 		// Cancellation surfaces between CPU stages; backends themselves do
@@ -131,7 +136,7 @@ func (p *Pipeline) GetArticleFromURL(ctx context.Context, url string) (Article, 
 		score := contentScore(content)
 		logger.Debug("backend scored", "backend", name, "score", score, "text_length", len(content.Text))
 
-		if acceptable(content) {
+		if acceptable(content, score) {
 			logger.Info("article extracted", "backend", name, "text_length", len(content.Text))
 
 			return p.buildArticle(content, page.URL, name, logger)

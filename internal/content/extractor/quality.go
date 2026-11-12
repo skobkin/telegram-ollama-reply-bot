@@ -24,7 +24,11 @@ const (
 	// sqrt(links-per-1000-chars above qualityLinkAllowance). The square root
 	// saturates the penalty: navigation menus and link farms extract at tens
 	// to thousands of links-per-1000-chars and still lose decisively, while
-	// reference-heavy articles (8–24 links/k) keep their length score (#132).
+	// reference-heavy articles keep their length score (#132). The saturating
+	// form is strictly weaker than the old linear penalty at every density:
+	// text-heavy boilerplate in the ~6–20 links/k band now passes the gate
+	// too, and at the top of the reference range (24 links/k) only a very
+	// long extraction (~36k+ runes with a title) still clears it.
 	qualityLinkPenaltyPerK = 4.0
 
 	// qualityLinkAllowance is the links-per-1000-chars allowed before any
@@ -41,13 +45,19 @@ const (
 //	title:        +2 when present
 //	link density: −4·√(links-per-1000-chars above 6)
 //
+// The link-density term needs hrefs to count, so a result whose backend
+// could not render HTML (structure is optional in every backend) is gated
+// on length and title alone; this only loosens the gate on the
+// render-failure path and is accepted.
+//
 // The link penalty grows with the square root of the density excess instead
 // of linearly (#132): a linear penalty crushes the logarithmic length term on
 // link-dense reference sites — every clean backend extracted Wikipedia
 // articles at 12–24 links/k and failed the gate, falling to rescue mode. The
-// square-root penalty keeps those pages accepted (measured: all extractions
-// pass with margin) while boilerplate-dominated junk, at densities an order
-// of magnitude higher, is still rejected.
+// square-root penalty keeps the probed pages accepted (measured: all 15 probe
+// extractions pass with margin) while boilerplate-dominated junk at densities
+// an order of magnitude higher is still rejected — by narrower absolute
+// margins than under the linear penalty.
 func contentScore(c Content) float64 {
 	runes := utf8.RuneCountInString(c.Text)
 	score := 2 * math.Log1p(float64(runes))
@@ -66,7 +76,9 @@ func contentScore(c Content) float64 {
 }
 
 // acceptable reports whether a backend result can be delivered without
-// trying further backends.
-func acceptable(c Content) bool {
-	return c.Text != "" && contentScore(c) >= qualityAcceptThreshold
+// trying further backends. score must be contentScore(c); it is passed in
+// separately so the pipeline can reuse the score it already computed for
+// logging and the rescue comparison instead of rescanning Text and HTML.
+func acceptable(c Content, score float64) bool {
+	return c.Text != "" && score >= qualityAcceptThreshold
 }

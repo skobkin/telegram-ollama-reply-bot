@@ -10,8 +10,15 @@ Non-breaking behavior changes in article extraction (`/summarize`, `fetch_url_co
   the density excess above the allowance — instead of linearly. Reference-heavy pages
   (Wikipedia articles, documentation wikis) legitimately extract at 8–24 links per 1000
   characters, which the linear penalty rejected on every backend, so they always fell to
-  rescue mode; they now pass the gate directly. Boilerplate-dominated junk (nav menus, link
-  farms) is still rejected, by wider margins than before.
+  rescue mode; the probed long Wikipedia articles now pass the gate directly. At the top of
+  that density range only long extractions clear the gate (roughly 36k+ characters with a
+  title at 24 links/k); shorter reference-dense pages can still land in rescue mode, where
+  the best non-empty result is still delivered. Boilerplate-dominated junk (nav menus, link
+  farms) is still rejected — by narrower margins than before, since the saturating penalty
+  is strictly weaker at every density: text-heavy boilerplate at moderate densities (up to
+  roughly 12–22 links/k depending on length) that the linear penalty rejected now passes
+  the gate outright, while high-density link farms (≳30 links/k with little prose) still
+  fail.
 - The configured backend order is re-ranked per page by built-in evaluators before
   extraction: MediaWiki pages (body markers or a wiki host) favor `readability` over
   `domdistiller`; fetched bodies of 128 KiB or more favor `domdistiller` over `trafilatura`
@@ -22,7 +29,7 @@ Non-breaking behavior changes in article extraction (`/summarize`, `fetch_url_co
   the best-scoring non-empty extraction, but exact score ties between backends are now
   resolved in the per-page voted order rather than the configured order.
 
-## 0.25.0 (2026-11-11) — changes since 0.23.1 (breaking)
+## 0.24.0 (2026-11-11) — changes since 0.23.1 (breaking)
 
 ### Auto-summarizer mode
 
@@ -70,7 +77,7 @@ SSRF-hardened fetcher instead of each extraction backend performing its own HTTP
 ### Extraction pipeline, quality gating, and Markdown output (breaking)
 
 Extraction is now a configurable pipeline (`CONTENT__EXTRACT__BACKENDS`, default
-`readability,trafilatura,domdistiller`) run over one fetched page per request, replacing the fixed
+`readability,trafilatura,goose`) run over one fetched page per request, replacing the fixed
 "readability primary, GoOse fallback" pair.
 
 - **Breaking**: `/summarize` and `fetch_url_content` now feed the model Markdown rendered from
@@ -90,8 +97,11 @@ Extraction is now a configurable pipeline (`CONTENT__EXTRACT__BACKENDS`, default
   engines disabled (the pipeline itself is the fallback chain).
 - `fetch_url_content` keeps its `text` field name and 2600-rune truncation; the content it
   carries is Markdown when available.
-- The GoOse backend was removed entirely after benchmarking (see the next section); the
-  extraction benchmark that drove the decision is tracked in issue #127.
+- The GoOse backend itself remains in 0.24.0; its removal (replaced by the new
+  `domdistiller` backend) ships in 0.25.0 — see below. The extraction benchmark that drove
+  that decision is tracked in issue #127.
+
+## 0.25.0 (2026-11-11) — changes since 0.24.0 (breaking)
 
 ### GoOse extraction backend removed (breaking)
 

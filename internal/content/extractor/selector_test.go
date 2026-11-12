@@ -21,15 +21,6 @@ func realBackends(t *testing.T, names []string) []Backend {
 	return backends
 }
 
-func backendNames(backends []Backend) []string {
-	names := make([]string, 0, len(backends))
-	for _, b := range backends {
-		names = append(names, b.Name())
-	}
-
-	return names
-}
-
 func TestExtractFeatures(t *testing.T) {
 	t.Parallel()
 
@@ -46,8 +37,11 @@ func TestExtractFeatures(t *testing.T) {
 	if !f.MediaWiki {
 		t.Fatal("expected MediaWiki marker detection from body")
 	}
-	if f.BodySize != len(page.Body) {
-		t.Fatalf("expected body size %d, got %d", len(page.Body), f.BodySize)
+	// Pinned literal rather than len(page.Body), which would re-derive the
+	// expected value with the same expression production uses: the fixture
+	// above is exactly 67 bytes, and BodySize must count raw bytes.
+	if f.BodySize != 67 {
+		t.Fatalf("expected body size 67, got %d", f.BodySize)
 	}
 	if f.URL == nil || f.URL.Host != "WWW.Example.com" {
 		t.Fatalf("expected parsed URL, got %v", f.URL)

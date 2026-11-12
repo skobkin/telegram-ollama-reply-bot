@@ -29,7 +29,14 @@ type Features struct {
 }
 
 // MediaWiki body markers. Package-level []byte so the scan never converts
-// the (potentially multi-megabyte) body to a string.
+// the (potentially multi-megabyte) body to a string. Both needles are
+// case-sensitive lowercase: the canonical mixed-case generator tag
+// (<meta name="generator" content="MediaWiki ...">) cannot match, so a
+// heavily skinned wiki at a host without "wiki" can go undetected;
+// conversely, any page whose body merely contains a lowercase "mediawiki"
+// substring (e.g. a link to mediawiki.org) counts as MediaWiki. Either way
+// the consequence is bounded: the chain re-ranks and the quality gate still
+// applies.
 var (
 	mwContentTextNeedle = []byte(`id="mw-content-text"`)
 	mediaWikiNeedle     = []byte("mediawiki")
@@ -65,21 +72,28 @@ type Evaluator interface {
 }
 
 // Ordering is the selector's output for one page: the backends in the order
-// they should run, the accumulated votes (per configured backend name; never
-// nil), and the evaluators that cast at least one counted vote.
+// they should run, the accumulated votes (only names that received at least
+// one counted vote; never nil), and the evaluators that cast at least one
+// counted vote.
 type Ordering struct {
 	Backends []Backend
 	Votes    map[string]float64
 	Fired    []string
 }
 
-func (o Ordering) names() []string {
-	names := make([]string, 0, len(o.Backends))
-	for _, b := range o.Backends {
+// backendNames collects backend names in slice order. Shared by the order
+// log and the tests so the two cannot drift.
+func backendNames(backends []Backend) []string {
+	names := make([]string, 0, len(backends))
+	for _, b := range backends {
 		names = append(names, b.Name())
 	}
 
 	return names
+}
+
+func (o Ordering) names() []string {
+	return backendNames(o.Backends)
 }
 
 // selector ranks the configured backends per page by accumulating evaluator
@@ -95,33 +109,37 @@ func newSelector() *selector {
 // order ranks backends by descending total vote. The sort is stable, so
 // ties and zero-vote backends keep the configured relative order: with no
 // evaluator firing, the returned order equals the input. The input slice is
-// never mutated (the pipeline is shared across concurrent requests).
+// never mutated (the pipeline is shared across concurrent requests); when no
+// votes accumulate the input slice is returned as-is, skipping the clone and
+// the no-op sort.
 func (s *selector) order(f Features, backends []Backend) Ordering {
 	votes := make(map[string]float64, len(backends))
 	var fired []string
 
-	if len(backends) >= 2 {
-		registered := make(map[string]struct{}, len(backends))
-		for _, b := range backends {
-			registered[b.Name()] = struct{}{}
-		}
+	registered := make(map[string]struct{}, len(backends))
+	for _, b := range backends {
+		registered[b.Name()] = struct{}{}
+	}
 
-		for _, e := range s.evaluators {
-			cast := false
+	for _, e := range s.evaluators {
+		cast := false
 
-			for name, weight := range e.Vote(f) {
-				if _, ok := registered[name]; !ok {
-					continue
-				}
-
-				votes[name] += weight
-				cast = true
+		for name, weight := range e.Vote(f) {
+			if _, ok := registered[name]; !ok {
+				continue
 			}
 
-			if cast {
-				fired = append(fired, e.Name())
-			}
+			votes[name] += weight
+			cast = true
 		}
+
+		if cast {
+			fired = append(fired, e.Name())
+		}
+	}
+
+	if len(votes) == 0 {
+		return Ordering{Backends: backends, Votes: votes, Fired: fired}
 	}
 
 	order := slices.Clone(backends)

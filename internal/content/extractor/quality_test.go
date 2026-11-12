@@ -17,7 +17,7 @@ func TestContentScoreAcceptsShortCleanArticle(t *testing.T) {
 		HTML:  "<p>" + strings.Repeat("This is a real sentence with actual content. ", 3) + "</p>",
 	}
 
-	if !acceptable(content) {
+	if !acceptable(content, contentScore(content)) {
 		t.Fatalf("expected short clean article to be accepted, score %f", contentScore(content))
 	}
 }
@@ -25,10 +25,10 @@ func TestContentScoreAcceptsShortCleanArticle(t *testing.T) {
 func TestContentScoreRejectsEmptyContent(t *testing.T) {
 	t.Parallel()
 
-	if acceptable(Content{}) {
+	if acceptable(Content{}, contentScore(Content{})) {
 		t.Fatal("expected empty content to be rejected")
 	}
-	if acceptable(Content{Title: "Only a title"}) {
+	if acceptable(Content{Title: "Only a title"}, contentScore(Content{Title: "Only a title"})) {
 		t.Fatal("expected title-only content to be rejected")
 	}
 }
@@ -38,7 +38,7 @@ func TestContentScoreRejectsLinkFarm(t *testing.T) {
 
 	content := linkFarmContent()
 
-	if acceptable(content) {
+	if acceptable(content, contentScore(content)) {
 		t.Fatalf("expected link farm to be rejected, score %f", contentScore(content))
 	}
 }
@@ -60,7 +60,7 @@ func TestContentScoreAcceptsReferenceDenseArticle(t *testing.T) {
 		t.Fatalf("reference-dense fixture drifted: %.1f links/1000 chars", linksPerK)
 	}
 
-	if !acceptable(content) {
+	if !acceptable(content, contentScore(content)) {
 		t.Fatalf("expected reference-dense article to be accepted, score %f", contentScore(content))
 	}
 }
@@ -71,14 +71,14 @@ func TestContentScoreRejectsDenseLinkShapes(t *testing.T) {
 	// Long link farm: ~20k runes of spam at ~50 links/1000 chars — length
 	// must not buy a link farm out of the gate.
 	long := longLinkFarmContent()
-	if acceptable(long) {
+	if acceptable(long, contentScore(long)) {
 		t.Fatalf("expected long link farm to be rejected, score %f", contentScore(long))
 	}
 
 	// Dense index page: ~10k runes at ~33 links/1000 chars — sparser than a
 	// farm, denser than any reference-heavy article.
 	index := moderateLinkIndexContent()
-	if acceptable(index) {
+	if acceptable(index, contentScore(index)) {
 		t.Fatalf("expected dense link index to be rejected, score %f", contentScore(index))
 	}
 
@@ -89,7 +89,7 @@ func TestContentScoreRejectsDenseLinkShapes(t *testing.T) {
 		Text: strings.Repeat("Short menu text. ", 18),
 		HTML: "<nav>" + strings.Repeat(`<a href="/m">item</a> `, 9) + "</nav>",
 	}
-	if acceptable(menu) {
+	if acceptable(menu, contentScore(menu)) {
 		t.Fatalf("expected short linky text to be rejected, score %f", contentScore(menu))
 	}
 }
@@ -106,7 +106,7 @@ func TestContentScoreLinkAllowanceKeepsLinkyButRealArticles(t *testing.T) {
 			`</p><a href="/a">a</a> <a href="/b">b</a>`,
 	}
 
-	if !acceptable(content) {
+	if !acceptable(content, contentScore(content)) {
 		t.Fatalf("expected link-light article to be accepted, score %f", contentScore(content))
 	}
 }

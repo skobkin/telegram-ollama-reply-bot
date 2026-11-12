@@ -215,7 +215,9 @@ type ContentFetchConfig struct {
 
 // ContentExtractConfig is the CONTENT__EXTRACT__* section.
 type ContentExtractConfig struct {
-	// Backends names the extraction backends in the order they are tried.
+	// Backends names the extraction backends. The configured order is the
+	// registered set, the base order, and the tiebreak: built-in evaluators
+	// may re-rank it per page before extraction (internal/content/extractor).
 	Backends []string `koanf:"backends"`
 }
 

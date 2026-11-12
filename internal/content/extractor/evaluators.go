@@ -35,6 +35,10 @@ const (
 	// above text-rich long essays (~80 KB, does not fire). Body size is a
 	// blunt proxy: markup-bloated short pages fire it too, and the only
 	// consequence is a different — still gate-checked — backend winning.
+	// Pages just below the cutoff keep the configured order, so the #131
+	// truncation lock-in persists for long pages under 128 KiB; fixing that
+	// needs a truncation signal on the extraction result itself, not a lower
+	// byte cutoff.
 	longPageBodyThresholdBytes = 128 << 10
 )
 
@@ -44,6 +48,14 @@ const (
 // weak wiki recall from winning when it is configured first. Host-based
 // detection (a "wiki" substring) can false-positive on non-MediaWiki hosts;
 // that only re-ranks the chain, and the quality gate still applies.
+//
+// Interaction with the long-page evaluator: on a very large page at a
+// wiki-substring host that is not actually MediaWiki, the demotion cancels
+// domdistiller's long-page promotion (net 0), so readability — with its
+// truncation-prone long-page recall — outranks it. For a domdistiller-first
+// configuration that recreates the #131 truncation lock-in on such hosts.
+// Accepted: the demotion is benchmark-grounded for actual wiki pages, and
+// the winning extraction is still gate-checked with rescue mode behind it.
 type mediaWikiEvaluator struct{}
 
 func (mediaWikiEvaluator) Name() string {
