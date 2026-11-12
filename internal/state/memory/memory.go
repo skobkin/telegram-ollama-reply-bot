@@ -18,6 +18,10 @@ const (
 	defaultHistoryStreamsMax                = 1024
 	defaultImageCacheMaxBytes int64         = 64 << 20 // 64 MiB
 	defaultImageCacheTTL      time.Duration = 24 * time.Hour
+
+	// reactionSeqRecordApproxBytes approximates one reactionSeq map entry
+	// (16-byte key, 8-byte value, map overhead) for budget accounting.
+	reactionSeqRecordApproxBytes = 48
 )
 
 type Config struct {
@@ -88,12 +92,17 @@ type conversationBucket struct {
 	summaryMessageCount int
 	bytes               int64
 	lastUpdatedAt       time.Time
+	// revision is the raw-history version: reaction changes and head trims
+	// bump it so in-flight summary generation commits only when the source
+	// it rendered from is unchanged.
+	revision int64
 	// reactionSeq tracks the newest applied reaction update per (message,
 	// user) so stale out-of-order updates are rejected; reaction updates are
 	// dispatched concurrently and do not preserve Telegram's arrival order.
-	// Entries for trimmed-away messages are harmless garbage until the
-	// bucket is evicted or reset.
-	reactionSeq map[reactionSeqKey]int64
+	// Records for trimmed-away messages are pruned, and the remaining ones
+	// count toward bucket bytes so long chats cannot grow them unbounded.
+	reactionSeq      map[reactionSeqKey]int64
+	reactionSeqBytes int64
 }
 
 // reactionSeqKey identifies the reacting user within one Telegram message.
@@ -186,22 +195,31 @@ func (s *ConversationStore) Snapshot(scope state.ConversationScope) state.Conver
 		MessageCount:        len(bucket.messages),
 		ApproxBytes:         bucket.bytes,
 		LastUpdatedAtUTC:    bucket.lastUpdatedAt,
+		Revision:            bucket.revision,
 	}
 
 	return result
 }
 
-func (s *ConversationStore) SetEarlierSummary(scope state.ConversationScope, text string, summaryMessageCount int) {
+func (s *ConversationStore) SetEarlierSummary(scope state.ConversationScope, text string, summaryMessageCount int, historyRevision int64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	key := scopeKey(scope)
 	bucket, ok := s.streams[key]
 	if !ok {
-		bucket = &conversationBucket{scope: scope}
-		s.streams[key] = bucket
-		s.streamOrder = append(s.streamOrder, key)
-		s.addStreamIndex(scope, key)
+		// No lazy bucket creation: the stream is gone (reset or eviction)
+		// and committing would resurrect a summary with no history behind it.
+		return false
+	}
+	if historyRevision != bucket.revision {
+		// The raw history changed while the summary was being generated;
+		// keep the summary cleared rather than restoring stale derived state.
+		s.logger.Debug("rejecting summary commit for changed history",
+			"chat_id", scope.ChatID, "topic_id", scope.TopicID,
+			"commit_revision", historyRevision, "current_revision", bucket.revision)
+
+		return false
 	}
 
 	oldSize := int64(len(bucket.earlierSummary))
@@ -220,6 +238,8 @@ func (s *ConversationStore) SetEarlierSummary(scope state.ConversationScope, tex
 	s.touchStreamOrder(key)
 	s.evictIfNeeded()
 	s.budget.Set("conversation", s.totalBytes)
+
+	return true
 }
 
 func (s *ConversationStore) SetMessageReactions(chatID int64, messageID int, userID int64, updateSeq int64, reactions []state.Reaction) bool {
@@ -279,6 +299,10 @@ func (s *ConversationStore) SetMessageReactions(chatID int64, messageID int, use
 				bucket.reactionSeq = make(map[reactionSeqKey]int64)
 			}
 			bucket.reactionSeq[seqKey] = updateSeq
+			seqBytes := int64(len(bucket.reactionSeq)) * reactionSeqRecordApproxBytes
+			bucket.bytes += seqBytes - bucket.reactionSeqBytes
+			s.totalBytes += seqBytes - bucket.reactionSeqBytes
+			bucket.reactionSeqBytes = seqBytes
 
 			// A reaction change on an already-summarized message makes the
 			// cached summary stale (it embeds the old reaction rendering), so
@@ -286,6 +310,9 @@ func (s *ConversationStore) SetMessageReactions(chatID int64, messageID int, use
 			if i < bucket.summaryMessageCount {
 				s.clearBucketSummary(bucket)
 			}
+			// Any applied reaction change can invalidate in-flight summary
+			// generation, so bump the revision to reject its commit.
+			bucket.revision++
 
 			bucket.lastUpdatedAt = now
 			s.touchStreamOrder(key)
@@ -437,6 +464,16 @@ func (s *ConversationStore) trimBucketHead(key string, bucket *conversationBucke
 		bucket.searchIndex = buildSearchIndex(bucket.messages)
 		size += beforeSearchBytes - bucket.searchIndex.bytes
 	}
+	// Prune reaction sequence records for the trimmed message so the map
+	// cannot grow past the surviving messages, and keep its size accounted.
+	for seqKey := range bucket.reactionSeq {
+		if seqKey.messageID == int64(removed.MessageID) {
+			delete(bucket.reactionSeq, seqKey)
+		}
+	}
+	seqBytes := int64(len(bucket.reactionSeq)) * reactionSeqRecordApproxBytes
+	size += bucket.reactionSeqBytes - seqBytes
+	bucket.reactionSeqBytes = seqBytes
 	bucket.bytes -= size
 	s.totalBytes -= size
 	bucket.lastUpdatedAt = time.Now().UTC()
@@ -447,6 +484,9 @@ func (s *ConversationStore) trimBucketHead(key string, bucket *conversationBucke
 	if bucket.summaryMessageCount > 0 || bucket.earlierSummary != "" {
 		s.clearBucketSummary(bucket)
 	}
+	// Trimming changes the raw history and can invalidate in-flight summary
+	// generation just like a reaction change does.
+	bucket.revision++
 }
 
 func (s *ConversationStore) clearBucketSummary(bucket *conversationBucket) {

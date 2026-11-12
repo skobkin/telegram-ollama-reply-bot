@@ -49,9 +49,11 @@ func (s *dmHistorySpy) Search(state.ConversationScope, state.HistorySearchQuery)
 	return nil
 }
 
-func (s *dmHistorySpy) SetEarlierSummary(state.ConversationScope, string, int) {}
-func (s *dmHistorySpy) Reset(state.ConversationScope)                          {}
-func (s *dmHistorySpy) ResetChat(int64)                                        {}
+func (s *dmHistorySpy) SetEarlierSummary(state.ConversationScope, string, int, int64) bool {
+	return false
+}
+func (s *dmHistorySpy) Reset(state.ConversationScope) {}
+func (s *dmHistorySpy) ResetChat(int64)               {}
 
 func (s *dmHistorySpy) SetMessageReactions(chatID int64, messageID int, userID int64, updateSeq int64, reactions []state.Reaction) bool {
 	s.reactionMu.Lock()

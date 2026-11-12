@@ -41,8 +41,8 @@ func TestReplyBuilderUsesSameTopicHistoryOnly(t *testing.T) {
 		TopicID:       otherScope.TopicID,
 		CreatedAt:     time.Now().UTC(),
 	})
-	stores.Conversations().SetEarlierSummary(topicScope, "same topic summary", 1)
-	stores.Conversations().SetEarlierSummary(otherScope, "wrong topic summary", 1)
+	_ = stores.Conversations().SetEarlierSummary(topicScope, "same topic summary", 1, 0)
+	_ = stores.Conversations().SetEarlierSummary(otherScope, "wrong topic summary", 1, 0)
 
 	ctx := builder.BuildReplyContext(context.Background(), ReplyInput{
 		Chat: ChatContext{
@@ -214,7 +214,7 @@ func TestReplyBuilderUsesUnsummarizedTailWhenSummaryExists(t *testing.T) {
 			CreatedAt: time.Now().UTC(),
 		})
 	}
-	stores.Conversations().SetEarlierSummary(scope, "summary of one and two", 2)
+	_ = stores.Conversations().SetEarlierSummary(scope, "summary of one and two", 2, 0)
 
 	ctx := builder.BuildReplyContext(context.Background(), ReplyInput{
 		Chat:           ChatContext{Type: "group"},

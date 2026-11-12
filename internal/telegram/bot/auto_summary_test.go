@@ -297,7 +297,9 @@ func (s *autoSummaryHistorySpy) Snapshot(state.ConversationScope) state.Conversa
 func (s *autoSummaryHistorySpy) Search(state.ConversationScope, state.HistorySearchQuery) []state.HistorySearchMatch {
 	return nil
 }
-func (s *autoSummaryHistorySpy) SetEarlierSummary(state.ConversationScope, string, int) {}
+func (s *autoSummaryHistorySpy) SetEarlierSummary(state.ConversationScope, string, int, int64) bool {
+	return false
+}
 func (s *autoSummaryHistorySpy) SetMessageReactions(int64, int, int64, int64, []state.Reaction) bool {
 	return false
 }

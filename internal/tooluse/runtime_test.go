@@ -415,7 +415,7 @@ func TestGetConversationSummaryReturnsCachedSummaryWithFullHistoryPresent(t *tes
 			CreatedAt: time.Now().UTC(),
 		})
 	}
-	store.SetEarlierSummary(scope, "summary of one and two", 2)
+	_ = store.SetEarlierSummary(scope, "summary of one and two", 2, 0)
 
 	runtime := New(
 		&stubLLM{},

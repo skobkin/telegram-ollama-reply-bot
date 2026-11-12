@@ -41,7 +41,7 @@ func TestConversationStoreSeparatesTopics(t *testing.T) {
 	topicScope := state.ConversationScope{ChatID: 100, TopicID: 77}
 	store.AppendMessage(baseScope, state.Message{Text: "chat-root"})
 	store.AppendMessage(topicScope, state.Message{Text: "topic-only"})
-	store.SetEarlierSummary(topicScope, "topic-summary", 1)
+	_ = store.SetEarlierSummary(topicScope, "topic-summary", 1, 0)
 
 	baseSnapshot := store.Snapshot(baseScope)
 	if len(baseSnapshot.Messages) != 1 || baseSnapshot.Messages[0].Text != "chat-root" {
@@ -70,7 +70,7 @@ func TestConversationStoreTrimsOversizedSingleScopeAndClearsSummary(t *testing.T
 
 	store.AppendMessage(scope, state.Message{Text: "first message that is long enough", FromID: 1})
 	store.AppendMessage(scope, state.Message{Text: "second message that is also long enough", FromID: 2})
-	store.SetEarlierSummary(scope, "cached summary", 1)
+	_ = store.SetEarlierSummary(scope, "cached summary", 1, 0)
 	store.AppendMessage(scope, state.Message{Text: "third message that forces trimming by bytes", FromID: 3})
 
 	snapshot := store.Snapshot(scope)
@@ -365,7 +365,7 @@ func TestConversationStoreSetMessageReactionsInvalidatesStaleSummary(t *testing.
 	scope := state.ConversationScope{ChatID: 700}
 	store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 70, Text: "summarized answer"})
 	store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 71, Text: "later bot answer"})
-	store.SetEarlierSummary(scope, "summary mentioning no reactions", 1)
+	_ = store.SetEarlierSummary(scope, "summary mentioning no reactions", 1, 0)
 
 	// The reacted message sits inside the summarized prefix: the cached
 	// summary embeds the old reaction rendering, so it must be dropped.
@@ -377,13 +377,118 @@ func TestConversationStoreSetMessageReactionsInvalidatesStaleSummary(t *testing.
 		t.Fatalf("summary must be invalidated by a reaction inside the summarized prefix: %#v", snapshot)
 	}
 
-	// A reaction outside the summarized prefix leaves the summary intact.
-	store.SetEarlierSummary(scope, "fresh summary", 1)
+	// A reaction outside the summarized prefix leaves the summary intact;
+	// the commit must carry the revision current at commit time.
+	fresh := store.Snapshot(scope)
+	if !store.SetEarlierSummary(scope, "fresh summary", 1, fresh.Revision) {
+		t.Fatalf("summary commit against unchanged history must be accepted")
+	}
 	if !store.SetMessageReactions(700, 71, 2, 11, []state.Reaction{{UserID: 2, Emoji: "👎"}}) {
 		t.Fatalf("expected reaction to apply")
 	}
 	snapshot = store.Snapshot(scope)
 	if snapshot.EarlierSummary != "fresh summary" || snapshot.SummaryMessageCount != 1 {
 		t.Fatalf("summary must survive a reaction outside the summarized prefix: %#v", snapshot)
+	}
+}
+
+func TestConversationStoreSummaryCommitRejectedAfterReactionChange(t *testing.T) {
+	t.Parallel()
+
+	stores := New(Config{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	store := stores.Conversations()
+
+	scope := state.ConversationScope{ChatID: 800}
+	store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 80, Text: "answer with reactions"})
+	store.AppendMessage(scope, state.Message{Text: "later", FromID: 1, MessageID: 81})
+
+	built := store.Snapshot(scope)
+	if !store.SetEarlierSummary(scope, "summary without reactions", 1, built.Revision) {
+		t.Fatalf("commit against unchanged history must be accepted")
+	}
+
+	// Reaction arrives while the summarizer is awaiting the LLM.
+	store.SetMessageReactions(800, 80, 1, 10, []state.Reaction{{UserID: 1, Emoji: "👍"}})
+
+	// The in-flight commit carries the old revision and must be rejected.
+	if store.SetEarlierSummary(scope, "stale summary", 2, built.Revision) {
+		t.Fatalf("summary commit after a reaction change must be rejected")
+	}
+	snapshot := store.Snapshot(scope)
+	if snapshot.EarlierSummary != "" || snapshot.SummaryMessageCount != 0 {
+		t.Fatalf("stale summary must not be restored: %#v", snapshot)
+	}
+
+	// A commit based on the post-change snapshot is accepted.
+	fresh := store.Snapshot(scope)
+	if !store.SetEarlierSummary(scope, "fresh summary", 2, fresh.Revision) {
+		t.Fatalf("commit with current revision must be accepted")
+	}
+	if store.Snapshot(scope).EarlierSummary != "fresh summary" {
+		t.Fatalf("accepted summary must be stored")
+	}
+}
+
+func TestConversationStoreSummaryCommitRejectedAfterReset(t *testing.T) {
+	t.Parallel()
+
+	stores := New(Config{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	store := stores.Conversations()
+
+	scope := state.ConversationScope{ChatID: 810}
+	store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 82, Text: "answer"})
+	built := store.Snapshot(scope)
+
+	store.Reset(scope)
+
+	if store.SetEarlierSummary(scope, "summary without history", 1, built.Revision) {
+		t.Fatalf("summary commit after reset must be rejected")
+	}
+	if got := store.Snapshot(scope); len(got.Messages) != 0 || got.EarlierSummary != "" {
+		t.Fatalf("reset must not leave a resurrected summary-only stream: %#v", got)
+	}
+}
+
+func TestConversationStoreReactionSeqRecordsPrunedOnTrimAndCountedInBytes(t *testing.T) {
+	t.Parallel()
+
+	stores := New(Config{
+		HistoryMaxBytes:    4096,
+		HistoryStreamsMax:  16,
+		ImageCacheMaxBytes: 1 << 20,
+	}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	store := stores.Conversations()
+
+	scope := state.ConversationScope{ChatID: 820}
+
+	// Enough reacted messages to force head trims under the tiny byte cap.
+	const messages = 40
+	for i := 1; i <= messages; i++ {
+		store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 900 + i, Text: "answer"})
+		store.SetMessageReactions(820, 900+i, int64(i), int64(i), []state.Reaction{{UserID: int64(i), Emoji: "👍"}})
+	}
+
+	bucket := stores.conversations.streams[scopeKey(scope)]
+	if bucket == nil {
+		t.Fatalf("expected the stream to survive")
+	}
+	if len(bucket.reactionSeq) >= messages {
+		t.Fatalf("trimmed messages must have their reaction sequence records pruned, got %d records", len(bucket.reactionSeq))
+	}
+	expectedBytes := int64(len(bucket.reactionSeq)) * reactionSeqRecordApproxBytes
+	if bucket.reactionSeqBytes != expectedBytes {
+		t.Fatalf("reaction sequence byte accounting must match the record count: %d != %d", bucket.reactionSeqBytes, expectedBytes)
+	}
+	if bucket.bytes < bucket.reactionSeqBytes {
+		t.Fatalf("reaction sequence metadata must count toward bucket bytes")
+	}
+	if bucket.bytes <= bucket.reactionSeqBytes {
+		t.Fatalf("bucket bytes must include message and sequence content: %d", bucket.bytes)
+	}
+
+	// The global budget tracks the sequence metadata too.
+	snapshot := store.Snapshot(scope)
+	if snapshot.ApproxBytes != bucket.bytes {
+		t.Fatalf("snapshot approximate bytes must include sequence metadata: %d != %d", snapshot.ApproxBytes, bucket.bytes)
 	}
 }

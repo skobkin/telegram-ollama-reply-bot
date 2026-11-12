@@ -66,13 +66,24 @@ type ConversationSnapshot struct {
 	MessageCount        int
 	ApproxBytes         int64
 	LastUpdatedAtUTC    time.Time
+	// Revision is the version of the raw history this snapshot was taken at.
+	// Raw-history mutations that can make derived state stale (reaction
+	// changes, head trims) bump it, so a summary generated from this
+	// snapshot can be committed only against an unchanged revision.
+	Revision int64
 }
 
 type ConversationStore interface {
 	AppendMessage(scope ConversationScope, msg Message)
 	Snapshot(scope ConversationScope) ConversationSnapshot
 	Search(scope ConversationScope, query HistorySearchQuery) []HistorySearchMatch
-	SetEarlierSummary(scope ConversationScope, text string, summaryMessageCount int)
+	// SetEarlierSummary stores a summary covering the first
+	// summaryMessageCount raw messages. historyRevision must be the
+	// Revision of the snapshot the summary was rendered from: if the raw
+	// history changed in the meantime (reaction change, head trim) or the
+	// stream no longer exists (reset, eviction), the commit is rejected and
+	// returns false instead of restoring stale derived state.
+	SetEarlierSummary(scope ConversationScope, text string, summaryMessageCount int, historyRevision int64) bool
 	// SetMessageReactions atomically replaces all reactions of a single user
 	// on one of the bot's own messages (IsMe) identified by its Telegram
 	// message ID within the chat. Reaction updates carry no topic, so all

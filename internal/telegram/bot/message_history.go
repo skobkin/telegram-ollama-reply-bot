@@ -131,7 +131,7 @@ func (b *Bot) maybeSummarizeHistory(ctx context.Context, message t.Message) {
 	}
 	slice := snapshot.Messages[start:end]
 	if len(slice) == 0 {
-		b.history.SetEarlierSummary(scope, snapshot.EarlierSummary, end)
+		_ = b.history.SetEarlierSummary(scope, snapshot.EarlierSummary, end, snapshot.Revision)
 
 		return
 	}
@@ -156,5 +156,10 @@ func (b *Bot) maybeSummarizeHistory(ctx context.Context, message t.Message) {
 	if usage != nil {
 		b.stats.AddUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.Cost)
 	}
-	b.history.SetEarlierSummary(scope, summary, end)
+	if ok := b.history.SetEarlierSummary(scope, summary, end, snapshot.Revision); !ok {
+		// History changed while the summary was being generated (reaction
+		// change, trim, reset): discard it rather than restore stale context.
+		b.loggerFromContext(workCtx).Debug("discarding summary built from changed history",
+			"chat_id", scope.ChatID, "topic_id", scope.TopicID)
+	}
 }
