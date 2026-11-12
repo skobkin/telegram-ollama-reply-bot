@@ -57,6 +57,13 @@ func (b *Bot) saveBotReplyToHistory(ctx context.Context, replyTo t.Message, text
 	}
 
 	b.history.AppendMessage(scope, msg)
+
+	if messageID > 0 {
+		// Telegram delivers reactions as soon as the sent reply becomes
+		// visible, potentially before this insertion: apply anything held
+		// during the send window, in update order.
+		b.replayPendingReactions(ctx, scope.ChatID, messageID)
+	}
 }
 
 func (b *Bot) tgUserMessageToMessageData(message t.Message, isUserRequest bool) state.Message {
@@ -105,6 +112,11 @@ func (b *Bot) ResetChatHistory(chatID int64) {
 	b.history.ResetChat(chatID)
 }
 
+// maxSummarizeChunksPerPass bounds the work one summarize trigger performs.
+// Normal operation needs a single chunk; a cleared-summary rebuild continues
+// across later triggers instead of bursting a long LLM chain at once.
+const maxSummarizeChunksPerPass = 8
+
 func (b *Bot) maybeSummarizeHistory(ctx context.Context, message t.Message) {
 	scope := scopeFromMessage(message)
 	snapshot := b.history.Snapshot(scope)
@@ -124,42 +136,68 @@ func (b *Bot) maybeSummarizeHistory(ctx context.Context, message t.Message) {
 		return
 	}
 
-	end := historyLen - limit
-	start := snapshot.SummaryMessageCount
-	if start >= end {
-		return
-	}
-	slice := snapshot.Messages[start:end]
-	if len(slice) == 0 {
-		_ = b.history.SetEarlierSummary(scope, snapshot.EarlierSummary, end, snapshot.Revision)
-
-		return
-	}
+	// A cleared summary (a reaction change or head trim on already-summarized
+	// history) puts the whole retained prefix back into the rebuild at once —
+	// far beyond one summarize request, and potentially beyond the
+	// summarizer's context window. Rebuild in threshold-sized chunks,
+	// committing each so concurrent invalidation only costs the current
+	// chunk; whatever remains continues on later triggers.
+	chunkSize := max(threshold, 1)
 
 	workCtx, cancel := b.withProcessingDeadline(ctx)
 	defer cancel()
 
-	slice = b.hydrateMessagesWithImageDescriptions(workCtx, slice)
+	for range maxSummarizeChunksPerPass {
+		if !b.summarizeHistoryChunk(workCtx, scope, limit, chunkSize) {
+			return
+		}
+	}
+}
+
+// summarizeHistoryChunk summarizes at most chunkSize not-yet-summarized
+// messages, folding the cached summary into the request, and commits the
+// result against the history revision it was built from. It reports whether
+// a chunk was processed; false means there was nothing (more) to do or the
+// attempt failed or was invalidated.
+func (b *Bot) summarizeHistoryChunk(ctx context.Context, scope state.ConversationScope, limit, chunkSize int) bool {
+	snapshot := b.history.Snapshot(scope)
+	historyLen := len(snapshot.Messages)
+	if historyLen == 0 {
+		return false
+	}
+
+	end := historyLen - limit
+	start := snapshot.SummaryMessageCount
+	if start >= end {
+		return false
+	}
+
+	chunkEnd := min(start+chunkSize, end)
+	slice := b.hydrateMessagesWithImageDescriptions(ctx, snapshot.Messages[start:chunkEnd])
 
 	text := llmcontext.RenderMessagesPlainText(slice)
 	if snapshot.EarlierSummary != "" {
 		text = "Earlier conversation summary:\n" + snapshot.EarlierSummary + "\n\nRecent messages:\n" + text
 	}
 
-	summary, usage, err := b.llm.Summarize(workCtx, llm.PromptScope{ChatID: scope.ChatID}, text, "")
+	summary, usage, err := b.llm.Summarize(ctx, llm.PromptScope{ChatID: scope.ChatID}, text, "")
 	if err != nil {
-		b.loggerFromContext(workCtx).Error("failed to summarize history", "error", err, "chat_id", scope.ChatID, "topic_id", scope.TopicID)
+		b.loggerFromContext(ctx).Error("failed to summarize history", "error", err, "chat_id", scope.ChatID, "topic_id", scope.TopicID)
 		sentry.CaptureException(err)
 
-		return
+		return false
 	}
 	if usage != nil {
 		b.stats.AddUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.Cost)
 	}
-	if ok := b.history.SetEarlierSummary(scope, summary, end, snapshot.Revision); !ok {
+	if ok := b.history.SetEarlierSummary(scope, summary, chunkEnd, snapshot.Revision); !ok {
 		// History changed while the summary was being generated (reaction
 		// change, trim, reset): discard it rather than restore stale context.
-		b.loggerFromContext(workCtx).Debug("discarding summary built from changed history",
+		b.loggerFromContext(ctx).Debug("discarding summary built from changed history",
 			"chat_id", scope.ChatID, "topic_id", scope.TopicID)
+
+		return false
 	}
+
+	return true
 }

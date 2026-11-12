@@ -82,6 +82,10 @@ type Bot struct {
 	tools            *tooluse.Runtime
 	imageRecognition ImageRecognitionSettings
 	autoSummaryURLs  *autoSummaryTracker
+	// pendingReactions holds reaction updates that arrived while their target
+	// reply's send response was still in flight; replayed on history
+	// insertion. The zero value is usable.
+	pendingReactions pendingReactionBuffer
 }
 
 func NewBot(

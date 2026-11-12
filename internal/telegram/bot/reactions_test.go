@@ -269,6 +269,81 @@ func TestReactionFromNonWhitelistedChatDropped(t *testing.T) {
 	}
 }
 
+// TestReactionNonAdminPrivateDroppedWithDMAdminsOnly proves BOT__DM_ADMINS_ONLY
+// covers reaction updates too: the middleware gate only inspects Message
+// updates, so the handler re-enforces the restriction for private chats
+// before the access policy is consulted.
+func TestReactionNonAdminPrivateDroppedWithDMAdminsOnly(t *testing.T) {
+	spy := &dmHistorySpy{}
+	p := newReactionTestBot(t, &dmCatalogSpy{}, spy)
+	p.bot.cfg.DMAdminsOnly = true
+
+	// Non-admin private reaction: dropped even under the allow-all policy.
+	p.deliver(t, reactionUpdate(100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, emojiReaction("👍")))
+	if got := spy.reactionCallCount(); got != 0 {
+		t.Fatalf("non-admin private reaction must be dropped, got %d store calls", got)
+	}
+
+	// Admin private reactions keep flowing.
+	p.deliver(t, reactionUpdateWithID(45, 100500, 777, &tg.User{ID: 7, FirstName: "Admin"}, emojiReaction("👍")))
+	if got := spy.reactionCallCount(); got != 1 {
+		t.Fatalf("admin private reaction must be processed, got %d store calls", got)
+	}
+
+	// Group reactions are unaffected by the DM restriction.
+	groupUpdate := reactionUpdateWithID(46, -100999, 777, &tg.User{ID: 42, FirstName: "Alice"}, emojiReaction("👍"))
+	groupUpdate.MessageReaction.Chat = tg.Chat{ID: -100999, Type: tg.ChatTypeSupergroup}
+	p.deliver(t, groupUpdate)
+	if got := spy.reactionCallCount(); got != 2 {
+		t.Fatalf("group reaction must not be affected by the DM restriction, got %d store calls", got)
+	}
+}
+
+// TestReactionHeldDuringSendWindowIsReplayedOnInsertion proves a reaction
+// that arrives while the bot reply's send response is still in flight is
+// buffered and applied once the reply is recorded in history.
+func TestReactionHeldDuringSendWindowIsReplayedOnInsertion(t *testing.T) {
+	p := newReactionTestBot(t, &dmCatalogSpy{}, newMemoryConversationStore())
+
+	// The reply is already visible on Telegram (so users can react) before
+	// its send response lands and history insertion happens: no target yet.
+	p.deliver(t, reactionUpdateWithID(101, 100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, emojiReaction("👍")))
+	if got := p.store.Snapshot(state.ConversationScope{ChatID: 100500}).Messages; len(got) != 0 {
+		t.Fatalf("nothing must be recorded before insertion, got %+v", got)
+	}
+
+	replyTo := tg.Message{MessageID: 55, Chat: tg.Chat{ID: 100500, Type: tg.ChatTypePrivate}}
+	p.bot.saveBotReplyToHistory(context.Background(), replyTo, "answer", 777)
+
+	snapshot := p.store.Snapshot(state.ConversationScope{ChatID: 100500})
+	if len(snapshot.Messages) != 1 || len(snapshot.Messages[0].Reactions) != 1 || snapshot.Messages[0].Reactions[0].Emoji != "👍" {
+		t.Fatalf("held reaction must be applied when the reply lands: %+v", snapshot.Messages)
+	}
+}
+
+// TestReactionRemovalDuringSendCannotBeResurrected reproduces the send-window
+// race end to end: the removal arrives before history insertion, the older
+// addition after it, and the sequence guard must keep the reaction removed.
+func TestReactionRemovalDuringSendCannotBeResurrected(t *testing.T) {
+	p := newReactionTestBot(t, &dmCatalogSpy{}, newMemoryConversationStore())
+
+	removal := reactionUpdateWithID(102, 100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, nil)
+	removal.MessageReaction.OldReaction = emojiReaction("👍")
+	p.deliver(t, removal) // arrives during the send: held, nothing recorded
+
+	replyTo := tg.Message{MessageID: 55, Chat: tg.Chat{ID: 100500, Type: tg.ChatTypePrivate}}
+	p.bot.saveBotReplyToHistory(context.Background(), replyTo, "answer", 777) // replays update 102
+
+	// The addition was delayed past the insertion: it is older than the
+	// replayed removal and must stay rejected.
+	p.deliver(t, reactionUpdateWithID(101, 100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, emojiReaction("👍")))
+
+	reactions := p.store.Snapshot(state.ConversationScope{ChatID: 100500}).Messages[0].Reactions
+	if len(reactions) != 0 {
+		t.Fatalf("delayed addition must not resurrect the removed reaction, got %+v", reactions)
+	}
+}
+
 // TestReactionInGroupChatRecorded proves the same flow works in groups where
 // the bot sees per-user reactions (bot admin required in production).
 func TestReactionInGroupChatRecorded(t *testing.T) {

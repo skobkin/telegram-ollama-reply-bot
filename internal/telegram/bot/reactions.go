@@ -1,8 +1,11 @@
 package bot
 
 import (
+	"cmp"
+	"context"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"telegram-ollama-reply-bot/internal/state"
@@ -62,6 +65,16 @@ func (b *Bot) messageReactionHandler(ctx *th.Context, update t.Update) error {
 		return nil
 	}
 
+	// The shared dmAdminsOnlyGate only inspects Message updates, so the
+	// BOT__DM_ADMINS_ONLY restriction is re-enforced here for reaction
+	// updates: a non-admin private reaction is dropped before the admin
+	// service is consulted or history is touched.
+	if b.cfg.DMAdminsOnly && reaction.Chat.Type == t.ChatTypePrivate && !b.isAdminReactionDM(reaction) {
+		logger.Info("dropping non-admin private reaction (BOT__DM_ADMINS_ONLY)", "from_id", reaction.User.ID)
+
+		return nil
+	}
+
 	if b.admin != nil {
 		allowed, err := b.admin.ShouldAllowChat(ctx.Context(), reaction.Chat.ID, b.isAdminReactionDM(reaction))
 		if err != nil {
@@ -92,10 +105,171 @@ func (b *Bot) messageReactionHandler(ctx *th.Context, update t.Update) error {
 	}
 
 	if !b.history.SetMessageReactions(reaction.Chat.ID, reaction.MessageID, reaction.User.ID, int64(update.UpdateID), tracked) {
-		logger.Debug("reaction target not in bot history")
+		// The target reply may still be in flight: Telegram makes a sent
+		// message reactable before its send response returns and the reply is
+		// recorded in history. Hold the update so insertion replays it in
+		// order — dropping it (and its sequence) would let an older sibling
+		// arriving after the insertion resurrect an undone change.
+		b.pendingReactions.hold(pendingReactionKey{
+			chatID:    reaction.Chat.ID,
+			messageID: reaction.MessageID,
+		}, reaction.User.ID, int64(update.UpdateID), tracked)
+		logger.Debug("holding reaction for reply not yet in history")
 	}
 
 	return nil
+}
+
+const (
+	// pendingReactionTTL bounds how long a reaction update is held while its
+	// target message may still be in flight. It is generous next to the real
+	// send latency so no live update is lost; holds whose target never gets
+	// recorded (user messages, history lost to restart or trim) expire
+	// silently.
+	pendingReactionTTL = 15 * time.Second
+
+	// pendingReactionMaxEntries caps the buffer against bursts of reactions
+	// to messages that will never be recorded; the oldest hold is dropped
+	// first. A popular fresh reply can legitimately hold many updates at
+	// once, so the cap applies globally rather than per message.
+	pendingReactionMaxEntries = 128
+)
+
+// pendingReactionKey identifies one Telegram message; reaction updates carry
+// no topic, matching the store's chat-wide lookup.
+type pendingReactionKey struct {
+	chatID    int64
+	messageID int
+}
+
+// pendingReactionUpdate is one held reaction update, replayed in update
+// order once its target message is recorded in history.
+type pendingReactionUpdate struct {
+	userID    int64
+	updateSeq int64
+	reactions []state.Reaction
+	heldAt    time.Time
+}
+
+// pendingReactionBuffer holds reaction updates for bot replies whose send
+// response has not landed yet. The zero value is ready to use so minimally
+// constructed bots keep working.
+type pendingReactionBuffer struct {
+	mu      sync.Mutex
+	entries map[pendingReactionKey][]pendingReactionUpdate
+}
+
+// hold buffers one reaction update, pruning expired holds and keeping the
+// buffer within its entry cap.
+func (p *pendingReactionBuffer) hold(key pendingReactionKey, userID, updateSeq int64, reactions []state.Reaction) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	now := time.Now().UTC()
+	p.pruneLocked(now)
+	if p.countLocked() >= pendingReactionMaxEntries {
+		p.dropOldestLocked(now)
+	}
+	if p.entries == nil {
+		p.entries = make(map[pendingReactionKey][]pendingReactionUpdate)
+	}
+	p.entries[key] = append(p.entries[key], pendingReactionUpdate{
+		userID:    userID,
+		updateSeq: updateSeq,
+		reactions: reactions,
+		heldAt:    now,
+	})
+}
+
+// take removes and returns the held updates for one message in update order:
+// handlers run concurrently, so the held order is arrival order.
+func (p *pendingReactionBuffer) take(key pendingReactionKey) []pendingReactionUpdate {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	held := p.entries[key]
+	if len(held) == 0 {
+		return nil
+	}
+	delete(p.entries, key)
+
+	slices.SortFunc(held, func(a, b pendingReactionUpdate) int {
+		return cmp.Compare(a.updateSeq, b.updateSeq)
+	})
+
+	return held
+}
+
+func (p *pendingReactionBuffer) pruneLocked(now time.Time) {
+	for key, held := range p.entries {
+		kept := held[:0]
+		for _, update := range held {
+			if now.Sub(update.heldAt) < pendingReactionTTL {
+				kept = append(kept, update)
+			}
+		}
+		if len(kept) == 0 {
+			delete(p.entries, key)
+
+			continue
+		}
+		p.entries[key] = kept
+	}
+}
+
+func (p *pendingReactionBuffer) countLocked() int {
+	total := 0
+	for _, held := range p.entries {
+		total += len(held)
+	}
+
+	return total
+}
+
+func (p *pendingReactionBuffer) dropOldestLocked(now time.Time) {
+	var (
+		oldestKey   pendingReactionKey
+		oldestIndex = -1
+		oldestAt    = now
+	)
+	for key, held := range p.entries {
+		for i, update := range held {
+			if oldestIndex < 0 || update.heldAt.Before(oldestAt) {
+				oldestKey, oldestIndex, oldestAt = key, i, update.heldAt
+			}
+		}
+	}
+	if oldestIndex < 0 {
+		return
+	}
+
+	held := slices.Delete(p.entries[oldestKey], oldestIndex, oldestIndex+1)
+	if len(held) == 0 {
+		delete(p.entries, oldestKey)
+
+		return
+	}
+	p.entries[oldestKey] = held
+}
+
+// replayPendingReactions applies held reaction updates once the reply they
+// target is recorded in history, in Telegram update order, so reactions that
+// arrived during the send response are neither dropped nor reordered.
+func (b *Bot) replayPendingReactions(ctx context.Context, chatID int64, messageID int) {
+	held := b.pendingReactions.take(pendingReactionKey{chatID: chatID, messageID: messageID})
+	if len(held) == 0 {
+		return
+	}
+
+	logger := b.loggerFromContext(ctx).With("chat_id", chatID, "message_id", messageID)
+	logger.Debug("replaying reactions held during send", "updates", len(held))
+
+	for _, update := range held {
+		if !b.history.SetMessageReactions(chatID, messageID, update.userID, update.updateSeq, update.reactions) {
+			logger.Debug("held reaction target vanished before replay",
+				"user_id", update.userID, "update_seq", update.updateSeq)
+		}
+	}
 }
 
 // isAdminReactionDM mirrors isAdminDM for reaction updates, whose actor is a
