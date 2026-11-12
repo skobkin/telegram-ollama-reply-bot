@@ -121,6 +121,12 @@ func (s *recordingStore) SetGlobalField(_ context.Context, field, value string, 
 		s.global.DefaultInteractivityMode = adminconfig.InteractivityMode(value)
 	case "default_auto_summary_enabled":
 		s.global.DefaultAutoSummaryEnabled = value == "true"
+	case "show_reply_previews":
+		s.global.ShowReplyPreviews = value == "true"
+	case "default_preview_mode":
+		s.global.DefaultPreviewMode = adminconfig.PreviewMode(value)
+	case "keep_tool_history":
+		s.global.KeepToolHistory = value == "true"
 	}
 
 	return nil
@@ -149,6 +155,13 @@ func (s *recordingStore) GetChatSettings(_ context.Context, chatID int64) (admin
 	}
 	if value, ok := fields["auto_summary_enabled"]; ok {
 		settings.AutoSummaryEnabled = adminconfig.BoolPointer(value == "true")
+	}
+	if value, ok := fields["preview_mode"]; ok && value != "" {
+		settings.HasPreviewMode = true
+		settings.PreviewMode = adminconfig.PreviewMode(value)
+	}
+	if value, ok := fields["keep_tool_history"]; ok {
+		settings.KeepToolHistory = adminconfig.BoolPointer(value == "true")
 	}
 
 	return settings, true, nil
@@ -582,6 +595,216 @@ func TestAutoSummaryToggleEditors(t *testing.T) {
 		"ClearChatField:-100200300400:auto_summary_enabled",
 		"SetGlobalField:default_auto_summary_enabled=true",
 	)
+}
+
+func TestPreviewEditors(t *testing.T) {
+	c, store := newTestController(t)
+	session := mustOpen(t, c)
+
+	// Master on so the editors operate normally.
+	store.mu.Lock()
+	store.global.ShowReplyPreviews = true
+	store.global.DefaultPreviewMode = adminconfig.PreviewModeTools
+	store.global.KeepToolHistory = true
+	store.mu.Unlock()
+
+	var calls []string
+
+	// Global master switch editor.
+	tap(t, c, session, VerbGlobalSet)
+	outcome := tap(t, c, session, VerbField, "rp")
+	if outcome.Render.Screen.Kind != ScreenFieldEditor || outcome.Render.Screen.Field != "show_reply_previews" {
+		t.Fatalf("global field tap must open the master switch editor: %+v", outcome.Render.Screen)
+	}
+
+	tap(t, c, session, VerbValue, "rp", "on")
+	calls = append(calls, "SetGlobalField:show_reply_previews=true")
+	store.assertCalls(t, calls...)
+
+	// Global default preview mode editor: enum without an off option and
+	// without an inherit row (global scope has nothing to inherit from).
+	tap(t, c, session, VerbGlobalSet)
+	outcome = tap(t, c, session, VerbField, "pv")
+	if outcome.Render.Screen.Kind != ScreenFieldEditor || outcome.Render.Screen.Field != "default_preview_mode" {
+		t.Fatalf("global field tap must open the default preview editor: %+v", outcome.Render.Screen)
+	}
+	buttons := screenButtons(outcome.Render.Built)
+	for _, want := range []string{"● Standard tools", "○ All tools and durations"} {
+		if !strings.Contains(buttons, want) {
+			t.Fatalf("global preview editor must offer %q: %q", want, buttons)
+		}
+	}
+	if strings.Contains(buttons, "Off (typing indicator)") || strings.Contains(buttons, "Inherit") {
+		t.Fatalf("global preview editor must not offer off or inherit: %q", buttons)
+	}
+
+	tap(t, c, session, VerbValue, "pv", "all_tools")
+	calls = append(calls, "SetGlobalField:default_preview_mode=all_tools")
+	store.assertCalls(t, calls...)
+
+	// Global scope must reject off (the master switch governs that). The
+	// rejection surfaces as a failure notice, without a store write.
+	session.mu.Lock()
+	seq, msgID := session.Seq, session.MsgID
+	session.mu.Unlock()
+	outcome, _ = c.HandleCallback(context.Background(), testAdminID, msgID, EncodeAction(VerbValue, seq, "pv", "off"))
+	if outcome.Render == nil || !strings.Contains(outcome.Render.Built.Text, "Failed") {
+		t.Fatalf("global preview mode must reject off with a failure notice: %+v", outcome.Render)
+	}
+	store.assertCalls(t, calls...)
+
+	// Global keep-tool-history editor.
+	tap(t, c, session, VerbGlobalSet)
+	outcome = tap(t, c, session, VerbField, "kh")
+	if outcome.Render.Screen.Kind != ScreenFieldEditor || outcome.Render.Screen.Field != "keep_tool_history" {
+		t.Fatalf("global field tap must open the tool-history editor: %+v", outcome.Render.Screen)
+	}
+
+	tap(t, c, session, VerbValue, "kh", "off")
+	calls = append(calls, "SetGlobalField:keep_tool_history=false")
+	store.assertCalls(t, calls...)
+
+	// Chat preview_mode enum editor: off is a valid choice here, and the
+	// explicit inherit row appears only while an override is stored.
+	tap(t, c, session, VerbCatalog, "1")
+	tap(t, c, session, VerbChat, strconv.FormatInt(testGroupID, 10))
+	tap(t, c, session, VerbChatSet)
+
+	outcome = tap(t, c, session, VerbField, "pv")
+	if outcome.Render.Screen.Kind != ScreenFieldEditor || outcome.Render.Screen.Field != "preview_mode" {
+		t.Fatalf("field tap must open the preview-mode editor: %+v", outcome.Render.Screen)
+	}
+	buttons = screenButtons(outcome.Render.Built)
+	// The inherited current value is the global default set earlier in this
+	// test (all_tools), so that option carries the filled marker.
+	for _, want := range []string{"○ Off (typing indicator)", "○ Standard tools", "● All tools and durations"} {
+		if !strings.Contains(buttons, want) {
+			t.Fatalf("chat preview editor must offer %q: %q", want, buttons)
+		}
+	}
+	if strings.Contains(buttons, "Inherit global") {
+		t.Fatalf("inherit must be hidden while no override is stored: %q", buttons)
+	}
+
+	tap(t, c, session, VerbValue, "pv", "all_tools")
+	calls = append(calls, "SetChatField:-100200300400:preview_mode=all_tools")
+	store.assertCalls(t, calls...)
+
+	// The stored override makes the enum editor offer explicit inherit; it
+	// clears the override row only, leaving unrelated settings untouched.
+	outcome = tap(t, c, session, VerbField, "pv")
+	if !strings.Contains(screenButtons(outcome.Render.Built), "Inherit global") {
+		t.Fatalf("overridden preview editor must offer inherit: %q", screenButtons(outcome.Render.Built))
+	}
+
+	store.mu.Lock()
+	store.chatRows[testGroupID]["language"] = "English"
+	store.mu.Unlock()
+
+	tap(t, c, session, VerbClear, "pv")
+	calls = append(calls, "ClearChatField:-100200300400:preview_mode")
+	store.assertCalls(t, calls...)
+
+	store.mu.Lock()
+	_, languageKept := store.chatRows[testGroupID]["language"]
+	store.mu.Unlock()
+	if !languageKept {
+		t.Fatal("clearing the preview override must not touch unrelated chat settings")
+	}
+
+	// Chat scope accepts off, unlike the global editor.
+	tap(t, c, session, VerbValue, "pv", "off")
+	calls = append(calls, "SetChatField:-100200300400:preview_mode=off")
+	store.assertCalls(t, calls...)
+
+	// Chat keep_tool_history tri-state editor: off and inherit round-trip.
+	outcome = tap(t, c, session, VerbField, "kh")
+	if outcome.Render.Screen.Kind != ScreenFieldEditor || outcome.Render.Screen.Field != "keep_tool_history" {
+		t.Fatalf("field tap must open the chat tool-history editor: %+v", outcome.Render.Screen)
+	}
+	if !strings.Contains(screenButtons(outcome.Render.Built), "Inherit") {
+		t.Fatalf("chat tool-history editor must offer inherit: %q", screenButtons(outcome.Render.Built))
+	}
+
+	tap(t, c, session, VerbValue, "kh", "off")
+	calls = append(calls, "SetChatField:-100200300400:keep_tool_history=false")
+	store.assertCalls(t, calls...)
+
+	tap(t, c, session, VerbValue, "kh", "inh")
+	calls = append(calls, "ClearChatField:-100200300400:keep_tool_history")
+	store.assertCalls(t, calls...)
+}
+
+func TestPreviewFieldsHiddenWhileMasterOff(t *testing.T) {
+	c, store := newTestController(t)
+	session := mustOpen(t, c)
+
+	// A stored chat override exists while previews are globally off (the
+	// migration default). Hiding must not delete it.
+	store.mu.Lock()
+	store.chatRows[testGroupID] = map[string]string{"preview_mode": "all_tools"}
+	store.mu.Unlock()
+
+	tap(t, c, session, VerbCatalog, "1")
+	outcome := tap(t, c, session, VerbChat, strconv.FormatInt(testGroupID, 10))
+	if strings.Contains(outcome.Render.Built.Text, "Preview mode") ||
+		strings.Contains(outcome.Render.Built.Text, "Keep tool history") {
+		t.Fatalf("card must hide preview fields while master off: %q", outcome.Render.Built.Text)
+	}
+
+	outcome = tap(t, c, session, VerbChatSet)
+	if strings.Contains(outcome.Render.Built.Text, "Preview mode") ||
+		strings.Contains(outcome.Render.Built.Text, "Keep tool history") ||
+		strings.Contains(screenButtons(outcome.Render.Built), "✎ Preview") ||
+		strings.Contains(screenButtons(outcome.Render.Built), "✎ Keep tool") {
+		t.Fatalf("chat settings must hide preview rows while master off: %q / %q",
+			outcome.Render.Built.Text, screenButtons(outcome.Render.Built))
+	}
+
+	// The global screen always keeps every field operable, including the
+	// master switch itself.
+	tap(t, c, session, VerbGlobalSet)
+	outcome, err := c.HandleCallback(context.Background(), testAdminID, session.MsgID,
+		EncodeAction(VerbField, session.Seq, "rp"))
+	if err != nil {
+		t.Fatalf("master switch editor tap: %v", err)
+	}
+	if outcome.Render.Screen.Kind != ScreenFieldEditor || outcome.Render.Screen.Field != "show_reply_previews" {
+		t.Fatalf("master switch editor must stay reachable while off: %+v", outcome.Render.Screen)
+	}
+
+	// Enable previews through the UI.
+	session.mu.Lock()
+	seq := session.Seq
+	session.mu.Unlock()
+	if outcome, err = c.HandleCallback(context.Background(), testAdminID, session.MsgID,
+		EncodeAction(VerbValue, seq, "rp", "on")); err != nil {
+		t.Fatalf("enable previews: %v", err)
+	}
+	store.assertCalls(t, "SetGlobalField:show_reply_previews=true")
+
+	// The stored chat override survived the whole hidden period.
+	store.mu.Lock()
+	mode := store.chatRows[testGroupID]["preview_mode"]
+	store.mu.Unlock()
+	if mode != "all_tools" {
+		t.Fatalf("stored override must survive hiding: preview_mode=%q", mode)
+	}
+
+	// Back to the chat settings screen: rows reappear with the override
+	// flagged.
+	tap(t, c, session, VerbBack)
+	outcome = tap(t, c, session, VerbBack)
+	if outcome.Render.Screen.Kind != ScreenChatSet {
+		t.Fatalf("back must return to chat settings: %+v", outcome.Render.Screen)
+	}
+	if !strings.Contains(outcome.Render.Built.Text, "Preview mode") ||
+		!strings.Contains(outcome.Render.Built.Text, "Keep tool history") {
+		t.Fatalf("chat settings must show preview rows after enabling: %q", outcome.Render.Built.Text)
+	}
+	if !strings.Contains(outcome.Render.Built.Text, "[chat override]") {
+		t.Fatalf("preserved override must be flagged: %q", outcome.Render.Built.Text)
+	}
 }
 
 func TestStringInputFlowSaveAndAttemptsCancel(t *testing.T) {

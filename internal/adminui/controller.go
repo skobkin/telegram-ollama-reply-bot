@@ -1338,13 +1338,18 @@ func (c *Controller) buildScreen(ctx context.Context, seq uint32, state ScreenSt
 		if err != nil {
 			return nil, err
 		}
+		global, err := c.service.Store().GetGlobalSettings(ctx)
+		if err != nil {
+			return nil, err
+		}
 		entry, found := c.catalogEntry(ctx, state.ChatID)
 
 		data := ChatCardData{
-			Info:       entry,
-			Found:      found,
-			View:       view,
-			AccessLine: accessStatusLabel(policy, view.Allowlisted),
+			Info:              entry,
+			Found:             found,
+			View:              view,
+			AccessLine:        accessStatusLabel(policy, view.Allowlisted),
+			HidePreviewFields: !global.ShowReplyPreviews,
 		}
 		for _, mode := range adminconfig.InteractivityModes() {
 			data.ModeValues = append(data.ModeValues, string(mode))
@@ -1370,7 +1375,15 @@ func (c *Controller) buildScreen(ctx context.Context, seq uint32, state ScreenSt
 		if err != nil {
 			return nil, err
 		}
-		screen = b.settings(SettingsData{ChatView: view, ChatName: c.chatDisplayName(ctx, state.ChatID)})
+		global, err := c.service.Store().GetGlobalSettings(ctx)
+		if err != nil {
+			return nil, err
+		}
+		screen = b.settings(SettingsData{
+			ChatView:          view,
+			ChatName:          c.chatDisplayName(ctx, state.ChatID),
+			HidePreviewFields: !global.ShowReplyPreviews,
+		})
 
 	case ScreenFieldEditor:
 		data, err := c.fieldEditorData(ctx, state)

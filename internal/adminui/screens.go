@@ -169,6 +169,30 @@ type ChatCardData struct {
 	ModeOverridden bool
 	ModeLabels     []string
 	ModeValues     []string
+	// HidePreviewFields hides the preview-governed fields from the settings
+	// list while the global preview master switch is off. Hiding is
+	// render-time only: stored chat overrides stay untouched.
+	HidePreviewFields bool
+}
+
+// previewFieldNames lists the chat fields governed by the preview master
+// switch; they disappear from chat screens while previews are globally off.
+var previewFieldNames = map[string]bool{
+	"preview_mode":      true,
+	"keep_tool_history": true,
+}
+
+// filterPreviewFields drops the preview-governed specs from a chat spec list.
+func filterPreviewFields(specs []adminconfig.FieldSpec) []adminconfig.FieldSpec {
+	filtered := make([]adminconfig.FieldSpec, 0, len(specs))
+	for _, spec := range specs {
+		if previewFieldNames[spec.Name] {
+			continue
+		}
+		filtered = append(filtered, spec)
+	}
+
+	return filtered
 }
 
 func (b screenBuilder) chatCard(data ChatCardData) *Screen {
@@ -188,6 +212,9 @@ func (b screenBuilder) chatCard(data ChatCardData) *Screen {
 	for _, field := range data.View.Fields {
 		if field.Spec.Name == "interactivity_mode" {
 			continue // shown in the dedicated line above
+		}
+		if data.HidePreviewFields && previewFieldNames[field.Spec.Name] {
+			continue // hidden while the preview master switch is off
 		}
 		fmt.Fprintf(&text, "• %s: %s%s\n", field.Spec.Label, displayFieldValue(field), sourceMark(field.Overridden))
 	}
@@ -233,6 +260,11 @@ type SettingsData struct {
 	View     adminconfig.EffectiveGlobalConfig
 	ChatView adminconfig.EffectiveChatConfig
 	ChatName string
+	// HidePreviewFields hides the preview-governed rows from the chat
+	// settings screen while the global preview master switch is off. The
+	// global screen always keeps every field (the master switch itself must
+	// stay operable), and stored chat overrides persist untouched.
+	HidePreviewFields bool
 }
 
 func (b screenBuilder) settings(data SettingsData) *Screen {
@@ -246,6 +278,9 @@ func (b screenBuilder) settings(data SettingsData) *Screen {
 	specs := adminconfig.GlobalFieldSpecs()
 	if !data.Global {
 		specs = adminconfig.ChatFieldSpecs()
+		if data.HidePreviewFields {
+			specs = filterPreviewFields(specs)
+		}
 	}
 
 	for _, spec := range specs {
@@ -308,6 +343,12 @@ func globalSettingsValue(settings adminconfig.GlobalSettings, spec adminconfig.F
 		return string(settings.DefaultInteractivityMode)
 	case "default_auto_summary_enabled":
 		return strconv.FormatBool(settings.DefaultAutoSummaryEnabled)
+	case "show_reply_previews":
+		return strconv.FormatBool(settings.ShowReplyPreviews)
+	case "default_preview_mode":
+		return string(settings.DefaultPreviewMode)
+	case "keep_tool_history":
+		return strconv.FormatBool(settings.KeepToolHistory)
 	default:
 		return ""
 	}
@@ -353,6 +394,11 @@ func (b screenBuilder) fieldEditor(data FieldEditorData) *Screen {
 				label = "● " + option.Label
 			}
 			rows = append(rows, ButtonRow{b.btn(label, VerbValue, code, option.Value)})
+		}
+		// Chat-scope enum overrides inherit by clearing the override row —
+		// restoring the global default without touching unrelated settings.
+		if !data.Global && data.Overridden {
+			rows = append(rows, ButtonRow{b.btn("Inherit global", VerbClear, code)})
 		}
 	case adminconfig.KindBool:
 		rows = append(rows, ButtonRow{

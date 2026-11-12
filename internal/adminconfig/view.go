@@ -118,6 +118,16 @@ func effectiveChatField(spec FieldSpec, global GlobalSettings, chat ChatSettings
 		if found && chat.AutoSummaryEnabled != nil {
 			field.Effective, field.Source, field.Overridden = strconv.FormatBool(*chat.AutoSummaryEnabled), SourceChatOverride, true
 		}
+	case "preview_mode":
+		field.GlobalValue = string(global.DefaultPreviewMode)
+		if found && chat.HasPreviewMode && chat.PreviewMode != "" {
+			field.Effective, field.Source, field.Overridden = string(chat.PreviewMode), SourceChatOverride, true
+		}
+	case "keep_tool_history":
+		field.GlobalValue = strconv.FormatBool(global.KeepToolHistory)
+		if found && chat.KeepToolHistory != nil {
+			field.Effective, field.Source, field.Overridden = strconv.FormatBool(*chat.KeepToolHistory), SourceChatOverride, true
+		}
 	}
 
 	if field.Effective == "" {
