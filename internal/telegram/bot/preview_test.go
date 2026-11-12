@@ -151,7 +151,8 @@ func newPreviewTestBot(t *testing.T, state *previewServerState) *Bot {
 
 		result := map[string]any{"date": 1, "chat": map[string]any{"id": 1, "type": "private"}}
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/sendMessage"), strings.HasSuffix(r.URL.Path, "/editMessageText"):
+		case strings.HasSuffix(r.URL.Path, "/sendMessage"), strings.HasSuffix(r.URL.Path, "/editMessageText"),
+			strings.HasSuffix(r.URL.Path, "/sendRichMessage"):
 			result["message_id"] = state.nextMessageID()
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": result})

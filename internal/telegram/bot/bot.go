@@ -381,6 +381,7 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adm
 
 	var llmReply string
 	var usage *llm.TokenUsage
+	var toolCalls []tooluse.ToolCallRecord
 	var err error
 
 	err = b.runWithPreviewTimeout(baseCtx, chatID, run, func(ctx context.Context) error {
@@ -416,6 +417,7 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adm
 			RunID:          run.ID(),
 		})
 		llmReply, usage, err = result.Reply, result.Usage, runErr
+		toolCalls = result.ToolCalls
 
 		return runErr
 	})
@@ -457,7 +459,14 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adm
 		return
 	}
 
-	sent, err := b.sendRichMarkdownReply(baseCtx, message, llmReply)
+	var sent *t.Message
+	if resolved.PreviewMode != adminconfig.PreviewModeOff && resolved.KeepToolHistory {
+		// Active previews append the collapsible tool-history block; with
+		// previews off the answer is sent exactly as before.
+		sent, err = b.sendReplyWithToolHistory(baseCtx, message, llmReply, toolCalls, resolved.PreviewMode)
+	} else {
+		sent, err = b.sendRichMarkdownReply(baseCtx, message, llmReply)
+	}
 	if err != nil {
 		run.Abort()
 
