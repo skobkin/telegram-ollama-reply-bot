@@ -563,3 +563,50 @@ func TestConversationStoreReactionSeqMapRebuiltOnSubstantialPrune(t *testing.T) 
 		t.Fatalf("released map must not be accounted, got %d bytes", bucket.reactionSeqBytes)
 	}
 }
+
+// TestConversationStoreReactionSeqMapRebuiltAfterCumulativeTrims proves the
+// rebuild decision tracks the high-water size, not the previous call's size:
+// incrementally trimming 100 one-record messages down to 10 never crosses a
+// per-call threshold, yet the original allocation must still be released
+// instead of staying retained outside the byte accounting.
+func TestConversationStoreReactionSeqMapRebuiltAfterCumulativeTrims(t *testing.T) {
+	t.Parallel()
+
+	stores := New(Config{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	store := stores.Conversations()
+
+	scope := state.ConversationScope{ChatID: 840}
+	key := scopeKey(scope)
+
+	const messages = 100
+	for i := 1; i <= messages; i++ {
+		store.AppendMessage(scope, state.Message{IsMe: true, MessageID: i, Text: "answer"})
+		store.SetMessageReactions(840, i, int64(i), int64(i), []state.Reaction{{UserID: int64(i), Emoji: "👍"}})
+	}
+
+	bucket := stores.conversations.streams[key]
+	if bucket == nil {
+		t.Fatalf("expected the stream to survive")
+	}
+	if bucket.reactionSeqPeak != messages {
+		t.Fatalf("expected high-water mark of %d records, got %d", messages, bucket.reactionSeqPeak)
+	}
+	before := bucket.reactionSeq
+
+	// Ninety individually tiny prunes: cumulatively only 10 of the 100
+	// records survive, so the map must be rebuilt against the high-water
+	// mark.
+	for i := 0; i < 90; i++ {
+		stores.conversations.trimBucketHead(key, bucket)
+	}
+
+	if len(bucket.reactionSeq) != 10 {
+		t.Fatalf("expected 10 surviving records, got %d", len(bucket.reactionSeq))
+	}
+	if reflect.ValueOf(bucket.reactionSeq).Pointer() == reflect.ValueOf(before).Pointer() {
+		t.Fatalf("cumulative prune must rebuild the map: retained allocation escapes the byte accounting")
+	}
+	if bucket.reactionSeqBytes != 10*reactionSeqRecordApproxBytes {
+		t.Fatalf("byte accounting must follow the surviving records, got %d", bucket.reactionSeqBytes)
+	}
+}

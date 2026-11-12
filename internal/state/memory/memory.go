@@ -103,6 +103,12 @@ type conversationBucket struct {
 	// count toward bucket bytes so long chats cannot grow them unbounded.
 	reactionSeq      map[reactionSeqKey]int64
 	reactionSeqBytes int64
+	// reactionSeqPeak is the high-water record count since the map was last
+	// allocated or rebuilt. Go maps keep their backing storage on delete,
+	// so the prune in trimBucketHead compares survivors against this peak —
+	// not against the previous call's size, which incremental trims would
+	// never cross — to decide when a rebuild actually releases storage.
+	reactionSeqPeak int
 }
 
 // reactionSeqKey identifies the reacting user within one Telegram message.
@@ -299,6 +305,9 @@ func (s *ConversationStore) SetMessageReactions(chatID int64, messageID int, use
 				bucket.reactionSeq = make(map[reactionSeqKey]int64)
 			}
 			bucket.reactionSeq[seqKey] = updateSeq
+			if size := len(bucket.reactionSeq); size > bucket.reactionSeqPeak {
+				bucket.reactionSeqPeak = size
+			}
 			seqBytes := int64(len(bucket.reactionSeq)) * reactionSeqRecordApproxBytes
 			bucket.bytes += seqBytes - bucket.reactionSeqBytes
 			s.totalBytes += seqBytes - bucket.reactionSeqBytes
@@ -466,26 +475,28 @@ func (s *ConversationStore) trimBucketHead(key string, bucket *conversationBucke
 	}
 	// Prune reaction sequence records for the trimmed message so the map
 	// cannot grow past the surviving messages, and keep its size accounted.
-	// Go maps do not return their backing storage on delete: when a prune
-	// removes a substantial share of the entries, the map is rebuilt so the
-	// retained allocation is actually released instead of escaping the byte
+	// Go maps do not return their backing storage on delete, so the survivors
+	// are compared against the high-water size since the last allocation:
+	// incremental one-message trims would never cross a per-call threshold,
+	// letting the original allocation stay retained outside the byte
 	// accounting below.
-	if beforeLen := len(bucket.reactionSeq); beforeLen > 0 {
+	if len(bucket.reactionSeq) > 0 {
 		for seqKey := range bucket.reactionSeq {
 			if seqKey.messageID == int64(removed.MessageID) {
 				delete(bucket.reactionSeq, seqKey)
 			}
 		}
-		if len(bucket.reactionSeq)*2 <= beforeLen {
-			if len(bucket.reactionSeq) == 0 {
+		if remaining := len(bucket.reactionSeq); remaining*2 <= bucket.reactionSeqPeak {
+			if remaining == 0 {
 				bucket.reactionSeq = nil
 			} else {
-				kept := make(map[reactionSeqKey]int64, len(bucket.reactionSeq))
+				kept := make(map[reactionSeqKey]int64, remaining)
 				for seqKey, seq := range bucket.reactionSeq {
 					kept[seqKey] = seq
 				}
 				bucket.reactionSeq = kept
 			}
+			bucket.reactionSeqPeak = remaining
 		}
 	}
 	seqBytes := int64(len(bucket.reactionSeq)) * reactionSeqRecordApproxBytes
