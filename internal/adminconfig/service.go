@@ -32,11 +32,11 @@ func (s *Service) Store() Store {
 }
 
 func (s *Service) GlobalFields() []string {
-	return []string{"character_name", "language", "gender", "tone_mode", "allow_teasing", "default_interactivity_mode", "default_auto_summary_enabled"}
+	return []string{"character_name", "language", "gender", "tone_mode", "allow_teasing", "default_interactivity_mode", "default_auto_summary_enabled", "show_reply_previews", "default_preview_mode", "keep_tool_history"}
 }
 
 func (s *Service) ChatFields() []string {
-	return []string{"character_name", "language", "gender", "tone_mode", "allow_teasing", "interactivity_mode", "auto_summary_enabled"}
+	return []string{"character_name", "language", "gender", "tone_mode", "allow_teasing", "interactivity_mode", "auto_summary_enabled", "preview_mode", "keep_tool_history"}
 }
 
 func (s *Service) PromptFeatures() []PromptFeature {
@@ -58,6 +58,11 @@ func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (Resolved
 		return ResolvedChatConfig{}, err
 	}
 
+	previewMode := global.DefaultPreviewMode
+	if previewMode == "" {
+		previewMode = PreviewModeTools
+	}
+
 	resolved := ResolvedChatConfig{
 		CharacterName:      global.CharacterName,
 		Language:           global.Language,
@@ -66,6 +71,8 @@ func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (Resolved
 		AllowTeasing:       global.AllowTeasing,
 		InteractivityMode:  global.DefaultInteractivityMode,
 		AutoSummaryEnabled: global.DefaultAutoSummaryEnabled,
+		PreviewMode:        previewMode,
+		KeepToolHistory:    global.KeepToolHistory,
 	}
 
 	if chatID == 0 {
@@ -77,6 +84,10 @@ func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (Resolved
 		return ResolvedChatConfig{}, err
 	}
 	if !ok {
+		if !global.ShowReplyPreviews {
+			resolved.PreviewMode = PreviewModeOff
+		}
+
 		return resolved, nil
 	}
 	if chat.CharacterName != "" {
@@ -99,6 +110,18 @@ func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (Resolved
 	}
 	if chat.AutoSummaryEnabled != nil {
 		resolved.AutoSummaryEnabled = *chat.AutoSummaryEnabled
+	}
+	if chat.HasPreviewMode && chat.PreviewMode != "" {
+		resolved.PreviewMode = chat.PreviewMode
+	}
+	if chat.KeepToolHistory != nil {
+		resolved.KeepToolHistory = *chat.KeepToolHistory
+	}
+
+	// The master switch outranks every per-chat override: stored overrides
+	// stay preserved but inert while previews are globally disabled.
+	if !global.ShowReplyPreviews {
+		resolved.PreviewMode = PreviewModeOff
 	}
 
 	return resolved, nil

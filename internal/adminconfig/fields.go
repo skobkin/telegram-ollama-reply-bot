@@ -46,7 +46,7 @@ type FieldSpec struct {
 	MaxLen int
 }
 
-// GlobalFieldSpecs describes the seven editable global settings fields.
+// GlobalFieldSpecs describes the ten editable global settings fields.
 func GlobalFieldSpecs() []FieldSpec {
 	return []FieldSpec{
 		{Name: "character_name", Label: "Character name", Kind: KindString, MaxLen: 128},
@@ -56,10 +56,13 @@ func GlobalFieldSpecs() []FieldSpec {
 		{Name: "allow_teasing", Label: "Allow teasing", Kind: KindBool},
 		{Name: "default_interactivity_mode", Label: "Default interactivity mode", Kind: KindEnum, Enum: InteractivityEnumOptions()},
 		{Name: "default_auto_summary_enabled", Label: "Default auto summary", Kind: KindBool},
+		{Name: "show_reply_previews", Label: "Show reply previews", Kind: KindBool},
+		{Name: "default_preview_mode", Label: "Default preview mode", Kind: KindEnum, Enum: GlobalPreviewModeEnumOptions()},
+		{Name: "keep_tool_history", Label: "Keep tool history", Kind: KindBool},
 	}
 }
 
-// ChatFieldSpecs describes the seven editable per-chat settings fields.
+// ChatFieldSpecs describes the nine editable per-chat settings fields.
 func ChatFieldSpecs() []FieldSpec {
 	return []FieldSpec{
 		{Name: "character_name", Label: "Character name", Kind: KindString, MaxLen: 128},
@@ -69,6 +72,8 @@ func ChatFieldSpecs() []FieldSpec {
 		{Name: "allow_teasing", Label: "Allow teasing", Kind: KindBoolTriState},
 		{Name: "interactivity_mode", Label: "Interactivity mode", Kind: KindEnum, Enum: InteractivityEnumOptions()},
 		{Name: "auto_summary_enabled", Label: "Auto summary", Kind: KindBoolTriState},
+		{Name: "preview_mode", Label: "Preview mode", Kind: KindEnum, Enum: ChatPreviewModeEnumOptions()},
+		{Name: "keep_tool_history", Label: "Keep tool history", Kind: KindBoolTriState},
 	}
 }
 
@@ -79,6 +84,31 @@ func InteractivityEnumOptions() []EnumOption {
 	options := make([]EnumOption, 0, len(modes))
 	for _, mode := range modes {
 		options = append(options, EnumOption{Value: string(mode), Label: InteractivityModeLabel(mode)})
+	}
+
+	return options
+}
+
+// ChatPreviewModeEnumOptions derives enum options from the supported
+// per-chat preview modes (off/tools/all_tools; inherit is a separate
+// clear-override action, mirroring the other inheritable chat fields).
+func ChatPreviewModeEnumOptions() []EnumOption {
+	modes := PreviewModes()
+	options := make([]EnumOption, 0, len(modes))
+	for _, mode := range modes {
+		options = append(options, EnumOption{Value: string(mode), Label: PreviewModeLabel(mode)})
+	}
+
+	return options
+}
+
+// GlobalPreviewModeEnumOptions derives enum options from the supported
+// global default preview modes (no off — the master switch governs that).
+func GlobalPreviewModeEnumOptions() []EnumOption {
+	modes := GlobalPreviewModes()
+	options := make([]EnumOption, 0, len(modes))
+	for _, mode := range modes {
+		options = append(options, EnumOption{Value: string(mode), Label: PreviewModeLabel(mode)})
 	}
 
 	return options
@@ -167,6 +197,35 @@ func ModeShortLabel(mode InteractivityMode) string {
 		return "Mentions"
 	case InteractivityMentionsReplies:
 		return "Mentions/Replies"
+	default:
+		return string(mode)
+	}
+}
+
+// PreviewModeLabel returns the full human-readable label of a preview mode,
+// used in screen text.
+func PreviewModeLabel(mode PreviewMode) string {
+	switch mode {
+	case PreviewModeOff:
+		return "Off (typing indicator)"
+	case PreviewModeTools:
+		return "Standard tools"
+	case PreviewModeAllTools:
+		return "All tools and durations"
+	default:
+		return string(mode)
+	}
+}
+
+// PreviewModeShortLabel returns a compact label for inline buttons.
+func PreviewModeShortLabel(mode PreviewMode) string {
+	switch mode {
+	case PreviewModeOff:
+		return "Off"
+	case PreviewModeTools:
+		return "Tools"
+	case PreviewModeAllTools:
+		return "All tools"
 	default:
 		return string(mode)
 	}

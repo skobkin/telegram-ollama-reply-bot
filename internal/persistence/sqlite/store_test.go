@@ -362,3 +362,100 @@ func TestStoreReminderLifecycle(t *testing.T) {
 		t.Fatalf("expected no active reminders, got %+v", items)
 	}
 }
+
+// TestStorePreviewSettingsRoundTrip covers the preview settings: the global
+// master switch/default mode/tool-history retention round-trip through
+// SetGlobalField, and the per-chat preview mode override (set, clear back to
+// inherit) plus tri-state keep-tool-history behave like the other
+// inheritable fields.
+func TestStorePreviewSettingsRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	global, err := store.GetGlobalSettings(ctx)
+	if err != nil {
+		t.Fatalf("get global settings: %v", err)
+	}
+	if global.ShowReplyPreviews {
+		t.Fatalf("expected previews off on a fresh store")
+	}
+	if global.DefaultPreviewMode != adminconfig.PreviewModeTools {
+		t.Fatalf("expected default preview mode tools on a fresh store, got %q", global.DefaultPreviewMode)
+	}
+	if !global.KeepToolHistory {
+		t.Fatalf("expected keep tool history on by default on a fresh store")
+	}
+
+	if err := store.SetGlobalField(ctx, "show_reply_previews", "true", 42); err != nil {
+		t.Fatalf("set show_reply_previews: %v", err)
+	}
+	if err := store.SetGlobalField(ctx, "default_preview_mode", "all_tools", 42); err != nil {
+		t.Fatalf("set default_preview_mode: %v", err)
+	}
+	global, err = store.GetGlobalSettings(ctx)
+	if err != nil {
+		t.Fatalf("get updated global settings: %v", err)
+	}
+	if !global.ShowReplyPreviews || global.DefaultPreviewMode != adminconfig.PreviewModeAllTools || !global.KeepToolHistory {
+		t.Fatalf("unexpected global preview settings: %+v", global)
+	}
+
+	if err := store.SetChatField(ctx, 123, "preview_mode", "tools", 42); err != nil {
+		t.Fatalf("set chat preview_mode: %v", err)
+	}
+	chat, ok, err := store.GetChatSettings(ctx, 123)
+	if err != nil || !ok {
+		t.Fatalf("get chat settings: ok=%v err=%v", ok, err)
+	}
+	if !chat.HasPreviewMode || chat.PreviewMode != adminconfig.PreviewModeTools {
+		t.Fatalf("expected explicit tools override, got has=%v mode=%q", chat.HasPreviewMode, chat.PreviewMode)
+	}
+
+	if err := store.SetChatField(ctx, 123, "keep_tool_history", "false", 42); err != nil {
+		t.Fatalf("set chat keep_tool_history: %v", err)
+	}
+	chat, ok, err = store.GetChatSettings(ctx, 123)
+	if err != nil || !ok {
+		t.Fatalf("get chat settings after keep_tool_history set: ok=%v err=%v", ok, err)
+	}
+	if chat.KeepToolHistory == nil || *chat.KeepToolHistory {
+		t.Fatalf("expected explicit false keep_tool_history, got %+v", chat.KeepToolHistory)
+	}
+
+	if err := store.ClearChatField(ctx, 123, "preview_mode", 42); err != nil {
+		t.Fatalf("clear chat preview_mode: %v", err)
+	}
+	if err := store.ClearChatField(ctx, 123, "keep_tool_history", 42); err != nil {
+		t.Fatalf("clear chat keep_tool_history: %v", err)
+	}
+	chat, ok, err = store.GetChatSettings(ctx, 123)
+	if err != nil || !ok {
+		t.Fatalf("get cleared chat settings: ok=%v err=%v", ok, err)
+	}
+	if chat.HasPreviewMode || chat.PreviewMode != "" {
+		t.Fatalf("expected inherit preview_mode after clear, got has=%v mode=%q", chat.HasPreviewMode, chat.PreviewMode)
+	}
+	if chat.KeepToolHistory != nil {
+		t.Fatalf("expected NULL (inherit) keep_tool_history after clear, got %+v", chat.KeepToolHistory)
+	}
+
+	// Setting an unrelated field afterwards must keep the preview overrides
+	// cleared (bootstrap INSERT must not touch them).
+	if err := store.SetChatField(ctx, 123, "language", "English", 42); err != nil {
+		t.Fatalf("set chat language: %v", err)
+	}
+	chat, ok, err = store.GetChatSettings(ctx, 123)
+	if err != nil || !ok {
+		t.Fatalf("get chat settings after language set: ok=%v err=%v", ok, err)
+	}
+	if chat.HasPreviewMode || chat.KeepToolHistory != nil {
+		t.Fatalf("preview overrides must stay cleared after unrelated field set: %+v", chat)
+	}
+
+	if err := store.SetGlobalField(ctx, "default_preview_mode", "off", 42); err == nil {
+		t.Fatal("global default_preview_mode must reject off (master switch governs)")
+	}
+	if err := store.SetChatField(ctx, 123, "preview_mode", "bogus", 42); err == nil {
+		t.Fatal("chat preview_mode must reject unsupported values")
+	}
+}

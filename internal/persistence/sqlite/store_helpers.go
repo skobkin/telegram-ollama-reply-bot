@@ -34,6 +34,21 @@ func globalFieldAssignment(field, value string) (string, any, error) {
 		parsed, err := parseBoolValue(value)
 
 		return "default_auto_summary_enabled", boolToSQLite(parsed), err
+	case "show_reply_previews":
+		parsed, err := parseBoolValue(value)
+
+		return "show_reply_previews", boolToSQLite(parsed), err
+	case "default_preview_mode":
+		mode := adminconfig.PreviewMode(value)
+		if !isValidGlobalPreviewMode(mode) {
+			return "", nil, fmt.Errorf("unsupported preview mode %q; supported values: %s", value, formatGlobalPreviewModes())
+		}
+
+		return "default_preview_mode", string(mode), nil
+	case "keep_tool_history":
+		parsed, err := parseBoolValue(value)
+
+		return "keep_tool_history", boolToSQLite(parsed), err
 	default:
 		return "", nil, fmt.Errorf("unsupported global field %q", field)
 	}
@@ -64,6 +79,17 @@ func chatFieldAssignment(field, value string) (string, any, error) {
 		parsed, err := parseBoolValue(value)
 
 		return "auto_summary_enabled", boolToSQLite(parsed), err
+	case "preview_mode":
+		mode := adminconfig.PreviewMode(value)
+		if !isValidPreviewMode(mode) {
+			return "", nil, fmt.Errorf("unsupported preview mode %q; supported values: %s", value, formatPreviewModes())
+		}
+
+		return "preview_mode", string(mode), nil
+	case "keep_tool_history":
+		parsed, err := parseBoolValue(value)
+
+		return "keep_tool_history", boolToSQLite(parsed), err
 	default:
 		return "", nil, fmt.Errorf("unsupported chat field %q", field)
 	}
@@ -85,6 +111,10 @@ func chatFieldClearValue(field string) (string, any, error) {
 		return "interactivity_mode", "", nil
 	case "auto_summary_enabled":
 		return "auto_summary_enabled", nil, nil
+	case "preview_mode":
+		return "preview_mode", "", nil
+	case "keep_tool_history":
+		return "keep_tool_history", nil, nil
 	default:
 		return "", nil, fmt.Errorf("unsupported chat field %q", field)
 	}
@@ -126,6 +156,31 @@ func formatInteractivityModes() string {
 	return strings.Join(modes, ", ")
 }
 
+func isValidPreviewMode(mode adminconfig.PreviewMode) bool {
+	return adminconfig.IsValidPreviewMode(mode)
+}
+
+func isValidGlobalPreviewMode(mode adminconfig.PreviewMode) bool {
+	return adminconfig.IsValidGlobalPreviewMode(mode)
+}
+
+func formatPreviewModes() string {
+	return formatModeList(adminconfig.PreviewModes())
+}
+
+func formatGlobalPreviewModes() string {
+	return formatModeList(adminconfig.GlobalPreviewModes())
+}
+
+func formatModeList(modes []adminconfig.PreviewMode) string {
+	formatted := make([]string, 0, len(modes))
+	for _, mode := range modes {
+		formatted = append(formatted, string(mode))
+	}
+
+	return strings.Join(formatted, ", ")
+}
+
 func globalFieldUpdateQuery(column string) (string, error) {
 	switch column {
 	case "character_name":
@@ -142,6 +197,12 @@ func globalFieldUpdateQuery(column string) (string, error) {
 		return `UPDATE global_settings SET default_interactivity_mode = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
 	case "default_auto_summary_enabled":
 		return `UPDATE global_settings SET default_auto_summary_enabled = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
+	case "show_reply_previews":
+		return `UPDATE global_settings SET show_reply_previews = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
+	case "default_preview_mode":
+		return `UPDATE global_settings SET default_preview_mode = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
+	case "keep_tool_history":
+		return `UPDATE global_settings SET keep_tool_history = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
 	default:
 		return "", fmt.Errorf("unsupported global column %q", column)
 	}
@@ -163,6 +224,10 @@ func chatFieldUpdateQuery(column string) (string, error) {
 		return `UPDATE chat_settings SET interactivity_mode = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
 	case "auto_summary_enabled":
 		return `UPDATE chat_settings SET auto_summary_enabled = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
+	case "preview_mode":
+		return `UPDATE chat_settings SET preview_mode = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
+	case "keep_tool_history":
+		return `UPDATE chat_settings SET keep_tool_history = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
 	default:
 		return "", fmt.Errorf("unsupported chat column %q", column)
 	}

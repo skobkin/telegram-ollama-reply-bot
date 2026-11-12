@@ -27,6 +27,57 @@ func InteractivityModes() []InteractivityMode {
 	}
 }
 
+// PreviewMode selects the live tool-progress preview behavior for a chat.
+type PreviewMode string
+
+const (
+	// PreviewModeOff disables previews; the bot keeps the plain typing
+	// indicator. This is the effective mode whenever the global master
+	// switch is off, regardless of overrides.
+	PreviewModeOff PreviewMode = "off"
+	// PreviewModeTools shows the neutral progress indicator and standard
+	// tools only.
+	PreviewModeTools PreviewMode = "tools"
+	// PreviewModeAllTools shows all tools including internal ones, plus
+	// execution durations.
+	PreviewModeAllTools PreviewMode = "all_tools"
+)
+
+// PreviewModes lists the supported per-chat preview modes (includes off).
+func PreviewModes() []PreviewMode {
+	return []PreviewMode{PreviewModeOff, PreviewModeTools, PreviewModeAllTools}
+}
+
+// GlobalPreviewModes lists the supported global default modes. There is no
+// global "off": the ShowReplyPreviews master switch governs that, so stored
+// per-chat overrides survive a master toggle.
+func GlobalPreviewModes() []PreviewMode {
+	return []PreviewMode{PreviewModeTools, PreviewModeAllTools}
+}
+
+// IsValidPreviewMode reports whether the value is a supported preview mode.
+func IsValidPreviewMode(mode PreviewMode) bool {
+	for _, supported := range PreviewModes() {
+		if mode == supported {
+			return true
+		}
+	}
+
+	return false
+}
+
+// IsValidGlobalPreviewMode reports whether the value is a supported global
+// default preview mode (no off — see GlobalPreviewModes).
+func IsValidGlobalPreviewMode(mode PreviewMode) bool {
+	for _, supported := range GlobalPreviewModes() {
+		if mode == supported {
+			return true
+		}
+	}
+
+	return false
+}
+
 // AccessPolicy decides which chats the bot serves beyond admin DMs.
 type AccessPolicy string
 
@@ -80,8 +131,17 @@ type GlobalSettings struct {
 	// DefaultAutoSummaryEnabled is the global default of the per-chat
 	// auto-summarizer toggle. Chats without an explicit override inherit it.
 	DefaultAutoSummaryEnabled bool
-	UpdatedAt                 time.Time
-	UpdatedBy                 int64
+	// ShowReplyPreviews is the master switch for live reply previews. When
+	// off, no previews are shown and per-chat preview overrides have no
+	// effect (they stay stored for re-enabling).
+	ShowReplyPreviews bool
+	// DefaultPreviewMode is the preview mode for chats without an override.
+	DefaultPreviewMode PreviewMode
+	// KeepToolHistory controls whether completed tool calls are appended as
+	// a collapsible section to final replies when previews are enabled.
+	KeepToolHistory bool
+	UpdatedAt       time.Time
+	UpdatedBy       int64
 }
 
 type ChatSettings struct {
@@ -96,8 +156,15 @@ type ChatSettings struct {
 	// AutoSummaryEnabled opts the chat into automatic summarization of
 	// linked long-form content. nil means inherit the global default.
 	AutoSummaryEnabled *bool
-	UpdatedAt          time.Time
-	UpdatedBy          int64
+	// PreviewMode overrides the global default preview mode. "" (has=false)
+	// means inherit.
+	PreviewMode    PreviewMode
+	HasPreviewMode bool
+	// KeepToolHistory overrides the global tool-history retention. nil means
+	// inherit the global default.
+	KeepToolHistory *bool
+	UpdatedAt       time.Time
+	UpdatedBy       int64
 }
 
 type PromptTemplate struct {
@@ -129,6 +196,12 @@ type ResolvedChatConfig struct {
 	// AutoSummaryEnabled is the effective auto-summarizer switch for the
 	// chat: the global default unless the chat overrides it.
 	AutoSummaryEnabled bool
+	// PreviewMode is the effective preview mode: off whenever the master
+	// switch is off (overrides preserved but inert), otherwise the chat
+	// override or the global default.
+	PreviewMode PreviewMode
+	// KeepToolHistory is the effective tool-history retention switch.
+	KeepToolHistory bool
 }
 
 type Store interface {
