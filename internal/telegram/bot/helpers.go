@@ -85,11 +85,27 @@ func (b *Bot) sendTypingUntil(ctx context.Context, chatID t.ChatID) {
 
 // runWithTimeout wraps handler work with typing feedback and the processing deadline.
 func (b *Bot) runWithTimeout(baseCtx context.Context, chatID t.ChatID, work func(ctx context.Context) error) error {
+	return b.runWithPreviewTimeout(baseCtx, chatID, nil, work)
+}
+
+// runWithPreviewTimeout wraps handler work with the processing deadline and
+// — unless an active live preview already signals activity in the chat —
+// the typing indicator. A run without a preview (mode off, master switch
+// off, or no dispatcher wired) behaves exactly like runWithTimeout.
+func (b *Bot) runWithPreviewTimeout(baseCtx context.Context, chatID t.ChatID, run *previewRun, work func(ctx context.Context) error) error {
 	ctx, cancel := b.withProcessingDeadline(baseCtx)
 	defer cancel()
 
-	go b.sendTypingUntil(ctx, chatID)
+	if run == nil {
+		go b.sendTypingUntil(ctx, chatID)
+	}
 
+	return b.withinProcessingDeadline(ctx, work)
+}
+
+// withinProcessingDeadline runs deadline-carrying work and maps deadline
+// exceedance to ErrRequestTimeout with timeout statistics.
+func (b *Bot) withinProcessingDeadline(ctx context.Context, work func(ctx context.Context) error) error {
 	err := work(ctx)
 
 	if err != nil {

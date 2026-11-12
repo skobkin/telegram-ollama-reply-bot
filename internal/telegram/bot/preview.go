@@ -1,0 +1,960 @@
+package bot
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
+	"time"
+
+	"telegram-ollama-reply-bot/internal/adminconfig"
+	"telegram-ollama-reply-bot/internal/execution"
+
+	t "github.com/mymmrac/telego"
+	telegoapi "github.com/mymmrac/telego/telegoapi"
+	tu "github.com/mymmrac/telego/telegoutil"
+)
+
+// Preview wire policy. All values are overridable per manager so tests can
+// shorten them; the shape stays identical between tests and production.
+type previewTimings struct {
+	// debounce is the initial silence window: a run that finishes inside it
+	// never creates a preview at all.
+	debounce time.Duration
+	// minInterval is the minimum spacing between a run's wire updates.
+	minInterval time.Duration
+	// flushFloor is the earliest delay a state-transition flush may use.
+	flushFloor time.Duration
+	// draftRefresh re-sends the private draft before its ~30s lifetime ends.
+	draftRefresh time.Duration
+	// ratePad is added on top of a 429 retry_after when backing off.
+	ratePad time.Duration
+}
+
+func defaultPreviewTimings() previewTimings {
+	return previewTimings{
+		debounce:     1500 * time.Millisecond,
+		minInterval:  2500 * time.Millisecond,
+		flushFloor:   1000 * time.Millisecond,
+		draftRefresh: 25 * time.Second,
+		ratePad:      time.Second,
+	}
+}
+
+const (
+	// previewMaxToolLines caps the rendered tool lines; older entries are
+	// compacted into an "and N earlier" line.
+	previewMaxToolLines = 20
+	// previewCallTimeout bounds one preview wire call so run finalization
+	// always rejoins the handler goroutine in bounded time.
+	previewCallTimeout = 5 * time.Second
+	// previewDeleteTimeout bounds the best-effort delete after delivery.
+	previewDeleteTimeout = 3 * time.Second
+	// previewStopJoinTimeout bounds finalization's and shutdown's wait for
+	// worker goroutine exit.
+	previewStopJoinTimeout = 3 * time.Second
+	// previewMaxFailures disables updates for a run after this many
+	// consecutive non-rate-limit wire failures (group previews).
+	previewMaxFailures = 3
+)
+
+// RunInfo describes one conversation run's preview parameters. Mode comes
+// from the resolved chat configuration; RunID correlates the preview with
+// the execution events of the same run.
+type RunInfo struct {
+	RunID            string
+	ChatID           int64
+	TopicID          int
+	TriggerMessageID int
+	ChatType         string
+	Mode             adminconfig.PreviewMode
+	KeepToolHistory  bool
+}
+
+// previewManager owns the live preview runs. It implements
+// execution.Handler: event handling is pure state update plus a non-blocking
+// worker signal — never Telegram I/O, because it runs on a dispatcher
+// delivery goroutine. All Telegram rendering happens on per-run worker
+// goroutines whose contexts derive from the bot's base context, so a worker
+// outlives the LLM run context and dies only at explicit lifecycle close or
+// shutdown.
+type previewManager struct {
+	baseCtx context.Context
+	api     *t.Bot
+	logger  *slog.Logger
+	typing  func(ctx context.Context, chatID t.ChatID)
+	timings previewTimings
+
+	mu        sync.Mutex
+	runs      map[string]*previewRun
+	chatGates map[int64]*chatGate
+	closed    bool
+	// unsubscribe detaches the manager from the dispatcher at Stop; nil when
+	// the manager was constructed without one (tests).
+	unsubscribe func()
+}
+
+// chatGate paces wire calls per chat. Every preview wire call of every run
+// in the chat waits for it, so a 429 on one run backs off all concurrent
+// runs in that chat without serializing their LLM or tool execution.
+type chatGate struct {
+	earliest time.Time
+	runs     int // active runs in this chat (gate lifetime refcount)
+}
+
+// newPreviewManager constructs the manager. typing reuses the bot's typing
+// indicator loop for the private-chat draft-failure fallback.
+func newPreviewManager(baseCtx context.Context, api *t.Bot, logger *slog.Logger, typing func(context.Context, t.ChatID)) *previewManager {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	return &previewManager{
+		baseCtx:   baseCtx,
+		api:       api,
+		logger:    logger,
+		typing:    typing,
+		timings:   defaultPreviewTimings(),
+		runs:      make(map[string]*previewRun),
+		chatGates: make(map[int64]*chatGate),
+	}
+}
+
+// RunFor starts a preview run for the given run parameters, or returns nil
+// when previews are inactive (manager absent, mode off, or manager
+// stopped). All *previewRun methods are nil-receiver-safe, so callers never
+// need to branch on the result.
+func (m *previewManager) RunFor(info RunInfo) *previewRun {
+	if m == nil || info.Mode == adminconfig.PreviewModeOff || info.ChatID == 0 {
+		return nil
+	}
+
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+
+		return nil
+	}
+	if info.RunID == "" {
+		info.RunID = execution.NewRunID()
+	}
+	run := newPreviewRun(m, info)
+	m.runs[info.RunID] = run
+	gate := m.chatGates[info.ChatID]
+	if gate == nil {
+		gate = &chatGate{}
+		m.chatGates[info.ChatID] = gate
+	}
+	gate.runs++
+	m.mu.Unlock()
+
+	go run.worker(m.baseCtx)
+
+	return run
+}
+
+// HandleExecutionEvent implements execution.Handler. Unknown or already
+// finalized runs are dropped silently — events never resurrect state.
+func (m *previewManager) HandleExecutionEvent(_ context.Context, event execution.Event) {
+	if m == nil {
+		return
+	}
+
+	runID := execution.RunContextOf(event).RunID
+	m.mu.Lock()
+	run := m.runs[runID]
+	m.mu.Unlock()
+	if run == nil {
+		return
+	}
+
+	run.applyEvent(event)
+}
+
+// Stop signals every active worker, waits bounded for their exit, stops any
+// typing fallbacks, and clears all state. Stop is idempotent.
+func (m *previewManager) Stop() {
+	if m == nil {
+		return
+	}
+
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+
+		return
+	}
+	m.closed = true
+	runs := make([]*previewRun, 0, len(m.runs))
+	for _, run := range m.runs {
+		runs = append(runs, run)
+	}
+	unsubscribe := m.unsubscribe
+	m.mu.Unlock()
+
+	if unsubscribe != nil {
+		unsubscribe()
+	}
+	for _, run := range runs {
+		run.requestTerminate()
+	}
+	deadline := time.After(previewStopJoinTimeout)
+	for _, run := range runs {
+		select {
+		case <-run.done:
+		case <-deadline:
+			m.logger.Warn("preview worker did not stop in time", "run_id", run.info.RunID)
+			deadline = make(chan time.Time) // stop waiting on further workers
+		}
+	}
+	for _, run := range runs {
+		run.stopTypingFallback()
+	}
+
+	m.mu.Lock()
+	clear(m.runs)
+	clear(m.chatGates)
+	m.mu.Unlock()
+}
+
+// gateEarliest returns the chat's earliest allowed wire-call time.
+func (m *previewManager) gateEarliest(chatID int64) time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if gate := m.chatGates[chatID]; gate != nil {
+		return gate.earliest
+	}
+
+	return time.Time{}
+}
+
+// backoffChat advances the chat gate after a 429 so every concurrent run in
+// the chat backs off together.
+func (m *previewManager) backoffChat(chatID int64, wait time.Duration) {
+	until := time.Now().Add(wait)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	gate := m.chatGates[chatID]
+	if gate == nil {
+		gate = &chatGate{}
+		m.chatGates[chatID] = gate
+	}
+	if until.After(gate.earliest) {
+		gate.earliest = until
+	}
+}
+
+// unregister removes a finalized run after its worker exited and drops the
+// chat gate when the chat's last run is gone. Missing entries are no-ops
+// (manager Stop may already have cleared them).
+func (m *previewManager) unregister(run *previewRun) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.runs, run.info.RunID)
+	if gate := m.chatGates[run.info.ChatID]; gate != nil {
+		gate.runs--
+		if gate.runs <= 0 {
+			delete(m.chatGates, run.info.ChatID)
+		}
+	}
+}
+
+// previewRun is one run's live preview: accumulated tool state, a worker
+// goroutine owning all wire calls, and lifecycle finalization owned by the
+// request flow — never by events, so execution completion is separate from
+// preview termination.
+//
+// Locking: r.mu guards the event-updated state (completed/active/finished/
+// dirty) and the fields read by finalization goroutines (finalized,
+// groupMsgID, deleted, disabled, draftID). The wire schedule (sendAt,
+// lastSent, refreshDue) is owned by the worker goroutine alone.
+type previewRun struct {
+	manager   *previewManager
+	info      RunInfo
+	isPrivate bool
+	draftID   int
+
+	wake      chan struct{} // buffered 1: coalesces flush requests
+	terminate chan struct{} // closed once at lifecycle close or shutdown
+	termOnce  sync.Once
+	done      chan struct{} // closed when the worker exited
+
+	mu         sync.Mutex
+	completed  []previewToolLine
+	active     []previewActiveTool
+	finished   bool
+	finishedOK bool
+	finalized  bool
+	dirty      bool
+	version    uint64 // bumped on every state change; guards dirty clearing
+	failures   int
+	disabled   bool
+	groupMsgID int
+	deleted    bool
+	typingStop context.CancelFunc
+
+	// wire schedule, worker-goroutine-owned
+	sendAt     time.Time
+	lastSent   time.Time
+	refreshDue time.Time
+}
+
+type previewToolLine struct {
+	name     string
+	internal bool
+	ok       bool
+	duration time.Duration
+}
+
+type previewActiveTool struct {
+	callID   string
+	name     string
+	internal bool
+}
+
+func newPreviewRun(m *previewManager, info RunInfo) *previewRun {
+	now := time.Now()
+
+	return &previewRun{
+		manager:    m,
+		info:       info,
+		isPrivate:  info.ChatType == t.ChatTypePrivate,
+		draftID:    newDraftID(),
+		wake:       make(chan struct{}, 1),
+		terminate:  make(chan struct{}),
+		done:       make(chan struct{}),
+		sendAt:     now.Add(m.timings.debounce),
+		refreshDue: now.Add(m.timings.draftRefresh),
+	}
+}
+
+// ID returns the run's execution correlation ID ("" without a run).
+func (r *previewRun) ID() string {
+	if r == nil {
+		return ""
+	}
+
+	return r.info.RunID
+}
+
+// applyEvent updates run state from one execution event and requests a
+// flush. It never performs I/O and never blocks.
+func (r *previewRun) applyEvent(event execution.Event) {
+	r.mu.Lock()
+	if r.finalized {
+		r.mu.Unlock()
+
+		return
+	}
+	switch e := event.(type) {
+	case execution.RunStarted, execution.GenerationCompleted:
+		// Rendering needs no start timestamps or generation metadata yet.
+	case execution.GenerationStarted:
+	case execution.ToolStarted:
+		r.active = append(r.active, previewActiveTool{callID: e.CallID, name: e.ToolName, internal: e.Internal})
+	case execution.ToolCompleted:
+		for i, a := range r.active {
+			if a.callID == e.CallID {
+				r.active = append(r.active[:i], r.active[i+1:]...)
+
+				break
+			}
+		}
+		r.completed = append(r.completed, previewToolLine{
+			name:     e.ToolName,
+			internal: e.Internal,
+			ok:       e.Status == execution.StatusOK,
+			duration: e.Duration,
+		})
+	case execution.RunCompleted:
+		r.finished, r.finishedOK = true, true
+	case execution.RunFailed:
+		r.finished = true
+	case execution.TextDelta:
+		// No producer in this phase; nothing to render yet.
+	}
+	r.dirty = true
+	r.version++
+	r.mu.Unlock()
+
+	r.wakeUp()
+}
+
+func (r *previewRun) wakeUp() {
+	select {
+	case r.wake <- struct{}{}:
+	default:
+	}
+}
+
+// FinalDelivered terminates the preview after the final reply was delivered
+// successfully: the group preview is deleted best-effort, the private draft
+// is dismissed by the final send itself.
+func (r *previewRun) FinalDelivered() {
+	if r == nil {
+		return
+	}
+	r.finalize()
+	if !r.isPrivate {
+		r.deleteGroupPreview()
+	}
+}
+
+// CompleteNoText terminates the preview after a successful run produced no
+// reply text: the group preview is deleted; the private chat gets one final
+// draft without the active marker.
+func (r *previewRun) CompleteNoText() {
+	if r == nil {
+		return
+	}
+	r.finalize()
+	if !r.isPrivate {
+		r.deleteGroupPreview()
+
+		return
+	}
+
+	r.mu.Lock()
+	gone := r.disabled
+	draftID := r.draftID
+	text := r.renderText("✔️ Done")
+	r.mu.Unlock()
+	if gone {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.manager.baseCtx, previewCallTimeout)
+	defer cancel()
+	if err := r.manager.api.SendRichMessageDraft(ctx, draftParams(r.info, draftID, text)); err != nil {
+		r.logSendFailure("sendRichMessageDraft", err)
+	}
+}
+
+// Abort terminates the preview after a failure. The last rendered preview
+// stays visible (accepted degradation); the worker stops and the run state
+// is cleaned up.
+func (r *previewRun) Abort() {
+	if r == nil {
+		return
+	}
+	r.finalize()
+}
+
+// Close is the deferred safety net; idempotent with the lifecycle methods.
+func (r *previewRun) Close() {
+	r.Abort()
+}
+
+// finalize marks the run terminated, stops the worker, waits bounded for
+// its exit, and then stops a possibly running typing fallback (which must
+// outlive the worker — see disableWithTypingFallback). Manager map cleanup
+// happens on worker exit.
+func (r *previewRun) finalize() {
+	r.mu.Lock()
+	already := r.finalized
+	r.finalized = true
+	r.mu.Unlock()
+	if already {
+		return
+	}
+
+	r.requestTerminate()
+	select {
+	case <-r.done:
+	case <-time.After(previewStopJoinTimeout):
+		r.manager.logger.Warn("preview worker did not stop after finalization", "run_id", r.info.RunID)
+	}
+	r.stopTypingFallback()
+}
+
+func (r *previewRun) requestTerminate() {
+	r.termOnce.Do(func() { close(r.terminate) })
+}
+
+// worker drives the run's wire calls. It exits on lifecycle termination,
+// manager shutdown, or base-context cancellation, and unregisters the run
+// from the manager on the way out.
+func (r *previewRun) worker(ctx context.Context) {
+	defer r.exit()
+
+	delay := time.Until(r.nextSendAt())
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	firesAt := time.Now().Add(delay)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-r.terminate:
+			return
+		case <-r.wake:
+			// Pull the schedule earlier, never later: compare against the
+			// armed timer's remaining time, not its original duration.
+			if next := time.Until(r.pullSendAt()); next < time.Until(firesAt) {
+				delay = next
+				firesAt = time.Now().Add(delay)
+				timer.Reset(delay)
+			}
+		case <-timer.C:
+			if !r.tick(ctx) {
+				return
+			}
+			delay = time.Until(r.nextSendAt())
+			firesAt = time.Now().Add(delay)
+			timer.Reset(delay)
+		}
+	}
+}
+
+// exit performs worker-goroutine cleanup. The typing fallback intentionally
+// survives: it must keep running after the worker disabled itself (draft
+// failures) until lifecycle finalization or shutdown stops it.
+func (r *previewRun) exit() {
+	r.manager.unregister(r)
+	close(r.done)
+}
+
+// nextSendAt returns the scheduled next wire-call time (worker goroutine only).
+func (r *previewRun) nextSendAt() time.Time {
+	return r.sendAt
+}
+
+// pullSendAt advances the schedule to the earliest useful flush time after
+// new state: at least flushFloor from now and no earlier than the previous
+// send plus minInterval (worker goroutine only).
+func (r *previewRun) pullSendAt() time.Time {
+	now := time.Now()
+
+	earliest := r.lastSent.Add(r.manager.timings.minInterval)
+	if floor := now.Add(r.manager.timings.flushFloor); floor.After(earliest) {
+		earliest = floor
+	}
+	if earliest.Before(now) {
+		earliest = now
+	}
+	if earliest.Before(r.sendAt) {
+		r.sendAt = earliest
+	}
+
+	return r.sendAt
+}
+
+// tick renders and sends one update when due. It returns false when the
+// worker should exit (disabled or finalized).
+func (r *previewRun) tick(ctx context.Context) bool {
+	now := time.Now()
+
+	r.mu.Lock()
+	finalized := r.finalized
+	dirty := r.dirty
+	r.mu.Unlock()
+	if finalized {
+		return false
+	}
+
+	// Chat pacing gate: a 429 on any concurrent run in this chat delays
+	// this run's wire calls too.
+	if gate := r.manager.gateEarliest(r.info.ChatID); gate.After(now) {
+		r.sendAt = gate
+
+		return true
+	}
+
+	refresh := r.isPrivate && !dirty && now.After(r.refreshDue)
+	if !dirty && !refresh {
+		r.sendAt = maxTime(now.Add(r.manager.timings.minInterval), r.refreshDue)
+
+		return true
+	}
+
+	r.mu.Lock()
+	text := r.renderText("🔄 Working…")
+	version := r.version
+	r.dirty = false // tentatively; re-set below unless the send succeeds cleanly
+	r.mu.Unlock()
+
+	if r.sendUpdate(ctx, text) {
+		r.mu.Lock()
+		// An event that arrived during the send must not lose its flush.
+		if r.version != version {
+			r.dirty = true
+		}
+		r.mu.Unlock()
+
+		r.lastSent = time.Now()
+		r.refreshDue = r.lastSent.Add(r.manager.timings.draftRefresh)
+	} else {
+		// Failed send: the rendered state never reached the wire — retry it
+		// after the backoff. A 429 already pushed sendAt past the chat gate.
+		r.mu.Lock()
+		r.dirty = true
+		r.mu.Unlock()
+
+		if r.isDisabled() {
+			return false
+		}
+	}
+
+	if floor := time.Now().Add(r.manager.timings.minInterval); r.sendAt.Before(floor) {
+		r.sendAt = floor
+	}
+
+	return true
+}
+
+func (r *previewRun) isDisabled() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.disabled
+}
+
+// sendUpdate performs the wire call: create/edit for groups, a draft send
+// for private chats. It returns true when the update reached the wire.
+func (r *previewRun) sendUpdate(_ context.Context, text string) bool {
+	callCtx, cancel := context.WithTimeout(r.manager.baseCtx, previewCallTimeout)
+	defer cancel()
+
+	if r.isPrivate {
+		err := r.manager.api.SendRichMessageDraft(callCtx, draftParams(r.info, r.draftID, text))
+		if err == nil {
+			return true
+		}
+		if r.handleSendError("sendRichMessageDraft", err) {
+			return false
+		}
+		// First non-rate-limit draft failure disables drafts for the run;
+		// the typing indicator takes over as the activity signal.
+		r.disableWithTypingFallback()
+
+		return false
+	}
+
+	msgID := r.groupMessageID()
+
+	if msgID == 0 {
+		params := &t.SendMessageParams{
+			ChatID:              tu.ID(r.info.ChatID),
+			Text:                text,
+			DisableNotification: true,
+		}
+		if r.info.TopicID != 0 {
+			params.MessageThreadID = r.info.TopicID
+		}
+		if r.info.TriggerMessageID != 0 {
+			params.ReplyParameters = &t.ReplyParameters{MessageID: r.info.TriggerMessageID}
+		}
+
+		sent, err := r.manager.api.SendMessage(callCtx, params)
+		if err == nil {
+			if sent != nil {
+				r.mu.Lock()
+				r.groupMsgID = sent.MessageID
+				r.mu.Unlock()
+			}
+
+			return true
+		}
+		if r.handleSendError("sendMessage", err) {
+			return false
+		}
+	} else {
+		_, err := r.manager.api.EditMessageText(callCtx, &t.EditMessageTextParams{
+			ChatID:    tu.ID(r.info.ChatID),
+			MessageID: msgID,
+			Text:      text,
+		})
+		if err == nil {
+			return true
+		}
+		if r.handleSendError("editMessageText", err) {
+			return false
+		}
+	}
+
+	r.mu.Lock()
+	r.failures++
+	if r.failures >= previewMaxFailures {
+		r.disabled = true
+	}
+	disabled := r.disabled
+	r.mu.Unlock()
+	if disabled {
+		r.manager.logger.Warn("preview updates disabled for run after repeated failures",
+			"chat_id", r.info.ChatID, "run_id", r.info.RunID)
+	}
+
+	return false
+}
+
+func (r *previewRun) groupMessageID() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.groupMsgID
+}
+
+// handleSendError reports one wire failure. It returns true when the error
+// was a rate limit: the chat gate absorbed it (not counted against the
+// run's failure budget) and the schedule moved past the gate.
+func (r *previewRun) handleSendError(method string, err error) bool {
+	var apiErr *telegoapi.Error
+	if errors.As(err, &apiErr) && apiErr.ErrorCode == 429 {
+		wait := r.manager.timings.ratePad
+		if apiErr.Parameters != nil && apiErr.Parameters.RetryAfter > 0 {
+			wait = time.Duration(apiErr.Parameters.RetryAfter)*time.Second + r.manager.timings.ratePad
+		}
+		r.manager.backoffChat(r.info.ChatID, wait)
+		r.sendAt = time.Now().Add(wait)
+
+		return true
+	}
+
+	r.logSendFailure(method, err)
+
+	return false
+}
+
+// logSendFailure logs a sanitized warning: method, chat, and the Bot API's
+// own error classification. Never tool payloads or raw run state.
+func (r *previewRun) logSendFailure(method string, err error) {
+	var apiErr *telegoapi.Error
+	if errors.As(err, &apiErr) {
+		r.manager.logger.Warn("preview update failed",
+			"method", method, "chat_id", r.info.ChatID,
+			"error_code", apiErr.ErrorCode, "description", apiErr.Description)
+
+		return
+	}
+	r.manager.logger.Warn("preview update failed",
+		"method", method, "chat_id", r.info.ChatID, "error", err)
+}
+
+// disableWithTypingFallback stops updates for the run and, in private
+// chats, starts the typing indicator so the chat still sees activity.
+func (r *previewRun) disableWithTypingFallback() {
+	r.mu.Lock()
+	if r.disabled {
+		r.mu.Unlock()
+
+		return
+	}
+	r.disabled = true
+	private := r.isPrivate
+	r.mu.Unlock()
+
+	if private {
+		r.startTypingFallback()
+	}
+	r.manager.logger.Warn("preview disabled for run",
+		"chat_id", r.info.ChatID, "run_id", r.info.RunID, "private", private)
+}
+
+func (r *previewRun) startTypingFallback() {
+	r.mu.Lock()
+	if r.typingStop != nil || r.manager.typing == nil {
+		r.mu.Unlock()
+
+		return
+	}
+	ctx, stop := context.WithCancel(r.manager.baseCtx)
+	r.typingStop = stop
+	typing := r.manager.typing
+	chatID := tu.ID(r.info.ChatID)
+	r.mu.Unlock()
+
+	go typing(ctx, chatID)
+}
+
+func (r *previewRun) stopTypingFallback() {
+	r.mu.Lock()
+	stop := r.typingStop
+	r.typingStop = nil
+	r.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+}
+
+// deleteGroupPreview removes the group preview message best-effort. Idempotent.
+func (r *previewRun) deleteGroupPreview() {
+	r.mu.Lock()
+	msgID := r.groupMsgID
+	deleted := r.deleted || msgID == 0
+	r.deleted = true
+	r.mu.Unlock()
+	if deleted {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.manager.baseCtx, previewDeleteTimeout)
+	defer cancel()
+	if err := r.manager.api.DeleteMessage(ctx, &t.DeleteMessageParams{
+		ChatID:    tu.ID(r.info.ChatID),
+		MessageID: msgID,
+	}); err != nil {
+		r.logSendFailure("deleteMessage", err)
+	}
+}
+
+// renderText builds the preview text. The caller must hold r.mu.
+func (r *previewRun) renderText(header string) string {
+	var lines []string
+	for _, tool := range r.completed {
+		if r.info.Mode != adminconfig.PreviewModeAllTools && tool.internal {
+			continue
+		}
+		lines = append(lines, previewToolLineText(tool, r.info.Mode, r.isPrivate))
+	}
+	for _, a := range r.active {
+		if r.info.Mode != adminconfig.PreviewModeAllTools && a.internal {
+			continue
+		}
+		lines = append(lines, previewRunningLine(a.name, r.isPrivate))
+	}
+
+	var b strings.Builder
+	b.WriteString(header)
+	if len(lines) == 0 {
+		if r.isPrivate {
+			b.WriteString("\n\n…")
+		}
+
+		return b.String()
+	}
+
+	b.WriteString("\n\n")
+	if dropped := len(lines) - previewMaxToolLines; dropped > 0 {
+		lines = lines[len(lines)-previewMaxToolLines:]
+		fmt.Fprintf(&b, "… and %d earlier\n", dropped)
+	}
+	for _, line := range lines {
+		b.WriteString(line + "\n")
+	}
+
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
+// previewToolLineText renders one completed tool line. Group previews are
+// plain text; private drafts are rich markdown, so the dynamically supplied
+// tool name goes through the markdown-safe rendering.
+func previewToolLineText(tool previewToolLine, mode adminconfig.PreviewMode, rich bool) string {
+	mark := "✅"
+	if !tool.ok {
+		mark = "❌"
+	}
+
+	return mark + " " + previewToolName(tool.name, rich) + previewDurationSuffix(tool.duration, mode)
+}
+
+func previewRunningLine(name string, rich bool) string {
+	return "🔄 " + previewToolName(name, rich)
+}
+
+// previewToolName renders a tool name for the target format. Rich markdown
+// puts registry identifiers into a code span; names that could break the
+// span fall back to escaped plain text (escaping, never stripping).
+func previewToolName(name string, rich bool) string {
+	if !rich {
+		return name + "()"
+	}
+	if strings.ContainsRune(name, '`') {
+		return escapeRichMarkdown(name) + "()"
+	}
+
+	return "`" + name + "()`"
+}
+
+func previewDurationSuffix(d time.Duration, mode adminconfig.PreviewMode) string {
+	if mode != adminconfig.PreviewModeAllTools || d <= 0 {
+		return ""
+	}
+
+	return " ⌛ " + formatShortDuration(d)
+}
+
+// formatShortDuration renders durations compactly: 0.2s, 5s, 1m20s.
+func formatShortDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	if d < time.Minute {
+		if d%time.Second == 0 {
+			return fmt.Sprintf("%ds", int(d.Seconds()))
+		}
+
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+
+	return fmt.Sprintf("%dm%02ds", int(d/time.Minute), int(d%time.Minute/time.Second))
+}
+
+// draftParams assembles a private-chat draft send.
+func draftParams(info RunInfo, draftID int, markdownText string) *t.SendRichMessageDraftParams {
+	params := &t.SendRichMessageDraftParams{
+		ChatID:      info.ChatID,
+		DraftID:     draftID,
+		RichMessage: tu.RichMessageMarkdown(markdownText),
+	}
+	if info.TopicID != 0 {
+		params.MessageThreadID = info.TopicID
+	}
+
+	return params
+}
+
+// newDraftID returns a positive non-zero draft identifier. Same-ID drafts
+// animate their updates on the wire.
+func newDraftID() int {
+	var buf [4]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return int(time.Now().UnixNano()&0x7fffffff) | 1
+	}
+
+	return int(binary.LittleEndian.Uint32(buf[:])&0x7fffffff) | 1
+}
+
+// escapeRichMarkdown backslash-escapes every ASCII punctuation character
+// that carries markdown structure, so dynamically supplied text renders
+// literally instead of changing the document. This is real escaping (the
+// characters survive), not stripping.
+func escapeRichMarkdown(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range text {
+		if r < 128 && isRichMarkdownPunct(r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+
+	return b.String()
+}
+
+func isRichMarkdownPunct(r rune) bool {
+	switch {
+	case r >= '!' && r <= '/': // !"#$%&'()*+,-./
+		return true
+	case r >= ':' && r <= '@': // :;<=>?@
+		return true
+	case r >= '[' && r <= '`': // [\]^_`
+		return true
+	case r >= '{' && r <= '~': // {|}~
+		return true
+	default:
+		return false
+	}
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+
+	return b
+}

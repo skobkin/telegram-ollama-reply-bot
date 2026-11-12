@@ -11,6 +11,7 @@ import (
 	"telegram-ollama-reply-bot/internal/content/extractor"
 	"telegram-ollama-reply-bot/internal/content/fetch"
 	"telegram-ollama-reply-bot/internal/content/search"
+	"telegram-ollama-reply-bot/internal/execution"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/logging"
 	"telegram-ollama-reply-bot/internal/mcp"
@@ -292,6 +293,12 @@ func Run(ctx context.Context) error {
 		return err
 	}
 
+	// Execution event dispatcher: publishes run/tool lifecycle events to
+	// in-process subscribers (the live preview renderer). Nothing is
+	// persisted; the runtime's authoritative result never depends on it.
+	dispatcher := execution.NewDispatcher(execution.DispatcherConfig{QueueSize: 256}, logManager.Logger("execution"))
+	dispatcher.Start(ctx)
+
 	tools := tooluse.New(
 		llmc,
 		stores.Conversations(),
@@ -300,7 +307,12 @@ func Run(ctx context.Context) error {
 		telegramAPI,
 		reminderService,
 		logManager.Logger("tooluse"),
-		tooluse.Config{MaxIterations: cfg.LLM.ToolLoopMaxIterations, AdminIDs: cfg.Bot.AdminIDs, RecentHistoryLimit: cfg.Bot.UncompressedHistoryLimit},
+		tooluse.Config{
+			MaxIterations:      cfg.LLM.ToolLoopMaxIterations,
+			AdminIDs:           cfg.Bot.AdminIDs,
+			RecentHistoryLimit: cfg.Bot.UncompressedHistoryLimit,
+			Dispatcher:         dispatcher,
+		},
 	)
 	tools.AttachMCP("mcp", mcpManager)
 	defer tools.Close()
@@ -340,11 +352,21 @@ func Run(ctx context.Context) error {
 
 	attachImageTools(tools, botService, cfg.LLM.ImageRecognitionEnabled)
 
-	if err := botService.Run(); err != nil {
-		logger.Error("bot exited with error", "error", err)
+	// Live previews subscribe to the execution events. At shutdown the
+	// preview workers must be joined before the dispatcher drains and both
+	// before the tool runtime closes (LIFO with the deferred tools.Close).
+	stopPreviews := botService.SetExecutionDispatcher(dispatcher)
+
+	runErr := botService.Run()
+	if stopPreviews != nil {
+		stopPreviews()
+	}
+	dispatcher.Stop()
+	if runErr != nil {
+		logger.Error("bot exited with error", "error", runErr)
 		sentry.CaptureMessage("Bot start error")
 
-		return err
+		return runErr
 	}
 
 	return nil

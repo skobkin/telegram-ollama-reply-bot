@@ -48,6 +48,15 @@ type Handler interface {
 	HandleExecutionEvent(ctx context.Context, event Event)
 }
 
+// Subscriber is the subscription side of the dispatcher. Producers depend
+// only on Dispatcher (Publish); consumers that own handler wiring take this
+// narrower interface.
+type Subscriber interface {
+	// Subscribe registers a handler and returns its unsubscribe function.
+	// Subscribe must be called after the dispatcher is started.
+	Subscribe(handler Handler) (unsubscribe func())
+}
+
 // HandlerFunc adapts a function to the Handler interface.
 type HandlerFunc func(ctx context.Context, event Event)
 

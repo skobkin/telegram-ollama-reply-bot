@@ -165,3 +165,28 @@ func (GenerationCompleted) isExecutionEvent() {}
 func (ToolStarted) isExecutionEvent()         {}
 func (ToolCompleted) isExecutionEvent()       {}
 func (TextDelta) isExecutionEvent()           {}
+
+// RunContextOf extracts the run context carried by any event. Every event
+// embeds one, so the switch is exhaustive over the sealed set.
+func RunContextOf(event Event) RunContext {
+	switch e := event.(type) {
+	case RunStarted:
+		return e.RunContext
+	case RunCompleted:
+		return e.RunContext
+	case RunFailed:
+		return e.RunContext
+	case GenerationStarted:
+		return e.RunContext
+	case GenerationCompleted:
+		return e.RunContext
+	case ToolStarted:
+		return e.RunContext
+	case ToolCompleted:
+		return e.RunContext
+	case TextDelta:
+		return e.RunContext
+	default:
+		return RunContext{}
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/content/extractor"
+	"telegram-ollama-reply-bot/internal/execution"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/llmcontext"
 	"telegram-ollama-reply-bot/internal/state"
@@ -82,6 +83,9 @@ type Bot struct {
 	tools            *tooluse.Runtime
 	imageRecognition ImageRecognitionSettings
 	autoSummaryURLs  *autoSummaryTracker
+	// previews manages live tool-progress previews; nil when no execution
+	// dispatcher was wired, in which case previews stay off entirely.
+	previews *previewManager
 	// pendingReactions holds reaction updates that arrived while their target
 	// reply's send response was still in flight; replayed on history
 	// insertion. The zero value is usable.
@@ -148,6 +152,23 @@ func NewBot(
 // inert until then).
 func (b *Bot) SetAdminUI(ui AdminUI) {
 	b.adminUI = ui
+}
+
+// SetExecutionDispatcher wires the execution event dispatcher and constructs
+// the live preview manager subscribed to it. It returns the manager's stop
+// function (nil without a dispatcher): call it at shutdown before stopping
+// the dispatcher itself, so preview workers are joined before any other
+// event consumer goes away. Passing nil keeps previews off entirely.
+func (b *Bot) SetExecutionDispatcher(dispatcher execution.Subscriber) func() {
+	if dispatcher == nil {
+		return nil
+	}
+
+	manager := newPreviewManager(b.ctx, b.api, b.logger, b.sendTypingUntil)
+	manager.unsubscribe = dispatcher.Subscribe(manager)
+	b.previews = manager
+
+	return manager.Stop
 }
 
 func (b *Bot) Run() error {
@@ -321,7 +342,7 @@ func (b *Bot) textMessageHandler(ctx *th.Context, update t.Update) error {
 			messageType = "reply"
 		}
 		logger.Info("processing message", "message_type", messageType)
-		b.processMention(ctx, message)
+		b.processMention(ctx, message, resolved)
 	} else {
 		logger.Debug("skipping message", "reason", "not a mention, reply, or private chat")
 	}
@@ -329,12 +350,27 @@ func (b *Bot) textMessageHandler(ctx *th.Context, update t.Update) error {
 	return nil
 }
 
-func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
+func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adminconfig.ResolvedChatConfig) {
 	b.stats.Mention()
 
 	chatID := tu.ID(message.Chat.ID)
 
 	baseCtx := b.handlerContext(reqCtx)
+
+	// The preview starts before preprocessing so the neutral indicator
+	// covers the entire run, history summarization included. It returns nil
+	// (and everything below no-ops) when previews are off.
+	run := b.previews.RunFor(RunInfo{
+		RunID:            execution.NewRunID(),
+		ChatID:           message.Chat.ID,
+		TopicID:          message.MessageThreadID,
+		TriggerMessageID: message.MessageID,
+		ChatType:         message.Chat.Type,
+		Mode:             resolved.PreviewMode,
+		KeepToolHistory:  resolved.KeepToolHistory,
+	})
+	defer run.Close() // safety net: state cleanup on every exit path
+
 	b.maybeSummarizeHistory(baseCtx, message)
 	logger := b.loggerFromContext(baseCtx)
 	logger.Debug("handling mention")
@@ -347,7 +383,7 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 	var usage *llm.TokenUsage
 	var err error
 
-	err = b.runWithTimeout(baseCtx, chatID, func(ctx context.Context) error {
+	err = b.runWithPreviewTimeout(baseCtx, chatID, run, func(ctx context.Context) error {
 		var userCtx llmcontext.UserContext
 		if message.From != nil {
 			userCtx = llmcontext.UserContext{
@@ -377,12 +413,15 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 			PromptScope:    llm.PromptScope{ChatID: message.Chat.ID},
 			ReplyContext:   requestContext,
 			RequestMessage: userMessageData,
+			RunID:          run.ID(),
 		})
 		llmReply, usage, err = result.Reply, result.Usage, runErr
 
 		return runErr
 	})
 	if err != nil {
+		run.Abort()
+
 		if errors.Is(err, ErrRequestTimeout) {
 			logger.Error("llm request timed out", "chat_id", message.Chat.ID, "error", err)
 			timeout := b.cfg.ProcessingTimeout
@@ -413,12 +452,15 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 
 	if strings.TrimSpace(llmReply) == "" {
 		logger.Debug("llm interaction completed without final text reply")
+		run.CompleteNoText()
 
 		return
 	}
 
 	sent, err := b.sendRichMarkdownReply(baseCtx, message, llmReply)
 	if err != nil {
+		run.Abort()
+
 		logger.Error("cannot send reply message", "error", err, "reply_length", len(llmReply))
 		sentry.CaptureException(err)
 
@@ -426,6 +468,8 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 
 		return
 	}
+
+	run.FinalDelivered()
 
 	replyMessageID := 0
 	if sent != nil {
