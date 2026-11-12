@@ -342,6 +342,28 @@ func TestReactionRemovalDuringSendCannotBeResurrected(t *testing.T) {
 	if len(reactions) != 0 {
 		t.Fatalf("delayed addition must not resurrect the removed reaction, got %+v", reactions)
 	}
+	if got := len(p.bot.pendingReactions.entries); got != 0 {
+		t.Fatalf("every update must be replayed or applied live: %d holds stranded, %+v", got, p.bot.pendingReactions.entries)
+	}
+}
+
+// TestReactionAppliedLiveLeavesNoHoldBehind proves the hold is released when
+// the store lookup succeeds: only genuinely in-flight targets keep entries.
+func TestReactionAppliedLiveLeavesNoHoldBehind(t *testing.T) {
+	p := newReactionTestBot(t, &dmCatalogSpy{}, newMemoryConversationStore())
+
+	scope := state.ConversationScope{ChatID: 100500}
+	p.store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 777, Text: "answer"})
+
+	p.deliver(t, reactionUpdate(100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, emojiReaction("👍")))
+
+	snapshot := p.store.Snapshot(scope)
+	if len(snapshot.Messages[0].Reactions) != 1 {
+		t.Fatalf("reaction must be applied live, got %+v", snapshot.Messages[0].Reactions)
+	}
+	if got := len(p.bot.pendingReactions.entries); got != 0 {
+		t.Fatalf("live-applied reaction must release its hold, got %d entries: %+v", got, p.bot.pendingReactions.entries)
+	}
 }
 
 // TestReactionInGroupChatRecorded proves the same flow works in groups where

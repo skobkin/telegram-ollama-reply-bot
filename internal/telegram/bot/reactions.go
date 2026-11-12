@@ -104,18 +104,28 @@ func (b *Bot) messageReactionHandler(ctx *th.Context, update t.Update) error {
 		return nil
 	}
 
-	if !b.history.SetMessageReactions(reaction.Chat.ID, reaction.MessageID, reaction.User.ID, int64(update.UpdateID), tracked) {
-		// The target reply may still be in flight: Telegram makes a sent
-		// message reactable before its send response returns and the reply is
-		// recorded in history. Hold the update so insertion replays it in
-		// order — dropping it (and its sequence) would let an older sibling
-		// arriving after the insertion resurrect an undone change.
-		b.pendingReactions.hold(pendingReactionKey{
-			chatID:    reaction.Chat.ID,
-			messageID: reaction.MessageID,
-		}, reaction.User.ID, int64(update.UpdateID), tracked)
-		logger.Debug("holding reaction for reply not yet in history")
+	key := pendingReactionKey{chatID: reaction.Chat.ID, messageID: reaction.MessageID}
+	seq := int64(update.UpdateID)
+
+	// Hold before applying: if the store lookup misses because the target
+	// reply's history insertion is racing this handler, the hold still
+	// precedes that insertion's pending-update drain, so the update is
+	// replayed instead of stranded after it. Holding strictly before the
+	// lookup closes the window: whatever the interleaving, the update is
+	// either replayed by the drain or found live by this lookup.
+	b.pendingReactions.hold(key, reaction.User.ID, seq, tracked)
+
+	if b.history.SetMessageReactions(reaction.Chat.ID, reaction.MessageID, reaction.User.ID, seq, tracked) {
+		// Applied, or rejected as stale against an existing message: drop
+		// the hold so it does not linger until the TTL. If the insertion
+		// drained it concurrently, release is a no-op and the sequence guard
+		// made that replay idempotent.
+		b.pendingReactions.release(key, reaction.User.ID, seq)
+
+		return nil
 	}
+
+	logger.Debug("holding reaction for reply not yet in history")
 
 	return nil
 }
@@ -198,6 +208,29 @@ func (p *pendingReactionBuffer) take(key pendingReactionKey) []pendingReactionUp
 	})
 
 	return held
+}
+
+// release drops a held update that was applied (or superseded) live, so it
+// does not linger until the TTL. No-op when the hold is already gone, e.g.
+// drained by a concurrent history insertion.
+func (p *pendingReactionBuffer) release(key pendingReactionKey, userID, updateSeq int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	held := p.entries[key]
+	for i, update := range held {
+		if update.userID == userID && update.updateSeq == updateSeq {
+			held = slices.Delete(held, i, i+1)
+
+			break
+		}
+	}
+	if len(held) == 0 {
+		delete(p.entries, key)
+
+		return
+	}
+	p.entries[key] = held
 }
 
 func (p *pendingReactionBuffer) pruneLocked(now time.Time) {

@@ -136,44 +136,53 @@ func (b *Bot) maybeSummarizeHistory(ctx context.Context, message t.Message) {
 		return
 	}
 
-	// A cleared summary (a reaction change or head trim on already-summarized
-	// history) puts the whole retained prefix back into the rebuild at once —
-	// far beyond one summarize request, and potentially beyond the
-	// summarizer's context window. Rebuild in threshold-sized chunks,
-	// committing each so concurrent invalidation only costs the current
-	// chunk; whatever remains continues on later triggers.
-	chunkSize := max(threshold, 1)
+	end := historyLen - limit
+	start := snapshot.SummaryMessageCount
+	if start >= end {
+		return
+	}
 
 	workCtx, cancel := b.withProcessingDeadline(ctx)
 	defer cancel()
 
-	for range maxSummarizeChunksPerPass {
-		if !b.summarizeHistoryChunk(workCtx, scope, limit, chunkSize) {
+	// An ordinary crossing accumulated about threshold+1 messages since the
+	// last summarization: one request covers it, as it always has. Only a
+	// cleared-summary rebuild (a reaction change or head trim on already-
+	// summarized history, or a backlog left by a failing summarizer) faces
+	// more than that at once — far beyond one summarize request, and
+	// potentially beyond the summarizer's context window. Such a rebuild is
+	// done in threshold-sized chunks over the fixed range observed at
+	// trigger time, committing each so concurrent invalidation only costs
+	// the current chunk; whatever remains continues on later triggers.
+	if end-start <= 2*max(threshold, 1) {
+		b.summarizeHistorySlice(workCtx, scope, start, end)
+
+		return
+	}
+
+	chunkSize := max(threshold, 1)
+	for chunks := 0; start < end && chunks < maxSummarizeChunksPerPass; chunks++ {
+		chunkEnd := min(start+chunkSize, end)
+		if !b.summarizeHistorySlice(workCtx, scope, start, chunkEnd) {
 			return
 		}
+		start = chunkEnd
 	}
 }
 
-// summarizeHistoryChunk summarizes at most chunkSize not-yet-summarized
-// messages, folding the cached summary into the request, and commits the
-// result against the history revision it was built from. It reports whether
-// a chunk was processed; false means there was nothing (more) to do or the
-// attempt failed or was invalidated.
-func (b *Bot) summarizeHistoryChunk(ctx context.Context, scope state.ConversationScope, limit, chunkSize int) bool {
+// summarizeHistorySlice summarizes raw history range [start, end), folding
+// the cached summary into the request, and commits it against the history
+// revision it was built from. It reports whether the slice was processed;
+// false means the range no longer aligns with the stream (concurrent trim,
+// reset, or summarizer), the LLM call failed, or the commit was invalidated
+// by a concurrent history change.
+func (b *Bot) summarizeHistorySlice(ctx context.Context, scope state.ConversationScope, start, end int) bool {
 	snapshot := b.history.Snapshot(scope)
-	historyLen := len(snapshot.Messages)
-	if historyLen == 0 {
+	if start >= end || end > len(snapshot.Messages) || snapshot.SummaryMessageCount != start {
 		return false
 	}
 
-	end := historyLen - limit
-	start := snapshot.SummaryMessageCount
-	if start >= end {
-		return false
-	}
-
-	chunkEnd := min(start+chunkSize, end)
-	slice := b.hydrateMessagesWithImageDescriptions(ctx, snapshot.Messages[start:chunkEnd])
+	slice := b.hydrateMessagesWithImageDescriptions(ctx, snapshot.Messages[start:end])
 
 	text := llmcontext.RenderMessagesPlainText(slice)
 	if snapshot.EarlierSummary != "" {
@@ -190,7 +199,7 @@ func (b *Bot) summarizeHistoryChunk(ctx context.Context, scope state.Conversatio
 	if usage != nil {
 		b.stats.AddUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.Cost)
 	}
-	if ok := b.history.SetEarlierSummary(scope, summary, chunkEnd, snapshot.Revision); !ok {
+	if ok := b.history.SetEarlierSummary(scope, summary, end, snapshot.Revision); !ok {
 		// History changed while the summary was being generated (reaction
 		// change, trim, reset): discard it rather than restore stale context.
 		b.loggerFromContext(ctx).Debug("discarding summary built from changed history",

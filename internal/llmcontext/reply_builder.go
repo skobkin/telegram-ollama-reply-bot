@@ -44,9 +44,15 @@ type ReplyBuilder struct {
 	history     state.ConversationStore
 	hydrate     HydrateFunc
 	recentLimit int
+	// summaryTailLimit bounds the raw tail forwarded while a summary exists.
+	// Normal operation keeps the unsummarized tail within the summarization
+	// window, but a cleared-summary rebuild commits chunks incrementally, so
+	// a partial summary can leave a long raw middle — forwarding all of it
+	// to the reply model could exceed its context window.
+	summaryTailLimit int
 }
 
-func NewReplyBuilder(history state.ConversationStore, hydrate HydrateFunc, recentLimit int) *ReplyBuilder {
+func NewReplyBuilder(history state.ConversationStore, hydrate HydrateFunc, recentLimit, summaryTailLimit int) *ReplyBuilder {
 	if history == nil {
 		panic("history store is required")
 	}
@@ -56,11 +62,15 @@ func NewReplyBuilder(history state.ConversationStore, hydrate HydrateFunc, recen
 	if recentLimit < 0 {
 		panic("recent history limit must not be negative")
 	}
+	if summaryTailLimit < 0 {
+		panic("summary tail limit must not be negative")
+	}
 
 	return &ReplyBuilder{
-		history:     history,
-		hydrate:     hydrate,
-		recentLimit: recentLimit,
+		history:          history,
+		hydrate:          hydrate,
+		recentLimit:      recentLimit,
+		summaryTailLimit: summaryTailLimit,
 	}
 }
 
@@ -78,6 +88,12 @@ func (b *ReplyBuilder) BuildReplyContext(ctx context.Context, input ReplyInput) 
 		if start < 0 {
 			start = 0
 		}
+	} else if b.summaryTailLimit > 0 && len(snapshot.Messages)-start > b.summaryTailLimit {
+		// Partial summary mid-rebuild: the committed prefix is covered by
+		// the summary, so keep the reply context on the newest tail instead
+		// of forwarding the whole unsummarized middle. The middle returns as
+		// summarization catches up.
+		start = len(snapshot.Messages) - b.summaryTailLimit
 	}
 
 	history := b.hydrate(ctx, snapshot.Messages[start:])

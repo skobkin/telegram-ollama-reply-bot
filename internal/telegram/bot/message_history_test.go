@@ -169,3 +169,63 @@ func TestMaybeSummarizeHistoryRebuildsClearedSummaryInBoundedChunks(t *testing.T
 		t.Fatalf("chunk progress must be committed, got: %#v", snapshot)
 	}
 }
+
+// TestMaybeSummarizeHistorySingleRequestForOrdinaryCrossing proves ordinary
+// threshold crossings keep their single summarize request: at the default
+// window (21 unsummarized over limit 15, threshold 5) the six accumulated
+// messages are summarized in one call, not split into a chunk pair.
+func TestMaybeSummarizeHistorySingleRequestForOrdinaryCrossing(t *testing.T) {
+	store := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations()
+
+	summarizer := &countingSummarizer{}
+	cfg := config.BotConfig{UncompressedHistoryLimit: 15, HistorySummaryThreshold: 5}
+	testBot := &Bot{
+		ctx:     context.Background(),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:     cfg,
+		history: store,
+		stats:   &dmStatsSpy{},
+		llm:     summarizer,
+	}
+
+	scope := state.ConversationScope{ChatID: 100500}
+	// 21 unsummarized messages cross the default window by exactly one —
+	// the shape of every ordinary trigger.
+	for i := 0; i < 21; i++ {
+		store.AppendMessage(scope, state.Message{Text: fmt.Sprintf("filler message number %d", i), FromID: 1, MessageID: 100 + i})
+	}
+
+	message := tg.Message{MessageID: 120, Chat: tg.Chat{ID: 100500, Type: tg.ChatTypePrivate}}
+	testBot.maybeSummarizeHistory(context.Background(), message)
+
+	if len(summarizer.inputs) != 1 {
+		t.Fatalf("ordinary crossing must be one summarize request, got %d calls", len(summarizer.inputs))
+	}
+	if got := strings.Count(summarizer.inputs[0], "filler message"); got != 6 {
+		t.Fatalf("expected the six accumulated messages in one request, got %d: %q", got, summarizer.inputs[0])
+	}
+	if snapshot := store.Snapshot(scope); snapshot.SummaryMessageCount != 6 || snapshot.EarlierSummary != "chunk summary" {
+		t.Fatalf("unexpected commit state: %#v", snapshot)
+	}
+
+	// The next ordinary trigger (five messages later) is again a single
+	// request folding the previous summary, not a re-split of the window.
+	for i := 21; i < 27; i++ {
+		store.AppendMessage(scope, state.Message{Text: fmt.Sprintf("filler message number %d", i), FromID: 1, MessageID: 100 + i})
+	}
+	testBot.maybeSummarizeHistory(context.Background(), message)
+
+	if len(summarizer.inputs) != 2 {
+		t.Fatalf("next ordinary crossing must also be one request, got %d calls total", len(summarizer.inputs))
+	}
+	second := summarizer.inputs[1]
+	if !strings.Contains(second, "Earlier conversation summary:") {
+		t.Fatalf("second request must fold the previous summary: %q", second)
+	}
+	if got := strings.Count(second, "filler message"); got != 6 {
+		t.Fatalf("second request must carry only the new messages, got %d: %q", got, second)
+	}
+	if snapshot := store.Snapshot(scope); snapshot.SummaryMessageCount != 12 {
+		t.Fatalf("unexpected second commit state: %#v", snapshot)
+	}
+}

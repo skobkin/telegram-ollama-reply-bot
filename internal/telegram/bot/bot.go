@@ -136,7 +136,10 @@ func NewBot(
 		autoSummaryURLs:  newAutoSummaryTracker(autoSummaryMaxTrackedURLsPerChat),
 	}
 
-	bot.replyCtx = llmcontext.NewReplyBuilder(history, bot.hydrateMessagesWithImageDescriptions, cfg.UncompressedHistoryLimit)
+	// The summary tail limit admits the normal unsummarized window plus room
+	// for messages arriving mid-generation, so it only binds during partial
+	// summary rebuilds; see ReplyBuilder.summaryTailLimit.
+	bot.replyCtx = llmcontext.NewReplyBuilder(history, bot.hydrateMessagesWithImageDescriptions, cfg.UncompressedHistoryLimit, cfg.UncompressedHistoryLimit+2*cfg.HistorySummaryThreshold)
 
 	return bot
 }

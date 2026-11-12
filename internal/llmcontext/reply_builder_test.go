@@ -18,7 +18,7 @@ func TestReplyBuilderUsesSameTopicHistoryOnly(t *testing.T) {
 	stores := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	builder := NewReplyBuilder(stores.Conversations(), func(_ context.Context, messages []state.Message) []state.Message {
 		return messages
-	}, 15)
+	}, 15, 100)
 
 	topicScope := state.ConversationScope{ChatID: 10, TopicID: 1}
 	otherScope := state.ConversationScope{ChatID: 10, TopicID: 2}
@@ -88,7 +88,7 @@ func TestReplyBuilderRendersCompactHistoryAndHydratesImages(t *testing.T) {
 		}
 
 		return result
-	}, 15)
+	}, 15, 100)
 
 	scope := state.ConversationScope{ChatID: 10}
 	stores.Conversations().AppendMessage(scope, state.Message{
@@ -170,7 +170,7 @@ func TestReplyBuilderUsesRecentLimitWithoutSummary(t *testing.T) {
 	stores := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	builder := NewReplyBuilder(stores.Conversations(), func(_ context.Context, messages []state.Message) []state.Message {
 		return messages
-	}, 2)
+	}, 2, 100)
 
 	scope := state.ConversationScope{ChatID: 10}
 	for _, text := range []string{"one", "two", "three"} {
@@ -204,7 +204,7 @@ func TestReplyBuilderUsesUnsummarizedTailWhenSummaryExists(t *testing.T) {
 	stores := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	builder := NewReplyBuilder(stores.Conversations(), func(_ context.Context, messages []state.Message) []state.Message {
 		return messages
-	}, 2)
+	}, 2, 100)
 
 	scope := state.ConversationScope{ChatID: 10}
 	for _, text := range []string{"one", "two", "three", "four"} {
@@ -233,6 +233,61 @@ func TestReplyBuilderUsesUnsummarizedTailWhenSummaryExists(t *testing.T) {
 	}
 	if got := ctx.History[1].Text(); !strings.Contains(got, "four") {
 		t.Fatalf("unexpected second tail message: %q", got)
+	}
+}
+
+// TestReplyBuilderBoundsRawTailDuringPartialSummary proves the raw tail is
+// bounded while a partial summary is committed mid-rebuild: a cleared-summary
+// chunk rebuild leaves a long unsummarized middle, which must not be
+// forwarded to the reply model wholesale.
+func TestReplyBuilderBoundsRawTailDuringPartialSummary(t *testing.T) {
+	t.Parallel()
+
+	stores := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	builder := NewReplyBuilder(stores.Conversations(), func(_ context.Context, messages []state.Message) []state.Message {
+		return messages
+	}, 15, 4)
+
+	scope := state.ConversationScope{ChatID: 10}
+	for _, text := range []string{"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"} {
+		stores.Conversations().AppendMessage(scope, state.Message{
+			Name:      "Alice",
+			Text:      text,
+			CreatedAt: time.Now().UTC(),
+		})
+	}
+	// Mid-rebuild state: the summary covers only the first two messages,
+	// leaving an eight-message raw middle.
+	_ = stores.Conversations().SetEarlierSummary(scope, "partial summary", 2, 0)
+
+	ctx := builder.BuildReplyContext(context.Background(), ReplyInput{
+		Chat:           ChatContext{Type: "group"},
+		Scope:          scope,
+		CurrentMessage: state.Message{Name: "Alice", Text: "current"},
+	})
+
+	if ctx.EarlierSummary != "partial summary" {
+		t.Fatalf("unexpected earlier summary: %q", ctx.EarlierSummary)
+	}
+	if len(ctx.History) != 4 {
+		t.Fatalf("raw tail must be bounded during rebuild, got %d messages", len(ctx.History))
+	}
+	if got := ctx.History[0].Text(); !strings.Contains(got, "seven") {
+		t.Fatalf("bounded tail must keep the newest messages, got first %q", got)
+	}
+
+	// Normal summary state is untouched: a tail within the bound forwards
+	// every unsummarized message, as before.
+	bounded := NewReplyBuilder(stores.Conversations(), func(_ context.Context, messages []state.Message) []state.Message {
+		return messages
+	}, 15, 25)
+	ctx = bounded.BuildReplyContext(context.Background(), ReplyInput{
+		Chat:           ChatContext{Type: "group"},
+		Scope:          scope,
+		CurrentMessage: state.Message{Name: "Alice", Text: "current"},
+	})
+	if len(ctx.History) != 8 {
+		t.Fatalf("summary state within the bound must forward the whole tail, got %d messages", len(ctx.History))
 	}
 }
 
