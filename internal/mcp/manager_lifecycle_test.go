@@ -262,7 +262,8 @@ func TestRuntimeCloseClosesAttachedMCPManager(t *testing.T) {
 	}
 
 	// While the session is open, the tool loop executes the MCP tool normally.
-	reply, _, err := runtime.ReplyWithTools(context.Background(), req)
+	result, err := runtime.ReplyWithTools(context.Background(), req)
+	reply := result.Reply
 	if err != nil {
 		t.Fatalf("first ReplyWithTools: %v", err)
 	}
@@ -283,7 +284,8 @@ func TestRuntimeCloseClosesAttachedMCPManager(t *testing.T) {
 	// A subsequent tool call through the (still registered) definition fails
 	// cleanly; the tool loop turns it into an error tool result instead of
 	// crashing, and the reply completes.
-	reply, _, err = runtime.ReplyWithTools(context.Background(), req)
+	result, err = runtime.ReplyWithTools(context.Background(), req)
+	reply = result.Reply
 	if err != nil {
 		t.Fatalf("second ReplyWithTools: %v", err)
 	}

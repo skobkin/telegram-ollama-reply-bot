@@ -372,14 +372,15 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message) {
 		llmCtx, cancel := b.withProcessingDeadline(ctx)
 		defer cancel()
 
-		llmReply, usage, err = b.tools.ReplyWithTools(llmCtx, tooluse.ChatRequest{
+		result, runErr := b.tools.ReplyWithTools(llmCtx, tooluse.ChatRequest{
 			Scope:          scopeFromMessage(message),
 			PromptScope:    llm.PromptScope{ChatID: message.Chat.ID},
 			ReplyContext:   requestContext,
 			RequestMessage: userMessageData,
 		})
+		llmReply, usage, err = result.Reply, result.Usage, runErr
 
-		return err
+		return runErr
 	})
 	if err != nil {
 		if errors.Is(err, ErrRequestTimeout) {

@@ -120,11 +120,12 @@ func TestRuntimeReturnsGenerateErrorWhenChatToolGenerateFailsImmediately(t *test
 		Config{MaxIterations: 6},
 	)
 
-	reply, usage, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
+	result, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
 		Scope:        state.ConversationScope{ChatID: 1},
 		PromptScope:  llm.PromptScope{ChatID: 1},
 		ReplyContext: llm.ChatReplyContext{UserMessage: llm.TextMessage(llm.RoleUser, "hi")},
 	})
+	reply, usage := result.Reply, result.Usage
 	if !errors.Is(err, generateErr) {
 		t.Fatalf("expected generate error, got %v", err)
 	}
@@ -168,12 +169,13 @@ func TestRuntimeExecutesToolCallsAndReturnsFinalReply(t *testing.T) {
 		Config{MaxIterations: 6},
 	)
 
-	reply, usage, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
+	result, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
 		Scope:          state.ConversationScope{ChatID: 1},
 		PromptScope:    llm.PromptScope{ChatID: 1},
 		ReplyContext:   llm.ChatReplyContext{UserMessage: llm.TextMessage(llm.RoleUser, "what was planned?")},
 		RequestMessage: state.Message{FromID: 11},
 	})
+	reply, usage := result.Reply, result.Usage
 	if err != nil {
 		t.Fatalf("ReplyWithTools() error = %v", err)
 	}
@@ -223,11 +225,12 @@ func TestRuntimeAllowsEmptyFinalReplyAfterSuccessfulSideEffectTool(t *testing.T)
 		Config{MaxIterations: 6},
 	)
 
-	reply, usage, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
+	result, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
 		Scope:        state.ConversationScope{ChatID: 1},
 		PromptScope:  llm.PromptScope{ChatID: 1},
 		ReplyContext: llm.ChatReplyContext{UserMessage: llm.TextMessage(llm.RoleUser, "roll a dice")},
 	})
+	reply, usage := result.Reply, result.Usage
 	if err != nil {
 		t.Fatalf("ReplyWithTools() error = %v", err)
 	}
@@ -265,11 +268,12 @@ func TestRuntimeAllowsNoChoicesAfterSuccessfulSideEffectTool(t *testing.T) {
 		Config{MaxIterations: 6},
 	)
 
-	reply, usage, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
+	result, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
 		Scope:        state.ConversationScope{ChatID: 1},
 		PromptScope:  llm.PromptScope{ChatID: 1},
 		ReplyContext: llm.ChatReplyContext{UserMessage: llm.TextMessage(llm.RoleUser, "roll a dice")},
 	})
+	reply, usage := result.Reply, result.Usage
 	if err != nil {
 		t.Fatalf("ReplyWithTools() error = %v", err)
 	}
@@ -313,12 +317,13 @@ func TestRuntimeRejectsEmptyFinalReplyAfterNonSideEffectTool(t *testing.T) {
 		Config{MaxIterations: 6},
 	)
 
-	reply, usage, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
+	result, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
 		Scope:          state.ConversationScope{ChatID: 1},
 		PromptScope:    llm.PromptScope{ChatID: 1},
 		ReplyContext:   llm.ChatReplyContext{UserMessage: llm.TextMessage(llm.RoleUser, "what was planned?")},
 		RequestMessage: state.Message{FromID: 11},
 	})
+	reply, usage := result.Reply, result.Usage
 	if !errors.Is(err, llm.ErrNoChoices) {
 		t.Fatalf("expected ErrNoChoices, got %v", err)
 	}
@@ -359,12 +364,13 @@ func TestRuntimeRejectsNoChoicesAfterNonSideEffectTool(t *testing.T) {
 		Config{MaxIterations: 6},
 	)
 
-	reply, usage, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
+	result, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
 		Scope:          state.ConversationScope{ChatID: 1},
 		PromptScope:    llm.PromptScope{ChatID: 1},
 		ReplyContext:   llm.ChatReplyContext{UserMessage: llm.TextMessage(llm.RoleUser, "what was planned?")},
 		RequestMessage: state.Message{FromID: 11},
 	})
+	reply, usage := result.Reply, result.Usage
 	if !errors.Is(err, llm.ErrNoChoices) {
 		t.Fatalf("expected ErrNoChoices, got %v", err)
 	}
@@ -394,7 +400,7 @@ func TestRuntimeRespectsConfiguredIterationLimit(t *testing.T) {
 		Config{MaxIterations: 1},
 	)
 
-	_, _, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
+	_, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
 		Scope:        state.ConversationScope{ChatID: 1},
 		PromptScope:  llm.PromptScope{ChatID: 1},
 		ReplyContext: llm.ChatReplyContext{UserMessage: llm.TextMessage(llm.RoleUser, "hi")},

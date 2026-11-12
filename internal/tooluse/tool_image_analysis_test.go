@@ -522,10 +522,11 @@ func TestReplyWithTools_AccountsUsageAcrossMultipleToolCalls(t *testing.T) {
 	}}
 	runtime.llm = llmStub
 
-	reply, usage, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
+	result, err := runtime.ReplyWithTools(context.Background(), ChatRequest{
 		Scope:          scope,
 		RequestMessage: state.Message{MessageID: 99, ChatID: 7},
 	})
+	reply, usage := result.Reply, result.Usage
 	if err != nil {
 		t.Fatalf("reply with tools: %v", err)
 	}
@@ -545,7 +546,7 @@ func TestReplyWithTools_AccountsUsageAcrossMultipleToolCalls(t *testing.T) {
 func wireTextFor(t *testing.T, r *Runtime, req ChatRequest, call llm.ToolCall) string {
 	t.Helper()
 
-	message, _ := r.executeToolCall(context.Background(), req, call)
+	message, _, _ := r.executeToolCall(context.Background(), runEmitter{}, req, call)
 
 	return message.Text()
 }

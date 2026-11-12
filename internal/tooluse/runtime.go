@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"telegram-ollama-reply-bot/internal/content/extractor"
 	"telegram-ollama-reply-bot/internal/content/search"
+	"telegram-ollama-reply-bot/internal/execution"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/logging"
 	"telegram-ollama-reply-bot/internal/reminders"
@@ -43,6 +45,9 @@ type Config struct {
 	MaxIterations      int
 	AdminIDs           []int64
 	RecentHistoryLimit int
+	// Dispatcher receives execution events. Nil disables event emission;
+	// delivery is best-effort and never influences the run outcome.
+	Dispatcher execution.Dispatcher
 }
 
 type ChatRequest struct {
@@ -50,6 +55,61 @@ type ChatRequest struct {
 	PromptScope    llm.PromptScope
 	ReplyContext   llm.ChatReplyContext
 	RequestMessage state.Message
+	// RunID correlates execution events for this run across subscribers;
+	// generated when empty.
+	RunID string
+}
+
+// ToolCallRecord is the authoritative record of one tool invocation, in
+// execution order (including failed and unknown-tool calls). It feeds
+// presentation such as the final tool-history block; events are best-effort
+// and never feed it.
+type ToolCallRecord struct {
+	CallID     string
+	Name       string
+	Visibility Visibility
+	Status     string
+	Duration   time.Duration
+}
+
+// Result is the authoritative outcome of a tool-enabled reply: the final
+// answer text (possibly empty for side-effect-only completions), the
+// accumulated token usage, and the chronological tool-call history.
+type Result struct {
+	Reply     string
+	Usage     *llm.TokenUsage
+	ToolCalls []ToolCallRecord
+}
+
+// runEmitter publishes execution events for one run. Emission is guarded by
+// the dispatcher being configured at all; publishing never blocks or fails.
+type runEmitter struct {
+	dispatcher execution.Dispatcher
+	rc         execution.RunContext
+}
+
+func (e runEmitter) publish(event execution.Event) {
+	if e.dispatcher == nil {
+		return
+	}
+	e.dispatcher.Publish(event)
+}
+
+// classifyRunFailure maps an error to a stable RunFailed reason classifier.
+// Raw error strings never appear on events.
+func classifyRunFailure(err error, fallback string) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return execution.ReasonTimeout
+	case errors.Is(err, context.Canceled):
+		return execution.ReasonCancelled
+	case errors.Is(err, ErrToolLoopLimitReached):
+		return execution.ReasonLoopLimit
+	case errors.Is(err, llm.ErrNoChoices):
+		return execution.ReasonNoChoices
+	default:
+		return fallback
+	}
 }
 
 type Runtime struct {
@@ -190,59 +250,107 @@ func (r *Runtime) Close() {
 	r.closers = nil
 }
 
-func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (string, *llm.TokenUsage, error) {
+// ReplyWithTools runs the tool-enabled generation loop and returns the
+// authoritative Result. Execution events are published along the way, but
+// delivery is best-effort: the returned outcome never depends on it.
+func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, error) {
 	logger := logging.FromContext(ctx, r.logger)
 	definitions := r.registry.DefaultDefinitions()
 	modelTools := toLLMToolDefinitions(definitions)
 	toolPolicy := buildToolPolicy(definitions)
 
+	runID := req.RunID
+	if runID == "" {
+		runID = execution.NewRunID()
+	}
+	emitter := runEmitter{dispatcher: r.config.Dispatcher}
+	emitter.rc = execution.RunContext{
+		RunID:     runID,
+		ChatID:    req.Scope.ChatID,
+		TopicID:   req.Scope.TopicID,
+		MessageID: req.RequestMessage.MessageID,
+	}
+	runStart := time.Now()
+	emitter.publish(execution.RunStarted{RunContext: emitter.rc, At: runStart})
+
 	var (
 		extraMessages             []llm.Message
 		totalUsage                llm.TokenUsage
+		records                   []ToolCallRecord
 		started                   bool
 		allowEmptyReplyCompletion bool
 	)
 
+	succeeded := func(reply string) (Result, error) {
+		emitter.publish(execution.RunCompleted{
+			RunContext:  emitter.rc,
+			At:          time.Now(),
+			Duration:    time.Since(runStart),
+			ReplyLength: len([]rune(reply)),
+		})
+
+		return Result{Reply: reply, Usage: usagePointer(totalUsage), ToolCalls: records}, nil
+	}
+	fail := func(err error, fallbackReason string) (Result, error) {
+		emitter.publish(execution.RunFailed{
+			RunContext: emitter.rc,
+			At:         time.Now(),
+			Duration:   time.Since(runStart),
+			Reason:     classifyRunFailure(err, fallbackReason),
+		})
+
+		return Result{Usage: usagePointer(totalUsage), ToolCalls: records}, err
+	}
+
 	for i := 0; i < r.config.MaxIterations; i++ {
+		genStart := time.Now()
+		emitter.publish(execution.GenerationStarted{RunContext: emitter.rc, At: genStart, Iteration: i})
+
 		request, err := r.llm.BuildChatToolRequest(ctx, req.PromptScope, req.ReplyContext, modelTools, toolPolicy, extraMessages)
 		if err != nil {
 			if !started {
 				logger.Warn("chat request preparation failed", "error", err)
-
-				return "", nil, err
 			}
 
-			return "", usagePointer(totalUsage), err
+			return fail(err, execution.ReasonPrepare)
 		}
 
 		resp, err := r.llm.Generate(ctx, request)
 		if err != nil {
 			if started && allowEmptyReplyCompletion && errors.Is(err, llm.ErrNoChoices) {
-				return "", usagePointer(totalUsage), nil
+				return succeeded("")
 			}
 
 			if !started {
 				logger.Warn("chat backend failed", "error", err)
-
-				return "", nil, err
 			}
 
-			return "", usagePointer(totalUsage), err
+			return fail(err, execution.ReasonBackend)
 		}
+
+		emitter.publish(execution.GenerationCompleted{
+			RunContext:    emitter.rc,
+			At:            time.Now(),
+			Iteration:     i,
+			Duration:      time.Since(genStart),
+			FinishReason:  string(resp.FinishReason),
+			ToolCallCount: len(resp.Message.ToolCalls),
+		})
 
 		started = true
 		accumulateUsage(&totalUsage, resp.Usage)
 
 		if len(resp.Message.ToolCalls) == 0 {
-			if resp.Message.Text() == "" {
+			text := resp.Message.Text()
+			if text == "" {
 				if allowEmptyReplyCompletion {
-					return "", usagePointer(totalUsage), nil
+					return succeeded("")
 				}
 
-				return "", usagePointer(totalUsage), llm.ErrNoChoices
+				return fail(llm.ErrNoChoices, execution.ReasonBackend)
 			}
 
-			return resp.Message.Text(), usagePointer(totalUsage), nil
+			return succeeded(text)
 		}
 
 		// Preserve the assistant tool-call message and the corresponding tool outputs.
@@ -252,25 +360,40 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (string, 
 		allowEmptyReplyCompletion = false
 
 		for _, call := range resp.Message.ToolCalls {
-			toolMessage, allowsEmptyReply := r.executeToolCall(ctx, req, call)
+			toolMessage, allowsEmptyReply, record := r.executeToolCall(ctx, emitter, req, call)
+			records = append(records, record)
 			extraMessages = append(extraMessages, toolMessage)
 			allowEmptyReplyCompletion = allowEmptyReplyCompletion || allowsEmptyReply
 		}
 	}
 
-	return "", usagePointer(totalUsage), ErrToolLoopLimitReached
+	return fail(ErrToolLoopLimitReached, execution.ReasonBackend)
 }
 
-func (r *Runtime) executeToolCall(ctx context.Context, req ChatRequest, call llm.ToolCall) (llm.Message, bool) {
+func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, req ChatRequest, call llm.ToolCall) (llm.Message, bool, ToolCallRecord) {
 	logger := logging.FromContext(ctx, r.logger)
 	definition, ok := r.registry.Lookup(call.Name)
 	if !ok {
 		logger.Warn("tool call references unknown tool", "tool_name", call.Name, "tool_call_id", call.ID)
+		emitter.publish(execution.ToolStarted{RunContext: emitter.rc, At: time.Now(), CallID: call.ID, ToolName: call.Name})
+		emitter.publish(execution.ToolCompleted{
+			RunContext: emitter.rc,
+			At:         time.Now(),
+			CallID:     call.ID,
+			ToolName:   call.Name,
+			Duration:   time.Duration(0),
+			Status:     execution.StatusError,
+		})
 
 		return toolResponseMessage(call.ID, marshalResult(toolResult{
 			Status: "error",
 			Error:  fmt.Sprintf("unknown tool %q", call.Name),
-		}, defaultToolResultCharBudget)), false
+		}, defaultToolResultCharBudget)), false, ToolCallRecord{
+			CallID:     call.ID,
+			Name:       call.Name,
+			Visibility: VisibilityStandard,
+			Status:     execution.StatusError,
+		}
 	}
 
 	logger.Info(
@@ -279,6 +402,16 @@ func (r *Runtime) executeToolCall(ctx context.Context, req ChatRequest, call llm
 		"tool_call_id", call.ID,
 		"invocation_policy", definition.InvocationPolicy,
 	)
+
+	internal := definition.EffectiveVisibility() == VisibilityInternal
+	toolStart := time.Now()
+	emitter.publish(execution.ToolStarted{
+		RunContext: emitter.rc,
+		At:         toolStart,
+		CallID:     call.ID,
+		ToolName:   definition.Name,
+		Internal:   internal,
+	})
 
 	result, err := definition.Handler(ctx, CallContext{
 		Scope:     req.Scope,
@@ -294,8 +427,26 @@ func (r *Runtime) executeToolCall(ctx context.Context, req ChatRequest, call llm
 		}
 	}
 
+	duration := time.Since(toolStart)
+	emitter.publish(execution.ToolCompleted{
+		RunContext: emitter.rc,
+		At:         time.Now(),
+		CallID:     call.ID,
+		ToolName:   definition.Name,
+		Internal:   internal,
+		Duration:   duration,
+		Status:     result.Status,
+	})
+
 	return toolResponseMessage(call.ID, marshalResult(result, definition.ResultCharBudget)),
-		definition.SideEffecting && result.Status == "ok"
+		definition.SideEffecting && result.Status == execution.StatusOK,
+		ToolCallRecord{
+			CallID:     call.ID,
+			Name:       definition.Name,
+			Visibility: definition.EffectiveVisibility(),
+			Status:     result.Status,
+			Duration:   duration,
+		}
 }
 
 func toolResponseMessage(toolCallID, text string) llm.Message {
