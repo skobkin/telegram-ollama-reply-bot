@@ -77,10 +77,14 @@ type ConversationStore interface {
 	// on one of the bot's own messages (IsMe) identified by its Telegram
 	// message ID within the chat. Reaction updates carry no topic, so all
 	// topic streams of the chat are searched; Telegram message IDs are
-	// unique per chat. An empty reactions slice removes that user's
-	// reactions. Returns false when the target message is not in history
-	// (restart, trim, reset, or a reaction on a non-bot message).
-	SetMessageReactions(chatID int64, messageID int, userID int64, reactions []Reaction) bool
+	// unique per chat. updateSeq is the sequential Telegram update ID of the
+	// reaction update: concurrent handlers do not preserve arrival order, so
+	// a call whose updateSeq is not newer than the last applied one for this
+	// user and message is rejected as stale, including after removals. An
+	// empty reactions slice removes that user's reactions. Returns false
+	// when the target message is not in history (restart, trim, reset, or a
+	// reaction on a non-bot message).
+	SetMessageReactions(chatID int64, messageID int, userID int64, updateSeq int64, reactions []Reaction) bool
 	Reset(scope ConversationScope)
 	ResetChat(chatID int64)
 }

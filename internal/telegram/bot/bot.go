@@ -262,8 +262,10 @@ func (b *Bot) registerRoutes(bh *th.BotHandler) {
 
 	// Reactions on the bot's own messages. Reaction updates carry no Message
 	// payload, so the shared middlewares above all no-op for them (including
-	// the access gate) — the handler enforces the gate itself.
-	bh.HandleMessageReaction(b.messageReactionHandler)
+	// the access gate) — the handler enforces the gate itself. Generic route
+	// (instead of the typed HandleMessageReaction) so the envelope's
+	// sequential UpdateID reaches the store for stale-update rejection.
+	bh.Handle(b.messageReactionHandler, th.AnyMessageReaction())
 
 	// User-facing commands.
 	bh.HandleMessage(b.startHandler, th.And(commandForMe, th.CommandEqual("start")))

@@ -33,6 +33,7 @@ type reactionRecord struct {
 	chatID    int64
 	messageID int
 	userID    int64
+	updateSeq int64
 	reactions []state.Reaction
 }
 
@@ -52,12 +53,12 @@ func (s *dmHistorySpy) SetEarlierSummary(state.ConversationScope, string, int) {
 func (s *dmHistorySpy) Reset(state.ConversationScope)                          {}
 func (s *dmHistorySpy) ResetChat(int64)                                        {}
 
-func (s *dmHistorySpy) SetMessageReactions(chatID int64, messageID int, userID int64, reactions []state.Reaction) bool {
+func (s *dmHistorySpy) SetMessageReactions(chatID int64, messageID int, userID int64, updateSeq int64, reactions []state.Reaction) bool {
 	s.reactionMu.Lock()
 	defer s.reactionMu.Unlock()
 
 	s.reactionCalls++
-	s.lastReaction = reactionRecord{chatID: chatID, messageID: messageID, userID: userID, reactions: reactions}
+	s.lastReaction = reactionRecord{chatID: chatID, messageID: messageID, userID: userID, updateSeq: updateSeq, reactions: reactions}
 
 	return s.reactionFound
 }

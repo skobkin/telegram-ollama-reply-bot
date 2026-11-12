@@ -72,7 +72,13 @@ func newMemoryConversationStore() state.ConversationStore {
 }
 
 func reactionUpdate(chatID int64, messageID int, user *tg.User, newReaction []tg.ReactionType) tg.Update {
-	return tg.Update{UpdateID: 44, MessageReaction: &tg.MessageReactionUpdated{
+	return reactionUpdateWithID(44, chatID, messageID, user, newReaction)
+}
+
+// reactionUpdateWithID lets tests set the envelope UpdateID, which the
+// handler carries into the store as the update-order sequence.
+func reactionUpdateWithID(updateID int, chatID int64, messageID int, user *tg.User, newReaction []tg.ReactionType) tg.Update {
+	return tg.Update{UpdateID: updateID, MessageReaction: &tg.MessageReactionUpdated{
 		Chat:        tg.Chat{ID: chatID, Type: tg.ChatTypePrivate},
 		MessageID:   messageID,
 		User:        user,
@@ -119,9 +125,11 @@ func TestReactionReplaceAndRemovalPerUser(t *testing.T) {
 	scope := state.ConversationScope{ChatID: 100500}
 	p.store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 777, Text: "answer"})
 
-	p.deliver(t, reactionUpdate(100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, emojiReaction("👍")))
-	p.deliver(t, reactionUpdate(100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, emojiReaction("👎")))
-	p.deliver(t, reactionUpdate(100500, 777, &tg.User{ID: 43, FirstName: "Bob"}, emojiReaction("🔥")))
+	// Each delivery carries a strictly increasing Telegram update ID, as in
+	// reality; the store rejects anything not newer per user and message.
+	p.deliver(t, reactionUpdateWithID(101, 100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, emojiReaction("👍")))
+	p.deliver(t, reactionUpdateWithID(102, 100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, emojiReaction("👎")))
+	p.deliver(t, reactionUpdateWithID(103, 100500, 777, &tg.User{ID: 43, FirstName: "Bob"}, emojiReaction("🔥")))
 
 	reactions := p.store.Snapshot(scope).Messages[0].Reactions
 	if len(reactions) != 2 {
@@ -136,7 +144,7 @@ func TestReactionReplaceAndRemovalPerUser(t *testing.T) {
 
 	// Alice removes her reaction entirely (the update still carries the old
 	// reaction list, as Telegram does).
-	removal := reactionUpdate(100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, nil)
+	removal := reactionUpdateWithID(104, 100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, nil)
 	removal.MessageReaction.OldReaction = emojiReaction("👎")
 	p.deliver(t, removal)
 
@@ -179,13 +187,13 @@ func TestReactionChangeAwayFromTrackedEmojiClears(t *testing.T) {
 	spy := &dmHistorySpy{reactionFound: true}
 	p := newReactionTestBot(t, &dmCatalogSpy{}, spy)
 
-	p.deliver(t, reactionUpdate(100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, emojiReaction("👍")))
+	p.deliver(t, reactionUpdateWithID(201, 100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, emojiReaction("👍")))
 	if got := spy.reactionCallCount(); got != 1 {
 		t.Fatalf("tracked reaction must reach the store, got %d calls", got)
 	}
 
 	// A real emoji switch carries the previous reaction in OldReaction.
-	switchAway := reactionUpdate(100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, emojiReaction("🍌"))
+	switchAway := reactionUpdateWithID(202, 100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, emojiReaction("🍌"))
 	switchAway.MessageReaction.OldReaction = emojiReaction("👍")
 	p.deliver(t, switchAway)
 
@@ -210,6 +218,38 @@ func TestReactionUnmappedTargetHarmless(t *testing.T) {
 	snapshot := p.store.Snapshot(scope)
 	if len(snapshot.Messages[0].Reactions) != 0 {
 		t.Fatalf("unmapped reactions must not modify history, got %+v", snapshot.Messages[0].Reactions)
+	}
+}
+
+// TestReactionOutOfOrderUpdatesCannotResurrect proves update-order safety:
+// handlers run concurrently, so a delayed "add" update arriving after the
+// user's later "remove" must not resurrect the removed reaction.
+func TestReactionOutOfOrderUpdatesCannotResurrect(t *testing.T) {
+	p := newReactionTestBot(t, &dmCatalogSpy{}, newMemoryConversationStore())
+
+	scope := state.ConversationScope{ChatID: 100500}
+	p.store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 777, Text: "answer"})
+
+	addition := reactionUpdateWithID(101, 100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, emojiReaction("👍"))
+	removal := reactionUpdateWithID(102, 100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, nil)
+	removal.MessageReaction.OldReaction = emojiReaction("👍")
+
+	// Deliver in reversed order: the removal is applied first.
+	p.deliver(t, removal)
+	p.deliver(t, addition)
+
+	reactions := p.store.Snapshot(scope).Messages[0].Reactions
+	if len(reactions) != 0 {
+		t.Fatalf("stale addition must not resurrect the removed reaction, got %+v", reactions)
+	}
+
+	// And the normal order still works: a newer addition applies.
+	newer := reactionUpdateWithID(103, 100500, 777, &tg.User{ID: 42, FirstName: "Alice"}, emojiReaction("🔥"))
+	p.deliver(t, newer)
+
+	reactions = p.store.Snapshot(scope).Messages[0].Reactions
+	if len(reactions) != 1 || reactions[0].Emoji != "🔥" {
+		t.Fatalf("newer reaction must apply, got %+v", reactions)
 	}
 }
 

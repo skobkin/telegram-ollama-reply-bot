@@ -39,9 +39,18 @@ var trackedReactionEmojis = map[string]struct{}{
 
 // messageReactionHandler records reactions to the bot's own messages in
 // conversation history so the model sees the feedback in later replies.
-// Reaction updates carry no Message payload, so the shared middlewares
-// (including the access gate) never run for them — the gate is enforced here.
-func (b *Bot) messageReactionHandler(ctx *th.Context, reaction t.MessageReactionUpdated) error {
+// It is registered as a generic route (not the typed HandleMessageReaction)
+// so the update envelope's sequential UpdateID reaches the store for
+// stale-update rejection: handlers run concurrently and do not preserve
+// Telegram's delivery order. Reaction updates carry no Message payload, so
+// the shared middlewares (including the access gate) never run for them —
+// the gate is enforced here.
+func (b *Bot) messageReactionHandler(ctx *th.Context, update t.Update) error {
+	reaction := update.MessageReaction
+	if reaction == nil {
+		return nil
+	}
+
 	logger := b.handlerLogger(ctx).With("chat_id", reaction.Chat.ID, "message_id", reaction.MessageID)
 
 	if reaction.User == nil {
@@ -82,7 +91,7 @@ func (b *Bot) messageReactionHandler(ctx *th.Context, reaction t.MessageReaction
 		return nil
 	}
 
-	if !b.history.SetMessageReactions(reaction.Chat.ID, reaction.MessageID, reaction.User.ID, tracked) {
+	if !b.history.SetMessageReactions(reaction.Chat.ID, reaction.MessageID, reaction.User.ID, int64(update.UpdateID), tracked) {
 		logger.Debug("reaction target not in bot history")
 	}
 
@@ -91,7 +100,7 @@ func (b *Bot) messageReactionHandler(ctx *th.Context, reaction t.MessageReaction
 
 // isAdminReactionDM mirrors isAdminDM for reaction updates, whose actor is a
 // User rather than a message sender.
-func (b *Bot) isAdminReactionDM(reaction t.MessageReactionUpdated) bool {
+func (b *Bot) isAdminReactionDM(reaction *t.MessageReactionUpdated) bool {
 	return reaction.User != nil &&
 		reaction.Chat.Type == t.ChatTypePrivate &&
 		slices.Contains(b.cfg.AdminIDs, reaction.User.ID)

@@ -88,6 +88,18 @@ type conversationBucket struct {
 	summaryMessageCount int
 	bytes               int64
 	lastUpdatedAt       time.Time
+	// reactionSeq tracks the newest applied reaction update per (message,
+	// user) so stale out-of-order updates are rejected; reaction updates are
+	// dispatched concurrently and do not preserve Telegram's arrival order.
+	// Entries for trimmed-away messages are harmless garbage until the
+	// bucket is evicted or reset.
+	reactionSeq map[reactionSeqKey]int64
+}
+
+// reactionSeqKey identifies the reacting user within one Telegram message.
+type reactionSeqKey struct {
+	messageID int64
+	userID    int64
 }
 
 type ConversationStore struct {
@@ -210,7 +222,7 @@ func (s *ConversationStore) SetEarlierSummary(scope state.ConversationScope, tex
 	s.budget.Set("conversation", s.totalBytes)
 }
 
-func (s *ConversationStore) SetMessageReactions(chatID int64, messageID int, userID int64, reactions []state.Reaction) bool {
+func (s *ConversationStore) SetMessageReactions(chatID int64, messageID int, userID int64, updateSeq int64, reactions []state.Reaction) bool {
 	if messageID <= 0 {
 		return false
 	}
@@ -232,6 +244,19 @@ func (s *ConversationStore) SetMessageReactions(chatID int64, messageID int, use
 				continue
 			}
 
+			// Reaction updates are dispatched concurrently, so arrival order is
+			// not update order: reject anything not newer than the last applied
+			// change for this user and message (also covers removals, whose
+			// empty result carries the sequence instead).
+			seqKey := reactionSeqKey{messageID: int64(messageID), userID: userID}
+			if lastSeq, tracked := bucket.reactionSeq[seqKey]; tracked && updateSeq <= lastSeq {
+				s.logger.Debug("rejecting stale reaction update",
+					"chat_id", chatID, "message_id", messageID, "user_id", userID,
+					"update_seq", updateSeq, "last_seq", lastSeq)
+
+				return true
+			}
+
 			now := time.Now().UTC()
 			kept := make([]state.Reaction, 0, len(msg.Reactions)+len(reactions))
 			for _, existing := range msg.Reactions {
@@ -249,6 +274,19 @@ func (s *ConversationStore) SetMessageReactions(chatID int64, messageID int, use
 			after := messageApproxBytes(*msg)
 			bucket.bytes += after - before
 			s.totalBytes += after - before
+
+			if bucket.reactionSeq == nil {
+				bucket.reactionSeq = make(map[reactionSeqKey]int64)
+			}
+			bucket.reactionSeq[seqKey] = updateSeq
+
+			// A reaction change on an already-summarized message makes the
+			// cached summary stale (it embeds the old reaction rendering), so
+			// drop it and let the next summarization rebuild from raw history.
+			if i < bucket.summaryMessageCount {
+				s.clearBucketSummary(bucket)
+			}
+
 			bucket.lastUpdatedAt = now
 			s.touchStreamOrder(key)
 			s.evictIfNeeded()

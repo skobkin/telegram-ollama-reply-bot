@@ -185,7 +185,7 @@ func TestConversationStoreSetMessageReactionsAcrossTopics(t *testing.T) {
 	store.AppendMessage(baseScope, state.Message{Text: "user question", FromID: 1, MessageID: 10})
 	store.AppendMessage(topicScope, state.Message{IsMe: true, MessageID: 11, Text: "bot answer"})
 
-	if !store.SetMessageReactions(100, 11, 42, []state.Reaction{{UserID: 42, Name: "Alice", Emoji: "👍"}}) {
+	if !store.SetMessageReactions(100, 11, 42, 10, []state.Reaction{{UserID: 42, Name: "Alice", Emoji: "👍"}}) {
 		t.Fatalf("expected the bot message to be found")
 	}
 
@@ -198,7 +198,7 @@ func TestConversationStoreSetMessageReactionsAcrossTopics(t *testing.T) {
 	}
 
 	// User messages are never reaction targets.
-	if store.SetMessageReactions(100, 10, 42, []state.Reaction{{UserID: 42, Emoji: "👎"}}) {
+	if store.SetMessageReactions(100, 10, 42, 11, []state.Reaction{{UserID: 42, Emoji: "👎"}}) {
 		t.Fatalf("user message must not be a reaction target")
 	}
 	if len(store.Snapshot(baseScope).Messages[0].Reactions) != 0 {
@@ -215,9 +215,9 @@ func TestConversationStoreSetMessageReactionsPerUserReplaceAndRemove(t *testing.
 	scope := state.ConversationScope{ChatID: 200}
 	store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 20, Text: "answer"})
 
-	store.SetMessageReactions(200, 20, 1, []state.Reaction{{UserID: 1, Emoji: "👍"}})
-	store.SetMessageReactions(200, 20, 1, []state.Reaction{{UserID: 1, Emoji: "👎"}})
-	store.SetMessageReactions(200, 20, 2, []state.Reaction{{UserID: 2, Emoji: "🔥"}})
+	store.SetMessageReactions(200, 20, 1, 20, []state.Reaction{{UserID: 1, Emoji: "👍"}})
+	store.SetMessageReactions(200, 20, 1, 21, []state.Reaction{{UserID: 1, Emoji: "👎"}})
+	store.SetMessageReactions(200, 20, 2, 22, []state.Reaction{{UserID: 2, Emoji: "🔥"}})
 
 	reactions := store.Snapshot(scope).Messages[0].Reactions
 	if len(reactions) != 2 || reactions[0].UserID != 1 || reactions[0].Emoji != "👎" || reactions[1].UserID != 2 {
@@ -225,7 +225,7 @@ func TestConversationStoreSetMessageReactionsPerUserReplaceAndRemove(t *testing.
 	}
 
 	// Empty slice removes only that user's reactions.
-	if !store.SetMessageReactions(200, 20, 1, nil) {
+	if !store.SetMessageReactions(200, 20, 1, 23, nil) {
 		t.Fatalf("expected removal to report the message as found")
 	}
 	reactions = store.Snapshot(scope).Messages[0].Reactions
@@ -243,13 +243,13 @@ func TestConversationStoreSetMessageReactionsUnmapped(t *testing.T) {
 	scope := state.ConversationScope{ChatID: 300}
 	store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 30, Text: "answer with no message id"})
 
-	if store.SetMessageReactions(300, 999, 1, []state.Reaction{{UserID: 1, Emoji: "👍"}}) {
+	if store.SetMessageReactions(300, 999, 1, 30, []state.Reaction{{UserID: 1, Emoji: "👍"}}) {
 		t.Fatalf("unknown message ID must not be found")
 	}
-	if store.SetMessageReactions(400, 30, 1, []state.Reaction{{UserID: 1, Emoji: "👍"}}) {
+	if store.SetMessageReactions(400, 30, 1, 31, []state.Reaction{{UserID: 1, Emoji: "👍"}}) {
 		t.Fatalf("other chat must not be searched")
 	}
-	if store.SetMessageReactions(300, 0, 1, nil) || store.SetMessageReactions(300, -5, 1, nil) {
+	if store.SetMessageReactions(300, 0, 1, 32, nil) || store.SetMessageReactions(300, -5, 1, 33, nil) {
 		t.Fatalf("non-positive message IDs must be rejected")
 	}
 	if len(store.Snapshot(scope).Messages[0].Reactions) != 0 {
@@ -267,7 +267,7 @@ func TestConversationStoreSetMessageReactionsGrowsApproxBytes(t *testing.T) {
 	store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 40, Text: "answer"})
 
 	before := store.Snapshot(scope).ApproxBytes
-	store.SetMessageReactions(400, 40, 1, []state.Reaction{{UserID: 1, Name: "Alice", Username: "alice", Emoji: "👍"}})
+	store.SetMessageReactions(400, 40, 1, 40, []state.Reaction{{UserID: 1, Name: "Alice", Username: "alice", Emoji: "👍"}})
 	after := store.Snapshot(scope).ApproxBytes
 
 	if after <= before {
@@ -296,7 +296,7 @@ func TestConversationStoreSetMessageReactionsConcurrent(t *testing.T) {
 				if i%2 == 1 {
 					emoji = "👎"
 				}
-				store.SetMessageReactions(500, 50, userID, []state.Reaction{{UserID: userID, Emoji: emoji}})
+				store.SetMessageReactions(500, 50, userID, int64(1000+i), []state.Reaction{{UserID: userID, Emoji: emoji}})
 			}
 		}(userID)
 	}
@@ -310,5 +310,80 @@ func TestConversationStoreSetMessageReactionsConcurrent(t *testing.T) {
 		if reaction.Emoji != "👍" && reaction.Emoji != "👎" {
 			t.Fatalf("unexpected final reaction: %#v", reaction)
 		}
+	}
+}
+
+func TestConversationStoreSetMessageReactionsRejectStaleUpdates(t *testing.T) {
+	t.Parallel()
+
+	stores := New(Config{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	store := stores.Conversations()
+
+	scope := state.ConversationScope{ChatID: 600}
+	store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 60, Text: "answer"})
+
+	reaction := func(seq int64, emoji string) bool {
+		reactions := []state.Reaction{{UserID: 1, Emoji: emoji}}
+
+		return store.SetMessageReactions(600, 60, 1, seq, reactions)
+	}
+
+	if !reaction(5, "👍") {
+		t.Fatalf("first update must apply")
+	}
+	// Same or older sequence is reported as found but not applied.
+	if !reaction(5, "👎") || !reaction(3, "👎") {
+		t.Fatalf("stale update targets an existing message, so it reports found")
+	}
+	reactions := store.Snapshot(scope).Messages[0].Reactions
+	if len(reactions) != 1 || reactions[0].Emoji != "👍" {
+		t.Fatalf("stale updates must not change reactions: %#v", reactions)
+	}
+
+	// A newer change applies, including a removal; removals keep the
+	// sequence so a later stale addition cannot resurrect the reaction.
+	if !reaction(6, "👎") {
+		t.Fatalf("newer update must apply")
+	}
+	if !store.SetMessageReactions(600, 60, 1, 7, nil) {
+		t.Fatalf("newer removal must apply")
+	}
+	if !store.SetMessageReactions(600, 60, 1, 2, []state.Reaction{{UserID: 1, Emoji: "👍"}}) {
+		t.Fatalf("stale addition targets an existing message, so it reports found")
+	}
+	if len(store.Snapshot(scope).Messages[0].Reactions) != 0 {
+		t.Fatalf("removed reaction must stay removed")
+	}
+}
+
+func TestConversationStoreSetMessageReactionsInvalidatesStaleSummary(t *testing.T) {
+	t.Parallel()
+
+	stores := New(Config{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	store := stores.Conversations()
+
+	scope := state.ConversationScope{ChatID: 700}
+	store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 70, Text: "summarized answer"})
+	store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 71, Text: "later bot answer"})
+	store.SetEarlierSummary(scope, "summary mentioning no reactions", 1)
+
+	// The reacted message sits inside the summarized prefix: the cached
+	// summary embeds the old reaction rendering, so it must be dropped.
+	if !store.SetMessageReactions(700, 70, 1, 10, []state.Reaction{{UserID: 1, Emoji: "👍"}}) {
+		t.Fatalf("expected reaction to apply")
+	}
+	snapshot := store.Snapshot(scope)
+	if snapshot.EarlierSummary != "" || snapshot.SummaryMessageCount != 0 {
+		t.Fatalf("summary must be invalidated by a reaction inside the summarized prefix: %#v", snapshot)
+	}
+
+	// A reaction outside the summarized prefix leaves the summary intact.
+	store.SetEarlierSummary(scope, "fresh summary", 1)
+	if !store.SetMessageReactions(700, 71, 2, 11, []state.Reaction{{UserID: 2, Emoji: "👎"}}) {
+		t.Fatalf("expected reaction to apply")
+	}
+	snapshot = store.Snapshot(scope)
+	if snapshot.EarlierSummary != "fresh summary" || snapshot.SummaryMessageCount != 1 {
+		t.Fatalf("summary must survive a reaction outside the summarized prefix: %#v", snapshot)
 	}
 }
