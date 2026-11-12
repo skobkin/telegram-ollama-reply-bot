@@ -466,9 +466,26 @@ func (s *ConversationStore) trimBucketHead(key string, bucket *conversationBucke
 	}
 	// Prune reaction sequence records for the trimmed message so the map
 	// cannot grow past the surviving messages, and keep its size accounted.
-	for seqKey := range bucket.reactionSeq {
-		if seqKey.messageID == int64(removed.MessageID) {
-			delete(bucket.reactionSeq, seqKey)
+	// Go maps do not return their backing storage on delete: when a prune
+	// removes a substantial share of the entries, the map is rebuilt so the
+	// retained allocation is actually released instead of escaping the byte
+	// accounting below.
+	if beforeLen := len(bucket.reactionSeq); beforeLen > 0 {
+		for seqKey := range bucket.reactionSeq {
+			if seqKey.messageID == int64(removed.MessageID) {
+				delete(bucket.reactionSeq, seqKey)
+			}
+		}
+		if len(bucket.reactionSeq)*2 <= beforeLen {
+			if len(bucket.reactionSeq) == 0 {
+				bucket.reactionSeq = nil
+			} else {
+				kept := make(map[reactionSeqKey]int64, len(bucket.reactionSeq))
+				for seqKey, seq := range bucket.reactionSeq {
+					kept[seqKey] = seq
+				}
+				bucket.reactionSeq = kept
+			}
 		}
 	}
 	seqBytes := int64(len(bucket.reactionSeq)) * reactionSeqRecordApproxBytes

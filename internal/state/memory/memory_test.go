@@ -3,6 +3,7 @@ package memory
 import (
 	"io"
 	"log/slog"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -490,5 +491,75 @@ func TestConversationStoreReactionSeqRecordsPrunedOnTrimAndCountedInBytes(t *tes
 	snapshot := store.Snapshot(scope)
 	if snapshot.ApproxBytes != bucket.bytes {
 		t.Fatalf("snapshot approximate bytes must include sequence metadata: %d != %d", snapshot.ApproxBytes, bucket.bytes)
+	}
+}
+
+// TestConversationStoreReactionSeqMapRebuiltOnSubstantialPrune proves a
+// substantial prune rebuilds the sequence map (or releases it entirely):
+// Go maps keep their backing storage on delete, so the retained allocation
+// would otherwise escape the byte accounting that tracks record counts.
+func TestConversationStoreReactionSeqMapRebuiltOnSubstantialPrune(t *testing.T) {
+	t.Parallel()
+
+	stores := New(Config{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	store := stores.Conversations()
+
+	scope := state.ConversationScope{ChatID: 830}
+	key := scopeKey(scope)
+	// Message A carries 300 reacting users, B ten, C fifteen: trimming A
+	// prunes well over half the entries and must rebuild the map.
+	store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 1, Text: "a"})
+	store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 2, Text: "b"})
+	store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 3, Text: "c"})
+	for userID := int64(1); userID <= 300; userID++ {
+		store.SetMessageReactions(830, 1, userID, userID, []state.Reaction{{UserID: userID, Emoji: "👍"}})
+	}
+	for userID := int64(1); userID <= 10; userID++ {
+		store.SetMessageReactions(830, 2, userID, userID, []state.Reaction{{UserID: userID, Emoji: "👍"}})
+	}
+	for userID := int64(1); userID <= 15; userID++ {
+		store.SetMessageReactions(830, 3, userID, userID, []state.Reaction{{UserID: userID, Emoji: "👍"}})
+	}
+
+	bucket := stores.conversations.streams[key]
+	if bucket == nil {
+		t.Fatalf("expected the stream to survive")
+	}
+	before := bucket.reactionSeq
+	if len(before) != 325 {
+		t.Fatalf("expected 325 sequence records, got %d", len(before))
+	}
+
+	// Trim A: 325 -> 25 records, a substantial prune, so the map must be a
+	// fresh allocation instead of the shrunken original.
+	stores.conversations.trimBucketHead(key, bucket)
+	if len(bucket.reactionSeq) != 25 {
+		t.Fatalf("expected the trimmed message's records pruned, got %d", len(bucket.reactionSeq))
+	}
+	if reflect.ValueOf(bucket.reactionSeq).Pointer() == reflect.ValueOf(before).Pointer() {
+		t.Fatalf("substantial prune must rebuild the map to release retained storage")
+	}
+	if bucket.reactionSeqBytes != 25*reactionSeqRecordApproxBytes {
+		t.Fatalf("byte accounting must follow the surviving records, got %d", bucket.reactionSeqBytes)
+	}
+
+	// A small prune keeps the map: trimming B removes 10 of 25 records,
+	// which does not justify a reallocation.
+	smallBefore := bucket.reactionSeq
+	stores.conversations.trimBucketHead(key, bucket)
+	if len(bucket.reactionSeq) != 15 {
+		t.Fatalf("expected records of the second message pruned, got %d", len(bucket.reactionSeq))
+	}
+	if reflect.ValueOf(bucket.reactionSeq).Pointer() != reflect.ValueOf(smallBefore).Pointer() {
+		t.Fatalf("a small prune must keep the map allocation")
+	}
+
+	// Trimming the last records releases the map entirely.
+	stores.conversations.trimBucketHead(key, bucket)
+	if bucket.reactionSeq != nil {
+		t.Fatalf("an emptied sequence map must be released, got %d records", len(bucket.reactionSeq))
+	}
+	if bucket.reactionSeqBytes != 0 {
+		t.Fatalf("released map must not be accounted, got %d bytes", bucket.reactionSeqBytes)
 	}
 }

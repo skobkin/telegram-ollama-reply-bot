@@ -83,10 +83,15 @@ func (b *ReplyBuilder) BuildReplyContext(ctx context.Context, input ReplyInput) 
 	if start > len(snapshot.Messages) {
 		start = len(snapshot.Messages)
 	}
-	if snapshot.EarlierSummary == "" && b.recentLimit > 0 {
-		start = len(snapshot.Messages) - b.recentLimit
-		if start < 0 {
-			start = 0
+	if snapshot.EarlierSummary == "" {
+		// No summary: bound to the recent window when one is configured.
+		// With summarization disabled entirely (limit 0) the full history
+		// stays available — nothing omitted here ever returns via a summary.
+		if b.recentLimit > 0 {
+			start = len(snapshot.Messages) - b.recentLimit
+			if start < 0 {
+				start = 0
+			}
 		}
 	} else if b.summaryTailLimit > 0 && len(snapshot.Messages)-start > b.summaryTailLimit {
 		// Partial summary mid-rebuild: the committed prefix is covered by

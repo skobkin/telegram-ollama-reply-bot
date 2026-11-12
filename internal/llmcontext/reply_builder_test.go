@@ -2,6 +2,7 @@ package llmcontext
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -288,6 +289,38 @@ func TestReplyBuilderBoundsRawTailDuringPartialSummary(t *testing.T) {
 	})
 	if len(ctx.History) != 8 {
 		t.Fatalf("summary state within the bound must forward the whole tail, got %d messages", len(ctx.History))
+	}
+}
+
+// TestReplyBuilderKeepsFullHistoryWhenSummarizationDisabled proves the
+// summary-tail cap never applies without a summary: with summarization
+// disabled (limit 0) the full history must stay available, because nothing
+// omitted here ever returns through a summary.
+func TestReplyBuilderKeepsFullHistoryWhenSummarizationDisabled(t *testing.T) {
+	t.Parallel()
+
+	stores := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	builder := NewReplyBuilder(stores.Conversations(), func(_ context.Context, messages []state.Message) []state.Message {
+		return messages
+	}, 0, 10)
+
+	scope := state.ConversationScope{ChatID: 10}
+	for i := 0; i < 20; i++ {
+		stores.Conversations().AppendMessage(scope, state.Message{
+			Name:      "Alice",
+			Text:      fmt.Sprintf("message %d", i),
+			CreatedAt: time.Now().UTC(),
+		})
+	}
+
+	ctx := builder.BuildReplyContext(context.Background(), ReplyInput{
+		Chat:           ChatContext{Type: "group"},
+		Scope:          scope,
+		CurrentMessage: state.Message{Name: "Alice", Text: "current"},
+	})
+
+	if len(ctx.History) != 20 {
+		t.Fatalf("disabled summarization must keep the full history, got %d of 20 messages", len(ctx.History))
 	}
 }
 
