@@ -1261,8 +1261,10 @@ func TestGroupPreviewFailureCounterResetsOnSuccess(t *testing.T) {
 }
 
 // TestPreviewAwaitChatGateWaitsForBackoff pins the authoritative-delivery
-// gate wait: an open gate returns immediately, an outstanding chat backoff
-// is waited out, and a cancelled context releases the wait.
+// gate wait: an open gate returns immediately (reported open), an
+// outstanding chat backoff is waited out, a cancelled context releases the
+// wait (reported closed), and a deadline expiring before the backoff ends
+// is reported closed instead of assumed open.
 func TestPreviewAwaitChatGateWaitsForBackoff(t *testing.T) {
 	state := newPreviewServerState()
 	b := newPreviewTestBot(t, state)
@@ -1271,8 +1273,9 @@ func TestPreviewAwaitChatGateWaitsForBackoff(t *testing.T) {
 	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
 
 	done := make(chan struct{})
+	var opened bool
 	go func() {
-		run.AwaitChatGate(context.Background())
+		opened = run.AwaitChatGate(context.Background())
 		close(done)
 	}()
 	select {
@@ -1280,10 +1283,15 @@ func TestPreviewAwaitChatGateWaitsForBackoff(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("AwaitChatGate must return immediately on an open gate")
 	}
+	if !opened {
+		t.Fatal("open gate must be reported open")
+	}
 
 	m.backoffChat(run.info.ChatID, 250*time.Millisecond)
 	start := time.Now()
-	run.AwaitChatGate(context.Background())
+	if !run.AwaitChatGate(context.Background()) {
+		t.Fatal("gate reopened after the backoff must be reported open")
+	}
 	if elapsed := time.Since(start); elapsed < 200*time.Millisecond {
 		t.Fatalf("AwaitChatGate must wait out the chat backoff, waited %s", elapsed)
 	}
@@ -1292,14 +1300,28 @@ func TestPreviewAwaitChatGateWaitsForBackoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	done = make(chan struct{})
+	var cancelOpen bool
 	go func() {
-		run.AwaitChatGate(ctx)
+		cancelOpen = run.AwaitChatGate(ctx)
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("AwaitChatGate must honor a cancelled context")
+	}
+	if cancelOpen {
+		t.Fatal("a wait released by cancellation must be reported closed")
+	}
+
+	deadlineCtx, deadlineCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer deadlineCancel()
+	start = time.Now()
+	if run.AwaitChatGate(deadlineCtx) {
+		t.Fatal("a deadline expiring before the backoff must be reported closed")
+	}
+	if elapsed := time.Since(start); elapsed >= 250*time.Millisecond {
+		t.Fatalf("deadline exhaustion must not wait past the deadline, waited %s", elapsed)
 	}
 
 	run.Abort()
@@ -1415,9 +1437,10 @@ func TestIngressExcludesPreviewReplies(t *testing.T) {
 		t.Fatalf("reply to an ordinary message must keep its context, got %+v", msg.ReplyTo)
 	}
 
-	// Quotes of the bot's own messages never copy the rendered wire text:
-	// a bot message absent from history is dropped entirely, even when its
-	// text looks like a final answer carrying the tool-history suffix.
+	// Quotes of the bot's own messages never copy the presentation-only
+	// tool-history metadata: a bot message absent from history (restart,
+	// reset, eviction) falls back to its wire text with the tool-history
+	// suffix stripped, keeping the answer's subject.
 	botReply := previewReply
 	botReply.MessageID = 102
 	botReply.ReplyToMessage = &tg.Message{
@@ -1427,8 +1450,19 @@ func TestIngressExcludesPreviewReplies(t *testing.T) {
 		Text:      "wire answer\n\nTool calls (1): ✅ search_web()",
 	}
 	msg = b.tgUserMessageToMessageData(botReply, true)
-	if msg.ReplyTo != nil {
-		t.Fatalf("quote of a bot message missing from history must be dropped, got %+v", msg.ReplyTo)
+	if msg.ReplyTo == nil {
+		t.Fatal("quote of a bot message missing from history must keep its cleaned subject")
+	}
+	if msg.ReplyTo.Text != "wire answer" || !msg.ReplyTo.IsMe {
+		t.Fatalf("cleaned fallback must be the answer without the suffix and with bot attribution, got %+v", msg.ReplyTo)
+	}
+
+	// The MarkdownV2 fallback suffix is sanitized on the wire: its escaped
+	// form is stripped identically.
+	botReply.ReplyToMessage.Text = "wire answer\nTool calls \\(1\\): ✅ search\\_web\\(\\)"
+	msg = b.tgUserMessageToMessageData(botReply, true)
+	if msg.ReplyTo == nil || msg.ReplyTo.Text != "wire answer" {
+		t.Fatalf("sanitized suffix must be stripped from the quoted answer, got %+v", msg.ReplyTo)
 	}
 
 	// A known bot message resolves to its stored conversation copy: the
@@ -1611,5 +1645,208 @@ func TestDeletedPreviewStaysExcludedFromHistory(t *testing.T) {
 	}
 	if snapshot.Messages[0].ReplyTo != nil {
 		t.Fatalf("reply to a deleted preview must be saved without its text, got %+v", snapshot.Messages[0].ReplyTo)
+	}
+}
+
+// TestFinalDeliveryRetriesThroughChatGate429 pins that authoritative
+// delivery survives a 429: a rate limit that closes the chat's gate right
+// before the send (a concurrent run's preview call landing late) or one the
+// send draws itself is absorbed into the shared gate, the recorded backoff
+// is waited out honoring the actual deadline, and the same completed answer
+// is redelivered without regenerating it.
+func TestFinalDeliveryRetriesThroughChatGate429(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+
+	info := RunInfo{
+		RunID:    execution.NewRunID(),
+		ChatID:   900800700,
+		ChatType: tg.ChatTypePrivate,
+		Mode:     adminconfig.PreviewModeTools,
+	}
+	run := m.RunFor(info)
+
+	// Both attempts of the first delivery — the rich send and its legacy
+	// MarkdownV2 fallback — walk into the closed window and draw 429s.
+	srv.armRateLimit("sendRichMessage")
+	srv.armRateLimit("sendMessage")
+
+	resolved := adminconfig.ResolvedChatConfig{PreviewMode: adminconfig.PreviewModeOff}
+	message := tg.Message{MessageID: 10, Chat: tg.Chat{ID: info.ChatID, Type: tg.ChatTypePrivate}}
+
+	start := time.Now()
+	sent, err := b.deliverFinalReply(context.Background(), run, message, "the answer", nil, resolved)
+	if elapsed := time.Since(start); elapsed < 900*time.Millisecond {
+		t.Fatalf("delivery must wait out the recorded backoff before redelivering, took %s", elapsed)
+	}
+	if err != nil {
+		t.Fatalf("the completed answer must be redelivered after the gate reopens, got error: %v", err)
+	}
+	if sent == nil || sent.MessageID == 0 {
+		t.Fatalf("redelivered answer must be a real message, got %+v", sent)
+	}
+	if n := srv.callCount("sendRichMessage"); n != 2 {
+		t.Fatalf("expected two rich send attempts, got %d", n)
+	}
+	if n := srv.callCount("sendMessage"); n != 1 {
+		t.Fatalf("expected exactly one legacy fallback attempt, got %d", n)
+	}
+
+	run.Abort()
+}
+
+// TestFinalDeliveryExactlyOnceWithoutPreviews pins the previews-off
+// behavior: without a run, delivery is attempted exactly once with no gate
+// interaction — byte-identical to the pre-preview pipeline.
+func TestFinalDeliveryExactlyOnceWithoutPreviews(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+
+	srv.armRateLimit("sendRichMessage")
+	srv.armRateLimit("sendMessage")
+
+	resolved := adminconfig.ResolvedChatConfig{PreviewMode: adminconfig.PreviewModeOff}
+	message := tg.Message{MessageID: 10, Chat: tg.Chat{ID: 900800700, Type: tg.ChatTypePrivate}}
+
+	_, err := b.deliverFinalReply(context.Background(), nil, message, "the answer", nil, resolved)
+	if err == nil {
+		t.Fatal("with previews off a failed send must surface unchanged")
+	}
+	if n := srv.callCount("sendRichMessage"); n != 1 {
+		t.Fatalf("expected exactly one rich attempt without previews, got %d", n)
+	}
+	if n := srv.callCount("sendMessage"); n != 1 {
+		t.Fatalf("expected exactly one fallback attempt without previews, got %d", n)
+	}
+	if earliest := m.gateEarliest(900800700); !earliest.IsZero() {
+		t.Fatalf("delivery without previews must not touch the chat gate, got %s", earliest)
+	}
+}
+
+// TestStoredBotReplyDropsAncestry pins that a quoted bot answer resolves to
+// its stored copy without reply ancestry: the quoted answer enters context
+// once, and the stored ReplyTo chain must not re-embed the whole reply
+// lineage under the new message.
+func TestStoredBotReplyDropsAncestry(t *testing.T) {
+	b := newPreviewTestBot(t, newPreviewServerState())
+	b.ctx = context.Background()
+	b.history = newMemoryConversationStore()
+
+	const chatID = int64(900800701)
+	scope := state.ConversationScope{ChatID: chatID}
+
+	ancestor := state.Message{
+		IsUserRequest: true,
+		Text:          "first question",
+		ChatID:        chatID,
+		MessageID:     10,
+	}
+	answer := state.Message{
+		IsMe:      true,
+		Text:      "first answer",
+		ChatID:    chatID,
+		MessageID: 11,
+		ReplyTo:   &ancestor,
+	}
+	b.history.AppendMessage(scope, ancestor)
+	b.history.AppendMessage(scope, answer)
+
+	quoted := tg.Message{
+		MessageID: 11,
+		Chat:      tg.Chat{ID: chatID, Type: tg.ChatTypePrivate},
+		From:      &tg.User{ID: b.me.ID, IsBot: true, FirstName: "Bot"},
+		Text:      "first answer",
+	}
+	resolved := b.quotedMessageData(quoted)
+	if resolved == nil {
+		t.Fatal("quote of a stored bot message must resolve")
+	}
+	if resolved.Text != "first answer" || !resolved.IsMe {
+		t.Fatalf("resolved quote must be the stored answer with bot attribution, got %+v", resolved)
+	}
+	if resolved.ReplyTo != nil {
+		t.Fatalf("resolved quote must not carry reply ancestry, got %+v", resolved.ReplyTo)
+	}
+}
+
+// TestStripToolHistoryPresentation pins the presentation stripping for
+// quoted wire text: both the rich collapsible block and the plain fallback
+// suffix (raw and MarkdownV2-sanitized forms) are cut from the answer,
+// while ordinary text and user-authored details blocks survive.
+func TestStripToolHistoryPresentation(t *testing.T) {
+	rich := "answer\n\n<details><summary>Tool calls (2)</summary>\n\n✅ `a()`\n❌ `b()`\n\n</details>"
+	if got := stripToolHistoryPresentation(rich); got != "answer" {
+		t.Fatalf("rich block must be stripped, got %q", got)
+	}
+
+	plainRaw := "answer\n\nTool calls (1): ✅ search_web()"
+	if got := stripToolHistoryPresentation(plainRaw); got != "answer" {
+		t.Fatalf("plain suffix must be stripped, got %q", got)
+	}
+
+	plainSanitized := "answer\nTool calls \\(1\\): ✅ search\\_web\\(\\)"
+	if got := stripToolHistoryPresentation(plainSanitized); got != "answer" {
+		t.Fatalf("sanitized suffix must be stripped, got %q", got)
+	}
+
+	userDetails := "answer\n\n<details><summary>notes</summary>kept</details>"
+	if got := stripToolHistoryPresentation(userDetails); got != userDetails {
+		t.Fatalf("user-authored details blocks must be kept, got %q", got)
+	}
+
+	if got := stripToolHistoryPresentation("plain answer"); got != "plain answer" {
+		t.Fatalf("text without presentation must be unchanged, got %q", got)
+	}
+}
+
+// TestPreviewIdentitiesEvictedAcrossChats pins the cross-chat bound on the
+// identity registry: chats beyond the cap lose their tombstones FIFO, while
+// a chat with an active run is never evicted while it runs.
+func TestPreviewIdentitiesEvictedAcrossChats(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+
+	protected := int64(-100900700001)
+	run := m.RunFor(RunInfo{
+		RunID:    execution.NewRunID(),
+		ChatID:   protected,
+		ChatType: tg.ChatTypeSupergroup,
+		Mode:     adminconfig.PreviewModeTools,
+	})
+	m.notePreviewMessage(protected, 1)
+
+	for i := 1; i <= previewMsgsChatCap; i++ {
+		m.notePreviewMessage(int64(-200000000000-i), 1)
+	}
+	m.mu.Lock()
+	orderLen := len(m.previewMsgsOrder)
+	m.mu.Unlock()
+	if orderLen != previewMsgsChatCap+1 {
+		t.Fatalf("active run must hold its chat against eviction, order holds %d chats", orderLen)
+	}
+
+	run.Abort()
+	waitForCondition(t, 2*time.Second, "run unregistered", func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+
+		return !m.chatHasActiveRunLocked(protected)
+	})
+
+	// One more chat pushes the count over the cap again; the protected chat
+	// (now runless and oldest) is evicted first.
+	m.notePreviewMessage(int64(-200000000000-previewMsgsChatCap-1), 1)
+	m.mu.Lock()
+	evicted := len(m.previewMsgs[protected]) == 0
+	orderLen = len(m.previewMsgsOrder)
+	m.mu.Unlock()
+	if !evicted {
+		t.Fatal("runless oldest chat must be evicted once the cap is exceeded")
+	}
+	if orderLen != previewMsgsChatCap {
+		t.Fatalf("eviction must restore the cap, order holds %d chats", orderLen)
 	}
 }

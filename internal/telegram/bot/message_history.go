@@ -110,16 +110,28 @@ func (b *Bot) tgUserMessageToMessageData(message t.Message, isUserRequest bool) 
 // copy instead of the rendered wire text: the wire form can carry
 // presentation-only metadata (the tool-history block on final replies,
 // preview text on live previews), while the stored entry holds the clean
-// answer with correct bot attribution. Bot messages absent from history
-// (error notices, side-effect sends, reset history) are dropped rather
-// than copied — their content either lives in history already or was
-// deliberately kept out of it.
+// answer with correct bot attribution. When the stored copy is unavailable
+// (restart, reset, history eviction), the rendered wire text is used with
+// the tool-history presentation stripped, so the quote keeps its subject
+// without re-importing presentation metadata.
 func (b *Bot) quotedMessageData(quoted t.Message) *state.Message {
 	if b.previews.isPreviewMessage(quoted.Chat.ID, quoted.MessageID) {
 		return nil
 	}
 	if quoted.From != nil && quoted.From.ID == b.me.ID {
-		return b.storedBotReply(scopeFromMessage(quoted), quoted.MessageID)
+		if stored := b.storedBotReply(scopeFromMessage(quoted), quoted.MessageID); stored != nil {
+			return stored
+		}
+
+		data := b.tgUserMessageToMessageData(quoted, false)
+		cleaned := stripToolHistoryPresentation(data.Text)
+		if strings.TrimSpace(cleaned) == "" {
+			return nil
+		}
+		data.Text = cleaned
+		data.IsMe = true
+
+		return &data
 	}
 
 	data := b.tgUserMessageToMessageData(quoted, false)
@@ -128,14 +140,19 @@ func (b *Bot) quotedMessageData(quoted t.Message) *state.Message {
 }
 
 // storedBotReply looks up the bot's stored copy of one of its own messages
-// by Telegram message ID within the scope. It returns nil when history does
-// not hold that message.
+// by Telegram message ID within the scope. The copy is shallow and carries
+// no reply ancestry: the quoted answer enters context once, and its stored
+// ReplyTo chain would re-embed the whole reply lineage, growing linearly
+// with consecutive reply-to-bot turns and reintroducing context that
+// summarization already folded away. It returns nil when history does not
+// hold that message.
 func (b *Bot) storedBotReply(scope state.ConversationScope, messageID int) *state.Message {
 	snapshot := b.history.Snapshot(scope)
 	for i := len(snapshot.Messages) - 1; i >= 0; i-- {
 		m := snapshot.Messages[i]
 		if m.IsMe && m.MessageID == messageID {
 			stored := m
+			stored.ReplyTo = nil
 
 			return &stored
 		}

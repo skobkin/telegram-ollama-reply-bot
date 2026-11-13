@@ -65,14 +65,26 @@ const (
 	// finalization returns, no preview write of this run can still be in
 	// flight and land after the final answer.
 	previewFinalizeJoinTimeout = previewCallTimeout + 500*time.Millisecond
-	// previewFinalDeliveryGateWait caps how long authoritative delivery
-	// waits for an outstanding chat rate-limit backoff before sending the
-	// completed answer anyway.
-	previewFinalDeliveryGateWait = 30 * time.Second
+	// previewFinalDeliveryMaxWait bounds the whole rate-limited redelivery
+	// of one final answer (gate waits across retries included) beyond the
+	// caller's context. It comfortably exceeds the largest retry_after the
+	// Bot API hands out for ordinary chat flood control, so a known backoff
+	// is waited out instead of abandoned, while a pathological gate can
+	// never hold delivery forever.
+	previewFinalDeliveryMaxWait = 2 * time.Minute
+	// previewFinalDeliveryRetries caps how many times authoritative
+	// delivery may absorb a 429 into the shared chat gate and redeliver the
+	// same completed answer after the gate reopens.
+	previewFinalDeliveryRetries = 2
 	// previewMsgsPerChatCap bounds the per-chat registry of preview message
 	// IDs used to keep their presentation text out of conversational
 	// context (aborted previews leave their messages, and their IDs, alive).
 	previewMsgsPerChatCap = 64
+	// previewMsgsChatCap bounds how many chats retain preview identities.
+	// Chats beyond it lose their tombstones FIFO (live previews are never
+	// evicted): per-chat IDs are bounded by previewMsgsPerChatCap, so the
+	// registry as a whole stays bounded on long-lived bots.
+	previewMsgsChatCap = 4096
 	// previewMaxFailures disables updates for a run after this many
 	// consecutive non-rate-limit wire failures (group previews).
 	previewMaxFailures = 3
@@ -111,7 +123,11 @@ type previewManager struct {
 	// previewMsgs holds chat -> preview message IDs, live and deleted
 	// (tombstone) alike, so their presentation text stays out of history.
 	previewMsgs map[int64]map[int]struct{}
-	closed      bool
+	// previewMsgsOrder records first-registration order of the chats in
+	// previewMsgs; each chat appears at most once. It drives FIFO eviction
+	// once previewMsgsChatCap chats are held.
+	previewMsgsOrder []int64
+	closed           bool
 	// unsubscribe detaches the manager from the dispatcher at Stop; nil when
 	// the manager was constructed without one (tests).
 	unsubscribe func()
@@ -242,6 +258,7 @@ func (m *previewManager) Stop() {
 	clear(m.runs)
 	clear(m.chatGates)
 	clear(m.previewMsgs)
+	m.previewMsgsOrder = nil
 	m.mu.Unlock()
 }
 
@@ -261,6 +278,8 @@ func (m *previewManager) notePreviewMessage(chatID int64, msgID int) {
 	if ids == nil {
 		ids = make(map[int]struct{})
 		m.previewMsgs[chatID] = ids
+		m.previewMsgsOrder = append(m.previewMsgsOrder, chatID)
+		m.evictPreviewIdentitiesLocked()
 	}
 	if len(ids) >= previewMsgsPerChatCap {
 		for k := range ids {
@@ -270,6 +289,38 @@ func (m *previewManager) notePreviewMessage(chatID int64, msgID int) {
 		}
 	}
 	ids[msgID] = struct{}{}
+}
+
+// evictPreviewIdentitiesLocked keeps the identity registry bounded across
+// chats: once more chats hold identities than previewMsgsChatCap, the
+// oldest chats lose their entries FIFO. Chats with an active run are never
+// evicted — their previews are still live on the wire — so the bound can be
+// exceeded by at most the number of concurrently active runs. Eviction
+// reopens the quoted-snapshot exclusion only for the evicted chat's long
+// past previews; per-chat Telegram message IDs are never reused, so it can
+// never suppress an unrelated message. The caller holds m.mu.
+func (m *previewManager) evictPreviewIdentitiesLocked() {
+	for len(m.previewMsgsOrder) > previewMsgsChatCap {
+		oldest := m.previewMsgsOrder[0]
+		if m.chatHasActiveRunLocked(oldest) {
+			return
+		}
+		m.previewMsgsOrder = m.previewMsgsOrder[1:]
+		delete(m.previewMsgs, oldest)
+	}
+}
+
+// chatHasActiveRunLocked reports whether any registered run belongs to the
+// chat. Registered runs are few (they are the concurrently executing
+// requests), so the scan is cheap. The caller holds m.mu.
+func (m *previewManager) chatHasActiveRunLocked(chatID int64) bool {
+	for _, run := range m.runs {
+		if run.info.ChatID == chatID {
+			return true
+		}
+	}
+
+	return false
 }
 
 // isPreviewMessage reports whether the message is a live preview or a
@@ -505,28 +556,30 @@ func (r *previewRun) Quiesce() {
 }
 
 // AwaitChatGate blocks until the chat's pacing gate is open — a preview 429
-// closes it for every sender in the chat — bounded by ctx and a fixed cap,
-// so authoritative delivery does not throw the completed answer at a
-// rate-limited API. Nil runs and open gates return immediately, so with
-// previews off the delivery path behaves exactly as before.
-func (r *previewRun) AwaitChatGate(ctx context.Context) {
+// closes it for every sender in the chat — bounded only by ctx, so callers
+// that must cap the wait pass a context with a deadline. It reports whether
+// the gate is open on return: false means the wait was exhausted (deadline
+// reached or context cancelled) while a backoff is still outstanding, so a
+// caller can react to a still-closed window instead of assuming the gate
+// opened. Nil runs return true immediately, so with previews off the
+// delivery path behaves exactly as before.
+func (r *previewRun) AwaitChatGate(ctx context.Context) bool {
 	if r == nil {
-		return
+		return true
 	}
 
-	deadline := time.Now().Add(previewFinalDeliveryGateWait)
-	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
-		deadline = dl
-	}
 	for {
 		now := time.Now()
 		earliest := r.manager.gateEarliest(r.info.ChatID)
-		if !earliest.After(now) || !now.Before(deadline) {
-			return
+		if !earliest.After(now) {
+			return true
 		}
 		wait := earliest
-		if wait.After(deadline) {
-			wait = deadline
+		if dl, ok := ctx.Deadline(); ok && dl.Before(wait) {
+			wait = dl
+		}
+		if !now.Before(wait) {
+			return false
 		}
 		timer := time.NewTimer(wait.Sub(now))
 		select {
@@ -534,9 +587,49 @@ func (r *previewRun) AwaitChatGate(ctx context.Context) {
 		case <-ctx.Done():
 			timer.Stop()
 
-			return
+			return false
 		}
 	}
+}
+
+// deliverFinalReply sends the authoritative answer and survives a 429:
+// a rate limit recorded by a concurrent run's preview call can close the
+// chat's gate between the pre-delivery gate wait and the send, and the send
+// can draw a fresh 429 of its own. Either way the completed answer is not
+// dropped on a predictable, recoverable rejection — the limit is absorbed
+// into the shared gate, the wait honors the recorded backoff (bounded by
+// previewFinalDeliveryMaxWait), and the same answer is redelivered without
+// regenerating it. With previews off (nil run) the answer is attempted
+// exactly once, exactly as before.
+func (b *Bot) deliverFinalReply(ctx context.Context, run *previewRun, message t.Message, llmReply string, calls []tooluse.ToolCallRecord, resolved adminconfig.ResolvedChatConfig) (*t.Message, error) {
+	deliver := func() (*t.Message, error) {
+		if resolved.PreviewMode != adminconfig.PreviewModeOff && resolved.KeepToolHistory {
+			return b.sendReplyWithToolHistory(ctx, message, llmReply, calls, resolved.PreviewMode)
+		}
+
+		return b.sendRichMarkdownReply(ctx, message, llmReply)
+	}
+
+	sent, err := deliver()
+	if run == nil {
+		return sent, err
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, previewFinalDeliveryMaxWait)
+	defer cancel()
+
+	for retries := 0; err != nil && retries < previewFinalDeliveryRetries; retries++ {
+		wait, limited := run.absorbDeliveryRateLimit(err)
+		if !limited {
+			break
+		}
+		b.loggerFromContext(ctx).Warn("final delivery hit the chat rate-limit window; redelivering after the gate reopens",
+			"chat_id", message.Chat.ID, "retry_in", wait.String(), "attempt", retries+1)
+		run.AwaitChatGate(waitCtx)
+		sent, err = deliver()
+	}
+
+	return sent, err
 }
 
 // FinalDelivered terminates the preview after the final reply was delivered
@@ -582,7 +675,9 @@ func (r *previewRun) CompleteNoText(calls []tooluse.ToolCallRecord) {
 	// outstanding chat backoff would burn it on a predictable 429 and leave
 	// the stale working preview on the wire. Wait for the gate (bounded)
 	// first; the worker is already joined, so the wait races nothing.
-	r.AwaitChatGate(r.manager.baseCtx)
+	waitCtx, cancel := context.WithTimeout(r.manager.baseCtx, previewFinalDeliveryMaxWait)
+	defer cancel()
+	r.AwaitChatGate(waitCtx)
 
 	ctx, cancel := context.WithTimeout(r.manager.baseCtx, previewCallTimeout)
 	defer cancel()
@@ -915,17 +1010,30 @@ func (r *previewRun) groupMessageID() int {
 	return r.groupMsgID
 }
 
+// absorbDeliveryRateLimit records a 429 — from a preview wire call or from
+// an authoritative delivery send — into the shared chat gate, so every
+// concurrent run in the chat backs off together. It reports whether the
+// error was a rate limit; wait is the recorded backoff.
+func (r *previewRun) absorbDeliveryRateLimit(err error) (time.Duration, bool) {
+	var apiErr *telegoapi.Error
+	if !errors.As(err, &apiErr) || apiErr.ErrorCode != 429 {
+		return 0, false
+	}
+
+	wait := r.manager.timings.ratePad
+	if apiErr.Parameters != nil && apiErr.Parameters.RetryAfter > 0 {
+		wait = time.Duration(apiErr.Parameters.RetryAfter)*time.Second + r.manager.timings.ratePad
+	}
+	r.manager.backoffChat(r.info.ChatID, wait)
+
+	return wait, true
+}
+
 // handleSendError reports one wire failure. It returns true when the error
 // was a rate limit: the chat gate absorbed it (not counted against the
 // run's failure budget) and the schedule moved past the gate.
 func (r *previewRun) handleSendError(method string, err error) bool {
-	var apiErr *telegoapi.Error
-	if errors.As(err, &apiErr) && apiErr.ErrorCode == 429 {
-		wait := r.manager.timings.ratePad
-		if apiErr.Parameters != nil && apiErr.Parameters.RetryAfter > 0 {
-			wait = time.Duration(apiErr.Parameters.RetryAfter)*time.Second + r.manager.timings.ratePad
-		}
-		r.manager.backoffChat(r.info.ChatID, wait)
+	if wait, limited := r.absorbDeliveryRateLimit(err); limited {
 		r.sendAt = time.Now().Add(wait)
 
 		return true

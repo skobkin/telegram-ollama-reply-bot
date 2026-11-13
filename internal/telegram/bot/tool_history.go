@@ -20,6 +20,37 @@ import (
 // tool-history block (rich) and the plain fallback suffix.
 const toolHistorySummary = "Tool calls"
 
+// stripToolHistoryPresentation removes the presentation-only tool-history
+// metadata this package appends to final replies — the rich <details> block
+// and the plain fallback suffix — from the rendered wire text of a quoted
+// bot message, so the stored quote keeps its subject without re-importing
+// diagnostics. Both anchor forms are matched (the plain suffix is
+// MarkdownV2-sanitized on the wire, escaping its parentheses), at the last
+// occurrence: the block is always appended at the very end of an answer.
+// Text without a block is returned unchanged; a deliberately crafted
+// suffix look-alike is stripped toward safety.
+func stripToolHistoryPresentation(text string) string {
+	anchors := []string{
+		"\n\n<details><summary>" + toolHistorySummary + " (",
+		"\n" + toolHistorySummary + " \\(",
+		"\n" + toolHistorySummary + " (",
+	}
+
+	cut := len(text)
+	for _, anchor := range anchors {
+		if at := strings.LastIndex(text, anchor); at >= 0 && at < cut {
+			cut = at
+		}
+	}
+	if cut == len(text) {
+		return text
+	}
+
+	// The separators preceding a block or suffix line are presentation
+	// spacing: blank runs left before the cut go with the block.
+	return strings.TrimRight(text[:cut], " \n\t")
+}
+
 // errRichHistorySend names rich-send failures of the history pipeline for
 // logging. Raw transport errors are never surfaced: the request URL embeds
 // the bot token, so causes are discarded via safeerr.

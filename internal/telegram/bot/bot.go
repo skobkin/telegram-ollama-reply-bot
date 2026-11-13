@@ -472,17 +472,13 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adm
 	// A preview 429 closes the chat's wire window for every sender: wait
 	// (bounded) for the shared gate to reopen before authoritative
 	// delivery instead of throwing the completed answer at a rate-limited
-	// API. With previews off this is a no-op.
+	// API. A 429 that lands after this check — or one drawn by the send
+	// itself — is recovered inside deliverFinalReply: absorbed into the
+	// gate, waited out honoring the recorded backoff, and the answer
+	// redelivered without regenerating. With previews off this is a no-op.
 	run.AwaitChatGate(baseCtx)
 
-	var sent *t.Message
-	if resolved.PreviewMode != adminconfig.PreviewModeOff && resolved.KeepToolHistory {
-		// Active previews append the collapsible tool-history block; with
-		// previews off the answer is sent exactly as before.
-		sent, err = b.sendReplyWithToolHistory(baseCtx, message, llmReply, toolCalls, resolved.PreviewMode)
-	} else {
-		sent, err = b.sendRichMarkdownReply(baseCtx, message, llmReply)
-	}
+	sent, err := b.deliverFinalReply(baseCtx, run, message, llmReply, toolCalls, resolved)
 	if err != nil {
 		run.Abort()
 
