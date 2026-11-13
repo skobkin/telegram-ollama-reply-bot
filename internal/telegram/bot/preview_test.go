@@ -1,12 +1,15 @@
 package bot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"runtime"
 	"strconv"
 	"strings"
@@ -27,8 +30,10 @@ import (
 type previewServerState struct {
 	mu       sync.Mutex
 	requests []capturedRequest
-	failures map[string]int        // method path suffix -> remaining 400 responses
-	rates    map[string]*rateLimit // method path suffix -> remaining 429 responses
+	failures map[string]int           // method path suffix -> remaining 400 responses
+	rates    map[string]*rateLimit    // method path suffix -> remaining 429 responses
+	descs    map[string]string        // method path suffix -> armed failure description
+	delays   map[string]time.Duration // method path suffix -> response delay
 	messageN int
 }
 
@@ -42,6 +47,8 @@ func newPreviewServerState() *previewServerState {
 	return &previewServerState{
 		failures: make(map[string]int),
 		rates:    make(map[string]*rateLimit),
+		descs:    make(map[string]string),
+		delays:   make(map[string]time.Duration),
 	}
 }
 
@@ -74,6 +81,43 @@ func (s *previewServerState) armFailure(method string, times int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failures[method] = times
+}
+
+// armError arms `times` 400 failures carrying a specific Bot API
+// description, e.g. the "message is not modified" no-op rejection.
+func (s *previewServerState) armError(method string, times int, description string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failures[method] = times
+	s.descs[method] = description
+}
+
+// takeFailureDescription returns the description armed for the method,
+// falling back to the generic failure text.
+func (s *previewServerState) takeFailureDescription(method string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if d := s.descs[method]; d != "" {
+		return d
+	}
+
+	return "test failure"
+}
+
+// delayMethod makes every response for the method wait d before answering,
+// so tests can hold a wire call in flight.
+func (s *previewServerState) delayMethod(method string, d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.delays[method] = d
+}
+
+func (s *previewServerState) delayFor(method string) time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.delays[method]
 }
 
 func (s *previewServerState) armRateLimit(method string, times, retryAfter int) {
@@ -143,10 +187,14 @@ func newPreviewTestBot(t *testing.T, state *previewServerState) *Bot {
 		if state.takeFailure(methodSuffix(r.URL.Path)) {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok": false, "error_code": 400, "description": "test failure",
+				"ok": false, "error_code": 400,
+				"description": state.takeFailureDescription(methodSuffix(r.URL.Path)),
 			})
 
 			return
+		}
+		if d := state.delayFor(methodSuffix(r.URL.Path)); d > 0 {
+			time.Sleep(d)
 		}
 
 		result := map[string]any{"date": 1, "chat": map[string]any{"id": 1, "type": "private"}}
@@ -749,4 +797,334 @@ func TestPreviewToolNameRendering(t *testing.T) {
 	if got := previewToolName("search_web", false); got != "search_web()" {
 		t.Fatalf("plain-text rendering must not escape: %q", got)
 	}
+}
+
+// TestGroupPreviewSkipsIdenticalEdits pins that preview states which render
+// identically to the delivered one (internal tools hidden by the mode, no-op
+// generation events) never reach the wire as edits: Telegram would reject
+// them as "message is not modified" and the retries would disable a healthy
+// preview.
+func TestGroupPreviewSkipsIdenticalEdits(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+
+	run.applyEvent(execution.ToolStarted{RunContext: execution.RunContext{RunID: run.ID()}, CallID: "c1", ToolName: "get_conversation_summary", Internal: true})
+	run.applyEvent(execution.ToolCompleted{RunContext: execution.RunContext{RunID: run.ID()}, CallID: "c1", ToolName: "get_conversation_summary", Internal: true, Duration: 300 * time.Millisecond, Status: execution.StatusOK})
+	waitForCondition(t, 2*time.Second, "preview created", func() bool {
+		return state.callCount("sendMessage") == 1
+	})
+
+	// Generation-only churn renders identically to the created preview.
+	run.applyEvent(execution.GenerationStarted{RunContext: execution.RunContext{RunID: run.ID()}, Iteration: 1})
+	run.applyEvent(execution.GenerationCompleted{RunContext: execution.RunContext{RunID: run.ID()}, Iteration: 1})
+	time.Sleep(4 * m.timings.minInterval)
+	if edits := state.callCount("editMessageText"); edits != 0 {
+		t.Fatalf("identical preview state must not produce edits, got %d", edits)
+	}
+
+	// A visible change still goes out as an edit.
+	toolDone(run, "search_web", false, true, time.Second)
+	waitForCondition(t, 2*time.Second, "visible change edited", func() bool {
+		return state.callCount("editMessageText") >= 1
+	})
+	edit := state.calls("editMessageText")[0]
+	if !strings.Contains(edit["text"].(string), "✅ search_web()") {
+		t.Fatalf("edit must carry the visible tool: %q", edit["text"])
+	}
+
+	run.FinalDelivered()
+}
+
+// TestGroupPreviewNotModifiedIsNoOp pins that the "message is not modified"
+// rejection is absorbed as a successful no-op: it must not count against
+// the run's failure budget or disable the preview.
+func TestGroupPreviewNotModifiedIsNoOp(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+	state.armError("editMessageText", 2, "Bad Request: message is not modified")
+
+	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	toolDone(run, "search_web", false, true, time.Second)
+	waitForCondition(t, 2*time.Second, "preview created", func() bool {
+		return state.callCount("sendMessage") == 1
+	})
+
+	// Two visible changes are each rejected as not-modified on the wire.
+	toolDone(run, "fetch_url_content", false, true, time.Second)
+	waitForCondition(t, 2*time.Second, "first not-modified edit", func() bool {
+		return state.callCount("editMessageText") >= 1
+	})
+	toolDone(run, "send_dice", false, true, 100*time.Millisecond)
+	waitForCondition(t, 2*time.Second, "second not-modified edit", func() bool {
+		return state.callCount("editMessageText") >= 2
+	})
+
+	// The run is still healthy: a further change reaches the wire and the
+	// preview is still deleted on final delivery.
+	toolDone(run, "get_current_time", false, true, 10*time.Millisecond)
+	waitForCondition(t, 2*time.Second, "healthy run keeps editing", func() bool {
+		return state.callCount("editMessageText") >= 3
+	})
+	third := state.calls("editMessageText")[2]
+	if !strings.Contains(third["text"].(string), "✅ get_current_time()") {
+		t.Fatalf("third edit must carry the newest tool: %q", third["text"])
+	}
+
+	run.FinalDelivered()
+	waitForCondition(t, 2*time.Second, "preview deleted", func() bool {
+		return state.callCount("deleteMessage") == 1
+	})
+}
+
+// TestPreviewNeutralIndicatorCoversSilentPreprocessing pins that the
+// neutral preview is delivered at the debounce even before the first
+// execution event fires — preprocessing (history summarization) publishes
+// no events.
+func TestPreviewNeutralIndicatorCoversSilentPreprocessing(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+
+	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	waitForCondition(t, 2*time.Second, "neutral group preview", func() bool {
+		return state.callCount("sendMessage") == 1
+	})
+	if text := state.calls("sendMessage")[0]["text"]; text != "🔄 Working…" {
+		t.Fatalf("neutral group preview text unexpected: %v", text)
+	}
+	run.FinalDelivered()
+
+	pstate := newPreviewServerState()
+	pb := newPreviewTestBot(t, pstate)
+	pm := newPreviewTestManager(t, pb)
+	info := RunInfo{
+		RunID:    execution.NewRunID(),
+		ChatID:   900800711,
+		ChatType: tg.ChatTypePrivate,
+		Mode:     adminconfig.PreviewModeTools,
+	}
+	prun := pm.RunFor(info)
+	waitForCondition(t, 2*time.Second, "neutral private draft", func() bool {
+		return pstate.callCount("sendRichMessageDraft") == 1
+	})
+	text := pstate.calls("sendRichMessageDraft")[0]["rich_message"].(map[string]any)["markdown"].(string)
+	if !strings.HasPrefix(text, "🔄 Working…") {
+		t.Fatalf("neutral draft must not wait for the refresh deadline: %q", text)
+	}
+	prun.CompleteNoText()
+}
+
+// TestGroupPreviewFinalDeliveredWaitsForInFlightCreate pins the finalization
+// join bound: FinalDelivered waits past an in-flight preview creation (the
+// join exceeds the wire-call timeout), so the post-delivery delete targets
+// the created message instead of abandoning it.
+func TestGroupPreviewFinalDeliveredWaitsForInFlightCreate(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+	state.delayMethod("sendMessage", 400*time.Millisecond)
+
+	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	waitForCondition(t, 2*time.Second, "create in flight", func() bool {
+		return state.callCount("sendMessage") == 1
+	})
+
+	run.FinalDelivered()
+	waitForCondition(t, 2*time.Second, "preview deleted after delivery", func() bool {
+		return state.callCount("deleteMessage") == 1
+	})
+	if n := state.callCount("deleteMessage"); n != 1 {
+		t.Fatalf("preview must be deleted exactly once, got %d", n)
+	}
+}
+
+// TestGroupPreviewLateCreateCleansUpAfterFinalization pins the defense for
+// a creation that lands after the lifecycle delete found no message ID:
+// the late preview removes itself instead of outliving the answer.
+func TestGroupPreviewLateCreateCleansUpAfterFinalization(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+
+	// The lifecycle delete ran while creation was still in flight and
+	// latched with nothing to remove.
+	run.mu.Lock()
+	run.deleted = true
+	run.mu.Unlock()
+
+	if !run.sendUpdate(context.Background(), "🔄 Working…") {
+		t.Fatal("late create must succeed")
+	}
+	waitForCondition(t, 2*time.Second, "late preview deleted", func() bool {
+		return state.callCount("deleteMessage") == 1
+	})
+	if n := state.callCount("sendMessage"); n != 1 {
+		t.Fatalf("late create must create the preview once, got %d", n)
+	}
+	if del := state.calls("deleteMessage")[0]; del["message_id"] != float64(1) {
+		t.Fatalf("late delete must target the created preview: %v", del)
+	}
+}
+
+// TestPreviewQuiesceStopsPrivateDraftsBeforeFinalSend pins that quiescing
+// before the final send stops all draft writes: a straggler draft can no
+// longer land after the answer and resurrect the working preview.
+func TestPreviewQuiesceStopsPrivateDraftsBeforeFinalSend(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+	info := RunInfo{
+		RunID:    execution.NewRunID(),
+		ChatID:   900800710,
+		ChatType: tg.ChatTypePrivate,
+		Mode:     adminconfig.PreviewModeTools,
+	}
+	run := m.RunFor(info)
+	toolDone(run, "search_web", false, true, time.Second)
+	waitForCondition(t, 2*time.Second, "first draft", func() bool {
+		return state.callCount("sendRichMessageDraft") >= 1
+	})
+
+	run.Quiesce()
+	draftsAtQuiesce := state.callCount("sendRichMessageDraft")
+
+	// Events after the quiesce are dropped and no further draft may hit
+	// the wire.
+	toolDone(run, "fetch_url_content", false, true, time.Second)
+	time.Sleep(4 * m.timings.minInterval)
+	if n := state.callCount("sendRichMessageDraft"); n != draftsAtQuiesce {
+		t.Fatalf("quiesce must stop draft writes, %d -> %d", draftsAtQuiesce, n)
+	}
+
+	m.mu.Lock()
+	remaining := len(m.runs)
+	m.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("quiesced run must leave no manager state, got %d runs", remaining)
+	}
+
+	run.FinalDelivered() // idempotent; private: no delete
+}
+
+// TestPreviewQuiesceLeavesGroupRunsToFinalDelivery pins that quiescing is a
+// no-op for group runs: they keep editing until final delivery deletes the
+// preview.
+func TestPreviewQuiesceLeavesGroupRunsToFinalDelivery(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	toolDone(run, "search_web", false, true, time.Second)
+	waitForCondition(t, 2*time.Second, "preview created", func() bool {
+		return state.callCount("sendMessage") == 1
+	})
+
+	run.Quiesce() // group runs are not quiesced
+	toolDone(run, "fetch_url_content", false, true, time.Second)
+	waitForCondition(t, 2*time.Second, "group run still editing", func() bool {
+		return state.callCount("editMessageText") >= 1
+	})
+
+	run.FinalDelivered()
+	waitForCondition(t, 2*time.Second, "preview deleted", func() bool {
+		return state.callCount("deleteMessage") == 1
+	})
+}
+
+// TestPreviewBackoffSurvivesRunExit pins that an unexpired chat backoff
+// survives the chat's last run exiting: a new run in the same chat must
+// wait out the outstanding retry window instead of drawing a fresh 429.
+func TestPreviewBackoffSurvivesRunExit(t *testing.T) {
+	const chatID = int64(-100900700600)
+
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+	state.armRateLimit("sendMessage", 1, 1) // 1s retry_after + rate pad
+
+	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	toolDone(run, "search_web", false, true, time.Second)
+	waitForCondition(t, 2*time.Second, "rate-limited attempt", func() bool {
+		return state.callCount("sendMessage") >= 1
+	})
+	run.Abort()
+
+	m.mu.Lock()
+	gate := m.chatGates[chatID]
+	runs := 0
+	if gate != nil {
+		runs = gate.runs
+	}
+	m.mu.Unlock()
+	if gate == nil || !gate.earliest.After(time.Now()) || runs != 0 {
+		t.Fatalf("unexpired backoff must survive the run exit: gate=%v runs=%d", gate, runs)
+	}
+
+	// A new run in the same chat respects the surviving backoff.
+	next := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	toolDone(next, "fetch_url_content", false, true, time.Second)
+	time.Sleep(300 * time.Millisecond)
+	if n := state.callCount("sendMessage"); n != 1 {
+		t.Fatalf("new run must not send inside the outstanding retry window, got %d sends", n)
+	}
+	waitForCondition(t, 3*time.Second, "preview after gate opens", func() bool {
+		return state.callCount("sendMessage") >= 2
+	})
+
+	next.FinalDelivered()
+	m.mu.Lock()
+	gates := len(m.chatGates)
+	m.mu.Unlock()
+	if gates != 0 {
+		t.Fatalf("expired backoff must be dropped, got %d gates", gates)
+	}
+}
+
+// TestPreviewFailureLogCarriesNoTransportURL pins that transport failures
+// (whose errors quote the token-bearing request URL) reach the log only in
+// their sanitized, typed form.
+func TestPreviewFailureLogCarriesNoTransportURL(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+
+	var buf safeBuffer
+	m.logger = slog.New(slog.NewTextHandler(&buf, nil))
+
+	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	tokenURL := "https://api.telegram.org/bot1:" + strings.Repeat("A", 35) + "/sendMessage"
+	transport := &url.Error{Op: "Post", URL: tokenURL, Err: errors.New("connection refused")}
+	run.logSendFailure("sendMessage", transport)
+
+	out := buf.String()
+	if strings.Contains(out, "api.telegram.org") || strings.Contains(out, strings.Repeat("A", 35)) {
+		t.Fatalf("transport URL must not reach the log: %s", out)
+	}
+	if !strings.Contains(out, "preview wire call failed") {
+		t.Fatalf("typed sentinel missing from log: %s", out)
+	}
+}
+
+// safeBuffer is a concurrency-safe bytes.Buffer for log capture.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *safeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *safeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
 }

@@ -2,12 +2,14 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/execution"
 	"telegram-ollama-reply-bot/internal/support/markdown"
+	"telegram-ollama-reply-bot/internal/support/safeerr"
 	"telegram-ollama-reply-bot/internal/tooluse"
 
 	t "github.com/mymmrac/telego"
@@ -17,6 +19,11 @@ import (
 // toolHistorySummary is the shared summary line prefix of the collapsible
 // tool-history block (rich) and the plain fallback suffix.
 const toolHistorySummary = "Tool calls"
+
+// errRichHistorySend names rich-send failures of the history pipeline for
+// logging. Raw transport errors are never surfaced: the request URL embeds
+// the bot token, so causes are discarded via safeerr.
+var errRichHistorySend = errors.New("rich reply send failed")
 
 // sendReplyWithToolHistory sends the final answer with an appended
 // collapsible tool-history block built from the run's authoritative tool
@@ -47,7 +54,8 @@ func (b *Bot) sendReplyWithToolHistory(ctx context.Context, message t.Message, a
 	}
 
 	logger.Warn("cannot send rich message, falling back to MarkdownV2",
-		"error", err, "reply_length", len([]rune(body))+len([]rune(block)))
+		"error", safeerr.WrapTransport(errRichHistorySend, err),
+		"reply_length", len([]rune(body))+len([]rune(block)))
 
 	// Legacy fallback: the answer is sanitized and cropped exactly as it is
 	// without history; the suffix must fit what remains of the plain limit.
@@ -64,9 +72,13 @@ func (b *Bot) sendReplyWithToolHistory(ctx context.Context, message t.Message, a
 }
 
 // renderRichToolHistoryBlock renders the collapsible rich-markdown block
-// within maxRunes, or "" when no visible calls exist or nothing fits.
-// Compaction order: durations are dropped first, then the oldest entries
-// (summarized in an "and N more" line); the whole block is the last resort.
+// within maxRunes, or "" when no visible calls exist or nothing fits. The
+// block starts with a blank line: the separator keeps it out of a trailing
+// fenced code block of the answer (a closing fence must stand alone) and
+// makes the HTML block-level, and its runes come out of the block's own
+// budget. Compaction order: durations are dropped first, then the oldest
+// entries (summarized in an "and N more" line); the whole block is the last
+// resort.
 func renderRichToolHistoryBlock(calls []tooluse.ToolCallRecord, mode adminconfig.PreviewMode, maxRunes int) string {
 	visible := visibleToolCalls(calls, mode)
 	if len(visible) == 0 {
@@ -75,7 +87,7 @@ func renderRichToolHistoryBlock(calls []tooluse.ToolCallRecord, mode adminconfig
 
 	build := func(lines []string) string {
 		var b strings.Builder
-		fmt.Fprintf(&b, "<details><summary>%s (%d)</summary>\n\n", toolHistorySummary, len(visible))
+		fmt.Fprintf(&b, "\n\n<details><summary>%s (%d)</summary>\n\n", toolHistorySummary, len(visible))
 		for _, line := range lines {
 			b.WriteString(line + "\n")
 		}
@@ -107,9 +119,12 @@ func renderRichToolHistoryBlock(calls []tooluse.ToolCallRecord, mode adminconfig
 }
 
 // renderPlainToolHistorySuffix renders the MarkdownV2 fallback suffix — a
-// single plain line without details markup or code spans — within maxRunes,
-// measured on the sanitized form (escaping lengthens text). Returns ""
-// when there are no visible calls or nothing fits.
+// single plain line without details markup or code spans — within maxRunes.
+// The returned suffix is the sanitized form itself (escaping lengthens
+// text, so the fit is measured on exactly what is sent): a raw suffix could
+// carry unescaped MarkdownV2-reserved characters and get the whole legacy
+// fallback rejected. Returns "" when there are no visible calls or nothing
+// fits.
 func renderPlainToolHistorySuffix(sanitize func(string) string, calls []tooluse.ToolCallRecord, mode adminconfig.PreviewMode, maxRunes int) string {
 	visible := visibleToolCalls(calls, mode)
 	if len(visible) == 0 {
@@ -129,14 +144,14 @@ func renderPlainToolHistorySuffix(sanitize func(string) string, calls []tooluse.
 		return "\n" + b.String()
 	}
 
-	if len([]rune(sanitize(build(visible, 0)))) <= maxRunes {
-		return build(visible, 0)
+	if sanitized := sanitize(build(visible, 0)); len([]rune(sanitized)) <= maxRunes {
+		return sanitized
 	}
 
 	for keep := len(visible) - 1; keep >= 1; keep-- {
-		compacted := build(visible[len(visible)-keep:], len(visible)-keep)
-		if len([]rune(sanitize(compacted))) <= maxRunes {
-			return compacted
+		sanitized := sanitize(build(visible[len(visible)-keep:], len(visible)-keep))
+		if len([]rune(sanitized)) <= maxRunes {
+			return sanitized
 		}
 	}
 

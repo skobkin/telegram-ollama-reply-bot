@@ -459,6 +459,12 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adm
 		return
 	}
 
+	// No private preview write may be in flight during the final send:
+	// quiesce the run first, so a slow draft cannot land after the answer
+	// and resurrect the working preview below it. Group runs keep their
+	// post-delivery deletion (FinalDelivered below).
+	run.Quiesce()
+
 	var sent *t.Message
 	if resolved.PreviewMode != adminconfig.PreviewModeOff && resolved.KeepToolHistory {
 		// Active previews append the collapsible tool-history block; with

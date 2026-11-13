@@ -149,8 +149,17 @@ func TestSendReplyWithToolHistoryLegacyFallback(t *testing.T) {
 	if strings.Contains(text, "<details>") || strings.Contains(text, "`") {
 		t.Fatalf("fallback must not carry details markup or code spans: %q", text)
 	}
-	if !strings.Contains(text, "Tool calls (3):") || !strings.Contains(text, "get_conversation_summary") {
+	// The suffix reaches the wire in its sanitized (escaped) form: raw
+	// MarkdownV2-reserved parentheses would get the whole fallback
+	// rejected. (Underscores may pass through as sanitizer italic pairs —
+	// valid MarkdownV2, same treatment as the answer body.)
+	if !strings.Contains(text, "Tool calls \\(3\\):") || !strings.Contains(text, "get_conversation_summary") {
 		t.Fatalf("fallback suffix must list all tools in all_tools mode: %q", text)
+	}
+	// Every parenthesis must be escaped — a raw one would get the whole
+	// fallback rejected.
+	if strings.Count(text, "(") != strings.Count(text, "\\(") {
+		t.Fatalf("raw parentheses must not reach the MarkdownV2 wire: %q", text)
 	}
 	if !strings.Contains(text, "Here is the answer") {
 		t.Fatalf("answer must survive the fallback: %q", text)
@@ -181,6 +190,47 @@ func TestPlainToolHistorySuffixBudget(t *testing.T) {
 	escaper := func(s string) string { return strings.ReplaceAll(s, "_", "\\_") }
 	if suffix := renderPlainToolHistorySuffix(escaper, historyCalls(), adminconfig.PreviewModeTools, 25); suffix != "" {
 		t.Fatalf("escaping must be measured before fitting: %q", suffix)
+	}
+}
+
+// TestSendReplyWithToolHistoryCodeFenceAnswer pins the blank-line
+// separation between the answer and the history block: a trailing fenced
+// code block keeps its closing fence on a line of its own, and the details
+// block starts as block-level HTML.
+func TestSendReplyWithToolHistoryCodeFenceAnswer(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+
+	answer := "```go\nfmt.Println(1)\n```"
+	_, err := b.sendReplyWithToolHistory(context.Background(), tg.Message{MessageID: 9, Chat: tg.Chat{ID: 55}},
+		answer, historyCalls(), adminconfig.PreviewModeTools)
+	if err != nil {
+		t.Fatalf("send with history: %v", err)
+	}
+
+	body := state.calls("sendRichMessage")[0]["rich_message"].(map[string]any)["markdown"].(string)
+	want := answer + renderRichToolHistoryBlock(historyCalls(), adminconfig.PreviewModeTools, RichMessageCharLimit-len([]rune(answer)))
+	if body != want {
+		t.Fatalf("fence-ending answer must keep the block separated: %q", body)
+	}
+	if !strings.Contains(body, "```\n\n<details>") {
+		t.Fatalf("block must start on its own line: %q", body)
+	}
+}
+
+// TestPlainToolHistorySuffixReturnsSanitizedForm pins that the fallback
+// suffix is returned in its sanitized form: the renderer measures the
+// escaped length, so what it returns must be exactly that escaped text.
+func TestPlainToolHistorySuffixReturnsSanitizedForm(t *testing.T) {
+	sanitizer := markdown.NewTgMarkdownV2Sanitizer()
+	suffix := renderPlainToolHistorySuffix(sanitizer.Sanitize, historyCalls(), adminconfig.PreviewModeTools, 1<<20)
+	if !strings.Contains(suffix, "Tool calls \\(2\\):") {
+		t.Fatalf("suffix must be the escaped wire form: %q", suffix)
+	}
+	// Every parenthesis must be escaped — a raw one would get the whole
+	// fallback rejected.
+	if strings.Count(suffix, "(") != strings.Count(suffix, "\\(") {
+		t.Fatalf("raw suffix must not be returned: %q", suffix)
 	}
 }
 

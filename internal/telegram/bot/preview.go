@@ -13,6 +13,7 @@ import (
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/execution"
+	"telegram-ollama-reply-bot/internal/support/safeerr"
 
 	t "github.com/mymmrac/telego"
 	telegoapi "github.com/mymmrac/telego/telegoapi"
@@ -54,9 +55,15 @@ const (
 	previewCallTimeout = 5 * time.Second
 	// previewDeleteTimeout bounds the best-effort delete after delivery.
 	previewDeleteTimeout = 3 * time.Second
-	// previewStopJoinTimeout bounds finalization's and shutdown's wait for
-	// worker goroutine exit.
+	// previewStopJoinTimeout bounds shutdown's wait for worker goroutine
+	// exit.
 	previewStopJoinTimeout = 3 * time.Second
+	// previewFinalizeJoinTimeout bounds lifecycle finalization's wait for
+	// worker exit. It exceeds previewCallTimeout so a wire call already in
+	// flight when termination was requested is guaranteed resolved: after
+	// finalization returns, no preview write of this run can still be in
+	// flight and land after the final answer.
+	previewFinalizeJoinTimeout = previewCallTimeout + 500*time.Millisecond
 	// previewMaxFailures disables updates for a run after this many
 	// consecutive non-rate-limit wire failures (group previews).
 	previewMaxFailures = 3
@@ -100,7 +107,9 @@ type previewManager struct {
 
 // chatGate paces wire calls per chat. Every preview wire call of every run
 // in the chat waits for it, so a 429 on one run backs off all concurrent
-// runs in that chat without serializing their LLM or tool execution.
+// runs in that chat without serializing their LLM or tool execution. An
+// unexpired backoff survives the chat's last run exiting, so a new request
+// in the same chat cannot send straight into the outstanding retry window.
 type chatGate struct {
 	earliest time.Time
 	runs     int // active runs in this chat (gate lifetime refcount)
@@ -221,15 +230,23 @@ func (m *previewManager) Stop() {
 	m.mu.Unlock()
 }
 
-// gateEarliest returns the chat's earliest allowed wire-call time.
+// gateEarliest returns the chat's earliest allowed wire-call time. An
+// emptied gate whose backoff has expired is dropped here, so gates retained
+// past their chat's last run (see unregister) do not linger forever.
 func (m *previewManager) gateEarliest(chatID int64) time.Time {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if gate := m.chatGates[chatID]; gate != nil {
-		return gate.earliest
+	gate := m.chatGates[chatID]
+	if gate == nil {
+		return time.Time{}
+	}
+	if gate.runs <= 0 && !gate.earliest.After(time.Now()) {
+		delete(m.chatGates, chatID)
+
+		return time.Time{}
 	}
 
-	return time.Time{}
+	return gate.earliest
 }
 
 // backoffChat advances the chat gate after a 429 so every concurrent run in
@@ -249,15 +266,17 @@ func (m *previewManager) backoffChat(chatID int64, wait time.Duration) {
 }
 
 // unregister removes a finalized run after its worker exited and drops the
-// chat gate when the chat's last run is gone. Missing entries are no-ops
-// (manager Stop may already have cleared them).
+// chat gate when the chat's last run is gone — unless a rate-limit backoff
+// is still outstanding, which survives so a new run in that chat respects
+// it. Missing entries are no-ops (manager Stop may already have cleared
+// them).
 func (m *previewManager) unregister(run *previewRun) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.runs, run.info.RunID)
 	if gate := m.chatGates[run.info.ChatID]; gate != nil {
 		gate.runs--
-		if gate.runs <= 0 {
+		if gate.runs <= 0 && !gate.earliest.After(time.Now()) {
 			delete(m.chatGates, run.info.ChatID)
 		}
 	}
@@ -297,9 +316,10 @@ type previewRun struct {
 	deleted    bool
 	typingStop context.CancelFunc
 
-	// wire schedule, worker-goroutine-owned
+	// wire schedule and last delivered text, worker-goroutine-owned
 	sendAt     time.Time
 	lastSent   time.Time
+	lastText   string
 	refreshDue time.Time
 }
 
@@ -320,13 +340,17 @@ func newPreviewRun(m *previewManager, info RunInfo) *previewRun {
 	now := time.Now()
 
 	return &previewRun{
-		manager:    m,
-		info:       info,
-		isPrivate:  info.ChatType == t.ChatTypePrivate,
-		draftID:    newDraftID(),
-		wake:       make(chan struct{}, 1),
-		terminate:  make(chan struct{}),
-		done:       make(chan struct{}),
+		manager:   m,
+		info:      info,
+		isPrivate: info.ChatType == t.ChatTypePrivate,
+		draftID:   newDraftID(),
+		wake:      make(chan struct{}, 1),
+		terminate: make(chan struct{}),
+		done:      make(chan struct{}),
+		// dirty starts true: the neutral indicator must go out at the
+		// debounce even before the first execution event arrives, so the
+		// preview covers silent preprocessing (history summarization) too.
+		dirty:      true,
 		sendAt:     now.Add(m.timings.debounce),
 		refreshDue: now.Add(m.timings.draftRefresh),
 	}
@@ -389,6 +413,19 @@ func (r *previewRun) wakeUp() {
 	case r.wake <- struct{}{}:
 	default:
 	}
+}
+
+// Quiesce stops all private preview writes and joins the worker before the
+// final reply is sent, so a slow in-flight draft cannot arrive after the
+// answer and resurrect the working preview below it. Group runs are left
+// alone: their edits racing the post-delivery delete are harmless no-ops,
+// and a late preview creation cleans up after itself. Idempotent with the
+// other lifecycle methods.
+func (r *previewRun) Quiesce() {
+	if r == nil || !r.isPrivate {
+		return
+	}
+	r.finalize()
 }
 
 // FinalDelivered terminates the preview after the final reply was delivered
@@ -465,7 +502,7 @@ func (r *previewRun) finalize() {
 	r.requestTerminate()
 	select {
 	case <-r.done:
-	case <-time.After(previewStopJoinTimeout):
+	case <-time.After(previewFinalizeJoinTimeout):
 		r.manager.logger.Warn("preview worker did not stop after finalization", "run_id", r.info.RunID)
 	}
 	r.stopTypingFallback()
@@ -578,7 +615,25 @@ func (r *previewRun) tick(ctx context.Context) bool {
 	r.dirty = false // tentatively; re-set below unless the send succeeds cleanly
 	r.mu.Unlock()
 
+	if !r.isPrivate && text == r.lastText {
+		// The rendered state is already on the wire (events for tools the
+		// preview mode hides, no-op generation events). Skip the edit — a
+		// redundant one is rejected by Telegram as "message is not modified"
+		// and would burn the run's failure budget on a healthy preview.
+		r.mu.Lock()
+		// An event that arrived during the render must not lose its flush.
+		if r.version != version {
+			r.dirty = true
+		}
+		r.mu.Unlock()
+		r.scheduleNext()
+
+		return true
+	}
+
 	if r.sendUpdate(ctx, text) {
+		r.lastText = text
+
 		r.mu.Lock()
 		// An event that arrived during the send must not lose its flush.
 		if r.version != version {
@@ -600,11 +655,17 @@ func (r *previewRun) tick(ctx context.Context) bool {
 		}
 	}
 
+	r.scheduleNext()
+
+	return true
+}
+
+// scheduleNext spaces the run's next wire call at least minInterval out
+// (worker goroutine only).
+func (r *previewRun) scheduleNext() {
 	if floor := time.Now().Add(r.manager.timings.minInterval); r.sendAt.Before(floor) {
 		r.sendAt = floor
 	}
-
-	return true
 }
 
 func (r *previewRun) isDisabled() bool {
@@ -655,7 +716,16 @@ func (r *previewRun) sendUpdate(_ context.Context, text string) bool {
 			if sent != nil {
 				r.mu.Lock()
 				r.groupMsgID = sent.MessageID
+				// Finalization may have raced this creation: the lifecycle
+				// delete ran while the message ID did not exist yet and
+				// latched deleted with nothing to remove. Re-arm the latch
+				// so the late preview is removed now.
+				late := r.deleted
+				r.deleted = false
 				r.mu.Unlock()
+				if late {
+					r.deleteGroupPreview()
+				}
 			}
 
 			return true
@@ -669,7 +739,7 @@ func (r *previewRun) sendUpdate(_ context.Context, text string) bool {
 			MessageID: msgID,
 			Text:      text,
 		})
-		if err == nil {
+		if err == nil || isMessageNotModified(err) {
 			return true
 		}
 		if r.handleSendError("editMessageText", err) {
@@ -720,8 +790,26 @@ func (r *previewRun) handleSendError(method string, err error) bool {
 	return false
 }
 
+// isMessageNotModified reports whether the Bot API rejected the edit
+// because the message already carries exactly this content: the target
+// state is already on the wire, so the update counts as a successful
+// no-op instead of burning the run's failure budget.
+func isMessageNotModified(err error) bool {
+	var apiErr *telegoapi.Error
+
+	return errors.As(err, &apiErr) && apiErr.ErrorCode == 400 &&
+		strings.Contains(apiErr.Description, "message is not modified")
+}
+
+// errPreviewSend names preview wire-call failures for logging. Raw transport
+// errors are never surfaced: the request URL embeds the bot token, so causes
+// are discarded via safeerr and only the typed kind and ctx sentinels remain.
+var errPreviewSend = errors.New("preview wire call failed")
+
 // logSendFailure logs a sanitized warning: method, chat, and the Bot API's
-// own error classification. Never tool payloads or raw run state.
+// own error classification. Never tool payloads or raw run state; the raw
+// fallback branch discards the transport cause (its request URL embeds the
+// bot token).
 func (r *previewRun) logSendFailure(method string, err error) {
 	var apiErr *telegoapi.Error
 	if errors.As(err, &apiErr) {
@@ -732,7 +820,8 @@ func (r *previewRun) logSendFailure(method string, err error) {
 		return
 	}
 	r.manager.logger.Warn("preview update failed",
-		"method", method, "chat_id", r.info.ChatID, "error", err)
+		"method", method, "chat_id", r.info.ChatID,
+		"error", safeerr.WrapTransport(errPreviewSend, err))
 }
 
 // disableWithTypingFallback stops updates for the run and, in private
