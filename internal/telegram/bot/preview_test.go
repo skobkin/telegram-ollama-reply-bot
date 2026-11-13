@@ -123,12 +123,13 @@ func (s *previewServerState) delayFor(method string) time.Duration {
 	return s.delays[method]
 }
 
-// armRateLimit arms one 429 response for the method carrying retry_after 1,
-// so the recorded gate window is ~1s plus the manager's rate pad.
-func (s *previewServerState) armRateLimit(method string) {
+// armRateLimit arms `times` 429 responses for the method, each carrying the
+// given retry_after in seconds, so recorded gate windows are retry_after
+// plus the manager's rate pad.
+func (s *previewServerState) armRateLimit(method string, times, retryAfter int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.rates[method] = &rateLimit{remaining: 1, retryAfter: 1}
+	s.rates[method] = &rateLimit{remaining: times, retryAfter: retryAfter}
 }
 
 func (s *previewServerState) takeRateLimit(method string) (int, bool) {
@@ -486,7 +487,7 @@ func TestPreviewRateLimitBacksOffWholeChat(t *testing.T) {
 	b := newPreviewTestBot(t, state)
 	m := newPreviewTestManager(t, b)
 	// The first preview wire call in the chat is rate limited.
-	state.armRateLimit("sendMessage")
+	state.armRateLimit("sendMessage", 1, 1)
 
 	runA := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
 	toolDone(runA, "search_web", false, true, time.Second)
@@ -1080,7 +1081,7 @@ func TestPreviewBackoffSurvivesRunExit(t *testing.T) {
 	state := newPreviewServerState()
 	b := newPreviewTestBot(t, state)
 	m := newPreviewTestManager(t, b)
-	state.armRateLimit("sendMessage")
+	state.armRateLimit("sendMessage", 1, 1)
 
 	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
 	toolDone(run, "search_web", false, true, time.Second)
@@ -1512,7 +1513,7 @@ func TestFinalSendWaitsForGateClosedByInFlightDraft(t *testing.T) {
 	run := m.RunFor(info)
 
 	// Hold the first draft in flight and answer it with a 429.
-	srv.armRateLimit("sendRichMessageDraft")
+	srv.armRateLimit("sendRichMessageDraft", 1, 1)
 	srv.delayMethod("sendRichMessageDraft", 300*time.Millisecond)
 	toolDone(run, "search_web", false, true, 10*time.Millisecond)
 
@@ -1578,7 +1579,7 @@ func TestCompleteNoTextRecordsFresh429(t *testing.T) {
 		Mode:     adminconfig.PreviewModeTools,
 	}
 	run := m.RunFor(info)
-	srv.armRateLimit("sendRichMessageDraft")
+	srv.armRateLimit("sendRichMessageDraft", 1, 1)
 
 	run.CompleteNoText(nil)
 
@@ -1667,10 +1668,10 @@ func TestFinalDeliveryRetriesThroughChatGate429(t *testing.T) {
 	}
 	run := m.RunFor(info)
 
-	// Both attempts of the first delivery — the rich send and its legacy
-	// MarkdownV2 fallback — walk into the closed window and draw 429s.
-	srv.armRateLimit("sendRichMessage")
-	srv.armRateLimit("sendMessage")
+	// The rich send draws a 429. The legacy fallback is deliberately not
+	// attempted: a 429 is chat-wide, so the fallback would only burn a
+	// second doomed call into the same window.
+	srv.armRateLimit("sendRichMessage", 1, 1)
 
 	resolved := adminconfig.ResolvedChatConfig{PreviewMode: adminconfig.PreviewModeOff}
 	message := tg.Message{MessageID: 10, Chat: tg.Chat{ID: info.ChatID, Type: tg.ChatTypePrivate}}
@@ -1689,8 +1690,8 @@ func TestFinalDeliveryRetriesThroughChatGate429(t *testing.T) {
 	if n := srv.callCount("sendRichMessage"); n != 2 {
 		t.Fatalf("expected two rich send attempts, got %d", n)
 	}
-	if n := srv.callCount("sendMessage"); n != 1 {
-		t.Fatalf("expected exactly one legacy fallback attempt, got %d", n)
+	if n := srv.callCount("sendMessage"); n != 0 {
+		t.Fatalf("a 429 on the rich send must not trigger the legacy fallback, got %d fallback calls", n)
 	}
 
 	run.Abort()
@@ -1704,21 +1705,20 @@ func TestFinalDeliveryExactlyOnceWithoutPreviews(t *testing.T) {
 	b := newPreviewTestBot(t, srv)
 	m := newPreviewTestManager(t, b)
 
-	srv.armRateLimit("sendRichMessage")
-	srv.armRateLimit("sendMessage")
+	srv.armRateLimit("sendRichMessage", 1, 1)
 
 	resolved := adminconfig.ResolvedChatConfig{PreviewMode: adminconfig.PreviewModeOff}
 	message := tg.Message{MessageID: 10, Chat: tg.Chat{ID: 900800700, Type: tg.ChatTypePrivate}}
 
 	_, err := b.deliverFinalReply(context.Background(), nil, message, "the answer", nil, resolved)
-	if err == nil {
-		t.Fatal("with previews off a failed send must surface unchanged")
+	if !isRateLimit(err) {
+		t.Fatalf("with previews off a rich-send 429 must surface unchanged, got %v", err)
 	}
 	if n := srv.callCount("sendRichMessage"); n != 1 {
 		t.Fatalf("expected exactly one rich attempt without previews, got %d", n)
 	}
-	if n := srv.callCount("sendMessage"); n != 1 {
-		t.Fatalf("expected exactly one fallback attempt without previews, got %d", n)
+	if n := srv.callCount("sendMessage"); n != 0 {
+		t.Fatalf("a 429 must not trigger the legacy fallback, got %d fallback calls", n)
 	}
 	if earliest := m.gateEarliest(900800700); !earliest.IsZero() {
 		t.Fatalf("delivery without previews must not touch the chat gate, got %s", earliest)
@@ -1802,8 +1802,9 @@ func TestStripToolHistoryPresentation(t *testing.T) {
 }
 
 // TestPreviewIdentitiesEvictedAcrossChats pins the cross-chat bound on the
-// identity registry: chats beyond the cap lose their tombstones FIFO, while
-// a chat with an active run is never evicted while it runs.
+// identity registry: chats beyond the cap lose their tombstones FIFO, an
+// active run's chat is skipped rather than blocking the whole sweep, and
+// overflow held back only by active runs is reclaimed when the run exits.
 func TestPreviewIdentitiesEvictedAcrossChats(t *testing.T) {
 	srv := newPreviewServerState()
 	b := newPreviewTestBot(t, srv)
@@ -1821,11 +1822,24 @@ func TestPreviewIdentitiesEvictedAcrossChats(t *testing.T) {
 	for i := 1; i <= previewMsgsChatCap; i++ {
 		m.notePreviewMessage(int64(-200000000000-i), 1)
 	}
+
+	// One more chat pushes the count over the cap. The active run's chat is
+	// skipped, but eviction continues past it: inactive overflow is evicted
+	// and the cap holds without the active chat being dropped.
+	m.notePreviewMessage(int64(-200000000000-previewMsgsChatCap-1), 1)
 	m.mu.Lock()
 	orderLen := len(m.previewMsgsOrder)
+	protectedKept := len(m.previewMsgs[protected]) == 1
+	oldestEvicted := len(m.previewMsgs[int64(-200000000000-1)]) == 0
 	m.mu.Unlock()
-	if orderLen != previewMsgsChatCap+1 {
-		t.Fatalf("active run must hold its chat against eviction, order holds %d chats", orderLen)
+	if orderLen != previewMsgsChatCap {
+		t.Fatalf("eviction must restore the cap past an active chat, order holds %d chats", orderLen)
+	}
+	if !protectedKept {
+		t.Fatal("the active run's chat must not be evicted")
+	}
+	if !oldestEvicted {
+		t.Fatal("an inactive chat behind an active one must still be evicted")
 	}
 
 	run.Abort()
@@ -1836,17 +1850,230 @@ func TestPreviewIdentitiesEvictedAcrossChats(t *testing.T) {
 		return !m.chatHasActiveRunLocked(protected)
 	})
 
-	// One more chat pushes the count over the cap again; the protected chat
-	// (now runless and oldest) is evicted first.
-	m.notePreviewMessage(int64(-200000000000-previewMsgsChatCap-1), 1)
+	// The finishing run's reclaim pass finds no overflow here (the sweep
+	// above already restored the cap) and leaves the registry intact.
 	m.mu.Lock()
-	evicted := len(m.previewMsgs[protected]) == 0
 	orderLen = len(m.previewMsgsOrder)
+	protectedKept = len(m.previewMsgs[protected]) == 1
 	m.mu.Unlock()
-	if !evicted {
-		t.Fatal("runless oldest chat must be evicted once the cap is exceeded")
+	if orderLen != previewMsgsChatCap || !protectedKept {
+		t.Fatalf("reclaim must not disturb a registry at the cap: order %d, kept %v", orderLen, protectedKept)
 	}
+}
+
+// TestUnregisterReclaimsHeldBackOverflow pins that a finishing run's
+// eviction pass reclaims registry overflow the run itself was holding back:
+// overflow that only active runs keep above the cap is evicted when the
+// last of them unregisters, without waiting for a new chat to arrive.
+func TestUnregisterReclaimsHeldBackOverflow(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+
+	held := int64(-100900700002)
+	run := m.RunFor(RunInfo{
+		RunID:    execution.NewRunID(),
+		ChatID:   held,
+		ChatType: tg.ChatTypeSupergroup,
+		Mode:     adminconfig.PreviewModeTools,
+	})
+	m.notePreviewMessage(held, 1)
+
+	// Inject overflow that the active run alone holds above the cap.
+	m.mu.Lock()
+	for i := 1; i <= previewMsgsChatCap; i++ {
+		chatID := int64(-300000000000 - i)
+		m.previewMsgs[chatID] = map[int]struct{}{1: {}}
+		m.previewMsgsOrder = append(m.previewMsgsOrder, chatID)
+	}
+	before := len(m.previewMsgsOrder)
+	m.mu.Unlock()
+	if before != previewMsgsChatCap+1 {
+		t.Fatalf("test setup must exceed the cap by one held chat, order holds %d", before)
+	}
+
+	run.Abort()
+	waitForCondition(t, 2*time.Second, "run unregistered", func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+
+		return !m.chatHasActiveRunLocked(held)
+	})
+
+	m.mu.Lock()
+	orderLen := len(m.previewMsgsOrder)
+	reclaimed := len(m.previewMsgs[held]) == 0
+	m.mu.Unlock()
 	if orderLen != previewMsgsChatCap {
-		t.Fatalf("eviction must restore the cap, order holds %d chats", orderLen)
+		t.Fatalf("unregister must reclaim overflow held by the finishing run, order holds %d chats", orderLen)
+	}
+	if !reclaimed {
+		t.Fatal("the held-back chat must be evicted once its run exits")
+	}
+}
+
+// TestFinalDeliverySkipsRedeliveryWhenWaitExpired pins that an exhausted
+// gate wait stops redelivery: with the caller's deadline expiring before
+// the recorded backoff ends, the answer's attempts are not burned on a
+// known closed window — the recorded rate limit is returned and no further
+// send is attempted.
+func TestFinalDeliverySkipsRedeliveryWhenWaitExpired(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+
+	info := RunInfo{
+		RunID:    execution.NewRunID(),
+		ChatID:   900800700,
+		ChatType: tg.ChatTypePrivate,
+		Mode:     adminconfig.PreviewModeTools,
+	}
+	run := m.RunFor(info)
+
+	// A 60-second retry window; the caller's delivery deadline expires long
+	// before it, so no redelivery may be attempted.
+	srv.armRateLimit("sendRichMessage", 1, 60)
+
+	resolved := adminconfig.ResolvedChatConfig{PreviewMode: adminconfig.PreviewModeOff}
+	message := tg.Message{MessageID: 10, Chat: tg.Chat{ID: info.ChatID, Type: tg.ChatTypePrivate}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := b.deliverFinalReply(ctx, run, message, "the answer", nil, resolved)
+	if elapsed := time.Since(start); elapsed >= 5*time.Second {
+		t.Fatalf("exhausted wait must stop redelivery instead of sending into the closed window, took %s", elapsed)
+	}
+	if err == nil {
+		t.Fatal("the recorded rate limit must surface when redelivery is skipped")
+	}
+	if n := srv.callCount("sendRichMessage"); n != 1 {
+		t.Fatalf("expected exactly one rich attempt, got %d", n)
+	}
+	if n := srv.callCount("sendMessage"); n != 0 {
+		t.Fatalf("no fallback may run during a known closed window, got %d calls", n)
+	}
+	if earliest := m.gateEarliest(info.ChatID); !earliest.After(time.Now()) {
+		t.Fatal("the delivery 429 must be recorded into the chat gate")
+	}
+
+	run.Abort()
+}
+
+// TestFinalDeliveryRecordsExhaustedRetryBackoff pins that the final
+// rejected attempt's 429 is still recorded: once redelivery attempts are
+// exhausted, the last rate limit advances the chat gate so concurrent and
+// later runs in the chat respect the window.
+func TestFinalDeliveryRecordsExhaustedRetryBackoff(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+
+	info := RunInfo{
+		RunID:    execution.NewRunID(),
+		ChatID:   900800700,
+		ChatType: tg.ChatTypePrivate,
+		Mode:     adminconfig.PreviewModeTools,
+	}
+	run := m.RunFor(info)
+
+	// Every rich attempt draws a 429; redelivery gives up after the retry
+	// bound with the last window recorded.
+	srv.armRateLimit("sendRichMessage", previewFinalDeliveryRetries+1, 1)
+
+	resolved := adminconfig.ResolvedChatConfig{PreviewMode: adminconfig.PreviewModeOff}
+	message := tg.Message{MessageID: 10, Chat: tg.Chat{ID: info.ChatID, Type: tg.ChatTypePrivate}}
+
+	_, err := b.deliverFinalReply(context.Background(), run, message, "the answer", nil, resolved)
+	if err == nil {
+		t.Fatal("delivery must give up when every attempt is rate-limited")
+	}
+	if n := srv.callCount("sendRichMessage"); n != previewFinalDeliveryRetries+1 {
+		t.Fatalf("expected %d rich attempts, got %d", previewFinalDeliveryRetries+1, n)
+	}
+	if earliest := m.gateEarliest(info.ChatID); !earliest.After(time.Now()) {
+		t.Fatal("the final rejected attempt's 429 must stay recorded in the chat gate")
+	}
+
+	run.Abort()
+}
+
+// TestCompleteNoTextSkipsDraftWhenWaitExpired pins that the terminal draft
+// is skipped when the gate wait expires: sending into a known closed window
+// would only burn the draft on a predictable 429.
+func TestCompleteNoTextSkipsDraftWhenWaitExpired(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+
+	baseCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	m := newPreviewManager(baseCtx, b.api, b.logger, b.sendTypingUntil)
+	m.timings = previewTimings{
+		debounce:     30 * time.Millisecond,
+		minInterval:  40 * time.Millisecond,
+		flushFloor:   15 * time.Millisecond,
+		draftRefresh: 120 * time.Millisecond,
+		ratePad:      10 * time.Millisecond,
+	}
+	t.Cleanup(func() {
+		m.Stop()
+		cancel()
+	})
+
+	info := RunInfo{
+		RunID:    execution.NewRunID(),
+		ChatID:   900800700,
+		ChatType: tg.ChatTypePrivate,
+		Mode:     adminconfig.PreviewModeTools,
+	}
+	run := m.RunFor(info)
+	m.backoffChat(info.ChatID, 10*time.Second)
+
+	run.CompleteNoText(nil)
+
+	if n := srv.callCount("sendRichMessageDraft"); n != 0 {
+		t.Fatalf("terminal draft must be skipped while the window is known closed, got %d drafts", n)
+	}
+
+	run.Abort()
+}
+
+// TestQuotedEvictedPreviewDropped pins the shape fallback of the identity
+// registry: a quoted snapshot of a preview whose registry identity was
+// evicted is recognized as preview presentation and dropped, so its working
+// indicator and tool lines cannot enter conversational context as an
+// answer.
+func TestQuotedEvictedPreviewDropped(t *testing.T) {
+	b := newPreviewTestBot(t, newPreviewServerState())
+	b.ctx = context.Background()
+	b.history = newMemoryConversationStore()
+
+	cases := []string{
+		"🔄 Working…\n\n✅ search_web()",
+		"🔄 Working…\n\n✅ search_web()\n❌ fetch_url_content()",
+		"✔️ Done\n\n✅ search_web()",
+		"✅ search_web()\n❌ fetch_url_content()",
+	}
+	for _, text := range cases {
+		quoted := tg.Message{
+			MessageID: 555,
+			Chat:      tg.Chat{ID: 900800702, Type: tg.ChatTypeSupergroup},
+			From:      &tg.User{ID: b.me.ID, IsBot: true, FirstName: "Bot"},
+			Text:      text,
+		}
+		if resolved := b.quotedMessageData(quoted); resolved != nil {
+			t.Fatalf("preview presentation must be dropped without its registry identity, got %+v", resolved)
+		}
+	}
+
+	// Ordinary answers keep their subject.
+	quoted := tg.Message{
+		MessageID: 556,
+		Chat:      tg.Chat{ID: 900800702, Type: tg.ChatTypeSupergroup},
+		From:      &tg.User{ID: b.me.ID, IsBot: true, FirstName: "Bot"},
+		Text:      "Here is the summary you asked for.",
+	}
+	if resolved := b.quotedMessageData(quoted); resolved == nil || resolved.Text != "Here is the summary you asked for." {
+		t.Fatalf("ordinary bot answers must keep their subject, got %+v", resolved)
 	}
 }

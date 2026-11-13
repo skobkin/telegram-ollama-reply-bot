@@ -293,21 +293,30 @@ func (m *previewManager) notePreviewMessage(chatID int64, msgID int) {
 
 // evictPreviewIdentitiesLocked keeps the identity registry bounded across
 // chats: once more chats hold identities than previewMsgsChatCap, the
-// oldest chats lose their entries FIFO. Chats with an active run are never
-// evicted — their previews are still live on the wire — so the bound can be
-// exceeded by at most the number of concurrently active runs. Eviction
+// oldest chats lose their entries FIFO. Chats with an active run are
+// skipped, never evicted — their previews are still live on the wire — so
+// the bound can be exceeded by at most the number of concurrently active
+// runs; finishing runs reclaim the overflow from unregister. Eviction
 // reopens the quoted-snapshot exclusion only for the evicted chat's long
 // past previews; per-chat Telegram message IDs are never reused, so it can
 // never suppress an unrelated message. The caller holds m.mu.
 func (m *previewManager) evictPreviewIdentitiesLocked() {
-	for len(m.previewMsgsOrder) > previewMsgsChatCap {
-		oldest := m.previewMsgsOrder[0]
-		if m.chatHasActiveRunLocked(oldest) {
-			return
-		}
-		m.previewMsgsOrder = m.previewMsgsOrder[1:]
-		delete(m.previewMsgs, oldest)
+	overflow := len(m.previewMsgsOrder) - previewMsgsChatCap
+	if overflow <= 0 {
+		return
 	}
+
+	kept := make([]int64, 0, len(m.previewMsgsOrder))
+	for _, chatID := range m.previewMsgsOrder {
+		if overflow > 0 && !m.chatHasActiveRunLocked(chatID) {
+			delete(m.previewMsgs, chatID)
+			overflow--
+
+			continue
+		}
+		kept = append(kept, chatID)
+	}
+	m.previewMsgsOrder = kept
 }
 
 // chatHasActiveRunLocked reports whether any registered run belongs to the
@@ -402,6 +411,9 @@ func (m *previewManager) unregister(run *previewRun) {
 			delete(m.chatGates, run.info.ChatID)
 		}
 	}
+	// A finishing run frees its chat for identity eviction: overflow held
+	// back only by active runs is reclaimed here, not just on new chats.
+	m.evictPreviewIdentitiesLocked()
 }
 
 // previewRun is one run's live preview: accumulated tool state, a worker
@@ -615,17 +627,32 @@ func (b *Bot) deliverFinalReply(ctx context.Context, run *previewRun, message t.
 		return sent, err
 	}
 
-	waitCtx, cancel := context.WithTimeout(ctx, previewFinalDeliveryMaxWait)
-	defer cancel()
+	waitCtx := ctx
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(ctx, previewFinalDeliveryMaxWait)
+		defer cancel()
+	}
 
-	for retries := 0; err != nil && retries < previewFinalDeliveryRetries; retries++ {
+	for retries := 0; err != nil; retries++ {
+		// Every rate-limit response is recorded into the shared gate — the
+		// last rejected attempt's backoff included, so later runs in the
+		// chat respect the window even once redelivery gives up.
 		wait, limited := run.absorbDeliveryRateLimit(err)
 		if !limited {
 			break
 		}
-		b.loggerFromContext(ctx).Warn("final delivery hit the chat rate-limit window; redelivering after the gate reopens",
+		b.loggerFromContext(ctx).Warn("final delivery hit the chat rate-limit window",
 			"chat_id", message.Chat.ID, "retry_in", wait.String(), "attempt", retries+1)
-		run.AwaitChatGate(waitCtx)
+		if retries >= previewFinalDeliveryRetries {
+			break
+		}
+		// An exhausted wait leaves the window known-closed: redelivering
+		// then would burn the answer's attempts on a predictable 429, so
+		// the recorded rate limit is returned to the caller's error path.
+		if !run.AwaitChatGate(waitCtx) {
+			break
+		}
 		sent, err = deliver()
 	}
 
@@ -674,10 +701,21 @@ func (r *previewRun) CompleteNoText(calls []tooluse.ToolCallRecord) {
 	// The terminal draft is a wire call like any other: sending it into an
 	// outstanding chat backoff would burn it on a predictable 429 and leave
 	// the stale working preview on the wire. Wait for the gate (bounded)
-	// first; the worker is already joined, so the wait races nothing.
-	waitCtx, cancel := context.WithTimeout(r.manager.baseCtx, previewFinalDeliveryMaxWait)
-	defer cancel()
-	r.AwaitChatGate(waitCtx)
+	// first; the worker is already joined, so the wait races nothing. A
+	// wait that expires with the backoff outstanding means the window is
+	// known-closed: the draft is skipped rather than sent to certain 429.
+	waitCtx := r.manager.baseCtx
+	if _, hasDeadline := r.manager.baseCtx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(r.manager.baseCtx, previewFinalDeliveryMaxWait)
+		defer cancel()
+	}
+	if !r.AwaitChatGate(waitCtx) {
+		r.manager.logger.Warn("terminal draft skipped: chat rate-limit window still open",
+			"chat_id", r.info.ChatID)
+
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.manager.baseCtx, previewCallTimeout)
 	defer cancel()
@@ -1010,6 +1048,13 @@ func (r *previewRun) groupMessageID() int {
 	return r.groupMsgID
 }
 
+// isRateLimit reports whether the error is a Telegram rate limit (429).
+func isRateLimit(err error) bool {
+	var apiErr *telegoapi.Error
+
+	return errors.As(err, &apiErr) && apiErr.ErrorCode == 429
+}
+
 // absorbDeliveryRateLimit records a 429 — from a preview wire call or from
 // an authoritative delivery send — into the shared chat gate, so every
 // concurrent run in the chat backs off together. It reports whether the
@@ -1247,6 +1292,59 @@ func previewToolLineText(tool previewToolLine, mode adminconfig.PreviewMode, ric
 
 func previewRunningLine(name string, rich bool) string {
 	return "🔄 " + previewToolName(name, rich)
+}
+
+// previewPresentationMarkers are the first-line header prefixes of rendered
+// preview text (working indicator, terminal done marker).
+var previewPresentationMarkers = []string{"🔄", "✔️"}
+
+// previewToolLineMarkers are the line prefixes of preview tool-progress
+// lines.
+var previewToolLineMarkers = []string{"✅ ", "❌ ", "🔄 ", "⌛ "}
+
+// isPreviewPresentation reports whether rendered text matches the live
+// preview shape: a working/done header first line, or nothing but
+// tool-progress lines (a snapshot truncated past its header). Quoted
+// snapshots of previews whose registry identities were evicted reach the
+// bot-quote fallback in message_history.go; without this check their
+// working indicator and tool lines would enter conversational context as
+// if the bot had said them. Ordinary answers do not open with the preview
+// header and are not made solely of tool-status lines, so the shape match
+// does not take legitimate quotes.
+func isPreviewPresentation(text string) bool {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	if len(lines) == 0 {
+		return false
+	}
+
+	first := strings.TrimSpace(lines[0])
+	for _, marker := range previewPresentationMarkers {
+		if strings.HasPrefix(first, marker) {
+			return true
+		}
+	}
+
+	toolLines := 0
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if t == "" {
+			continue
+		}
+		matched := false
+		for _, marker := range previewToolLineMarkers {
+			if strings.HasPrefix(t, marker) {
+				matched = true
+
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+		toolLines++
+	}
+
+	return toolLines > 0
 }
 
 // previewToolName renders a tool name for the target format. Rich markdown

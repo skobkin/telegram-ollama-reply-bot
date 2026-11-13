@@ -83,6 +83,13 @@ func (b *Bot) sendReplyWithToolHistory(ctx context.Context, message t.Message, a
 	if err == nil {
 		return sent, nil
 	}
+	if isRateLimit(err) {
+		// A 429 is chat-wide and transient: the legacy fallback walks into
+		// the same rate-limited window, so it is not attempted. The rate
+		// limit is returned unchanged so the caller's gate logic can absorb
+		// it — flattening it into a fallback error would hide the signal.
+		return nil, err
+	}
 
 	logger.Warn("cannot send rich message, falling back to MarkdownV2",
 		"error", safeerr.WrapTransport(errRichHistorySend, err),

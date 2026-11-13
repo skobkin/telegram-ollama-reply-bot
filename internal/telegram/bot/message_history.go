@@ -125,7 +125,9 @@ func (b *Bot) quotedMessageData(quoted t.Message) *state.Message {
 
 		data := b.tgUserMessageToMessageData(quoted, false)
 		cleaned := stripToolHistoryPresentation(data.Text)
-		if strings.TrimSpace(cleaned) == "" {
+		if strings.TrimSpace(cleaned) == "" || isPreviewPresentation(cleaned) {
+			// Preview-shaped text — a snapshot of a preview whose registry
+			// identity was long evicted — is presentation, not an answer.
 			return nil
 		}
 		data.Text = cleaned
