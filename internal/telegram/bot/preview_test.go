@@ -2065,6 +2065,9 @@ func TestQuotedEvictedPreviewDropped(t *testing.T) {
 		"🔄 Working…\n\n✅ search_web()",
 		"🔄 Working…\n\n✅ search_web()\n❌ fetch_url_content()",
 		"✔️ Done\n\n✅ search_web()",
+		"✔️ Done",
+		"✔️ Done\n\n✅ search_web() ⌛ 1.2s",
+		"… and 3 earlier\n✅ search_web()",
 		"✅ search_web()\n❌ fetch_url_content()",
 	}
 	for _, text := range cases {
@@ -2080,11 +2083,14 @@ func TestQuotedEvictedPreviewDropped(t *testing.T) {
 	}
 
 	// Ordinary answers keep their subject — including answers that merely
-	// open with ✔️ or carry ✅ checklist lines, which are not the preview
-	// shape (exact headers, tool-call syntax).
+	// open with ✔️ or carry ✅ checklist lines, and answers that open with
+	// the exact done header and continue with real content: only the full
+	// preview shape (header plus nothing but tool lines) is presentation.
 	kept := []string{
 		"Here is the summary you asked for.",
 		"✔️ The answer is 42.",
+		"✔️ Done\n\nHere is the full report:\n- item one\n- item two",
+		"🔄 Working…\n\nHmm, let me think about this.",
 		"✅ Buy milk\n✅ Buy eggs",
 		"Progress:\n✅ step one done\n✅ step two done",
 	}
@@ -2133,6 +2139,42 @@ func TestFinalDeliveryHonorsGateWithoutPreviews(t *testing.T) {
 	}
 	if n := srv.callCount("sendRichMessage"); n != 2 {
 		t.Fatalf("expected two rich send attempts, got %d", n)
+	}
+}
+
+// TestFinalDeliveryWaitsRetainedBackoffBeforeFirstSend pins that the
+// retained chat backoff is honored BEFORE the first attempt: with previews
+// off for the request (nil run) and a window opened by an earlier preview
+// 429, delivery must wait the window out instead of sending into the
+// known-closed gate and drawing a predictable rejection from inside it.
+func TestFinalDeliveryWaitsRetainedBackoffBeforeFirstSend(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+	b.previews = m
+
+	// No failures armed: a send inside the closed window would succeed and
+	// hide behind a nil error, so the observation is timing — the single
+	// attempt must happen only after the gate reopens.
+	m.backoffChat(900800705, 250*time.Millisecond)
+
+	resolved := adminconfig.ResolvedChatConfig{PreviewMode: adminconfig.PreviewModeOff}
+	message := tg.Message{MessageID: 10, Chat: tg.Chat{ID: 900800705, Type: tg.ChatTypePrivate}}
+
+	start := time.Now()
+	sent, err := b.deliverFinalReply(context.Background(), message, "the answer", nil, resolved)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("delivery must succeed without drawing any rate limit, got error: %v", err)
+	}
+	if elapsed < 250*time.Millisecond {
+		t.Fatalf("the first send must wait out the retained backoff, took %s", elapsed)
+	}
+	if sent == nil || sent.MessageID == 0 {
+		t.Fatalf("delivered answer must be a real message, got %+v", sent)
+	}
+	if n := srv.callCount("sendRichMessage"); n != 1 {
+		t.Fatalf("expected exactly one send, made after the gate reopened, got %d", n)
 	}
 }
 

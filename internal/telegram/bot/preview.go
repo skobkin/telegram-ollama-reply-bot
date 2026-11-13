@@ -617,9 +617,11 @@ func (m *previewManager) awaitChatGate(ctx context.Context, chatID int64) bool {
 // into the shared gate, the wait honors the recorded backoff (bounded by
 // previewFinalDeliveryMaxWait), and the same answer is redelivered without
 // regenerating it. The chat gate is consulted through the manager even when
-// this request's previews are off: an outstanding window
-// rate-limits every sender in the chat. Only with no preview manager wired
-// at all is delivery exactly-once with no gate interaction.
+// this request's previews are off: an outstanding window rate-limits every
+// sender in the chat, so the bounded wait runs before the first attempt
+// too — a retained backoff (possibly from a request whose own run is nil)
+// must not draw a predictably rejected send. Only with no preview manager
+// wired at all is delivery exactly-once with no gate interaction.
 func (b *Bot) deliverFinalReply(ctx context.Context, message t.Message, llmReply string, calls []tooluse.ToolCallRecord, resolved adminconfig.ResolvedChatConfig) (*t.Message, error) {
 	deliver := func(sendCtx context.Context) (*t.Message, error) {
 		if resolved.PreviewMode != adminconfig.PreviewModeOff && resolved.KeepToolHistory {
@@ -629,10 +631,9 @@ func (b *Bot) deliverFinalReply(ctx context.Context, message t.Message, llmReply
 		return b.sendRichMarkdownReply(sendCtx, message, llmReply)
 	}
 
-	sent, err := deliver(ctx)
 	mgr := b.previews
 	if mgr == nil {
-		return sent, err
+		return deliver(ctx)
 	}
 
 	waitCtx := ctx
@@ -642,6 +643,13 @@ func (b *Bot) deliverFinalReply(ctx context.Context, message t.Message, llmReply
 		defer cancel()
 	}
 
+	// An exhausted wait falls through to a single attempt: with the whole
+	// delivery budget spent waiting, dropping the completed answer without
+	// any try is worse than one send whose outcome — redelivered or a real
+	// 429 returned to the caller — the retry loop below owns either way.
+	mgr.awaitChatGate(waitCtx, message.Chat.ID)
+
+	sent, err := deliver(ctx)
 	for retries := 0; err != nil; retries++ {
 		// Every rate-limit response is recorded into the shared gate — the
 		// last rejected attempt's backoff included, so later runs in the
@@ -1313,28 +1321,32 @@ const (
 )
 
 // isPreviewPresentation reports whether rendered text matches the live
-// preview shape: exactly the working/done header as the first line, or
-// nothing but tool-progress lines (a snapshot truncated past its header).
-// The match is structural — exact header strings and the name() tool-call
-// syntax — because the check gates dropping quoted bot answers: an answer
-// that merely opens with ✔️ or carries ✅ checklist lines is an ordinary
-// answer and must be kept. Quoted snapshots of previews whose registry
-// identities were evicted reach the bot-quote fallback in
-// message_history.go; without this check their working indicator and tool
-// lines would enter conversational context as if the bot had said them.
+// preview shape: the exact working/done header followed by nothing but
+// tool-progress lines, or nothing but tool-progress lines alone (a
+// snapshot truncated past its header). The match is structural — exact
+// header strings and the name() tool-call syntax — because the check
+// gates dropping quoted bot answers: an answer that merely opens with
+// ✔️, carries ✅ checklist lines, or continues the "✔️ Done" line with
+// real content is an ordinary answer and must be kept. Quoted snapshots
+// of previews whose registry identities were evicted reach the bot-quote
+// fallback in message_history.go; without this check their working
+// indicator and tool lines would enter conversational context as if the
+// bot had said them.
 func isPreviewPresentation(text string) bool {
 	lines := strings.Split(strings.TrimSpace(text), "\n")
 	if len(lines) == 0 {
 		return false
 	}
 
-	first := strings.TrimSpace(lines[0])
-	if first == previewWorkingHeader || first == previewDoneHeader {
-		return true
+	headerSeen := false
+	body := lines
+	if first := strings.TrimSpace(lines[0]); first == previewWorkingHeader || first == previewDoneHeader {
+		headerSeen = true
+		body = lines[1:]
 	}
 
 	toolLines := 0
-	for _, line := range lines {
+	for _, line := range body {
 		t := strings.TrimSpace(line)
 		if t == "" || t == "…" || strings.HasPrefix(t, "… and ") {
 			continue
@@ -1345,7 +1357,11 @@ func isPreviewPresentation(text string) bool {
 		toolLines++
 	}
 
-	return toolLines > 0
+	// A header with no tool lines is still the preview shape: an empty
+	// private snapshot renders the bare header (with the "…" placeholder),
+	// so the header alone identifies presentation only when nothing else
+	// follows — real content after it is an ordinary answer.
+	return toolLines > 0 || headerSeen
 }
 
 // isPreviewToolLine reports whether one rendered line is a preview
