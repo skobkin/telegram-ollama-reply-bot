@@ -454,10 +454,16 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adm
 
 	if strings.TrimSpace(llmReply) == "" {
 		logger.Debug("llm interaction completed without final text reply")
-		run.CompleteNoText()
+		run.CompleteNoText(toolCalls)
 
 		return
 	}
+
+	// A preview 429 closes the chat's wire window for every sender: wait
+	// (bounded) for the shared gate to reopen before authoritative
+	// delivery instead of throwing the completed answer at a rate-limited
+	// API. With previews off this is a no-op.
+	run.AwaitChatGate(baseCtx)
 
 	// No private preview write may be in flight during the final send:
 	// quiesce the run first, so a slow draft cannot land after the answer

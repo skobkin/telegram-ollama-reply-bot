@@ -49,11 +49,15 @@ func (b *Bot) saveBotReplyToHistory(ctx context.Context, replyTo t.Message, text
 
 	if replyTo.ReplyToMessage != nil {
 		replyMessage := *replyTo.ReplyToMessage
-		replyScope := scopeFromMessage(replyMessage)
-		replyData := b.tgUserMessageToMessageData(replyMessage, false)
-		replyData.ChatID = replyScope.ChatID
-		replyData.TopicID = replyScope.TopicID
-		msg.ReplyTo = &replyData
+		// Preview presentation text never enters conversational context:
+		// a reply to a live preview carries no quotable content.
+		if !b.previews.isPreviewMessage(replyMessage.Chat.ID, replyMessage.MessageID) {
+			replyScope := scopeFromMessage(replyMessage)
+			replyData := b.tgUserMessageToMessageData(replyMessage, false)
+			replyData.ChatID = replyScope.ChatID
+			replyData.TopicID = replyScope.TopicID
+			msg.ReplyTo = &replyData
+		}
 	}
 
 	b.history.AppendMessage(scope, msg)
@@ -99,7 +103,10 @@ func (b *Bot) tgUserMessageToMessageData(message t.Message, isUserRequest bool) 
 		}
 	}
 
-	if message.ReplyToMessage != nil {
+	// Preview presentation text never enters conversational context at any
+	// recursion depth: a reply to a live preview carries no quotable
+	// content.
+	if message.ReplyToMessage != nil && !b.previews.isPreviewMessage(message.ReplyToMessage.Chat.ID, message.ReplyToMessage.MessageID) {
 		replyData := b.tgUserMessageToMessageData(*message.ReplyToMessage, false)
 		msg.ReplyTo = &replyData
 	}

@@ -19,7 +19,9 @@ import (
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/execution"
+	"telegram-ollama-reply-bot/internal/state"
 	"telegram-ollama-reply-bot/internal/support/markdown"
+	"telegram-ollama-reply-bot/internal/tooluse"
 
 	tg "github.com/mymmrac/telego"
 )
@@ -293,7 +295,7 @@ func TestPreviewManagerRunForInactive(t *testing.T) {
 
 	var nilRun *previewRun
 	nilRun.FinalDelivered()
-	nilRun.CompleteNoText()
+	nilRun.CompleteNoText(nil)
 	nilRun.Abort()
 	nilRun.Close()
 	if nilRun.ID() != "" {
@@ -314,7 +316,8 @@ func TestPreviewManagerRunForInactive(t *testing.T) {
 func TestPreviewNilRunLifecycleNoops(t *testing.T) {
 	var run *previewRun
 	run.FinalDelivered()
-	run.CompleteNoText()
+	run.CompleteNoText(nil)
+	run.AwaitChatGate(context.Background())
 	run.Abort()
 	run.Close()
 	if run.ID() != "" {
@@ -626,7 +629,13 @@ func TestPrivateCompleteNoTextSendsFinalDraft(t *testing.T) {
 		return state.callCount("sendRichMessageDraft") >= 1
 	})
 
-	run.CompleteNoText()
+	run.CompleteNoText([]tooluse.ToolCallRecord{{
+		CallID:     "c1",
+		Name:       "send_dice",
+		Visibility: tooluse.VisibilityStandard,
+		Status:     execution.StatusOK,
+		Duration:   300 * time.Millisecond,
+	}})
 	waitForCondition(t, 2*time.Second, "final done draft", func() bool {
 		return state.callCount("sendRichMessageDraft") >= 2
 	})
@@ -635,6 +644,9 @@ func TestPrivateCompleteNoTextSendsFinalDraft(t *testing.T) {
 	text := last["rich_message"].(map[string]any)["markdown"].(string)
 	if !strings.Contains(text, "✔️ Done") || strings.Contains(text, "🔄") {
 		t.Fatalf("final draft must drop the active marker: %q", text)
+	}
+	if !strings.Contains(text, "send_dice") {
+		t.Fatalf("final draft must render authoritative records, got: %q", text)
 	}
 }
 
@@ -712,7 +724,7 @@ func TestPreviewManagerStateHygiene(t *testing.T) {
 			case 1:
 				run.Abort()
 			case 2:
-				run.CompleteNoText()
+				run.CompleteNoText(nil)
 			}
 		}
 	}
@@ -744,10 +756,10 @@ func TestPreviewStopClearsStateAndStopsWorkers(t *testing.T) {
 	m.Stop() // idempotent
 
 	m.mu.Lock()
-	runs, gates := len(m.runs), len(m.chatGates)
+	runs, gates, msgs := len(m.runs), len(m.chatGates), len(m.previewMsgs)
 	m.mu.Unlock()
-	if runs != 0 || gates != 0 {
-		t.Fatalf("stop must clear manager state, got %d runs / %d gates", runs, gates)
+	if runs != 0 || gates != 0 || msgs != 0 {
+		t.Fatalf("stop must clear manager state, got %d runs / %d gates / %d preview msg chats", runs, gates, msgs)
 	}
 }
 
@@ -914,7 +926,7 @@ func TestPreviewNeutralIndicatorCoversSilentPreprocessing(t *testing.T) {
 	if !strings.HasPrefix(text, "🔄 Working…") {
 		t.Fatalf("neutral draft must not wait for the refresh deadline: %q", text)
 	}
-	prun.CompleteNoText()
+	prun.CompleteNoText(nil)
 }
 
 // TestGroupPreviewFinalDeliveredWaitsForInFlightCreate pins the finalization
@@ -1127,4 +1139,273 @@ func (b *safeBuffer) String() string {
 	defer b.mu.Unlock()
 
 	return b.buf.String()
+}
+
+// TestPrivateCompleteNoTextRendersFromAuthoritativeRecords pins that the
+// terminal no-text draft is rendered from the run's authoritative tool
+// records: the dispatcher may still hold an un-applied ToolCompleted when
+// finalization lands, and that late event must neither leave a
+// forever-running line in the final draft nor resurrect the terminated
+// preview with a refresh.
+func TestPrivateCompleteNoTextRendersFromAuthoritativeRecords(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+
+	info := RunInfo{
+		RunID:    execution.NewRunID(),
+		ChatID:   900800733,
+		ChatType: tg.ChatTypePrivate,
+		Mode:     adminconfig.PreviewModeTools,
+	}
+	run := m.RunFor(info)
+
+	// Only the start is applied: the completion is still in flight when
+	// finalization lands.
+	run.applyEvent(execution.ToolStarted{RunContext: execution.RunContext{RunID: run.ID()}, CallID: "c1", ToolName: "send_dice", Internal: false})
+	waitForCondition(t, 2*time.Second, "working draft", func() bool {
+		return state.callCount("sendRichMessageDraft") >= 1
+	})
+
+	run.CompleteNoText([]tooluse.ToolCallRecord{{
+		CallID:     "c1",
+		Name:       "send_dice",
+		Visibility: tooluse.VisibilityStandard,
+		Status:     execution.StatusOK,
+		Duration:   300 * time.Millisecond,
+	}})
+	waitForCondition(t, 2*time.Second, "final done draft", func() bool {
+		return state.callCount("sendRichMessageDraft") >= 2
+	})
+
+	// The late completion is dropped by the finalized run and must not
+	// trigger another draft refresh.
+	run.applyEvent(execution.ToolCompleted{RunContext: execution.RunContext{RunID: run.ID()}, CallID: "c1", ToolName: "send_dice", Internal: false, Duration: 300 * time.Millisecond, Status: execution.StatusOK})
+	time.Sleep(3 * m.timings.draftRefresh)
+	if n := state.callCount("sendRichMessageDraft"); n != 2 {
+		t.Fatalf("terminated run must not refresh the final draft, got %d drafts", n)
+	}
+
+	text := state.calls("sendRichMessageDraft")[1]["rich_message"].(map[string]any)["markdown"].(string)
+	if strings.Contains(text, "🔄") {
+		t.Fatalf("final draft must not trust stale event state, got: %q", text)
+	}
+	if !strings.Contains(text, "send_dice") {
+		t.Fatalf("final draft must render the authoritative record, got: %q", text)
+	}
+}
+
+// TestGroupPreviewFailureCounterResetsOnSuccess pins that previewMaxFailures
+// counts consecutive failures: a successful edit refunds the budget, so
+// isolated wire blips interleaved with recoveries never disable the run.
+func TestGroupPreviewFailureCounterResetsOnSuccess(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+
+	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	toolDone(run, "search_web", false, true, 10*time.Millisecond)
+	waitForCondition(t, 2*time.Second, "preview created", func() bool {
+		return state.callCount("sendMessage") >= 1
+	})
+
+	// Three failing edits, each followed by a recovery: the lifetime count
+	// exceeds previewMaxFailures but never consecutively.
+	for i := 0; i < 3; i++ {
+		state.armFailure("editMessageText", 1)
+		toolDone(run, "tool_fail_"+strconv.Itoa(i), false, true, 10*time.Millisecond)
+		waitForCondition(t, 2*time.Second, "failing edit attempted", func() bool {
+			return state.callCount("editMessageText") >= 2*i+1
+		})
+		toolDone(run, "tool_ok_"+strconv.Itoa(i), false, true, 10*time.Millisecond)
+		waitForCondition(t, 2*time.Second, "recovered edit delivered", func() bool {
+			return state.callCount("editMessageText") >= 2*i+2
+		})
+	}
+
+	run.mu.Lock()
+	disabled, failures := run.disabled, run.failures
+	run.mu.Unlock()
+	if disabled || failures != 0 {
+		t.Fatalf("successful edits must refund the failure budget: disabled=%v failures=%d", disabled, failures)
+	}
+
+	run.FinalDelivered()
+	waitForCondition(t, 2*time.Second, "preview deleted after final delivery", func() bool {
+		return state.callCount("deleteMessage") >= 1
+	})
+}
+
+// TestPreviewAwaitChatGateWaitsForBackoff pins the authoritative-delivery
+// gate wait: an open gate returns immediately, an outstanding chat backoff
+// is waited out, and a cancelled context releases the wait.
+func TestPreviewAwaitChatGateWaitsForBackoff(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+
+	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+
+	done := make(chan struct{})
+	go func() {
+		run.AwaitChatGate(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("AwaitChatGate must return immediately on an open gate")
+	}
+
+	m.backoffChat(run.info.ChatID, 250*time.Millisecond)
+	start := time.Now()
+	run.AwaitChatGate(context.Background())
+	if elapsed := time.Since(start); elapsed < 200*time.Millisecond {
+		t.Fatalf("AwaitChatGate must wait out the chat backoff, waited %s", elapsed)
+	}
+
+	m.backoffChat(run.info.ChatID, 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done = make(chan struct{})
+	go func() {
+		run.AwaitChatGate(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("AwaitChatGate must honor a cancelled context")
+	}
+
+	run.Abort()
+}
+
+// TestGateSweepReclaimsExpiredGates pins the retained-backoff reclamation:
+// an expired gate of a chat that never returns is swept by unrelated
+// manager activity, while live backoffs and gates with active runs stay.
+func TestGateSweepReclaimsExpiredGates(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+
+	m.mu.Lock()
+	m.chatGates[-100900700601] = &chatGate{earliest: time.Now().Add(time.Minute), runs: 0}  // unexpired backoff: kept
+	m.chatGates[-100900700602] = &chatGate{earliest: time.Now().Add(time.Minute), runs: 1}  // active run refcount: kept
+	m.chatGates[-100900700603] = &chatGate{earliest: time.Now().Add(-time.Minute), runs: 0} // expired, chatless: swept
+	m.mu.Unlock()
+
+	// An unrelated chat's RunFor sweeps the expired gate; its own run exits
+	// and releases its gate.
+	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	run.Abort()
+
+	waitForCondition(t, 2*time.Second, "expired and released gates reclaimed", func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+
+		_, expiredLeft := m.chatGates[-100900700603]
+		_, runGateLeft := m.chatGates[-100900700600]
+
+		return !expiredLeft && !runGateLeft
+	})
+
+	m.mu.Lock()
+	_, liveKept := m.chatGates[-100900700601]
+	_, activeKept := m.chatGates[-100900700602]
+	m.mu.Unlock()
+	if !liveKept || !activeKept {
+		t.Fatal("sweep must keep unexpired backoffs and gates with active runs")
+	}
+}
+
+// TestPreviewInitialDebounceSurvivesEarlyEvents pins that early run events
+// cannot collapse the initial debounce into the flush floor: a run that
+// finishes inside the debounce window never creates a preview at all.
+func TestPreviewInitialDebounceSurvivesEarlyEvents(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+	m.timings.debounce = 200 * time.Millisecond
+
+	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeAllTools))
+	run.applyEvent(execution.RunStarted{RunContext: execution.RunContext{RunID: run.ID()}, At: time.Now()})
+	run.applyEvent(execution.GenerationStarted{RunContext: execution.RunContext{RunID: run.ID()}, At: time.Now(), Iteration: 1})
+
+	time.Sleep(100 * time.Millisecond)
+	if n := state.callCount("sendMessage"); n != 0 {
+		t.Fatalf("early events must not pull the first send inside the debounce, got %d sends", n)
+	}
+	waitForCondition(t, 2*time.Second, "debounced first send", func() bool {
+		return state.callCount("sendMessage") >= 1
+	})
+
+	run.FinalDelivered()
+	waitForCondition(t, 2*time.Second, "preview deleted", func() bool {
+		return state.callCount("deleteMessage") >= 1
+	})
+}
+
+// TestIngressExcludesPreviewReplies pins that preview presentation text
+// never enters conversational context: a message replying to a live group
+// preview is stored without ReplyTo, replies to ordinary messages keep
+// theirs, and forgetting the preview ID lifts the suppression.
+func TestIngressExcludesPreviewReplies(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	b.ctx = context.Background()
+	b.history = newMemoryConversationStore()
+	m := newPreviewTestManager(t, b)
+	b.previews = m
+
+	const chatID = int64(-100900700600)
+	m.notePreviewMessage(chatID, 777)
+
+	previewReply := tg.Message{
+		MessageID: 100,
+		Chat:      tg.Chat{ID: chatID, Type: tg.ChatTypeSupergroup},
+		From:      &tg.User{ID: 42, Username: "alice", FirstName: "Alice"},
+		ReplyToMessage: &tg.Message{
+			MessageID: 777,
+			Chat:      tg.Chat{ID: chatID, Type: tg.ChatTypeSupergroup},
+			From:      &tg.User{ID: b.me.ID, IsBot: true, FirstName: "Bot"},
+			Text:      "🔄 Working…",
+		},
+	}
+	msg := b.tgUserMessageToMessageData(previewReply, true)
+	if msg.ReplyTo != nil {
+		t.Fatalf("reply to a live preview must not carry quotable content: %+v", msg.ReplyTo)
+	}
+
+	normalReply := previewReply
+	normalReply.MessageID = 101
+	normalReply.ReplyToMessage = &tg.Message{
+		MessageID: 42,
+		Chat:      tg.Chat{ID: chatID, Type: tg.ChatTypeSupergroup},
+		From:      &tg.User{ID: 43, Username: "bob", FirstName: "Bob"},
+		Text:      "what is this about?",
+	}
+	msg = b.tgUserMessageToMessageData(normalReply, true)
+	if msg.ReplyTo == nil || msg.ReplyTo.Text != "what is this about?" {
+		t.Fatalf("reply to an ordinary message must keep its context, got %+v", msg.ReplyTo)
+	}
+
+	// Once the preview is gone from the registry, the suppression lifts.
+	m.forgetPreviewMessage(chatID, 777)
+	msg = b.tgUserMessageToMessageData(previewReply, true)
+	if msg.ReplyTo == nil {
+		t.Fatal("reply to a forgotten preview message must be recorded like any other reply")
+	}
+
+	// The authoritative reply path honors the same exclusion.
+	m.notePreviewMessage(chatID, 777)
+	b.saveBotReplyToHistory(context.Background(), previewReply, "answer", 999)
+	scope := state.ConversationScope{ChatID: chatID, TopicID: previewReply.MessageThreadID}
+	snapshot := b.history.Snapshot(scope)
+	if len(snapshot.Messages) != 1 {
+		t.Fatalf("expected one history entry, got %d", len(snapshot.Messages))
+	}
+	if snapshot.Messages[0].ReplyTo != nil {
+		t.Fatalf("bot reply to a live preview must be saved without ReplyTo, got %+v", snapshot.Messages[0].ReplyTo)
+	}
 }

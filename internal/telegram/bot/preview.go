@@ -14,6 +14,7 @@ import (
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/execution"
 	"telegram-ollama-reply-bot/internal/support/safeerr"
+	"telegram-ollama-reply-bot/internal/tooluse"
 
 	t "github.com/mymmrac/telego"
 	telegoapi "github.com/mymmrac/telego/telegoapi"
@@ -64,6 +65,14 @@ const (
 	// finalization returns, no preview write of this run can still be in
 	// flight and land after the final answer.
 	previewFinalizeJoinTimeout = previewCallTimeout + 500*time.Millisecond
+	// previewFinalDeliveryGateWait caps how long authoritative delivery
+	// waits for an outstanding chat rate-limit backoff before sending the
+	// completed answer anyway.
+	previewFinalDeliveryGateWait = 30 * time.Second
+	// previewMsgsPerChatCap bounds the per-chat registry of preview message
+	// IDs used to keep their presentation text out of conversational
+	// context (aborted previews leave their messages, and their IDs, alive).
+	previewMsgsPerChatCap = 64
 	// previewMaxFailures disables updates for a run after this many
 	// consecutive non-rate-limit wire failures (group previews).
 	previewMaxFailures = 3
@@ -96,10 +105,11 @@ type previewManager struct {
 	typing  func(ctx context.Context, chatID t.ChatID)
 	timings previewTimings
 
-	mu        sync.Mutex
-	runs      map[string]*previewRun
-	chatGates map[int64]*chatGate
-	closed    bool
+	mu          sync.Mutex
+	runs        map[string]*previewRun
+	chatGates   map[int64]*chatGate
+	previewMsgs map[int64]map[int]struct{} // chat -> live preview message IDs
+	closed      bool
 	// unsubscribe detaches the manager from the dispatcher at Stop; nil when
 	// the manager was constructed without one (tests).
 	unsubscribe func()
@@ -123,13 +133,14 @@ func newPreviewManager(baseCtx context.Context, api *t.Bot, logger *slog.Logger,
 	}
 
 	return &previewManager{
-		baseCtx:   baseCtx,
-		api:       api,
-		logger:    logger,
-		typing:    typing,
-		timings:   defaultPreviewTimings(),
-		runs:      make(map[string]*previewRun),
-		chatGates: make(map[int64]*chatGate),
+		baseCtx:     baseCtx,
+		api:         api,
+		logger:      logger,
+		typing:      typing,
+		timings:     defaultPreviewTimings(),
+		runs:        make(map[string]*previewRun),
+		chatGates:   make(map[int64]*chatGate),
+		previewMsgs: make(map[int64]map[int]struct{}),
 	}
 }
 
@@ -148,6 +159,7 @@ func (m *previewManager) RunFor(info RunInfo) *previewRun {
 
 		return nil
 	}
+	m.sweepExpiredGatesLocked(time.Now())
 	if info.RunID == "" {
 		info.RunID = execution.NewRunID()
 	}
@@ -227,7 +239,77 @@ func (m *previewManager) Stop() {
 	m.mu.Lock()
 	clear(m.runs)
 	clear(m.chatGates)
+	clear(m.previewMsgs)
 	m.mu.Unlock()
+}
+
+// notePreviewMessage registers a live group preview message so ingress can
+// recognize replies to it and keep its presentation text out of the
+// conversational context (history, prompts, summaries).
+func (m *previewManager) notePreviewMessage(chatID int64, msgID int) {
+	if m == nil || msgID == 0 {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ids := m.previewMsgs[chatID]
+	if ids == nil {
+		ids = make(map[int]struct{})
+		m.previewMsgs[chatID] = ids
+	}
+	if len(ids) >= previewMsgsPerChatCap {
+		for k := range ids {
+			delete(ids, k)
+
+			break
+		}
+	}
+	ids[msgID] = struct{}{}
+}
+
+// forgetPreviewMessage drops a deleted preview message from the registry.
+func (m *previewManager) forgetPreviewMessage(chatID int64, msgID int) {
+	if m == nil || msgID == 0 {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ids := m.previewMsgs[chatID]; ids != nil {
+		delete(ids, msgID)
+		if len(ids) == 0 {
+			delete(m.previewMsgs, chatID)
+		}
+	}
+}
+
+// isPreviewMessage reports whether the message is a live (or undeleted)
+// preview. Nil managers and unknown IDs return false.
+func (m *previewManager) isPreviewMessage(chatID int64, msgID int) bool {
+	if m == nil || msgID == 0 {
+		return false
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ids := m.previewMsgs[chatID]
+	_, ok := ids[msgID]
+
+	return ok
+}
+
+// sweepExpiredGatesLocked drops gates left behind by chats whose last run
+// exited during a backoff and whose backoff has since expired. It runs
+// wherever the manager already mutates gate state, so a chat that never
+// runs again cannot leave its entry behind forever: every new run anywhere
+// reclaims expired gates. The caller must hold m.mu.
+func (m *previewManager) sweepExpiredGatesLocked(now time.Time) {
+	for chatID, gate := range m.chatGates {
+		if gate.runs <= 0 && !gate.earliest.After(now) {
+			delete(m.chatGates, chatID)
+		}
+	}
 }
 
 // gateEarliest returns the chat's earliest allowed wire-call time. An
@@ -316,11 +398,13 @@ type previewRun struct {
 	deleted    bool
 	typingStop context.CancelFunc
 
-	// wire schedule and last delivered text, worker-goroutine-owned
-	sendAt     time.Time
-	lastSent   time.Time
-	lastText   string
-	refreshDue time.Time
+	// wire schedule and last delivered text, worker-goroutine-owned.
+	// firstSendAt is fixed at construction and only read by the worker.
+	sendAt      time.Time
+	lastSent    time.Time
+	lastText    string
+	refreshDue  time.Time
+	firstSendAt time.Time
 }
 
 type previewToolLine struct {
@@ -350,9 +434,10 @@ func newPreviewRun(m *previewManager, info RunInfo) *previewRun {
 		// dirty starts true: the neutral indicator must go out at the
 		// debounce even before the first execution event arrives, so the
 		// preview covers silent preprocessing (history summarization) too.
-		dirty:      true,
-		sendAt:     now.Add(m.timings.debounce),
-		refreshDue: now.Add(m.timings.draftRefresh),
+		dirty:       true,
+		sendAt:      now.Add(m.timings.debounce),
+		refreshDue:  now.Add(m.timings.draftRefresh),
+		firstSendAt: now.Add(m.timings.debounce),
 	}
 }
 
@@ -428,6 +513,41 @@ func (r *previewRun) Quiesce() {
 	r.finalize()
 }
 
+// AwaitChatGate blocks until the chat's pacing gate is open — a preview 429
+// closes it for every sender in the chat — bounded by ctx and a fixed cap,
+// so authoritative delivery does not throw the completed answer at a
+// rate-limited API. Nil runs and open gates return immediately, so with
+// previews off the delivery path behaves exactly as before.
+func (r *previewRun) AwaitChatGate(ctx context.Context) {
+	if r == nil {
+		return
+	}
+
+	deadline := time.Now().Add(previewFinalDeliveryGateWait)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+	for {
+		now := time.Now()
+		earliest := r.manager.gateEarliest(r.info.ChatID)
+		if !earliest.After(now) || !now.Before(deadline) {
+			return
+		}
+		wait := earliest
+		if wait.After(deadline) {
+			wait = deadline
+		}
+		timer := time.NewTimer(wait.Sub(now))
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+
+			return
+		}
+	}
+}
+
 // FinalDelivered terminates the preview after the final reply was delivered
 // successfully: the group preview is deleted best-effort, the private draft
 // is dismissed by the final send itself.
@@ -443,8 +563,11 @@ func (r *previewRun) FinalDelivered() {
 
 // CompleteNoText terminates the preview after a successful run produced no
 // reply text: the group preview is deleted; the private chat gets one final
-// draft without the active marker.
-func (r *previewRun) CompleteNoText() {
+// draft without the active marker. The final draft is rendered from the
+// run's authoritative tool records — the event stream may still hold
+// un-applied completions when finalization lands, so event state cannot be
+// trusted to show every tool as finished.
+func (r *previewRun) CompleteNoText(calls []tooluse.ToolCallRecord) {
 	if r == nil {
 		return
 	}
@@ -458,7 +581,7 @@ func (r *previewRun) CompleteNoText() {
 	r.mu.Lock()
 	gone := r.disabled
 	draftID := r.draftID
-	text := r.renderText("✔️ Done")
+	text := r.renderFinalText("✔️ Done", calls)
 	r.mu.Unlock()
 	if gone {
 		return
@@ -568,6 +691,13 @@ func (r *previewRun) pullSendAt() time.Time {
 	now := time.Now()
 
 	earliest := r.lastSent.Add(r.manager.timings.minInterval)
+	if r.lastSent.IsZero() {
+		// Before the first delivery the initial debounce is a lower bound:
+		// early events (RunStarted fires as soon as execution begins) must
+		// not pull the first preview earlier than it, or runs finishing
+		// inside the debounce window would still flash a preview.
+		earliest = r.firstSendAt
+	}
 	if floor := now.Add(r.manager.timings.flushFloor); floor.After(earliest) {
 		earliest = floor
 	}
@@ -675,6 +805,15 @@ func (r *previewRun) isDisabled() bool {
 	return r.disabled
 }
 
+// noteSendSuccess resets the consecutive-failure budget: only failures
+// without a successful update in between accumulate toward disabling the
+// run's previews.
+func (r *previewRun) noteSendSuccess() {
+	r.mu.Lock()
+	r.failures = 0
+	r.mu.Unlock()
+}
+
 // sendUpdate performs the wire call: create/edit for groups, a draft send
 // for private chats. It returns true when the update reached the wire.
 func (r *previewRun) sendUpdate(_ context.Context, text string) bool {
@@ -684,6 +823,8 @@ func (r *previewRun) sendUpdate(_ context.Context, text string) bool {
 	if r.isPrivate {
 		err := r.manager.api.SendRichMessageDraft(callCtx, draftParams(r.info, r.draftID, text))
 		if err == nil {
+			r.noteSendSuccess()
+
 			return true
 		}
 		if r.handleSendError("sendRichMessageDraft", err) {
@@ -714,8 +855,9 @@ func (r *previewRun) sendUpdate(_ context.Context, text string) bool {
 		sent, err := r.manager.api.SendMessage(callCtx, params)
 		if err == nil {
 			if sent != nil {
+				msgID := sent.MessageID
 				r.mu.Lock()
-				r.groupMsgID = sent.MessageID
+				r.groupMsgID = msgID
 				// Finalization may have raced this creation: the lifecycle
 				// delete ran while the message ID did not exist yet and
 				// latched deleted with nothing to remove. Re-arm the latch
@@ -723,10 +865,12 @@ func (r *previewRun) sendUpdate(_ context.Context, text string) bool {
 				late := r.deleted
 				r.deleted = false
 				r.mu.Unlock()
+				r.manager.notePreviewMessage(r.info.ChatID, msgID)
 				if late {
 					r.deleteGroupPreview()
 				}
 			}
+			r.noteSendSuccess()
 
 			return true
 		}
@@ -740,6 +884,8 @@ func (r *previewRun) sendUpdate(_ context.Context, text string) bool {
 			Text:      text,
 		})
 		if err == nil || isMessageNotModified(err) {
+			r.noteSendSuccess()
+
 			return true
 		}
 		if r.handleSendError("editMessageText", err) {
@@ -887,11 +1033,17 @@ func (r *previewRun) deleteGroupPreview() {
 		ChatID:    tu.ID(r.info.ChatID),
 		MessageID: msgID,
 	}); err != nil {
+		// Deletion failed, so the preview message stays visible: keep its
+		// ID registered so replies to it stay excluded from context.
 		r.logSendFailure("deleteMessage", err)
+
+		return
 	}
+	r.manager.forgetPreviewMessage(r.info.ChatID, msgID)
 }
 
-// renderText builds the preview text. The caller must hold r.mu.
+// renderText builds the preview text from event state. The caller must
+// hold r.mu.
 func (r *previewRun) renderText(header string) string {
 	var lines []string
 	for _, tool := range r.completed {
@@ -907,10 +1059,48 @@ func (r *previewRun) renderText(header string) string {
 		lines = append(lines, previewRunningLine(a.name, r.isPrivate))
 	}
 
+	return assemblePreviewText(header, lines, r.isPrivate)
+}
+
+// renderFinalText builds a terminal draft from the run's authoritative tool
+// records instead of event state: a completion still queued in the
+// dispatcher when finalization lands would otherwise leave its tool
+// rendering as forever-running. The caller must hold r.mu.
+func (r *previewRun) renderFinalText(header string, calls []tooluse.ToolCallRecord) string {
+	var lines []string
+	for _, tool := range recordsToPreviewLines(calls) {
+		if r.info.Mode != adminconfig.PreviewModeAllTools && tool.internal {
+			continue
+		}
+		lines = append(lines, previewToolLineText(tool, r.info.Mode, r.isPrivate))
+	}
+
+	return assemblePreviewText(header, lines, r.isPrivate)
+}
+
+// recordsToPreviewLines converts authoritative tool records into preview
+// tool lines.
+func recordsToPreviewLines(calls []tooluse.ToolCallRecord) []previewToolLine {
+	lines := make([]previewToolLine, 0, len(calls))
+	for _, call := range calls {
+		lines = append(lines, previewToolLine{
+			name:     call.Name,
+			internal: call.Visibility == tooluse.VisibilityInternal,
+			ok:       call.Status == execution.StatusOK,
+			duration: call.Duration,
+		})
+	}
+
+	return lines
+}
+
+// assemblePreviewText joins the header and rendered tool lines into the
+// final preview text, compacting the oldest lines beyond the cap.
+func assemblePreviewText(header string, lines []string, private bool) string {
 	var b strings.Builder
 	b.WriteString(header)
 	if len(lines) == 0 {
-		if r.isPrivate {
+		if private {
 			b.WriteString("\n\n…")
 		}
 
