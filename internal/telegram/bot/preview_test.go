@@ -2217,6 +2217,139 @@ func TestFinalDeliveryStopsWhenInitialWaitExpires(t *testing.T) {
 	}
 }
 
+// TestFinalDeliveredAbsorbsDelete429 pins that a rate limit on the
+// best-effort group preview delete is recorded into the chat gate: the
+// deletion is best-effort, but its 429 closes the chat's wire window for
+// every later sender, so the backoff must land in the gate before the
+// sanitized failure log.
+func TestFinalDeliveredAbsorbsDelete429(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+
+	info := groupRunInfo(adminconfig.PreviewModeTools)
+	run := m.RunFor(info)
+	toolDone(run, "search_web", false, true, time.Second)
+
+	waitForCondition(t, 2*time.Second, "preview creation", func() bool {
+		return srv.callCount("sendMessage") == 1
+	})
+
+	srv.armRateLimit("deleteMessage", 1, 30)
+	run.FinalDelivered()
+
+	if n := srv.callCount("deleteMessage"); n != 1 {
+		t.Fatalf("exactly one delete attempt expected, got %d", n)
+	}
+	if earliest := m.gateEarliest(info.ChatID); !earliest.After(time.Now()) {
+		t.Fatal("a delete 429 must close the chat gate even though the delete is best-effort")
+	}
+}
+
+// TestDeliverySweepsExpiredGatesWithoutPreviews pins that the expired-gate
+// sweep runs through the manager gate-read path used by off-mode requests:
+// gates of chats that went silent during a backoff are reclaimed by any
+// later delivery, not only by new preview runs.
+func TestDeliverySweepsExpiredGatesWithoutPreviews(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+	b.previews = m
+
+	for _, chatID := range []int64{900800801, 900800802, 900800803} {
+		m.backoffChat(chatID, 20*time.Millisecond)
+	}
+
+	time.Sleep(50 * time.Millisecond) // every recorded window is expired now
+
+	resolved := adminconfig.ResolvedChatConfig{PreviewMode: adminconfig.PreviewModeOff}
+	message := tg.Message{MessageID: 10, Chat: tg.Chat{ID: 900800809, Type: tg.ChatTypePrivate}}
+	if _, err := b.deliverFinalReply(context.Background(), message, "the answer", nil, resolved); err != nil {
+		t.Fatalf("unrelated delivery must succeed, got error: %v", err)
+	}
+
+	if len(m.chatGates) != 0 {
+		t.Fatalf("expired gates must be swept by an unrelated delivery, %d remain", len(m.chatGates))
+	}
+}
+
+// TestMentionDeliveryTailStopsWhenCallerBudgetExpires pins the composed
+// delivery tail (Quiesce, then the bounded delivery helper): with a caller
+// deadline that expires mid-wait against a retained backoff, the tail stops
+// by the deadline with ErrDeliveryRateLimited and no request is made — the
+// budget governs, with no preliminary wait outside the helper.
+func TestMentionDeliveryTailStopsWhenCallerBudgetExpires(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+	b.previews = m
+
+	info := RunInfo{
+		RunID:    execution.NewRunID(),
+		ChatID:   900800811,
+		ChatType: tg.ChatTypePrivate,
+		Mode:     adminconfig.PreviewModeTools,
+	}
+	run := m.RunFor(info)
+	m.backoffChat(info.ChatID, 400*time.Millisecond)
+
+	resolved := adminconfig.ResolvedChatConfig{PreviewMode: adminconfig.PreviewModeOff}
+	message := tg.Message{MessageID: 10, Chat: tg.Chat{ID: info.ChatID, Type: tg.ChatTypePrivate}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	run.Quiesce()
+	sent, err := b.deliverFinalReply(ctx, message, "the answer", nil, resolved)
+	if sent != nil {
+		t.Fatalf("nothing may be delivered once the budget is spent, got %+v", sent)
+	}
+	if !errors.Is(err, ErrDeliveryRateLimited) {
+		t.Fatalf("exhausted budget must surface the rate-limit error, got %v", err)
+	}
+	if n := srv.callCount("sendRichMessage"); n != 0 {
+		t.Fatalf("no request may be made into a known-closed window, got %d", n)
+	}
+
+	run.Abort()
+}
+
+// TestMentionDeliveryTailWaitsOutCoveredBackoff pins the composed tail when
+// the delivery budget covers the retained backoff: the tail waits the window
+// out through the bounded helper and delivers exactly once.
+func TestMentionDeliveryTailWaitsOutCoveredBackoff(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+	b.previews = m
+
+	info := RunInfo{
+		RunID:    execution.NewRunID(),
+		ChatID:   900800812,
+		ChatType: tg.ChatTypePrivate,
+		Mode:     adminconfig.PreviewModeTools,
+	}
+	run := m.RunFor(info)
+	m.backoffChat(info.ChatID, 250*time.Millisecond)
+
+	resolved := adminconfig.ResolvedChatConfig{PreviewMode: adminconfig.PreviewModeOff}
+	message := tg.Message{MessageID: 10, Chat: tg.Chat{ID: info.ChatID, Type: tg.ChatTypePrivate}}
+
+	run.Quiesce()
+	sent, err := b.deliverFinalReply(context.Background(), message, "the answer", nil, resolved)
+	if err != nil {
+		t.Fatalf("a backoff covered by the budget must be waited out, got error: %v", err)
+	}
+	if sent == nil || sent.MessageID == 0 {
+		t.Fatalf("the answer must be delivered after the gate reopens, got %+v", sent)
+	}
+	if n := srv.callCount("sendRichMessage"); n != 1 {
+		t.Fatalf("exactly one send expected after the covered backoff, got %d", n)
+	}
+
+	run.Abort()
+}
+
 // TestFinalDeliveryRetryRidesBoundedContext pins that redelivery requests
 // use the bounded delivery context: a stalled retry is cancelled when the
 // delivery deadline passes instead of hanging without a deadline.

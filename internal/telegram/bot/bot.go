@@ -459,7 +459,7 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adm
 		return
 	}
 
-	// Join all preview writes before the gate check: a 429 landing on a
+	// Join all preview writes before delivery: a 429 landing on a
 	// still-in-flight preview call closes the chat's wire window only
 	// through the gate, so it must be harvested into the gate before
 	// delivery looks at it — otherwise the answer walks into a window that
@@ -469,15 +469,11 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adm
 	// deletes them. With previews off this is a no-op.
 	run.Quiesce()
 
-	// A preview 429 closes the chat's wire window for every sender: wait
-	// (bounded) for the shared gate to reopen before authoritative
-	// delivery instead of throwing the completed answer at a rate-limited
-	// API. A 429 that lands after this check — or one drawn by the send
-	// itself — is recovered inside deliverFinalReply: absorbed into the
-	// gate, waited out honoring the recorded backoff, and the answer
-	// redelivered without regenerating. With previews off this is a no-op.
-	run.AwaitChatGate(baseCtx)
-
+	// The gate itself is consulted inside deliverFinalReply, under its
+	// bounded delivery budget: an outstanding backoff is waited out there,
+	// and a 429 the send draws is absorbed, waited, and redelivered by the
+	// same helper — a preliminary wait here would run unbounded against a
+	// backoff larger than the budget.
 	sent, err := b.deliverFinalReply(baseCtx, message, llmReply, toolCalls, resolved)
 	if err != nil {
 		run.Abort()

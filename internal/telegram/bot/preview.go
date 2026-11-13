@@ -367,12 +367,17 @@ func (m *previewManager) sweepExpiredGatesLocked(now time.Time) {
 	}
 }
 
-// gateEarliest returns the chat's earliest allowed wire-call time. An
-// emptied gate whose backoff has expired is dropped here, so gates retained
+// gateEarliest returns the chat's earliest allowed wire-call time. The
+// expired-gate sweep runs here too — not only in RunFor — because delivery
+// consults the gate through the manager even when previews are off for the
+// request: without the sweep, gates of chats that went silent during a
+// backoff would accumulate until some new preview run happened to start.
+// An emptied gate whose backoff has expired is dropped, so gates retained
 // past their chat's last run (see unregister) do not linger forever.
 func (m *previewManager) gateEarliest(chatID int64) time.Time {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.sweepExpiredGatesLocked(time.Now())
 	gate := m.chatGates[chatID]
 	if gate == nil {
 		return time.Time{}
@@ -1221,7 +1226,12 @@ func (r *previewRun) deleteGroupPreview() {
 		MessageID: msgID,
 	}); err != nil {
 		// Deletion failed, so the preview message stays visible: keep its
-		// ID registered so replies to it stay excluded from context.
+		// ID registered so replies to it stay excluded from context. A 429
+		// on the delete still closes the chat's wire window: record the
+		// returned backoff into the shared gate before the sanitized log,
+		// so later wire calls in this chat respect the window even though
+		// the delete itself was best-effort.
+		r.manager.absorbDeliveryRateLimit(r.info.ChatID, err)
 		r.logSendFailure("deleteMessage", err)
 
 		return
