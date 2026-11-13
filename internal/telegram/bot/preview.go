@@ -685,6 +685,22 @@ func (m *previewManager) awaitChatGate(ctx context.Context, chatID int64) bool {
 	}
 }
 
+// deliveryBudgetError names the caller-facing error for a delivery stopped
+// by its exhausted budget: parent cancellation keeps its own cause, and the
+// budget deadline surfaces chat-scoped, wrapped around sentinel. A nil
+// return means the budget is not what stopped the delivery.
+func deliveryBudgetError(waitCtx context.Context, chatID int64, sentinel error) error {
+	if waitCtx.Err() == nil {
+		return nil
+	}
+	cause := context.Cause(waitCtx)
+	if cause != nil && !errors.Is(cause, context.DeadlineExceeded) {
+		return cause
+	}
+
+	return fmt.Errorf("chat %d: %w", chatID, sentinel)
+}
+
 // deliverFinalReply sends the authoritative answer and survives a 429:
 // a rate limit recorded by a concurrent run's preview call can close the
 // chat's gate between the pre-delivery gate wait and the send, and the send
@@ -742,6 +758,15 @@ func (b *Bot) deliverFinalReply(ctx context.Context, message t.Message, llmReply
 		// chat respect the window even once redelivery gives up.
 		wait, limited := mgr.absorbDeliveryRateLimit(message.Chat.ID, err)
 		if !limited {
+			// A non-429 failure with an exhausted delivery budget means the
+			// attempt was aborted by the deadline: the transport reports its
+			// own timeout identity for an in-flight cancellation, so the
+			// deadline itself is surfaced — the same rule the exhausted
+			// gate wait lives by.
+			if budgetErr := deliveryBudgetError(waitCtx, message.Chat.ID, context.DeadlineExceeded); budgetErr != nil {
+				return nil, budgetErr
+			}
+
 			break
 		}
 		b.loggerFromContext(ctx).Warn("final delivery hit the chat rate-limit window",

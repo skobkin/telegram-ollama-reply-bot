@@ -69,6 +69,14 @@ func (b *Bot) sendRichMarkdownReplyWithSuffix(ctx context.Context, message t.Mes
 		// it — flattening it into a fallback error would hide the signal.
 		return nil, err
 	}
+	if ctx.Err() != nil {
+		// A send context that is already done cannot carry the fallback:
+		// the rich attempt was aborted (deadline or cancellation), the
+		// fallback is a guaranteed-failing call on the same dead context,
+		// and its differing error would mask the abort. The original error
+		// is returned unchanged.
+		return nil, err
+	}
 
 	logger.Warn("cannot send rich message, falling back to MarkdownV2",
 		"error", err, "reply_length", len([]rune(body))+len([]rune(suffix)))
