@@ -105,10 +105,12 @@ type previewManager struct {
 	typing  func(ctx context.Context, chatID t.ChatID)
 	timings previewTimings
 
-	mu          sync.Mutex
-	runs        map[string]*previewRun
-	chatGates   map[int64]*chatGate
-	previewMsgs map[int64]map[int]struct{} // chat -> live preview message IDs
+	mu        sync.Mutex
+	runs      map[string]*previewRun
+	chatGates map[int64]*chatGate
+	// previewMsgs holds chat -> preview message IDs, live and deleted
+	// (tombstone) alike, so their presentation text stays out of history.
+	previewMsgs map[int64]map[int]struct{}
 	closed      bool
 	// unsubscribe detaches the manager from the dispatcher at Stop; nil when
 	// the manager was constructed without one (tests).
@@ -243,9 +245,11 @@ func (m *previewManager) Stop() {
 	m.mu.Unlock()
 }
 
-// notePreviewMessage registers a live group preview message so ingress can
+// notePreviewMessage registers a group preview message so ingress can
 // recognize replies to it and keep its presentation text out of the
-// conversational context (history, prompts, summaries).
+// conversational context (history, prompts, summaries). The registry holds
+// live previews and tombstones of deleted ones alike: quoted snapshots of a
+// deleted preview still carry its text.
 func (m *previewManager) notePreviewMessage(chatID int64, msgID int) {
 	if m == nil || msgID == 0 {
 		return
@@ -268,24 +272,9 @@ func (m *previewManager) notePreviewMessage(chatID int64, msgID int) {
 	ids[msgID] = struct{}{}
 }
 
-// forgetPreviewMessage drops a deleted preview message from the registry.
-func (m *previewManager) forgetPreviewMessage(chatID int64, msgID int) {
-	if m == nil || msgID == 0 {
-		return
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if ids := m.previewMsgs[chatID]; ids != nil {
-		delete(ids, msgID)
-		if len(ids) == 0 {
-			delete(m.previewMsgs, chatID)
-		}
-	}
-}
-
-// isPreviewMessage reports whether the message is a live (or undeleted)
-// preview. Nil managers and unknown IDs return false.
+// isPreviewMessage reports whether the message is a live preview or a
+// deleted one (tombstone): both kinds must stay excluded from context.
+// Nil managers and unknown IDs return false.
 func (m *previewManager) isPreviewMessage(chatID int64, msgID int) bool {
 	if m == nil || msgID == 0 {
 		return false
@@ -500,14 +489,16 @@ func (r *previewRun) wakeUp() {
 	}
 }
 
-// Quiesce stops all private preview writes and joins the worker before the
-// final reply is sent, so a slow in-flight draft cannot arrive after the
-// answer and resurrect the working preview below it. Group runs are left
-// alone: their edits racing the post-delivery delete are harmless no-ops,
-// and a late preview creation cleans up after itself. Idempotent with the
-// other lifecycle methods.
+// Quiesce stops all preview writes and joins the worker before the final
+// reply's gate check and send. Two reasons make the join mandatory for both
+// chat types: a private draft still in flight could land after the answer
+// and resurrect the working preview below it, and a 429 landing on any
+// in-flight wire call closes the chat gate only afterwards — it must be
+// harvested before the gate check, not after it. Group previews freeze at
+// their last rendered state until FinalDelivered deletes them. Idempotent
+// with the other lifecycle methods.
 func (r *previewRun) Quiesce() {
-	if r == nil || !r.isPrivate {
+	if r == nil {
 		return
 	}
 	r.finalize()
@@ -587,10 +578,19 @@ func (r *previewRun) CompleteNoText(calls []tooluse.ToolCallRecord) {
 		return
 	}
 
+	// The terminal draft is a wire call like any other: sending it into an
+	// outstanding chat backoff would burn it on a predictable 429 and leave
+	// the stale working preview on the wire. Wait for the gate (bounded)
+	// first; the worker is already joined, so the wait races nothing.
+	r.AwaitChatGate(r.manager.baseCtx)
+
 	ctx, cancel := context.WithTimeout(r.manager.baseCtx, previewCallTimeout)
 	defer cancel()
 	if err := r.manager.api.SendRichMessageDraft(ctx, draftParams(r.info, draftID, text)); err != nil {
-		r.logSendFailure("sendRichMessageDraft", err)
+		// A fresh 429 must be retained for the chat, not merely logged —
+		// this is the chat's last observed rate-limit signal. Non-rate-limit
+		// failures log identically either way.
+		r.handleSendError("sendRichMessageDraft", err)
 	}
 }
 
@@ -1039,7 +1039,13 @@ func (r *previewRun) deleteGroupPreview() {
 
 		return
 	}
-	r.manager.forgetPreviewMessage(r.info.ChatID, msgID)
+	// Deletion succeeded: the identity is retained as a tombstone anyway.
+	// The message is gone from the wire, but Telegram snapshots that quoted
+	// it — updates queued in the long-poll backlog, replies processed by
+	// later history saves — still carry its preview text, and only a
+	// registered ID keeps that text out of conversational context. Per-chat
+	// message IDs are never reused, so a tombstone can never suppress an
+	// unrelated message; the per-chat cap bounds memory.
 }
 
 // renderText builds the preview text from event state. The caller must

@@ -459,17 +459,21 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adm
 		return
 	}
 
+	// Join all preview writes before the gate check: a 429 landing on a
+	// still-in-flight preview call closes the chat's wire window only
+	// through the gate, so it must be harvested into the gate before
+	// delivery looks at it — otherwise the answer walks into a window that
+	// had already opened. Quiescing also keeps a slow private draft from
+	// landing after the answer and resurrecting the working preview below
+	// it; group previews freeze at their last state until FinalDelivered
+	// deletes them. With previews off this is a no-op.
+	run.Quiesce()
+
 	// A preview 429 closes the chat's wire window for every sender: wait
 	// (bounded) for the shared gate to reopen before authoritative
 	// delivery instead of throwing the completed answer at a rate-limited
 	// API. With previews off this is a no-op.
 	run.AwaitChatGate(baseCtx)
-
-	// No private preview write may be in flight during the final send:
-	// quiesce the run first, so a slow draft cannot land after the answer
-	// and resurrect the working preview below it. Group runs keep their
-	// post-delivery deletion (FinalDelivered below).
-	run.Quiesce()
 
 	var sent *t.Message
 	if resolved.PreviewMode != adminconfig.PreviewModeOff && resolved.KeepToolHistory {

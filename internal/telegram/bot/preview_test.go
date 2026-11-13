@@ -108,7 +108,8 @@ func (s *previewServerState) takeFailureDescription(method string) string {
 }
 
 // delayMethod makes every response for the method wait d before answering,
-// so tests can hold a wire call in flight.
+// including failure and rate-limit responses, so tests can hold a wire call
+// in flight even when it is going to be rejected.
 func (s *previewServerState) delayMethod(method string, d time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -122,10 +123,12 @@ func (s *previewServerState) delayFor(method string) time.Duration {
 	return s.delays[method]
 }
 
-func (s *previewServerState) armRateLimit(method string, times, retryAfter int) {
+// armRateLimit arms one 429 response for the method carrying retry_after 1,
+// so the recorded gate window is ~1s plus the manager's rate pad.
+func (s *previewServerState) armRateLimit(method string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.rates[method] = &rateLimit{remaining: times, retryAfter: retryAfter}
+	s.rates[method] = &rateLimit{remaining: 1, retryAfter: 1}
 }
 
 func (s *previewServerState) takeRateLimit(method string) (int, bool) {
@@ -175,6 +178,11 @@ func newPreviewTestBot(t *testing.T, state *previewServerState) *Bot {
 
 		w.Header().Set("Content-Type", "application/json")
 
+		// The response delay applies before failure/rate-limit answers too,
+		// so tests can hold a doomed request in flight while it is answered.
+		if d := state.delayFor(methodSuffix(r.URL.Path)); d > 0 {
+			time.Sleep(d)
+		}
 		if retryAfter, limited := state.takeRateLimit(methodSuffix(r.URL.Path)); limited {
 			w.WriteHeader(http.StatusTooManyRequests)
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -194,9 +202,6 @@ func newPreviewTestBot(t *testing.T, state *previewServerState) *Bot {
 			})
 
 			return
-		}
-		if d := state.delayFor(methodSuffix(r.URL.Path)); d > 0 {
-			time.Sleep(d)
 		}
 
 		result := map[string]any{"date": 1, "chat": map[string]any{"id": 1, "type": "private"}}
@@ -481,7 +486,7 @@ func TestPreviewRateLimitBacksOffWholeChat(t *testing.T) {
 	b := newPreviewTestBot(t, state)
 	m := newPreviewTestManager(t, b)
 	// The first preview wire call in the chat is rate limited.
-	state.armRateLimit("sendMessage", 1, 1)
+	state.armRateLimit("sendMessage")
 
 	runA := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
 	toolDone(runA, "search_web", false, true, time.Second)
@@ -1022,10 +1027,12 @@ func TestPreviewQuiesceStopsPrivateDraftsBeforeFinalSend(t *testing.T) {
 	run.FinalDelivered() // idempotent; private: no delete
 }
 
-// TestPreviewQuiesceLeavesGroupRunsToFinalDelivery pins that quiescing is a
-// no-op for group runs: they keep editing until final delivery deletes the
-// preview.
-func TestPreviewQuiesceLeavesGroupRunsToFinalDelivery(t *testing.T) {
+// TestPreviewQuiesceJoinsGroupRuns pins that quiescing joins group runs
+// like private ones: edits stop before the final-delivery gate check (a 429
+// landing on an in-flight edit must be harvested into the chat gate, not
+// land after it), the preview message freezes in place, and deletion stays
+// owned by FinalDelivered.
+func TestPreviewQuiesceJoinsGroupRuns(t *testing.T) {
 	state := newPreviewServerState()
 	b := newPreviewTestBot(t, state)
 	m := newPreviewTestManager(t, b)
@@ -1035,12 +1042,29 @@ func TestPreviewQuiesceLeavesGroupRunsToFinalDelivery(t *testing.T) {
 		return state.callCount("sendMessage") == 1
 	})
 
-	run.Quiesce() // group runs are not quiesced
-	toolDone(run, "fetch_url_content", false, true, time.Second)
-	waitForCondition(t, 2*time.Second, "group run still editing", func() bool {
-		return state.callCount("editMessageText") >= 1
-	})
+	run.Quiesce()
+	editsAtQuiesce := state.callCount("editMessageText")
 
+	// Events after the quiesce are dropped and no further edit may hit
+	// the wire.
+	toolDone(run, "fetch_url_content", false, true, time.Second)
+	time.Sleep(4 * m.timings.minInterval)
+	if n := state.callCount("editMessageText"); n != editsAtQuiesce {
+		t.Fatalf("quiesce must stop group edits, %d -> %d", editsAtQuiesce, n)
+	}
+
+	m.mu.Lock()
+	remaining := len(m.runs)
+	m.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("quiesced run must leave no manager state, got %d runs", remaining)
+	}
+
+	// The frozen preview is still on the wire; the delete stays with the
+	// post-delivery lifecycle.
+	if n := state.callCount("deleteMessage"); n != 0 {
+		t.Fatalf("quiesce must not delete the group preview, got %d deletes", n)
+	}
 	run.FinalDelivered()
 	waitForCondition(t, 2*time.Second, "preview deleted", func() bool {
 		return state.callCount("deleteMessage") == 1
@@ -1056,7 +1080,7 @@ func TestPreviewBackoffSurvivesRunExit(t *testing.T) {
 	state := newPreviewServerState()
 	b := newPreviewTestBot(t, state)
 	m := newPreviewTestManager(t, b)
-	state.armRateLimit("sendMessage", 1, 1) // 1s retry_after + rate pad
+	state.armRateLimit("sendMessage")
 
 	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
 	toolDone(run, "search_web", false, true, time.Second)
@@ -1349,7 +1373,8 @@ func TestPreviewInitialDebounceSurvivesEarlyEvents(t *testing.T) {
 // TestIngressExcludesPreviewReplies pins that preview presentation text
 // never enters conversational context: a message replying to a live group
 // preview is stored without ReplyTo, replies to ordinary messages keep
-// theirs, and forgetting the preview ID lifts the suppression.
+// theirs, and quotes of the bot's own messages resolve to the stored
+// answer instead of the rendered wire text.
 func TestIngressExcludesPreviewReplies(t *testing.T) {
 	srv := newPreviewServerState()
 	b := newPreviewTestBot(t, srv)
@@ -1390,22 +1415,201 @@ func TestIngressExcludesPreviewReplies(t *testing.T) {
 		t.Fatalf("reply to an ordinary message must keep its context, got %+v", msg.ReplyTo)
 	}
 
-	// Once the preview is gone from the registry, the suppression lifts.
-	m.forgetPreviewMessage(chatID, 777)
-	msg = b.tgUserMessageToMessageData(previewReply, true)
-	if msg.ReplyTo == nil {
-		t.Fatal("reply to a forgotten preview message must be recorded like any other reply")
+	// Quotes of the bot's own messages never copy the rendered wire text:
+	// a bot message absent from history is dropped entirely, even when its
+	// text looks like a final answer carrying the tool-history suffix.
+	botReply := previewReply
+	botReply.MessageID = 102
+	botReply.ReplyToMessage = &tg.Message{
+		MessageID: 888,
+		Chat:      tg.Chat{ID: chatID, Type: tg.ChatTypeSupergroup},
+		From:      &tg.User{ID: b.me.ID, IsBot: true, FirstName: "Bot"},
+		Text:      "wire answer\n\nTool calls (1): ✅ search_web()",
+	}
+	msg = b.tgUserMessageToMessageData(botReply, true)
+	if msg.ReplyTo != nil {
+		t.Fatalf("quote of a bot message missing from history must be dropped, got %+v", msg.ReplyTo)
 	}
 
-	// The authoritative reply path honors the same exclusion.
-	m.notePreviewMessage(chatID, 777)
+	// A known bot message resolves to its stored conversation copy: the
+	// clean answer with bot attribution, without the presentation suffix.
+	b.saveBotReplyToHistory(context.Background(), tg.Message{
+		MessageID: 50,
+		Chat:      tg.Chat{ID: chatID, Type: tg.ChatTypeSupergroup},
+		From:      &tg.User{ID: 42, Username: "alice", FirstName: "Alice"},
+	}, "clean answer", 888)
+	msg = b.tgUserMessageToMessageData(botReply, true)
+	if msg.ReplyTo == nil {
+		t.Fatal("quote of a stored bot message must resolve to the stored copy")
+	}
+	if msg.ReplyTo.Text != "clean answer" || !msg.ReplyTo.IsMe {
+		t.Fatalf("resolved quote must be the stored answer with bot attribution, got %+v", msg.ReplyTo)
+	}
+
+	// The authoritative reply path honors the preview exclusion.
 	b.saveBotReplyToHistory(context.Background(), previewReply, "answer", 999)
 	scope := state.ConversationScope{ChatID: chatID, TopicID: previewReply.MessageThreadID}
+	snapshot := b.history.Snapshot(scope)
+	if len(snapshot.Messages) != 2 {
+		t.Fatalf("expected two history entries, got %d", len(snapshot.Messages))
+	}
+	last := snapshot.Messages[len(snapshot.Messages)-1]
+	if last.ReplyTo != nil {
+		t.Fatalf("bot reply to a live preview must be saved without ReplyTo, got %+v", last.ReplyTo)
+	}
+}
+
+// TestFinalSendWaitsForGateClosedByInFlightDraft pins the final-delivery
+// ordering: preview writes are joined before the gate check, so a 429 that
+// lands on an in-flight draft closes the chat gate before delivery looks
+// at it, and the authoritative send waits the recorded backoff out instead
+// of walking into a window that had already opened.
+func TestFinalSendWaitsForGateClosedByInFlightDraft(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+
+	info := RunInfo{
+		RunID:    execution.NewRunID(),
+		ChatID:   900800700,
+		ChatType: tg.ChatTypePrivate,
+		Mode:     adminconfig.PreviewModeTools,
+	}
+	run := m.RunFor(info)
+
+	// Hold the first draft in flight and answer it with a 429.
+	srv.armRateLimit("sendRichMessageDraft")
+	srv.delayMethod("sendRichMessageDraft", 300*time.Millisecond)
+	toolDone(run, "search_web", false, true, 10*time.Millisecond)
+
+	waitForCondition(t, 2*time.Second, "draft request in flight", func() bool {
+		return srv.callCount("sendRichMessageDraft") == 1
+	})
+	time.Sleep(50 * time.Millisecond) // the server is inside its 300ms hold
+
+	// Joining the writes must harvest the pending 429 into the chat gate.
+	run.Quiesce()
+	if earliest := m.gateEarliest(info.ChatID); !earliest.After(time.Now()) {
+		t.Fatal("429 harvested by quiesce must close the chat gate")
+	}
+
+	// The gate check after quiescing must observe the closed window.
+	start := time.Now()
+	run.AwaitChatGate(context.Background())
+	if elapsed := time.Since(start); elapsed < 500*time.Millisecond {
+		t.Fatalf("final gate check must wait out the recorded backoff, waited %s", elapsed)
+	}
+}
+
+// TestCompleteNoTextWaitsChatGate pins that the terminal no-text draft is a
+// wire call like any other: with a chat backoff outstanding, it waits for
+// the gate to reopen before sending instead of burning itself on a
+// predictable 429.
+func TestCompleteNoTextWaitsChatGate(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+
+	info := RunInfo{
+		RunID:    execution.NewRunID(),
+		ChatID:   900800700,
+		ChatType: tg.ChatTypePrivate,
+		Mode:     adminconfig.PreviewModeTools,
+	}
+	run := m.RunFor(info)
+	m.backoffChat(info.ChatID, 250*time.Millisecond)
+
+	start := time.Now()
+	run.CompleteNoText(nil)
+	if elapsed := time.Since(start); elapsed < 200*time.Millisecond {
+		t.Fatalf("terminal draft must wait out the chat backoff, returned after %s", elapsed)
+	}
+	if n := srv.callCount("sendRichMessageDraft"); n != 1 {
+		t.Fatalf("exactly one terminal draft expected, got %d", n)
+	}
+}
+
+// TestCompleteNoTextRecordsFresh429 pins that a rate limit on the terminal
+// no-text draft is retained for the chat (advancing the gate for concurrent
+// and future runs) instead of being only logged.
+func TestCompleteNoTextRecordsFresh429(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+
+	info := RunInfo{
+		RunID:    execution.NewRunID(),
+		ChatID:   900800700,
+		ChatType: tg.ChatTypePrivate,
+		Mode:     adminconfig.PreviewModeTools,
+	}
+	run := m.RunFor(info)
+	srv.armRateLimit("sendRichMessageDraft")
+
+	run.CompleteNoText(nil)
+
+	if earliest := m.gateEarliest(info.ChatID); !earliest.After(time.Now()) {
+		t.Fatal("429 on the terminal draft must be recorded into the chat gate")
+	}
+}
+
+// TestDeletedPreviewStaysExcludedFromHistory pins tombstone retention:
+// after a successful group preview deletion, its identity stays registered,
+// so a reply to it whose snapshot is processed later (long-poll backlog,
+// deferred history save) keeps the preview text out of conversational
+// context.
+func TestDeletedPreviewStaysExcludedFromHistory(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	b.ctx = context.Background()
+	b.history = newMemoryConversationStore()
+	m := newPreviewTestManager(t, b)
+	b.previews = m
+
+	info := groupRunInfo(adminconfig.PreviewModeTools)
+	run := m.RunFor(info)
+	toolDone(run, "search_web", false, true, 10*time.Millisecond)
+	waitForCondition(t, 2*time.Second, "preview created", func() bool {
+		return srv.callCount("sendMessage") == 1
+	})
+
+	run.FinalDelivered()
+	waitForCondition(t, 2*time.Second, "preview deleted", func() bool {
+		return srv.callCount("deleteMessage") == 1
+	})
+
+	m.mu.Lock()
+	var previewID int
+	for id := range m.previewMsgs[info.ChatID] {
+		previewID = id
+	}
+	m.mu.Unlock()
+	if previewID == 0 {
+		t.Fatal("deleted preview identity must be retained as a tombstone")
+	}
+	if !b.previews.isPreviewMessage(info.ChatID, previewID) {
+		t.Fatal("deleted preview must stay excluded from context")
+	}
+
+	reply := tg.Message{
+		MessageID: 200,
+		Chat:      tg.Chat{ID: info.ChatID, Type: tg.ChatTypeSupergroup},
+		From:      &tg.User{ID: 42, Username: "alice", FirstName: "Alice"},
+		ReplyToMessage: &tg.Message{
+			MessageID: previewID,
+			Chat:      tg.Chat{ID: info.ChatID, Type: tg.ChatTypeSupergroup},
+			From:      &tg.User{ID: b.me.ID, IsBot: true, FirstName: "Bot"},
+			Text:      "🔄 Working…\n\n✅ search_web()",
+		},
+	}
+	b.saveBotReplyToHistory(context.Background(), reply, "final answer", 999)
+
+	scope := state.ConversationScope{ChatID: info.ChatID, TopicID: reply.MessageThreadID}
 	snapshot := b.history.Snapshot(scope)
 	if len(snapshot.Messages) != 1 {
 		t.Fatalf("expected one history entry, got %d", len(snapshot.Messages))
 	}
 	if snapshot.Messages[0].ReplyTo != nil {
-		t.Fatalf("bot reply to a live preview must be saved without ReplyTo, got %+v", snapshot.Messages[0].ReplyTo)
+		t.Fatalf("reply to a deleted preview must be saved without its text, got %+v", snapshot.Messages[0].ReplyTo)
 	}
 }

@@ -48,15 +48,8 @@ func (b *Bot) saveBotReplyToHistory(ctx context.Context, replyTo t.Message, text
 	}
 
 	if replyTo.ReplyToMessage != nil {
-		replyMessage := *replyTo.ReplyToMessage
-		// Preview presentation text never enters conversational context:
-		// a reply to a live preview carries no quotable content.
-		if !b.previews.isPreviewMessage(replyMessage.Chat.ID, replyMessage.MessageID) {
-			replyScope := scopeFromMessage(replyMessage)
-			replyData := b.tgUserMessageToMessageData(replyMessage, false)
-			replyData.ChatID = replyScope.ChatID
-			replyData.TopicID = replyScope.TopicID
-			msg.ReplyTo = &replyData
+		if replyData := b.quotedMessageData(*replyTo.ReplyToMessage); replyData != nil {
+			msg.ReplyTo = replyData
 		}
 	}
 
@@ -103,15 +96,52 @@ func (b *Bot) tgUserMessageToMessageData(message t.Message, isUserRequest bool) 
 		}
 	}
 
-	// Preview presentation text never enters conversational context at any
-	// recursion depth: a reply to a live preview carries no quotable
-	// content.
-	if message.ReplyToMessage != nil && !b.previews.isPreviewMessage(message.ReplyToMessage.Chat.ID, message.ReplyToMessage.MessageID) {
-		replyData := b.tgUserMessageToMessageData(*message.ReplyToMessage, false)
-		msg.ReplyTo = &replyData
+	if message.ReplyToMessage != nil {
+		msg.ReplyTo = b.quotedMessageData(*message.ReplyToMessage)
 	}
 
 	return msg
+}
+
+// quotedMessageData converts one quoted message for history storage, or
+// returns nil when the quote must not carry content into conversational
+// context. Preview presentation text is excluded outright at any depth.
+// Quotes of the bot's own messages resolve to their stored conversation
+// copy instead of the rendered wire text: the wire form can carry
+// presentation-only metadata (the tool-history block on final replies,
+// preview text on live previews), while the stored entry holds the clean
+// answer with correct bot attribution. Bot messages absent from history
+// (error notices, side-effect sends, reset history) are dropped rather
+// than copied — their content either lives in history already or was
+// deliberately kept out of it.
+func (b *Bot) quotedMessageData(quoted t.Message) *state.Message {
+	if b.previews.isPreviewMessage(quoted.Chat.ID, quoted.MessageID) {
+		return nil
+	}
+	if quoted.From != nil && quoted.From.ID == b.me.ID {
+		return b.storedBotReply(scopeFromMessage(quoted), quoted.MessageID)
+	}
+
+	data := b.tgUserMessageToMessageData(quoted, false)
+
+	return &data
+}
+
+// storedBotReply looks up the bot's stored copy of one of its own messages
+// by Telegram message ID within the scope. It returns nil when history does
+// not hold that message.
+func (b *Bot) storedBotReply(scope state.ConversationScope, messageID int) *state.Message {
+	snapshot := b.history.Snapshot(scope)
+	for i := len(snapshot.Messages) - 1; i >= 0; i-- {
+		m := snapshot.Messages[i]
+		if m.IsMe && m.MessageID == messageID {
+			stored := m
+
+			return &stored
+		}
+	}
+
+	return nil
 }
 
 func (b *Bot) ResetChatHistory(chatID int64) {
