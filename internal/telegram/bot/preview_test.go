@@ -181,8 +181,15 @@ func newPreviewTestBot(t *testing.T, state *previewServerState) *Bot {
 
 		// The response delay applies before failure/rate-limit answers too,
 		// so tests can hold a doomed request in flight while it is answered.
+		// An expired client context releases the hold early, so tests can
+		// also observe a bounded wire call being cancelled mid-hold.
 		if d := state.delayFor(methodSuffix(r.URL.Path)); d > 0 {
-			time.Sleep(d)
+			timer := time.NewTimer(d)
+			select {
+			case <-timer.C:
+			case <-r.Context().Done():
+				timer.Stop()
+			}
 		}
 		if retryAfter, limited := state.takeRateLimit(methodSuffix(r.URL.Path)); limited {
 			w.WriteHeader(http.StatusTooManyRequests)
@@ -1503,6 +1510,7 @@ func TestFinalSendWaitsForGateClosedByInFlightDraft(t *testing.T) {
 	srv := newPreviewServerState()
 	b := newPreviewTestBot(t, srv)
 	m := newPreviewTestManager(t, b)
+	b.previews = m
 
 	info := RunInfo{
 		RunID:    execution.NewRunID(),
@@ -1544,6 +1552,7 @@ func TestCompleteNoTextWaitsChatGate(t *testing.T) {
 	srv := newPreviewServerState()
 	b := newPreviewTestBot(t, srv)
 	m := newPreviewTestManager(t, b)
+	b.previews = m
 
 	info := RunInfo{
 		RunID:    execution.NewRunID(),
@@ -1571,6 +1580,7 @@ func TestCompleteNoTextRecordsFresh429(t *testing.T) {
 	srv := newPreviewServerState()
 	b := newPreviewTestBot(t, srv)
 	m := newPreviewTestManager(t, b)
+	b.previews = m
 
 	info := RunInfo{
 		RunID:    execution.NewRunID(),
@@ -1659,6 +1669,7 @@ func TestFinalDeliveryRetriesThroughChatGate429(t *testing.T) {
 	srv := newPreviewServerState()
 	b := newPreviewTestBot(t, srv)
 	m := newPreviewTestManager(t, b)
+	b.previews = m
 
 	info := RunInfo{
 		RunID:    execution.NewRunID(),
@@ -1677,7 +1688,7 @@ func TestFinalDeliveryRetriesThroughChatGate429(t *testing.T) {
 	message := tg.Message{MessageID: 10, Chat: tg.Chat{ID: info.ChatID, Type: tg.ChatTypePrivate}}
 
 	start := time.Now()
-	sent, err := b.deliverFinalReply(context.Background(), run, message, "the answer", nil, resolved)
+	sent, err := b.deliverFinalReply(context.Background(), message, "the answer", nil, resolved)
 	if elapsed := time.Since(start); elapsed < 900*time.Millisecond {
 		t.Fatalf("delivery must wait out the recorded backoff before redelivering, took %s", elapsed)
 	}
@@ -1710,7 +1721,7 @@ func TestFinalDeliveryExactlyOnceWithoutPreviews(t *testing.T) {
 	resolved := adminconfig.ResolvedChatConfig{PreviewMode: adminconfig.PreviewModeOff}
 	message := tg.Message{MessageID: 10, Chat: tg.Chat{ID: 900800700, Type: tg.ChatTypePrivate}}
 
-	_, err := b.deliverFinalReply(context.Background(), nil, message, "the answer", nil, resolved)
+	_, err := b.deliverFinalReply(context.Background(), message, "the answer", nil, resolved)
 	if !isRateLimit(err) {
 		t.Fatalf("with previews off a rich-send 429 must surface unchanged, got %v", err)
 	}
@@ -1921,6 +1932,7 @@ func TestFinalDeliverySkipsRedeliveryWhenWaitExpired(t *testing.T) {
 	srv := newPreviewServerState()
 	b := newPreviewTestBot(t, srv)
 	m := newPreviewTestManager(t, b)
+	b.previews = m
 
 	info := RunInfo{
 		RunID:    execution.NewRunID(),
@@ -1941,7 +1953,7 @@ func TestFinalDeliverySkipsRedeliveryWhenWaitExpired(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, err := b.deliverFinalReply(ctx, run, message, "the answer", nil, resolved)
+	_, err := b.deliverFinalReply(ctx, message, "the answer", nil, resolved)
 	if elapsed := time.Since(start); elapsed >= 5*time.Second {
 		t.Fatalf("exhausted wait must stop redelivery instead of sending into the closed window, took %s", elapsed)
 	}
@@ -1969,6 +1981,7 @@ func TestFinalDeliveryRecordsExhaustedRetryBackoff(t *testing.T) {
 	srv := newPreviewServerState()
 	b := newPreviewTestBot(t, srv)
 	m := newPreviewTestManager(t, b)
+	b.previews = m
 
 	info := RunInfo{
 		RunID:    execution.NewRunID(),
@@ -1985,7 +1998,7 @@ func TestFinalDeliveryRecordsExhaustedRetryBackoff(t *testing.T) {
 	resolved := adminconfig.ResolvedChatConfig{PreviewMode: adminconfig.PreviewModeOff}
 	message := tg.Message{MessageID: 10, Chat: tg.Chat{ID: info.ChatID, Type: tg.ChatTypePrivate}}
 
-	_, err := b.deliverFinalReply(context.Background(), run, message, "the answer", nil, resolved)
+	_, err := b.deliverFinalReply(context.Background(), message, "the answer", nil, resolved)
 	if err == nil {
 		t.Fatal("delivery must give up when every attempt is rate-limited")
 	}
@@ -2066,14 +2079,106 @@ func TestQuotedEvictedPreviewDropped(t *testing.T) {
 		}
 	}
 
-	// Ordinary answers keep their subject.
-	quoted := tg.Message{
-		MessageID: 556,
-		Chat:      tg.Chat{ID: 900800702, Type: tg.ChatTypeSupergroup},
-		From:      &tg.User{ID: b.me.ID, IsBot: true, FirstName: "Bot"},
-		Text:      "Here is the summary you asked for.",
+	// Ordinary answers keep their subject — including answers that merely
+	// open with ✔️ or carry ✅ checklist lines, which are not the preview
+	// shape (exact headers, tool-call syntax).
+	kept := []string{
+		"Here is the summary you asked for.",
+		"✔️ The answer is 42.",
+		"✅ Buy milk\n✅ Buy eggs",
+		"Progress:\n✅ step one done\n✅ step two done",
 	}
-	if resolved := b.quotedMessageData(quoted); resolved == nil || resolved.Text != "Here is the summary you asked for." {
-		t.Fatalf("ordinary bot answers must keep their subject, got %+v", resolved)
+	for _, text := range kept {
+		quoted := tg.Message{
+			MessageID: 556,
+			Chat:      tg.Chat{ID: 900800702, Type: tg.ChatTypeSupergroup},
+			From:      &tg.User{ID: b.me.ID, IsBot: true, FirstName: "Bot"},
+			Text:      text,
+		}
+		if resolved := b.quotedMessageData(quoted); resolved == nil || resolved.Text != text {
+			t.Fatalf("ordinary answer must keep its subject, got %+v", resolved)
+		}
 	}
+}
+
+// TestFinalDeliveryHonorsGateWithoutPreviews pins that the chat gate is
+// consulted even when this request's previews are off: an outstanding
+// per-chat backoff rate-limits every sender, so delivery with a nil run
+// still waits the window out and redelivers through the manager instead of
+// losing the completed answer to a predictable 429.
+func TestFinalDeliveryHonorsGateWithoutPreviews(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+	b.previews = m
+
+	// The window was opened by a preview 429 before this request resolved
+	// with previews off; the delivery itself draws a fresh 429 on top.
+	m.backoffChat(900800703, 250*time.Millisecond)
+	srv.armRateLimit("sendRichMessage", 1, 1)
+
+	resolved := adminconfig.ResolvedChatConfig{PreviewMode: adminconfig.PreviewModeOff}
+	message := tg.Message{MessageID: 10, Chat: tg.Chat{ID: 900800703, Type: tg.ChatTypePrivate}}
+
+	start := time.Now()
+	sent, err := b.deliverFinalReply(context.Background(), message, "the answer", nil, resolved)
+	if elapsed := time.Since(start); elapsed < 900*time.Millisecond {
+		t.Fatalf("delivery must wait out the chat window even with previews off, took %s", elapsed)
+	}
+	if err != nil {
+		t.Fatalf("the answer must be redelivered after the gate reopens, got error: %v", err)
+	}
+	if sent == nil || sent.MessageID == 0 {
+		t.Fatalf("redelivered answer must be a real message, got %+v", sent)
+	}
+	if n := srv.callCount("sendRichMessage"); n != 2 {
+		t.Fatalf("expected two rich send attempts, got %d", n)
+	}
+}
+
+// TestFinalDeliveryRetryRidesBoundedContext pins that redelivery requests
+// use the bounded delivery context: a stalled retry is cancelled when the
+// delivery deadline passes instead of hanging without a deadline.
+func TestFinalDeliveryRetryRidesBoundedContext(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+	b.previews = m
+
+	info := RunInfo{
+		RunID:    execution.NewRunID(),
+		ChatID:   900800704,
+		ChatType: tg.ChatTypePrivate,
+		Mode:     adminconfig.PreviewModeTools,
+	}
+	run := m.RunFor(info)
+
+	// Every rich send stalls; the first attempt (caller's context, wide
+	// deadline) completes into a 429, the gate opens ~1s later, and the
+	// retry rides the delivery deadline, which cancels it mid-stall.
+	srv.delayMethod("sendRichMessage", 5*time.Second)
+	srv.armRateLimit("sendRichMessage", 2, 1)
+
+	resolved := adminconfig.ResolvedChatConfig{PreviewMode: adminconfig.PreviewModeOff}
+	message := tg.Message{MessageID: 10, Chat: tg.Chat{ID: info.ChatID, Type: tg.ChatTypePrivate}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	sent, err := b.deliverFinalReply(ctx, message, "the answer", nil, resolved)
+	if elapsed := time.Since(start); elapsed >= 12*time.Second {
+		t.Fatalf("the stalled retry must be cancelled by the delivery deadline, took %s", elapsed)
+	}
+	if sent != nil {
+		t.Fatalf("the stalled retry must not deliver, got %+v", sent)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the retry must surface the delivery deadline, got %v", err)
+	}
+	if n := srv.callCount("sendRichMessage"); n != 2 {
+		t.Fatalf("expected the retry to be attempted, got %d rich sends", n)
+	}
+
+	run.Abort()
 }

@@ -478,7 +478,7 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adm
 	// redelivered without regenerating. With previews off this is a no-op.
 	run.AwaitChatGate(baseCtx)
 
-	sent, err := b.deliverFinalReply(baseCtx, run, message, llmReply, toolCalls, resolved)
+	sent, err := b.deliverFinalReply(baseCtx, message, llmReply, toolCalls, resolved)
 	if err != nil {
 		run.Abort()
 

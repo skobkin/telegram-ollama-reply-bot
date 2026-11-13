@@ -567,22 +567,27 @@ func (r *previewRun) Quiesce() {
 	r.finalize()
 }
 
-// AwaitChatGate blocks until the chat's pacing gate is open — a preview 429
-// closes it for every sender in the chat — bounded only by ctx, so callers
-// that must cap the wait pass a context with a deadline. It reports whether
-// the gate is open on return: false means the wait was exhausted (deadline
-// reached or context cancelled) while a backoff is still outstanding, so a
-// caller can react to a still-closed window instead of assuming the gate
-// opened. Nil runs return true immediately, so with previews off the
-// delivery path behaves exactly as before.
+// AwaitChatGate blocks until the chat's pacing gate is open. Nil runs
+// return true immediately. See previewManager.awaitChatGate.
 func (r *previewRun) AwaitChatGate(ctx context.Context) bool {
 	if r == nil {
 		return true
 	}
 
+	return r.manager.awaitChatGate(ctx, r.info.ChatID)
+}
+
+// awaitChatGate blocks until the chat's pacing gate is open — a preview 429
+// closes it for every sender in the chat — bounded only by ctx, so callers
+// that must cap the wait pass a context with a deadline. It reports whether
+// the gate is open on return: false means the wait was exhausted (deadline
+// reached or context cancelled) while a backoff is still outstanding, so a
+// caller can react to a still-closed window instead of assuming the gate
+// opened.
+func (m *previewManager) awaitChatGate(ctx context.Context, chatID int64) bool {
 	for {
 		now := time.Now()
-		earliest := r.manager.gateEarliest(r.info.ChatID)
+		earliest := m.gateEarliest(chatID)
 		if !earliest.After(now) {
 			return true
 		}
@@ -611,19 +616,22 @@ func (r *previewRun) AwaitChatGate(ctx context.Context) bool {
 // dropped on a predictable, recoverable rejection — the limit is absorbed
 // into the shared gate, the wait honors the recorded backoff (bounded by
 // previewFinalDeliveryMaxWait), and the same answer is redelivered without
-// regenerating it. With previews off (nil run) the answer is attempted
-// exactly once, exactly as before.
-func (b *Bot) deliverFinalReply(ctx context.Context, run *previewRun, message t.Message, llmReply string, calls []tooluse.ToolCallRecord, resolved adminconfig.ResolvedChatConfig) (*t.Message, error) {
-	deliver := func() (*t.Message, error) {
+// regenerating it. The chat gate is consulted through the manager even when
+// this request's previews are off: an outstanding window
+// rate-limits every sender in the chat. Only with no preview manager wired
+// at all is delivery exactly-once with no gate interaction.
+func (b *Bot) deliverFinalReply(ctx context.Context, message t.Message, llmReply string, calls []tooluse.ToolCallRecord, resolved adminconfig.ResolvedChatConfig) (*t.Message, error) {
+	deliver := func(sendCtx context.Context) (*t.Message, error) {
 		if resolved.PreviewMode != adminconfig.PreviewModeOff && resolved.KeepToolHistory {
-			return b.sendReplyWithToolHistory(ctx, message, llmReply, calls, resolved.PreviewMode)
+			return b.sendReplyWithToolHistory(sendCtx, message, llmReply, calls, resolved.PreviewMode)
 		}
 
-		return b.sendRichMarkdownReply(ctx, message, llmReply)
+		return b.sendRichMarkdownReply(sendCtx, message, llmReply)
 	}
 
-	sent, err := deliver()
-	if run == nil {
+	sent, err := deliver(ctx)
+	mgr := b.previews
+	if mgr == nil {
 		return sent, err
 	}
 
@@ -638,7 +646,7 @@ func (b *Bot) deliverFinalReply(ctx context.Context, run *previewRun, message t.
 		// Every rate-limit response is recorded into the shared gate — the
 		// last rejected attempt's backoff included, so later runs in the
 		// chat respect the window even once redelivery gives up.
-		wait, limited := run.absorbDeliveryRateLimit(err)
+		wait, limited := mgr.absorbDeliveryRateLimit(message.Chat.ID, err)
 		if !limited {
 			break
 		}
@@ -650,10 +658,12 @@ func (b *Bot) deliverFinalReply(ctx context.Context, run *previewRun, message t.
 		// An exhausted wait leaves the window known-closed: redelivering
 		// then would burn the answer's attempts on a predictable 429, so
 		// the recorded rate limit is returned to the caller's error path.
-		if !run.AwaitChatGate(waitCtx) {
+		if !mgr.awaitChatGate(waitCtx, message.Chat.ID) {
 			break
 		}
-		sent, err = deliver()
+		// Redelivery rides the bounded delivery context: a stalled retry
+		// request cannot outlive previewFinalDeliveryMaxWait.
+		sent, err = deliver(waitCtx)
 	}
 
 	return sent, err
@@ -692,7 +702,7 @@ func (r *previewRun) CompleteNoText(calls []tooluse.ToolCallRecord) {
 	r.mu.Lock()
 	gone := r.disabled
 	draftID := r.draftID
-	text := r.renderFinalText("✔️ Done", calls)
+	text := r.renderFinalText(previewDoneHeader, calls)
 	r.mu.Unlock()
 	if gone {
 		return
@@ -873,7 +883,7 @@ func (r *previewRun) tick(ctx context.Context) bool {
 	}
 
 	r.mu.Lock()
-	text := r.renderText("🔄 Working…")
+	text := r.renderText(previewWorkingHeader)
 	version := r.version
 	r.dirty = false // tentatively; re-set below unless the send succeeds cleanly
 	r.mu.Unlock()
@@ -1059,17 +1069,17 @@ func isRateLimit(err error) bool {
 // an authoritative delivery send — into the shared chat gate, so every
 // concurrent run in the chat backs off together. It reports whether the
 // error was a rate limit; wait is the recorded backoff.
-func (r *previewRun) absorbDeliveryRateLimit(err error) (time.Duration, bool) {
+func (m *previewManager) absorbDeliveryRateLimit(chatID int64, err error) (time.Duration, bool) {
 	var apiErr *telegoapi.Error
 	if !errors.As(err, &apiErr) || apiErr.ErrorCode != 429 {
 		return 0, false
 	}
 
-	wait := r.manager.timings.ratePad
+	wait := m.timings.ratePad
 	if apiErr.Parameters != nil && apiErr.Parameters.RetryAfter > 0 {
-		wait = time.Duration(apiErr.Parameters.RetryAfter)*time.Second + r.manager.timings.ratePad
+		wait = time.Duration(apiErr.Parameters.RetryAfter)*time.Second + m.timings.ratePad
 	}
-	r.manager.backoffChat(r.info.ChatID, wait)
+	m.backoffChat(chatID, wait)
 
 	return wait, true
 }
@@ -1078,7 +1088,7 @@ func (r *previewRun) absorbDeliveryRateLimit(err error) (time.Duration, bool) {
 // was a rate limit: the chat gate absorbed it (not counted against the
 // run's failure budget) and the schedule moved past the gate.
 func (r *previewRun) handleSendError(method string, err error) bool {
-	if wait, limited := r.absorbDeliveryRateLimit(err); limited {
+	if wait, limited := r.manager.absorbDeliveryRateLimit(r.info.ChatID, err); limited {
 		r.sendAt = time.Now().Add(wait)
 
 		return true
@@ -1294,23 +1304,24 @@ func previewRunningLine(name string, rich bool) string {
 	return "🔄 " + previewToolName(name, rich)
 }
 
-// previewPresentationMarkers are the first-line header prefixes of rendered
-// preview text (working indicator, terminal done marker).
-var previewPresentationMarkers = []string{"🔄", "✔️"}
-
-// previewToolLineMarkers are the line prefixes of preview tool-progress
-// lines.
-var previewToolLineMarkers = []string{"✅ ", "❌ ", "🔄 ", "⌛ "}
+// previewWorkingHeader and previewDoneHeader are the exact first lines of
+// rendered preview text: the neutral working indicator and the terminal
+// no-text marker.
+const (
+	previewWorkingHeader = "🔄 Working…"
+	previewDoneHeader    = "✔️ Done"
+)
 
 // isPreviewPresentation reports whether rendered text matches the live
-// preview shape: a working/done header first line, or nothing but
-// tool-progress lines (a snapshot truncated past its header). Quoted
-// snapshots of previews whose registry identities were evicted reach the
-// bot-quote fallback in message_history.go; without this check their
-// working indicator and tool lines would enter conversational context as
-// if the bot had said them. Ordinary answers do not open with the preview
-// header and are not made solely of tool-status lines, so the shape match
-// does not take legitimate quotes.
+// preview shape: exactly the working/done header as the first line, or
+// nothing but tool-progress lines (a snapshot truncated past its header).
+// The match is structural — exact header strings and the name() tool-call
+// syntax — because the check gates dropping quoted bot answers: an answer
+// that merely opens with ✔️ or carries ✅ checklist lines is an ordinary
+// answer and must be kept. Quoted snapshots of previews whose registry
+// identities were evicted reach the bot-quote fallback in
+// message_history.go; without this check their working indicator and tool
+// lines would enter conversational context as if the bot had said them.
 func isPreviewPresentation(text string) bool {
 	lines := strings.Split(strings.TrimSpace(text), "\n")
 	if len(lines) == 0 {
@@ -1318,33 +1329,54 @@ func isPreviewPresentation(text string) bool {
 	}
 
 	first := strings.TrimSpace(lines[0])
-	for _, marker := range previewPresentationMarkers {
-		if strings.HasPrefix(first, marker) {
-			return true
-		}
+	if first == previewWorkingHeader || first == previewDoneHeader {
+		return true
 	}
 
 	toolLines := 0
 	for _, line := range lines {
 		t := strings.TrimSpace(line)
-		if t == "" {
+		if t == "" || t == "…" || strings.HasPrefix(t, "… and ") {
 			continue
 		}
-		matched := false
-		for _, marker := range previewToolLineMarkers {
-			if strings.HasPrefix(t, marker) {
-				matched = true
-
-				break
-			}
-		}
-		if !matched {
+		if !isPreviewToolLine(t) {
 			return false
 		}
 		toolLines++
 	}
 
 	return toolLines > 0
+}
+
+// isPreviewToolLine reports whether one rendered line is a preview
+// tool-progress line: a status mark followed by the tool-call syntax —
+// plain "name()" or rich "`name()`" — with the optional duration suffix of
+// all_tools mode. Any mark-prefixed text without the call syntax (a
+// checklist, an emoji-led sentence) is not a tool line.
+func isPreviewToolLine(line string) bool {
+	for _, mark := range []string{"✅ ", "❌ ", "🔄 "} {
+		if !strings.HasPrefix(line, mark) {
+			continue
+		}
+
+		rest := strings.TrimPrefix(line, mark)
+		if at := strings.Index(rest, " ⌛ "); at >= 0 {
+			rest = rest[:at]
+		}
+		if rest == "" {
+			return false
+		}
+		if strings.HasPrefix(rest, "`") && strings.HasSuffix(rest, "()`") {
+			return true
+		}
+		if strings.HasSuffix(rest, "()") && !strings.ContainsAny(strings.TrimSuffix(rest, "()"), " `") {
+			return true
+		}
+
+		return false
+	}
+
+	return false
 }
 
 // previewToolName renders a tool name for the target format. Rich markdown
