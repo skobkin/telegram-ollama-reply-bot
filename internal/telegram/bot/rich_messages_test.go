@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"telegram-ollama-reply-bot/internal/support/markdown"
 
@@ -53,6 +54,7 @@ func TestBuildRichMessageParams_PassesThreadID(t *testing.T) {
 type capturedRequest struct {
 	path string
 	body map[string]any
+	at   time.Time // arrival time at the test server
 }
 
 // newRichTestBot returns a Bot wired to a test Bot API server that records

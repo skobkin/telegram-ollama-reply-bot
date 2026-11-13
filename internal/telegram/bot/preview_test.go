@@ -57,7 +57,28 @@ func newPreviewServerState() *previewServerState {
 func (s *previewServerState) record(path string, body map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.requests = append(s.requests, capturedRequest{path: path, body: body})
+	s.requests = append(s.requests, capturedRequest{path: path, body: body, at: time.Now()})
+}
+
+// stamps returns the arrival times of the named methods' calls, merged in
+// recording (chronological) order. It is the observation side of pacing
+// assertions: the server sees requests in the order they were issued.
+func (s *previewServerState) stamps(methods ...string) []time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var out []time.Time
+	for _, r := range s.requests {
+		for _, m := range methods {
+			if strings.HasSuffix(r.path, "/"+m) {
+				out = append(out, r.at)
+
+				break
+			}
+		}
+	}
+
+	return out
 }
 
 // calls returns the recorded request paths for the named method suffix.
@@ -2404,4 +2425,121 @@ func TestFinalDeliveryRetryRidesBoundedContext(t *testing.T) {
 	}
 
 	run.Abort()
+}
+
+// TestConcurrentRunsPaceChatSlotsWithout429 pins the per-chat pacing
+// guarantee on successful sends: two runs in one group chat claim the chat's
+// send slots atomically, so no two preview wire calls in the chat are spaced
+// closer than the minimum interval — no rate limit required to activate the
+// pacing.
+func TestConcurrentRunsPaceChatSlotsWithout429(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+
+	// Two runs in the SAME chat: each keeps its own schedule, and only the
+	// chat-level slot claim can keep their wire calls apart.
+	runA := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	runB := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+
+	// Pump alternating tool events into both runs so both keep flushing for
+	// a while; the server answers every call successfully.
+	deadline := time.Now().Add(600 * time.Millisecond)
+	for i := 0; time.Now().Before(deadline); i++ {
+		toolDone(runA, "tool_a_"+strconv.Itoa(i), false, true, 10*time.Millisecond)
+		toolDone(runB, "tool_b_"+strconv.Itoa(i), false, true, 10*time.Millisecond)
+		time.Sleep(15 * time.Millisecond)
+	}
+
+	waitForCondition(t, 2*time.Second, "both previews flushed repeatedly", func() bool {
+		return srv.callCount("sendMessage") >= 2 && srv.callCount("editMessageText") >= 4
+	})
+
+	runA.Abort()
+	runB.Abort()
+
+	minInterval := m.timings.minInterval
+	epsilon := 5 * time.Millisecond // server-side arrival skew between calls
+	stamps := srv.stamps("sendMessage", "editMessageText")
+	for i := 1; i < len(stamps); i++ {
+		if gap := stamps[i].Sub(stamps[i-1]); gap < minInterval-epsilon {
+			t.Fatalf("concurrent runs must pace chat wire calls minInterval apart, pair %d gap %s (< %s)", i, gap, minInterval-epsilon)
+		}
+	}
+}
+
+// TestStopAbandonsStuckWorkersOnOneAbsoluteDeadline pins that Stop's join
+// budget is one absolute deadline across workers: workers stuck in a bounded
+// wire call must not extend the shutdown past it — Stop returns while they
+// are still in flight, and the state cleanup runs regardless.
+func TestStopAbandonsStuckWorkersOnOneAbsoluteDeadline(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+
+	// Two runs in different chats, each mid-draft-send, held well past the
+	// join deadline (the wire-call timeout resolves the workers
+	// eventually — far after Stop must have returned).
+	srv.delayMethod("sendRichMessageDraft", 8*time.Second)
+	for _, chatID := range []int64{900800821, 900800822} {
+		run := m.RunFor(RunInfo{
+			RunID:    execution.NewRunID(),
+			ChatID:   chatID,
+			ChatType: tg.ChatTypePrivate,
+			Mode:     adminconfig.PreviewModeTools,
+		})
+		toolDone(run, "search_web", false, true, 10*time.Millisecond)
+	}
+	waitForCondition(t, 2*time.Second, "both drafts in flight", func() bool {
+		return srv.callCount("sendRichMessageDraft") == 2
+	})
+	time.Sleep(50 * time.Millisecond) // both requests are inside the server hold
+
+	start := time.Now()
+	m.Stop()
+	if elapsed := time.Since(start); elapsed >= 4*time.Second {
+		t.Fatalf("Stop must return on the absolute join deadline while workers are stuck, took %s", elapsed)
+	}
+
+	m.mu.Lock()
+	remaining := len(m.runs)
+	m.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("Stop must clear the run registry regardless of stuck workers, %d remain", remaining)
+	}
+}
+
+// TestLegacyFallbackPreservesForumTopic pins that both MarkdownV2 fallback
+// paths keep the originating forum topic: the rich path carries
+// MessageThreadID, so a fallback send must not move the reply out of its
+// thread — the ordinary fallback and the tool-history fallback alike.
+func TestLegacyFallbackPreservesForumTopic(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+
+	message := tg.Message{
+		MessageID:       10,
+		Chat:            tg.Chat{ID: -100900700610, Type: tg.ChatTypeSupergroup},
+		MessageThreadID: 77,
+	}
+
+	// Rich send fails with a plain API error: the legacy fallback delivers.
+	srv.armFailure("sendRichMessage", 2)
+
+	if _, err := b.sendRichMarkdownReply(context.Background(), message, "the answer"); err != nil {
+		t.Fatalf("ordinary fallback must deliver, got error: %v", err)
+	}
+	if _, err := b.sendReplyWithToolHistory(context.Background(), message, "the answer", historyCalls(), adminconfig.PreviewModeTools); err != nil {
+		t.Fatalf("tool-history fallback must deliver, got error: %v", err)
+	}
+
+	fallbacks := srv.calls("sendMessage")
+	if len(fallbacks) != 2 {
+		t.Fatalf("expected two legacy fallback sends, got %d", len(fallbacks))
+	}
+	for i, body := range fallbacks {
+		if body["message_thread_id"] != float64(77) {
+			t.Fatalf("fallback %d must preserve the forum topic, got message_thread_id %v", i, body["message_thread_id"])
+		}
+	}
 }

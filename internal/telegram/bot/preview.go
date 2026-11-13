@@ -146,6 +146,11 @@ type previewManager struct {
 // in the same chat cannot send straight into the outstanding retry window.
 type chatGate struct {
 	earliest time.Time
+	// nextSend is the chat's reserved preview wire-call slot: the atomic
+	// claim of a sending run moves it minInterval forward, spacing every
+	// preview call in the chat across concurrent runs — not only under a
+	// 429 backoff (earliest).
+	nextSend time.Time
 	runs     int // active runs in this chat (gate lifetime refcount)
 }
 
@@ -247,13 +252,24 @@ func (m *previewManager) Stop() {
 	for _, run := range runs {
 		run.requestTerminate()
 	}
-	deadline := time.After(previewStopJoinTimeout)
+	// One absolute deadline for every worker join: a worker stuck in a
+	// bounded wire call exhausts the budget once, and the remaining joins
+	// are abandoned with a warning instead of blocking on channels that
+	// never fire. Cleanup below runs regardless.
+	joinDeadline := time.Now().Add(previewStopJoinTimeout)
 	for _, run := range runs {
+		remaining := time.Until(joinDeadline)
+		if remaining <= 0 {
+			m.logger.Warn("preview worker did not stop in time", "run_id", run.info.RunID)
+
+			continue
+		}
+		timer := time.NewTimer(remaining)
 		select {
 		case <-run.done:
-		case <-deadline:
+			timer.Stop()
+		case <-timer.C:
 			m.logger.Warn("preview worker did not stop in time", "run_id", run.info.RunID)
-			deadline = make(chan time.Time) // stop waiting on further workers
 		}
 	}
 	for _, run := range runs {
@@ -405,6 +421,42 @@ func (m *previewManager) backoffChat(chatID int64, wait time.Duration) {
 	if until.After(gate.earliest) {
 		gate.earliest = until
 	}
+}
+
+// claimChatSendSlot atomically claims the chat's next preview wire-call
+// slot. It reports whether the slot is due now (claimed — the caller sends)
+// or hands back the time the caller must reschedule to: at least minInterval
+// after any other preview call in the same chat, concurrent runs included,
+// and never inside an outstanding 429 backoff. The claim happens under the
+// manager mutex, so concurrent runs in one chat cannot race into the same
+// window, and only this chat's gate is touched — unrelated chats and LLM
+// execution are not serialized. Once-per-run lifecycle calls (the final
+// preview delete, the terminal no-text draft) are not paced: they are
+// cleanup and terminal state, not preview updates.
+func (m *previewManager) claimChatSendSlot(chatID int64) (time.Time, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	gate := m.chatGates[chatID]
+	if gate == nil {
+		gate = &chatGate{}
+		m.chatGates[chatID] = gate
+	}
+	now := time.Now()
+	at := now
+	if gate.nextSend.After(at) {
+		at = gate.nextSend
+	}
+	if gate.earliest.After(at) {
+		at = gate.earliest
+	}
+	if at.After(now) {
+		// Not due: hand the caller the slot without claiming anything, so
+		// the bookkeeping only moves when a wire call actually goes out.
+		return at, false
+	}
+	gate.nextSend = at.Add(m.timings.minInterval)
+
+	return at, true
 }
 
 // unregister removes a finalized run after its worker exited and drops the
@@ -929,6 +981,24 @@ func (r *previewRun) tick(ctx context.Context) bool {
 		}
 		r.mu.Unlock()
 		r.scheduleNext()
+
+		return true
+	}
+
+	// Claim the chat's send slot atomically right before the wire call: a
+	// 429 on any concurrent run in this chat delays this call (the gate's
+	// backoff), and so does a concurrent run's own reservation — the chat
+	// paces preview calls minInterval apart across runs on successes too,
+	// not only under rate limiting. A run claiming first hands this tick
+	// the next slot instead.
+	if slot, claimed := r.manager.claimChatSendSlot(r.info.ChatID); !claimed {
+		// Nothing went out this tick: the render cleared the dirty flag
+		// tentatively, so the pending flush must be restored — the claim
+		// only deferred the wire call to the chat's next slot.
+		r.mu.Lock()
+		r.dirty = dirty || r.version != version
+		r.mu.Unlock()
+		r.sendAt = slot
 
 		return true
 	}

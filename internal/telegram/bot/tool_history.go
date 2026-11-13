@@ -105,8 +105,15 @@ func (b *Bot) sendReplyWithToolHistory(ctx context.Context, message t.Message, a
 
 	suffix := renderPlainToolHistorySuffix(b.sanitizer.Sanitize, calls, mode, TelegramCharLimit-len([]rune(cropped)))
 
-	return b.api.SendMessage(ctx, b.reply(message,
-		tu.Message(tu.ID(message.Chat.ID), cropped+suffix).WithParseMode(t.ModeMarkdownV2)))
+	// The fallback preserves the originating forum topic exactly like the
+	// rich path and the ordinary fallback do.
+	params := b.reply(message,
+		tu.Message(tu.ID(message.Chat.ID), cropped+suffix).WithParseMode(t.ModeMarkdownV2))
+	if message.MessageThreadID != 0 {
+		params.MessageThreadID = message.MessageThreadID
+	}
+
+	return b.api.SendMessage(ctx, params)
 }
 
 // renderRichToolHistoryBlock renders the collapsible rich-markdown block

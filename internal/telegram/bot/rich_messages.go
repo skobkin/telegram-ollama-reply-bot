@@ -78,7 +78,9 @@ func (b *Bot) sendRichMarkdownReplyWithSuffix(ctx context.Context, message t.Mes
 
 // sendLegacyMarkdownV2 sends text (plus an optional reserved suffix appended
 // verbatim after cropping) through the legacy MarkdownV2 sanitizer pipeline
-// with the plain message character limit.
+// with the plain message character limit. The originating forum topic is
+// preserved exactly as the rich path does: a fallback send must not move
+// the reply out of its thread.
 func (b *Bot) sendLegacyMarkdownV2(ctx context.Context, message t.Message, text, suffix string) (*t.Message, error) {
 	sanitized := b.sanitizer.Sanitize(text)
 
@@ -92,6 +94,11 @@ func (b *Bot) sendLegacyMarkdownV2(ctx context.Context, message t.Message, text,
 		cropped = b.sanitizer.Sanitize(cropped)
 	}
 
-	return b.api.SendMessage(ctx, b.reply(message,
-		tu.Message(tu.ID(message.Chat.ID), cropped+suffix).WithParseMode(t.ModeMarkdownV2)))
+	params := b.reply(message,
+		tu.Message(tu.ID(message.Chat.ID), cropped+suffix).WithParseMode(t.ModeMarkdownV2))
+	if message.MessageThreadID != 0 {
+		params.MessageThreadID = message.MessageThreadID
+	}
+
+	return b.api.SendMessage(ctx, params)
 }
