@@ -1242,7 +1242,10 @@ func TestGroupPreviewFailureCounterResetsOnSuccess(t *testing.T) {
 	})
 
 	// Three failing edits, each followed by a recovery: the lifetime count
-	// exceeds previewMaxFailures but never consecutively.
+	// exceeds previewMaxFailures but never consecutively. The budget refund
+	// is synchronized explicitly: the wire-call count is visible when the
+	// request arrives, but the worker refunds failures only after the
+	// response is processed, so counting alone can race the assertion.
 	for i := 0; i < 3; i++ {
 		state.armFailure("editMessageText", 1)
 		toolDone(run, "tool_fail_"+strconv.Itoa(i), false, true, 10*time.Millisecond)
@@ -1252,6 +1255,12 @@ func TestGroupPreviewFailureCounterResetsOnSuccess(t *testing.T) {
 		toolDone(run, "tool_ok_"+strconv.Itoa(i), false, true, 10*time.Millisecond)
 		waitForCondition(t, 2*time.Second, "recovered edit delivered", func() bool {
 			return state.callCount("editMessageText") >= 2*i+2
+		})
+		waitForCondition(t, 2*time.Second, "failure budget refunded", func() bool {
+			run.mu.Lock()
+			defer run.mu.Unlock()
+
+			return run.failures == 0
 		})
 	}
 
