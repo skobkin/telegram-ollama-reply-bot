@@ -47,6 +47,12 @@ func defaultPreviewTimings() previewTimings {
 	}
 }
 
+// ErrDeliveryRateLimited reports that the chat's rate-limit window was
+// still open when the bounded final-delivery wait expired, so the
+// completed answer was not sent. It wraps context.DeadlineExceeded: the
+// wait always ends through the delivery budget or the caller's deadline.
+var ErrDeliveryRateLimited = fmt.Errorf("chat rate-limit window still open: %w", context.DeadlineExceeded)
+
 const (
 	// previewMaxToolLines caps the rendered tool lines; older entries are
 	// compacted into an "and N earlier" line.
@@ -620,8 +626,11 @@ func (m *previewManager) awaitChatGate(ctx context.Context, chatID int64) bool {
 // this request's previews are off: an outstanding window rate-limits every
 // sender in the chat, so the bounded wait runs before the first attempt
 // too — a retained backoff (possibly from a request whose own run is nil)
-// must not draw a predictably rejected send. Only with no preview manager
-// wired at all is delivery exactly-once with no gate interaction.
+// must not draw a predictably rejected send. An exhausted wait stops
+// delivery instead of sending into the known-closed window, surfacing
+// ErrDeliveryRateLimited; parent cancellation keeps its own identity. Only
+// with no preview manager wired at all is delivery exactly-once with no
+// gate interaction.
 func (b *Bot) deliverFinalReply(ctx context.Context, message t.Message, llmReply string, calls []tooluse.ToolCallRecord, resolved adminconfig.ResolvedChatConfig) (*t.Message, error) {
 	deliver := func(sendCtx context.Context) (*t.Message, error) {
 		if resolved.PreviewMode != adminconfig.PreviewModeOff && resolved.KeepToolHistory {
@@ -643,13 +652,20 @@ func (b *Bot) deliverFinalReply(ctx context.Context, message t.Message, llmReply
 		defer cancel()
 	}
 
-	// An exhausted wait falls through to a single attempt: with the whole
-	// delivery budget spent waiting, dropping the completed answer without
-	// any try is worse than one send whose outcome — redelivered or a real
-	// 429 returned to the caller — the retry loop below owns either way.
-	mgr.awaitChatGate(waitCtx, message.Chat.ID)
+	// The initial send rides the bounded delivery context like every
+	// retry, and never runs into a known-closed window: an exhausted
+	// pre-send wait ends delivery here, the same rule the retry loop
+	// lives by.
+	if !mgr.awaitChatGate(waitCtx, message.Chat.ID) {
+		cause := context.Cause(waitCtx)
+		if cause != nil && !errors.Is(cause, context.DeadlineExceeded) {
+			return nil, cause
+		}
 
-	sent, err := deliver(ctx)
+		return nil, fmt.Errorf("chat %d: %w", message.Chat.ID, ErrDeliveryRateLimited)
+	}
+
+	sent, err := deliver(waitCtx)
 	for retries := 0; err != nil; retries++ {
 		// Every rate-limit response is recorded into the shared gate — the
 		// last rejected attempt's backoff included, so later runs in the

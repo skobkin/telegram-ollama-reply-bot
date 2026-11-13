@@ -2178,6 +2178,45 @@ func TestFinalDeliveryWaitsRetainedBackoffBeforeFirstSend(t *testing.T) {
 	}
 }
 
+// TestFinalDeliveryStopsWhenInitialWaitExpires pins that an exhausted
+// pre-send gate wait stops delivery: with the delivery budget spent and
+// the window still open, no request is made and the exhaustion surfaces
+// through ErrDeliveryRateLimited instead of a predictably rejected send.
+func TestFinalDeliveryStopsWhenInitialWaitExpires(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+	b.previews = m
+
+	// The window outlives the delivery budget: the caller's deadline
+	// expires mid-wait, so nothing may reach the API.
+	m.backoffChat(900800706, 500*time.Millisecond)
+
+	resolved := adminconfig.ResolvedChatConfig{PreviewMode: adminconfig.PreviewModeOff}
+	message := tg.Message{MessageID: 10, Chat: tg.Chat{ID: 900800706, Type: tg.ChatTypePrivate}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	sent, err := b.deliverFinalReply(ctx, message, "the answer", nil, resolved)
+	if elapsed := time.Since(start); elapsed >= 500*time.Millisecond {
+		t.Fatalf("delivery must stop when the budget expires, took %s", elapsed)
+	}
+	if sent != nil {
+		t.Fatalf("nothing may be delivered into a known-closed window, got %+v", sent)
+	}
+	if !errors.Is(err, ErrDeliveryRateLimited) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("exhausted initial wait must surface the rate-limit error, got %v", err)
+	}
+	if n := srv.callCount("sendRichMessage"); n != 0 {
+		t.Fatalf("no request may be made into a known-closed window, got %d", n)
+	}
+	if n := srv.callCount("sendMessage"); n != 0 {
+		t.Fatalf("no fallback may be attempted either, got %d", n)
+	}
+}
+
 // TestFinalDeliveryRetryRidesBoundedContext pins that redelivery requests
 // use the bounded delivery context: a stalled retry is cancelled when the
 // delivery deadline passes instead of hanging without a deadline.
