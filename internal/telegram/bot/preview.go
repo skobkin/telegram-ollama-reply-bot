@@ -371,16 +371,25 @@ func (m *previewManager) isPreviewMessage(chatID int64, msgID int) bool {
 }
 
 // sweepExpiredGatesLocked drops gates left behind by chats whose last run
-// exited during a backoff and whose backoff has since expired. It runs
+// exited and whose backoff and pacing slot have both since expired. It runs
 // wherever the manager already mutates gate state, so a chat that never
 // runs again cannot leave its entry behind forever: every new run anywhere
 // reclaims expired gates. The caller must hold m.mu.
 func (m *previewManager) sweepExpiredGatesLocked(now time.Time) {
 	for chatID, gate := range m.chatGates {
-		if gate.runs <= 0 && !gate.earliest.After(now) {
+		if m.gateIdleExpiredLocked(gate, now) {
 			delete(m.chatGates, chatID)
 		}
 	}
+}
+
+// gateIdleExpiredLocked reports whether a run-less chat gate holds nothing
+// that must survive: both the 429 backoff and the pacing slot have passed.
+// Only such a gate is dropped, wherever the manager mutates gate state — a
+// gate whose pacing slot is still in the future keeps sequential runs in
+// the chat paced like concurrent ones.
+func (m *previewManager) gateIdleExpiredLocked(gate *chatGate, now time.Time) bool {
+	return gate.runs <= 0 && !gate.earliest.After(now) && !gate.nextSend.After(now)
 }
 
 // gateEarliest returns the chat's earliest allowed wire-call time. The
@@ -388,8 +397,9 @@ func (m *previewManager) sweepExpiredGatesLocked(now time.Time) {
 // consults the gate through the manager even when previews are off for the
 // request: without the sweep, gates of chats that went silent during a
 // backoff would accumulate until some new preview run happened to start.
-// An emptied gate whose backoff has expired is dropped, so gates retained
-// past their chat's last run (see unregister) do not linger forever.
+// An emptied gate whose backoff and pacing slot have both expired is
+// dropped, so gates retained past their chat's last run (see unregister)
+// do not linger forever.
 func (m *previewManager) gateEarliest(chatID int64) time.Time {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -398,7 +408,7 @@ func (m *previewManager) gateEarliest(chatID int64) time.Time {
 	if gate == nil {
 		return time.Time{}
 	}
-	if gate.runs <= 0 && !gate.earliest.After(time.Now()) {
+	if m.gateIdleExpiredLocked(gate, time.Now()) {
 		delete(m.chatGates, chatID)
 
 		return time.Time{}
@@ -461,16 +471,19 @@ func (m *previewManager) claimChatSendSlot(chatID int64) (time.Time, bool) {
 
 // unregister removes a finalized run after its worker exited and drops the
 // chat gate when the chat's last run is gone — unless a rate-limit backoff
-// is still outstanding, which survives so a new run in that chat respects
-// it. Missing entries are no-ops (manager Stop may already have cleared
-// them).
+// or a pacing slot is still outstanding, which survives so a new run in
+// that chat respects it. Missing entries are no-ops (manager Stop may
+// already have cleared them).
 func (m *previewManager) unregister(run *previewRun) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.runs, run.info.RunID)
 	if gate := m.chatGates[run.info.ChatID]; gate != nil {
 		gate.runs--
-		if gate.runs <= 0 && !gate.earliest.After(time.Now()) {
+		// A still-outstanding backoff or pacing slot survives run exit: a
+		// new run in this chat must inherit the reserved window instead of
+		// sending the moment it starts.
+		if m.gateIdleExpiredLocked(gate, time.Now()) {
 			delete(m.chatGates, run.info.ChatID)
 		}
 	}

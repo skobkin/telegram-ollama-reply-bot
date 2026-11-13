@@ -1141,12 +1141,17 @@ func TestPreviewBackoffSurvivesRunExit(t *testing.T) {
 	})
 
 	next.FinalDelivered()
-	m.mu.Lock()
-	gates := len(m.chatGates)
-	m.mu.Unlock()
-	if gates != 0 {
-		t.Fatalf("expired backoff must be dropped, got %d gates", gates)
-	}
+
+	// The successful send claimed a pacing slot, so the gate outlives the
+	// run until that slot expires as well; a later delivery-style consult
+	// then sweeps it. Cleanup stays bounded.
+	waitForCondition(t, 2*time.Second, "expired gate dropped on a later consult", func() bool {
+		m.gateEarliest(chatID)
+		m.mu.Lock()
+		defer m.mu.Unlock()
+
+		return len(m.chatGates) == 0
+	})
 }
 
 // TestPreviewFailureLogCarriesNoTransportURL pins that transport failures
@@ -2541,5 +2546,53 @@ func TestLegacyFallbackPreservesForumTopic(t *testing.T) {
 		if body["message_thread_id"] != float64(77) {
 			t.Fatalf("fallback %d must preserve the forum topic, got message_thread_id %v", i, body["message_thread_id"])
 		}
+	}
+}
+
+// TestSequentialRunsInheritChatPacingSlot pins that the pacing window
+// survives run exit: a run that sent a preview and finished leaves the
+// chat's slot reserved, so a new run starting in the same chat before
+// minInterval expires waits out the remaining window instead of sending
+// immediately — sequential runs pace like concurrent ones.
+func TestSequentialRunsInheritChatPacingSlot(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	m := newPreviewTestManager(t, b)
+	// A wide window makes the discrimination robust: run B's own debounce
+	// would send around ~30ms, while the inherited slot binds at 120ms —
+	// without the fix the gap collapses far below the threshold.
+	m.timings.minInterval = 120 * time.Millisecond
+
+	runA := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	toolDone(runA, "search_web", false, true, 10*time.Millisecond)
+	waitForCondition(t, 2*time.Second, "run A preview created", func() bool {
+		return srv.callCount("sendMessage") == 1
+	})
+	runA.Abort()
+	waitForCondition(t, 2*time.Second, "run A fully unregistered", func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+
+		return len(m.runs) == 0
+	})
+
+	// Run B starts in the same chat well before minInterval expires: its
+	// first send must inherit A's reserved slot instead of going out at
+	// its own debounce.
+	runB := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	toolDone(runB, "fetch_url_content", false, true, 10*time.Millisecond)
+	waitForCondition(t, 2*time.Second, "run B preview created", func() bool {
+		return srv.callCount("sendMessage") == 2
+	})
+
+	runB.Abort()
+
+	stamps := srv.stamps("sendMessage")
+	if len(stamps) < 2 {
+		t.Fatalf("expected both runs' preview creates, got %d", len(stamps))
+	}
+	epsilon := 5 * time.Millisecond // server-side arrival skew between calls
+	if gap := stamps[1].Sub(stamps[0]); gap < m.timings.minInterval-epsilon {
+		t.Fatalf("sequential runs must inherit the chat pacing slot, gap %s (< %s)", gap, m.timings.minInterval-epsilon)
 	}
 }
