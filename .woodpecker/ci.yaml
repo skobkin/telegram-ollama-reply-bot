@@ -1,5 +1,12 @@
 when:
-  - event: [push, pull_request, tag]
+  # Push builds only the default branch: a feature-branch push with an
+  # open PR would otherwise run this pipeline and the pull_request one on
+  # the same commit concurrently — duplicated work for the same result,
+  # since the PR pipeline already tests the merged state.
+  - event: push
+    branch: main
+  - event: pull_request
+  - event: tag
 
 clone:
   git:
