@@ -978,6 +978,42 @@ func TestSetReactionGateAcquisitionIsBounded(t *testing.T) {
 	}
 }
 
+// TestSetReactionRejectsSpentAttemptBeforeWaiting proves a repeated call in
+// one run fails immediately with already_reacted instead of first waiting on
+// the target gate and the chat cooldown it can never use — the wait would
+// burn processing time the model needs for its follow-up answer.
+func TestSetReactionRejectsSpentAttemptBeforeWaiting(t *testing.T) {
+	t.Parallel()
+
+	sender := &stubActionSender{}
+	runtime := newSetReactionRuntime(t, nil, sender)
+	scope := state.ConversationScope{ChatID: 1200}
+	callCtx := reactionCallCtx(scope, state.Message{FromID: 11, ChatID: 1200, MessageID: 42})
+
+	if result := callSetReaction(t, runtime, callCtx, `{"emoji":"👍"}`); result.Status != execution.StatusOK {
+		t.Fatalf("first reaction must succeed, got %+v", result.Data)
+	}
+
+	// Put the chat into a cooldown beyond the per-call wait bound: if the
+	// handler still reached the wait, it would refuse with rate_limited
+	// rather than already_reacted, proving the wrong order.
+	runtime.reactions.mu.Lock()
+	runtime.reactions.cooldowns[1200] = time.Now().Add(time.Hour)
+	runtime.reactions.mu.Unlock()
+
+	start := time.Now()
+	result := callSetReaction(t, runtime, callCtx, `{"emoji":"🔥"}`)
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("spent attempt must be rejected immediately, took %v", elapsed)
+	}
+	if code := reactionErrorCode(t, result); code != "already_reacted" {
+		t.Fatalf("expected already_reacted, got %q", code)
+	}
+	if sender.reactionCallCount() != 1 {
+		t.Fatalf("unexpected call count: %d", sender.reactionCallCount())
+	}
+}
+
 // --- runtime flows ---
 
 func reactionRuntimeFlow(t *testing.T, sender *stubActionSender, recorder *recordingDispatcher) *Runtime {

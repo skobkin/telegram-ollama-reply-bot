@@ -327,6 +327,14 @@ func (r *Runtime) setReaction(ctx context.Context, callCtx CallContext, args jso
 		return setReactionError("identity_unavailable", "The bot identity is not initialized; reactions cannot be recorded."), nil
 	}
 
+	// Cheap pre-check: a spent run is rejected before it can wait for a
+	// send slot it can never use. The authoritative atomic claim happens
+	// after the waits; the pre-check cannot race anything because calls of
+	// one run are sequential.
+	if callCtx.run.reactionAttempted.Load() {
+		return setReactionError("already_reacted", "This run already attempted its one allowed reaction."), nil
+	}
+
 	// Serialize per target before pacing: two runs reacting to the same
 	// message must send one after another, and each reserves its chat slot
 	// only once it is the gate holder, immediately before its send. The
