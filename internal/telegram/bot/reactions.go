@@ -64,7 +64,15 @@ func (b *Bot) messageReactionHandler(ctx *th.Context, update t.Update) error {
 		return err
 	}
 
+	// Synchronous and authoritative: history mutation happens here and its
+	// outcome never depends on event delivery.
 	b.applyReactionChange(change, logger)
+
+	// Observational: exactly once per eligible incoming update, at the
+	// ingress — regardless of whether the change applied, was rejected as
+	// stale, or is held for replay. Pending-reaction replay never
+	// re-publishes.
+	b.publishReactionChanged(change)
 
 	return nil
 }
@@ -297,6 +305,8 @@ func (p *pendingReactionBuffer) dropOldestLocked(now time.Time) {
 // replayPendingReactions applies held reaction updates once the reply they
 // target is recorded in history, in Telegram update order, so reactions that
 // arrived during the send response are neither dropped nor reordered.
+// Replay mutates history directly and never re-publishes ReactionChanged:
+// each update published its event once, at ingress eligibility.
 func (b *Bot) replayPendingReactions(ctx context.Context, chatID int64, messageID int) {
 	held := b.pendingReactions.take(pendingReactionKey{chatID: chatID, messageID: messageID})
 	if len(held) == 0 {

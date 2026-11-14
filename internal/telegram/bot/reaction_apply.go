@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"time"
 
+	"telegram-ollama-reply-bot/internal/execution"
 	"telegram-ollama-reply-bot/internal/state"
 )
 
@@ -63,4 +64,39 @@ func (b *Bot) applyReactionChange(change reactionChange, logger *slog.Logger) bo
 	logger.Debug("holding reaction for reply not yet in history")
 
 	return false
+}
+
+// publishReactionChanged publishes the observational ReactionChanged event
+// for one eligible normalized change: exactly once per eligible incoming
+// update, after the synchronous history attempt, and never again during
+// pending-reaction replay (which mutates history directly). The event
+// does not confirm that the target message existed or that a newer state
+// was committed — it is an observation, and the store's sequence guard
+// remains the authority on what applied.
+//
+// Publication is best-effort: a nil publisher (no dispatcher wired,
+// stopped, or overloaded) is a no-op or drop, and history state is
+// unaffected either way. The emoji slice is built fresh so the event
+// exclusively owns its payload, which must stay immutable after
+// publication. Nothing is logged.
+func (b *Bot) publishReactionChanged(change reactionChange) {
+	if b.events == nil {
+		return
+	}
+
+	emojis := make([]string, 0, len(change.reactions))
+	for _, reaction := range change.reactions {
+		emojis = append(emojis, reaction.Emoji)
+	}
+
+	b.events.Publish(execution.ReactionChanged{
+		RunContext:      execution.RunContext{ChatID: change.chatID},
+		At:              change.at,
+		TargetMessageID: change.messageID,
+		UserID:          change.userID,
+		Name:            change.name,
+		Username:        change.username,
+		UpdateID:        change.updateSeq,
+		Reactions:       emojis,
+	})
 }

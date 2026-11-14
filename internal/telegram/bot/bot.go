@@ -86,6 +86,10 @@ type Bot struct {
 	// previews manages live tool-progress previews; nil when no execution
 	// dispatcher was wired, in which case previews stay off entirely.
 	previews *previewManager
+	// events publishes observational execution events from the reaction
+	// ingress; nil when no dispatcher was wired, making publication a
+	// no-op. Reaction history never depends on event delivery.
+	events execution.Dispatcher
 	// pendingReactions holds reaction updates that arrived while their target
 	// reply's send response was still in flight; replayed on history
 	// insertion. The zero value is usable.
@@ -154,18 +158,30 @@ func (b *Bot) SetAdminUI(ui AdminUI) {
 	b.adminUI = ui
 }
 
-// SetExecutionDispatcher wires the execution event dispatcher and constructs
-// the live preview manager subscribed to it. It returns the manager's stop
-// function (nil without a dispatcher): call it at shutdown before stopping
-// the dispatcher itself, so preview workers are joined before any other
-// event consumer goes away. Passing nil keeps previews off entirely.
-func (b *Bot) SetExecutionDispatcher(dispatcher execution.Subscriber) func() {
+// executionEventBus is the dispatcher contract the bot wiring needs:
+// subscribing the live preview manager and publishing execution events
+// from the reaction ingress. The concrete dispatcher from
+// internal/execution satisfies it.
+type executionEventBus interface {
+	execution.Dispatcher
+	execution.Subscriber
+}
+
+// SetExecutionDispatcher wires the execution event dispatcher: it
+// subscribes the live preview manager and arms observational reaction
+// event publication. It returns the manager's stop function (nil without
+// a dispatcher): call it at shutdown before stopping the dispatcher
+// itself, so preview workers are joined before any other event consumer
+// goes away. Passing nil keeps previews off and reaction publication
+// disabled.
+func (b *Bot) SetExecutionDispatcher(dispatcher executionEventBus) func() {
 	if dispatcher == nil {
 		return nil
 	}
 
 	manager := newPreviewManager(b.ctx, b.api, b.logger, b.sendTypingUntil)
 	manager.unsubscribe = dispatcher.Subscribe(manager)
+	b.events = dispatcher
 	b.previews = manager
 
 	return manager.Stop

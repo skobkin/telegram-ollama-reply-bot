@@ -736,6 +736,38 @@ func TestFinalizedAndUnknownRunsIgnoreEvents(t *testing.T) {
 	if lines != 0 {
 		t.Fatalf("finalized run must ignore events, got %d tool lines", lines)
 	}
+
+	// Interaction events carry no RunID: the manager must ignore them —
+	// none may match a live run, create a preview run, or change progress
+	// behavior. HandleExecutionEvent is synchronous, so a misrouted event
+	// would show up in the run state immediately.
+	live := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	live.mu.Lock()
+	before := len(live.completed)
+	live.mu.Unlock()
+	m.mu.Lock()
+	runsBefore := len(m.runs)
+	m.mu.Unlock()
+	m.HandleExecutionEvent(context.Background(), execution.ReactionChanged{
+		RunContext:      execution.RunContext{ChatID: -1},
+		At:              time.Now(),
+		TargetMessageID: 42,
+		UserID:          7,
+		UpdateID:        1,
+		Reactions:       []string{"👍"},
+	})
+	live.mu.Lock()
+	after := len(live.completed)
+	live.mu.Unlock()
+	m.mu.Lock()
+	runsAfter := len(m.runs)
+	m.mu.Unlock()
+	if before != after {
+		t.Fatalf("interaction event must not touch a live run, tool lines %d -> %d", before, after)
+	}
+	if runsBefore != runsAfter {
+		t.Fatalf("interaction event must not create preview runs, %d -> %d", runsBefore, runsAfter)
+	}
 }
 
 func TestPreviewManagerStateHygiene(t *testing.T) {
