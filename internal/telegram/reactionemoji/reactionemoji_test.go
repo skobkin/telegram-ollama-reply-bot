@@ -41,6 +41,12 @@ func TestAllHasExactTelegramForms(t *testing.T) {
 		t.Error("whitelist must not contain the bolt with variation selector U+FE0F")
 	}
 
+	// The rolling-on-the-floor-laughing face must be tracked: it is the
+	// laughter reaction Telegram actually offers (see excludedFromReactions).
+	if !slices.Contains(all, "🤣") {
+		t.Error("whitelist must contain rolling on the floor laughing U+1F923")
+	}
+
 	// Duplicates would silently skew Joined() and the schema enum.
 	seen := make(map[string]struct{}, len(all))
 	for _, emoji := range all {
@@ -132,6 +138,15 @@ func TestReactionCandidatesAreTrackedSubset(t *testing.T) {
 		if Candidate(emoji) {
 			t.Errorf("%q must not be an outgoing reaction candidate", emoji)
 		}
+	}
+
+	// 🤣 is the laughter reaction Telegram does offer, so it must be
+	// advertised even though 😂 stays excluded.
+	if !Supported("🤣") {
+		t.Error("🤣 must be tracked")
+	}
+	if !Candidate("🤣") {
+		t.Error("🤣 must be an outgoing reaction candidate")
 	}
 
 	// Membership follows the candidate list exactly.

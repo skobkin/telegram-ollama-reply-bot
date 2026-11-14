@@ -23,7 +23,7 @@ import "strings"
 // description and its JSON Schema enum.
 var supported = []string{
 	// Best clarity: unambiguous sentiment the model reads directly.
-	"👍", "👎", "❤", "😂", "😭", "😴", "💯",
+	"👍", "👎", "❤", "😂", "🤣", "😭", "😴", "💯",
 	"🏆", "⚡", "🙏", "🤝", "👏", "👌",
 
 	// Good clarity: reliably understood in conversational context.

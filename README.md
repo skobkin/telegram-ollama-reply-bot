@@ -251,7 +251,7 @@ compaction.
 ### Model-authored reactions
 
 The model can acknowledge the message that triggered its run by reacting to it with an emoji (`set_reaction` tool): a
-joke may get 😂 alone with no text reply, a useful answer may get 👍 plus a normal reply.
+joke may get 🤣 alone with no text reply, a useful answer may get 👍 plus a normal reply.
 
 - Only the triggering message can be targeted — never other messages or the bot's own replies. Album (media group)
   messages are skipped, since Telegram applies album reactions to an unpredictable member.
@@ -259,7 +259,7 @@ joke may get 😂 alone with no text reply, a useful answer may get 👍 plus a 
   inbound filtering but are not in Telegram's reaction list are not advertised. Telegram may still reject a reaction
   in chats with restricted reaction settings, which surfaces as a normal tool error the model can recover from.
 - A confirmed reaction is recorded on the user's message in history and rendered like any other reaction
-  (e.g. `[reactions: 😂 MyBot]`), so later model context and summaries see it.
+  (e.g. `[reactions: 🤣 MyBot]`), so later model context and summaries see it.
 - Outgoing reactions are paced per chat and rate-limit aware; one reaction attempt is allowed per model run.
 
 ### Live reply previews

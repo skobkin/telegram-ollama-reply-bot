@@ -14,7 +14,7 @@ A model may call `set_reaction` to acknowledge the current user message with an 
 
 This is an ordinary discretionary, side-effecting tool. **It must not be terminal.** Do not add `say_nothing` or a special completion protocol. Reuse `ReplyWithTools()`'s existing successful-empty-completion path following successful side effects. Do not force a textual reply after a successful reaction.
 
-Examples: a joke may get 😂 alone; a thank-you may get 🙏 alone; a useful answer may get 👍 plus text. Genuine questions and actionable requests generally deserve substantive responses.
+Examples: a joke may get 🤣 alone; a thank-you may get 🙏 alone; a useful answer may get 👍 plus text. Genuine questions and actionable requests generally deserve substantive responses.
 
 ## 2. Tool API and precise target binding
 
@@ -47,7 +47,7 @@ Reuse **exactly** the current `trackedReactionEmojis` whitelist in `internal/tel
 
 Initial list, preserving exact Telegram Unicode forms:
 
-`👍 👎 ❤ 😂 😭 😴 💯 🏆 ⚡ 🙏 🤝 👏 👌 🔥 🎉 🤔 👀 😐 🤨 😎 🥰 🤩 😍 🥳 🫡 🤯 😱 💔 😈 🤡 🤓 🥴 🥱 🤮 💩`
+`👍 👎 ❤ 😂 🤣 😭 😴 💯 🏆 ⚡ 🙏 🤝 👏 👌 🔥 🎉 🤔 👀 😐 🤨 😎 🥰 🤩 😍 🥳 🫡 🤯 😱 💔 😈 🤡 🤓 🥴 🥱 🤮 💩`
 
 In particular **`❤` is U+2764 without U+FE0F**; do not silently normalize or replace it with `❤️`.
 
@@ -58,7 +58,7 @@ In particular **`❤` is U+2764 without U+FE0F**; do not silently normalize or r
 - Only ordinary `ReactionTypeEmoji` is supported. No custom emoji, paid reactions, removal API, or animated `is_big` option in v1.
 - The list and tool description should make this distinction clear: the listed emoji are the bot's supported candidates, not a guarantee Telegram accepts them in every chat.
 
-**Implementation note (2026-11-15):** of the tracked emoji, `😂` and `🥳` are not in Telegram's `ReactionTypeEmoji` emoji list at all — they can appear in incoming updates never, and sending one is rejected outright, which would burn a run's only reaction attempt. The shared package therefore exposes the tracked list (the inbound filter, unchanged from the list above) and a derived reaction-candidate subset (the tool's description, enum, and validation). If Telegram extends its reaction list, removing an entry from the package's exclusion map promotes it back to a candidate.
+**Implementation note (2026-11-15):** of the tracked emoji, `😂` and `🥳` are not in Telegram's `ReactionTypeEmoji` emoji list at all — they can appear in incoming updates never, and sending one is rejected outright, which would burn a run's only reaction attempt. The shared package therefore exposes the tracked list (the inbound filter, unchanged from the list above) and a derived reaction-candidate subset (the tool's description, enum, and validation). If Telegram extends its reaction list, removing an entry from the package's exclusion map promotes it back to a candidate. `🤣`, which Telegram does offer as a reaction, is tracked and advertised as the laughter candidate in place of `😂`.
 
 ## 4. Prompt guidance and empty final response
 
@@ -89,7 +89,7 @@ A successful bot reaction must be recorded on the **existing triggering user mes
 
 ```text
 Alice: That's a terrible pun.
-[reactions: 😂 MyBot]
+[reactions: 🤣 MyBot]
 ```
 
 Re-use `state.Reaction` including real bot `UserID`, display name/username, emoji and timestamp. Update its documentation to permit bot-authored reactions on user messages. Update `llmcontext` comments/tests to reflect the broader semantics; **do not** hide bot-authored reactions from the model.
