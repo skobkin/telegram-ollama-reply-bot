@@ -97,6 +97,22 @@ func reactionErrorCode(t *testing.T, result toolResult) string {
 	return code
 }
 
+func reactionErrorMessage(t *testing.T, result toolResult) string {
+	t.Helper()
+
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected structured error data, got %#v", result.Data)
+	}
+	errObj, ok := data["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error object, got %#v", data)
+	}
+	message, _ := errObj["message"].(string)
+
+	return message
+}
+
 func reactionUserMessage(scope state.ConversationScope) (state.ConversationScope, state.Message) {
 	return scope, state.Message{FromID: 11, ChatID: scope.ChatID, TopicID: scope.TopicID, MessageID: 42, Name: "alice"}
 }
@@ -593,6 +609,39 @@ func TestSetReactionTransportErrorIsSanitized(t *testing.T) {
 	}
 	if sender.reactionCallCount() != 1 {
 		t.Fatalf("ambiguous transport failures must not be retried, got %d calls", sender.reactionCallCount())
+	}
+
+	// The response was lost after the request was sent, so the outcome on
+	// Telegram's side is unknown; the model must not be told the reaction
+	// was definitely not applied.
+	if msg := reactionErrorMessage(t, result); !strings.Contains(msg, "unknown") || strings.Contains(msg, "was not applied") {
+		t.Fatalf("transport failure must preserve the unknown outcome, got %q", msg)
+	}
+}
+
+func TestSetReactionCancelDuringSendPreservesUnknownOutcome(t *testing.T) {
+	t.Parallel()
+
+	// A cancellation while the request is already in flight is ambiguous:
+	// Telegram may still have applied the reaction after the client gave
+	// up. The result must not claim the reaction was not applied.
+	sender := &stubActionSender{reactionErr: context.Canceled}
+	runtime := newSetReactionRuntime(t, nil, sender)
+
+	callCtx := reactionCallCtx(state.ConversationScope{ChatID: 500}, state.Message{FromID: 11, ChatID: 500, MessageID: 42})
+
+	result, err := runtime.setReaction(context.Background(), callCtx, json.RawMessage(`{"emoji":"👍"}`))
+	if err != nil {
+		t.Fatalf("setReaction returned a Go error: %v", err)
+	}
+	if code := reactionErrorCode(t, result); code != "cancelled" {
+		t.Fatalf("expected cancelled, got %q", code)
+	}
+	if msg := reactionErrorMessage(t, result); !strings.Contains(msg, "may or may not") {
+		t.Fatalf("mid-flight cancellation must preserve the unknown outcome, got %q", msg)
+	}
+	if sender.reactionCallCount() != 1 {
+		t.Fatalf("expected exactly one send attempt, got %d", sender.reactionCallCount())
 	}
 }
 

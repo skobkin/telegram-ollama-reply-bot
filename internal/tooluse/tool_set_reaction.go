@@ -424,13 +424,19 @@ func (r *Runtime) setReaction(ctx context.Context, callCtx CallContext, args jso
 // error. Descriptions coming from the Telegram API itself are safe to show;
 // transport errors can embed the token-bearing request URL, so they are
 // classified instead of printed — in model-facing results and in logs alike.
+// Failures after the request was sent (a lost response, a mid-flight
+// cancellation) are ambiguous — the outcome on Telegram's side is unknown —
+// so the model is told that instead of a definite "not applied".
 func (r *Runtime) setReactionSendError(callCtx CallContext, chatID int64, sendErr error) toolResult {
 	var apiErr *telegoapi.Error
 	switch {
 	case errors.Is(sendErr, context.Canceled) || errors.Is(sendErr, context.DeadlineExceeded):
 		callCtx.Logger.Warn("set_reaction cancelled during telegram request")
 
-		return setReactionCancelledResult()
+		// The request was already in flight, so its outcome on Telegram's
+		// side is unknown — report the uncertainty instead of a definite
+		// "not applied".
+		return setReactionError("cancelled", "The reaction request was interrupted before Telegram confirmed it; the reaction may or may not have been applied.")
 	case errors.As(sendErr, &apiErr):
 		if apiErr.ErrorCode == 429 {
 			var retryAfterSeconds int
@@ -449,7 +455,11 @@ func (r *Runtime) setReactionSendError(callCtx CallContext, chatID int64, sendEr
 	default:
 		callCtx.Logger.Warn("set_reaction telegram request failed")
 
-		return setReactionError("request_failed", "The Telegram request failed; the reaction was not applied.")
+		// A transport failure after the request was sent is ambiguous: the
+		// response may have been lost while Telegram applied the reaction.
+		// Never retry it and never claim the reaction was not applied —
+		// report the unknown outcome (spec section 5).
+		return setReactionError("request_failed", "The Telegram request failed without a confirmation; whether the reaction was applied is unknown.")
 	}
 }
 
