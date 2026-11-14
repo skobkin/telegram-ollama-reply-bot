@@ -1,8 +1,8 @@
 // Package reactionemoji holds the canonical whitelist of reaction emoji the
 // bot works with. It is shared by the inbound reaction pipeline (which
 // filters tracked feedback into history) and the model-facing set_reaction
-// tool (which validates and advertises the same set), so both sides always
-// refer to one definition.
+// tool (which advertises the sendable subset as outgoing reaction
+// candidates), so both sides always refer to one definition.
 //
 // Everything else is ignored — unlisted emoji, premium custom emoji, and
 // paid reaction types. Telegram's per-chat reaction availability acts as the
@@ -54,6 +54,48 @@ func All() []string {
 	return result
 }
 
+// excludedFromReactions lists tracked emoji that Telegram does not offer as
+// reaction choices at all (neither to users nor to bots), so they can never
+// appear in incoming updates and must not be advertised as outgoing
+// reaction candidates — sending one is rejected outright and would burn a
+// run's only reaction attempt. They stay tracked above so a Telegram-side
+// extension of the reaction list needs no code change beyond removing an
+// entry here.
+var excludedFromReactions = map[string]struct{}{
+	// 😂 (face with tears of joy) and 🥳 (partying face) are not in the
+	// ReactionTypeEmoji emoji list of the Bot API (see the pinned list in
+	// the telego ReactionTypeEmoji documentation); 🤣 and 🎉 cover their
+	// sentiment.
+	"😂": {},
+	"🥳": {},
+}
+
+// ReactionCandidates returns the tracked emoji that are valid Telegram
+// reactions, in canonical order. This is the set advertised to the model for
+// outgoing set_reaction calls; the full list remains the inbound filter.
+func ReactionCandidates() []string {
+	candidates := make([]string, 0, len(supported))
+	for _, emoji := range supported {
+		if _, excluded := excludedFromReactions[emoji]; !excluded {
+			candidates = append(candidates, emoji)
+		}
+	}
+
+	return candidates
+}
+
+// Candidate reports whether the exact emoji string may be used as an
+// outgoing reaction.
+func Candidate(emoji string) bool {
+	if !Supported(emoji) {
+		return false
+	}
+
+	_, excluded := excludedFromReactions[emoji]
+
+	return !excluded
+}
+
 // Supported reports whether the exact emoji string is on the whitelist.
 // Comparison is byte-exact: "❤️" (with the U+FE0F variation selector) is not
 // supported, "❤" (U+2764 alone) is.
@@ -67,4 +109,10 @@ func Supported(emoji string) bool {
 // model-visible tool descriptions.
 func Joined() string {
 	return strings.Join(supported, " ")
+}
+
+// CandidatesJoined renders the outgoing reaction candidates as a single
+// space-separated string.
+func CandidatesJoined() string {
+	return strings.Join(ReactionCandidates(), " ")
 }

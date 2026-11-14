@@ -58,6 +58,8 @@ In particular **`❤` is U+2764 without U+FE0F**; do not silently normalize or r
 - Only ordinary `ReactionTypeEmoji` is supported. No custom emoji, paid reactions, removal API, or animated `is_big` option in v1.
 - The list and tool description should make this distinction clear: the listed emoji are the bot's supported candidates, not a guarantee Telegram accepts them in every chat.
 
+**Implementation note (2026-11-15):** of the tracked emoji, `😂` and `🥳` are not in Telegram's `ReactionTypeEmoji` emoji list at all — they can appear in incoming updates never, and sending one is rejected outright, which would burn a run's only reaction attempt. The shared package therefore exposes the tracked list (the inbound filter, unchanged from the list above) and a derived reaction-candidate subset (the tool's description, enum, and validation). If Telegram extends its reaction list, removing an entry from the package's exclusion map promotes it back to a candidate.
+
 ## 4. Prompt guidance and empty final response
 
 Add concise instruction to the **effective tool policy/description delivered to the model** (independent of operator-editable prompt templates):

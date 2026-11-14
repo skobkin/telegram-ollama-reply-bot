@@ -269,17 +269,17 @@ func setReactionDescription() string {
 	sb.WriteString("The target is the user message that started the current run — never assume it is the latest message in the chat. ")
 	sb.WriteString("If a reaction fully communicates the response, you may end the turn without any additional text; you may also react and then provide a text reply when useful. ")
 	sb.WriteString("Do not replace a substantive answer to a genuine question or request with a reaction alone, and do not repeat or change reactions unnecessarily. ")
-	sb.WriteString("Available emoji: " + reactionemoji.Joined() + ". ")
+	sb.WriteString("Available emoji: " + reactionemoji.CandidatesJoined() + ". ")
 	sb.WriteString("These are the bot's supported candidates, not a guarantee that Telegram accepts them in every chat.")
 
 	return sb.String()
 }
 
-// setReactionParameters builds the JSON Schema from the shared whitelist so
-// the enum can never drift from the validated set.
+// setReactionParameters builds the JSON Schema from the shared whitelist's
+// reaction candidates so the enum can never drift from the validated set.
 func setReactionParameters() json.RawMessage {
 	// json.Marshal on a []string cannot fail.
-	enum, _ := json.Marshal(reactionemoji.All())
+	enum, _ := json.Marshal(reactionemoji.ReactionCandidates())
 
 	return json.RawMessage(`{"type":"object","properties":{"emoji":{"type":"string","enum":` + string(enum) + `,"description":"Exactly one supported reaction emoji"}},"required":["emoji"],"additionalProperties":false}`)
 }
@@ -295,7 +295,7 @@ func (r *Runtime) setReaction(ctx context.Context, callCtx CallContext, args jso
 		return setReactionError("invalid_arguments", `Provide the reaction as a JSON object with one "emoji" field, e.g. {"emoji":"👍"}.`), nil
 	}
 
-	if !reactionemoji.Supported(payload.Emoji) {
+	if !reactionemoji.Candidate(payload.Emoji) {
 		return setReactionError("invalid_emoji", "Unsupported emoji: choose exactly one emoji from the listed available values."), nil
 	}
 

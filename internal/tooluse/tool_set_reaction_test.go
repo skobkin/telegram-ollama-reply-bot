@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -133,9 +134,11 @@ func TestSetReactionDescriptionAndEnumMatchWhitelist(t *testing.T) {
 		t.Fatal("set_reaction must be registered by default")
 	}
 
-	// The description enumerates exactly the shared whitelist, in order.
-	whitelist := reactionemoji.All()
-	joined := reactionemoji.Joined()
+	// The description enumerates exactly the sendable candidates of the
+	// shared whitelist, in order — every entry must be a reaction Telegram
+	// can actually apply.
+	whitelist := reactionemoji.ReactionCandidates()
+	joined := reactionemoji.CandidatesJoined()
 	if !strings.Contains(definition.Description, "Available emoji: "+joined) {
 		t.Fatalf("description must list the shared whitelist verbatim:\n%s", definition.Description)
 	}
@@ -176,6 +179,15 @@ func TestSetReactionDescriptionAndEnumMatchWhitelist(t *testing.T) {
 	for i, emoji := range whitelist {
 		if schema.Properties.Emoji.Enum[i] != emoji {
 			t.Fatalf("enum[%d] = %q, want %q (order must be deterministic)", i, schema.Properties.Emoji.Enum[i], emoji)
+		}
+	}
+
+	// Tracked emoji that Telegram does not offer as reactions must not be
+	// advertised: sending one is rejected outright and burns the run's
+	// only reaction attempt.
+	for _, invalid := range reactionemoji.All() {
+		if !reactionemoji.Candidate(invalid) && slices.Contains(schema.Properties.Emoji.Enum, invalid) {
+			t.Fatalf("non-reaction emoji %q must not appear in the enum", invalid)
 		}
 	}
 }
@@ -388,7 +400,7 @@ func TestSetReactionSuccessWritesHistoryAndPublishesEvent(t *testing.T) {
 	recorder := &recordingDispatcher{}
 	runtime.config.Dispatcher = recorder
 
-	result := callSetReaction(t, runtime, reactionCallCtx(scope, state.Message{FromID: 11, ChatID: 100, TopicID: 7, MessageID: 42}), `{"emoji":"😂"}`)
+	result := callSetReaction(t, runtime, reactionCallCtx(scope, state.Message{FromID: 11, ChatID: 100, TopicID: 7, MessageID: 42}), `{"emoji":"🎉"}`)
 	if result.Status != execution.StatusOK {
 		t.Fatalf("expected success, got %+v", result.Data)
 	}
@@ -408,7 +420,7 @@ func TestSetReactionSuccessWritesHistoryAndPublishesEvent(t *testing.T) {
 		t.Fatalf("exactly one reaction type expected, got %d", len(params.Reaction))
 	}
 	sent, ok := params.Reaction[0].(*tg.ReactionTypeEmoji)
-	if !ok || sent.Emoji != "😂" || sent.Type != tg.ReactionEmoji {
+	if !ok || sent.Emoji != "🎉" || sent.Type != tg.ReactionEmoji {
 		t.Fatalf("unexpected reaction type: %#v", params.Reaction[0])
 	}
 
@@ -422,7 +434,7 @@ func TestSetReactionSuccessWritesHistoryAndPublishesEvent(t *testing.T) {
 	if len(reactions) != 1 {
 		t.Fatalf("expected one stored reaction, got %#v", reactions)
 	}
-	if reactions[0].UserID != testBotIdentity.UserID || reactions[0].Name != testBotIdentity.Name || reactions[0].Username != testBotIdentity.Username || reactions[0].Emoji != "😂" {
+	if reactions[0].UserID != testBotIdentity.UserID || reactions[0].Name != testBotIdentity.Name || reactions[0].Username != testBotIdentity.Username || reactions[0].Emoji != "🎉" {
 		t.Fatalf("unexpected bot attribution: %#v", reactions[0])
 	}
 
@@ -436,13 +448,13 @@ func TestSetReactionSuccessWritesHistoryAndPublishesEvent(t *testing.T) {
 	if event.RunID != "run-test" || event.ChatID != 100 || event.TopicID != 7 || event.MessageID != 42 {
 		t.Fatalf("unexpected run context: %+v", event.RunContext)
 	}
-	if event.TargetMessageID != 42 || event.BotUserID != testBotIdentity.UserID || event.Emoji != "😂" || event.At.IsZero() {
+	if event.TargetMessageID != 42 || event.BotUserID != testBotIdentity.UserID || event.Emoji != "🎉" || event.At.IsZero() {
 		t.Fatalf("unexpected event payload: %+v", event)
 	}
 
 	// The model-visible result carries the emoji only: no identifiers.
 	data, ok := result.Data.(map[string]any)
-	if !ok || len(data) != 1 || data["emoji"] != "😂" {
+	if !ok || len(data) != 1 || data["emoji"] != "🎉" {
 		t.Fatalf("result data must be the emoji only, got %#v", result.Data)
 	}
 }
@@ -1034,7 +1046,7 @@ func TestReplyWithToolsReactionOnlyCompletesEmpty(t *testing.T) {
 	stub := runtime.llm.(*stubLLM)
 	stub.responses = []llm.Response{
 		{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{
-			{ID: "call-1", Name: "set_reaction", Arguments: json.RawMessage(`{"emoji":"😂"}`)},
+			{ID: "call-1", Name: "set_reaction", Arguments: json.RawMessage(`{"emoji":"🎉"}`)},
 		}}},
 		{Message: llm.Message{Role: llm.RoleAssistant}},
 	}

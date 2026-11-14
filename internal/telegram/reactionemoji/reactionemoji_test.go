@@ -94,3 +94,68 @@ func TestJoinedDeterministic(t *testing.T) {
 		t.Errorf("Joined() = %q, want space-joined All()", first)
 	}
 }
+
+func TestReactionCandidatesAreTrackedSubset(t *testing.T) {
+	t.Parallel()
+
+	candidates := ReactionCandidates()
+	if len(candidates) == 0 || len(candidates) >= len(All()) {
+		t.Fatalf("candidates must be a proper non-empty subset: %d of %d", len(candidates), len(All()))
+	}
+
+	for _, emoji := range candidates {
+		if !Supported(emoji) {
+			t.Errorf("candidate %q must be tracked", emoji)
+		}
+		if !Candidate(emoji) {
+			t.Errorf("candidate %q must report Candidate()=true", emoji)
+		}
+	}
+
+	// Candidates stay in canonical order.
+	ordered := make([]string, 0, len(All()))
+	for _, emoji := range All() {
+		if Candidate(emoji) {
+			ordered = append(ordered, emoji)
+		}
+	}
+	if !slices.Equal(candidates, ordered) {
+		t.Error("ReactionCandidates() must preserve the canonical order of All()")
+	}
+
+	// Emoji Telegram does not offer as reactions are tracked but never
+	// advertised as outgoing candidates (see excludedFromReactions).
+	for _, emoji := range []string{"😂", "🥳"} {
+		if !Supported(emoji) {
+			t.Errorf("%q must stay tracked for inbound filtering", emoji)
+		}
+		if Candidate(emoji) {
+			t.Errorf("%q must not be an outgoing reaction candidate", emoji)
+		}
+	}
+
+	// Membership follows the candidate list exactly.
+	for _, emoji := range All() {
+		if got, want := Candidate(emoji), slices.Contains(candidates, emoji); got != want {
+			t.Errorf("Candidate(%q) = %v, want %v", emoji, got, want)
+		}
+	}
+	if Candidate("") || Candidate("❤️") || Candidate("😁") {
+		t.Error("unknown or invalid forms must not be candidates")
+	}
+}
+
+func TestCandidatesJoinedDeterministic(t *testing.T) {
+	t.Parallel()
+
+	first := CandidatesJoined()
+	if first == "" {
+		t.Fatal("CandidatesJoined() must not be empty")
+	}
+	if first != CandidatesJoined() {
+		t.Fatal("CandidatesJoined() must be deterministic")
+	}
+	if got, want := strings.Split(first, " "), ReactionCandidates(); !slices.Equal(got, want) {
+		t.Errorf("CandidatesJoined() = %q, want space-joined ReactionCandidates()", first)
+	}
+}
