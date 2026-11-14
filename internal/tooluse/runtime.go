@@ -58,6 +58,12 @@ type ChatRequest struct {
 	// RunID correlates execution events for this run across subscribers;
 	// generated when empty.
 	RunID string
+	// RequesterMediaGroupID mirrors Telegram's MediaGroupID of the
+	// triggering message, for this request only. It is deliberately not part
+	// of the persisted history schema: tools use it to reject targets whose
+	// identity Telegram may redirect (album reactions land on the first
+	// non-deleted member), never to address messages.
+	RequesterMediaGroupID string
 }
 
 // ToolCallRecord is the authoritative record of one tool invocation, in
@@ -273,6 +279,10 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 	runStart := time.Now()
 	emitter.publish(execution.RunStarted{RunContext: emitter.rc, At: runStart})
 
+	// Per-run tool state is shared by every tool call of this run and never
+	// leaks across runs — even for concurrent runs in the same chat.
+	run := &runState{}
+
 	var (
 		extraMessages             []llm.Message
 		totalUsage                llm.TokenUsage
@@ -360,7 +370,7 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 		allowEmptyReplyCompletion = false
 
 		for _, call := range resp.Message.ToolCalls {
-			toolMessage, allowsEmptyReply, record := r.executeToolCall(ctx, emitter, req, call)
+			toolMessage, allowsEmptyReply, record := r.executeToolCall(ctx, emitter, run, req, call)
 			records = append(records, record)
 			extraMessages = append(extraMessages, toolMessage)
 			allowEmptyReplyCompletion = allowEmptyReplyCompletion || allowsEmptyReply
@@ -370,7 +380,7 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 	return fail(ErrToolLoopLimitReached, execution.ReasonBackend)
 }
 
-func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, req ChatRequest, call llm.ToolCall) (llm.Message, bool, ToolCallRecord) {
+func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *runState, req ChatRequest, call llm.ToolCall) (llm.Message, bool, ToolCallRecord) {
 	logger := logging.FromContext(ctx, r.logger)
 	definition, ok := r.registry.Lookup(call.Name)
 	if !ok {
@@ -414,10 +424,13 @@ func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, req C
 	})
 
 	result, err := definition.Handler(ctx, CallContext{
-		Scope:     req.Scope,
-		RequestID: logging.RequestIDFromContext(ctx),
-		Requester: req.RequestMessage,
-		Logger:    logger.With("tool_name", definition.Name, "tool_call_id", call.ID),
+		Scope:                 req.Scope,
+		RequestID:             logging.RequestIDFromContext(ctx),
+		Requester:             req.RequestMessage,
+		Logger:                logger.With("tool_name", definition.Name, "tool_call_id", call.ID),
+		RunID:                 emitter.rc.RunID,
+		RequesterMediaGroupID: req.RequesterMediaGroupID,
+		run:                   run,
 	}, call.Arguments)
 	if err != nil {
 		logger.Warn("tool call failed", "tool_name", definition.Name, "tool_call_id", call.ID, "error", err)

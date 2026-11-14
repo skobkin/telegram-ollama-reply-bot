@@ -427,11 +427,12 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adm
 		defer cancel()
 
 		result, runErr := b.tools.ReplyWithTools(llmCtx, tooluse.ChatRequest{
-			Scope:          scopeFromMessage(message),
-			PromptScope:    llm.PromptScope{ChatID: message.Chat.ID},
-			ReplyContext:   requestContext,
-			RequestMessage: userMessageData,
-			RunID:          run.ID(),
+			Scope:                 scopeFromMessage(message),
+			PromptScope:           llm.PromptScope{ChatID: message.Chat.ID},
+			ReplyContext:          requestContext,
+			RequestMessage:        userMessageData,
+			RunID:                 run.ID(),
+			RequesterMediaGroupID: message.MediaGroupID,
 		})
 		llmReply, usage, err = result.Reply, result.Usage, runErr
 		toolCalls = result.ToolCalls

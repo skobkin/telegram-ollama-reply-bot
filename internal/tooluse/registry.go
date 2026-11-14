@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"telegram-ollama-reply-bot/internal/state"
 )
@@ -82,11 +83,30 @@ func (d Definition) EffectiveVisibility() Visibility {
 	return d.Visibility
 }
 
+// runState holds one run's mutable tool-invocation state. It is created per
+// ReplyWithTools call and shared by that run's tool calls; handlers receive
+// it through CallContext and must treat a nil value as "state unavailable".
+type runState struct {
+	// reactionAttempted claims the run's single outgoing set-reaction API
+	// attempt (invalid local arguments do not consume it).
+	reactionAttempted atomic.Bool
+}
+
 type CallContext struct {
 	Scope     state.ConversationScope
 	RequestID string
 	Requester state.Message
 	Logger    logger
+	// RunID is the effective execution run ID (generated when the caller
+	// omitted it). It is the correlation ID for events about this run, and
+	// deliberately not the logging RequestID.
+	RunID string
+	// RequesterMediaGroupID is non-empty when the triggering message belongs
+	// to a Telegram media group (album); see ChatRequest.
+	RequesterMediaGroupID string
+	// run is the per-run state shared by this run's tool calls. Nil only in
+	// direct handler tests that bypass the runtime.
+	run *runState
 }
 
 type logger interface {
