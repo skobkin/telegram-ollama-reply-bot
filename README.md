@@ -10,6 +10,7 @@
 - Summarization of articles by provided link (SSRF-protected fetching, quality-scored extraction backends, Markdown output)
 - Optional per-chat auto-summarizer mode: linked long-form articles in ordinary chat messages are summarized automatically
 - Reactions to the bot's messages are recorded in conversation history and shown to the model as per-user feedback
+- The model can react to a user's message with an emoji (`set_reaction` tool) instead of, or alongside, a text reply
 - Optional live tool-execution previews while a reply is being generated (temporary message in groups, message draft in private chats), with a collapsible tool-history section appended to the final reply
 - Image recognition and description
 - Tool-assisted free-form chat with
@@ -239,7 +240,6 @@ can take the feedback into account. The next model request sees each bot message
 names, e.g. `[reactions: 👍 Alice, 👎 Bob]`, and the same rendering feeds history summaries, so the signal survives
 compaction.
 
-- Receive-only: the bot never sets reactions itself.
 - A fixed set of common emoji is tracked (chosen for model comprehension); other simple emoji, premium custom emoji,
   and paid reactions are ignored. The set is not configurable.
 - **Group chats require the bot to be an administrator** — Telegram delivers per-user reaction updates to admin bots
@@ -247,6 +247,19 @@ compaction.
   DM restrictions are ignored for reactions too.
 - Reaction changes and removals are applied per user; after a restart, a history reset, or history trimming, older
   replies can no longer be matched and such reactions are dropped (logged at DEBUG level).
+
+### Model-authored reactions
+
+The model can acknowledge the message that triggered its run by reacting to it with an emoji (`set_reaction` tool): a
+joke may get 😂 alone with no text reply, a useful answer may get 👍 plus a normal reply.
+
+- Only the triggering message can be targeted — never other messages or the bot's own replies. Album (media group)
+  messages are skipped, since Telegram applies album reactions to an unpredictable member.
+- The tool uses the same fixed emoji set as the inbound tracking above; Telegram may still reject a reaction in chats
+  with restricted reaction settings, which surfaces as a normal tool error the model can recover from.
+- A confirmed reaction is recorded on the user's message in history and rendered like any other reaction
+  (e.g. `[reactions: 😂 MyBot]`), so later model context and summaries see it.
+- Outgoing reactions are paced per chat and rate-limit aware; one reaction attempt is allowed per model run.
 
 ### Live reply previews
 
