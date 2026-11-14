@@ -770,6 +770,71 @@ func TestFinalizedAndUnknownRunsIgnoreEvents(t *testing.T) {
 	}
 }
 
+// previewEventSnapshot captures the render-relevant previewRun fields a
+// state transition would change.
+type previewEventSnapshot struct {
+	version   uint64
+	dirty     bool
+	completed int
+	active    int
+}
+
+// TestPreviewIgnoresBotReactionSet proves the outgoing bot-reaction event is
+// not a preview state transition: even when its RunID matches a live run, the
+// run's render state (version/dirty, tool lines) must stay untouched and no
+// run may be created for it. HandleExecutionEvent is synchronous, so a
+// misrouted event would show up immediately.
+func TestPreviewIgnoresBotReactionSet(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+
+	live := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	live.mu.Lock()
+	before := previewEventSnapshot{version: live.version, dirty: live.dirty, completed: len(live.completed), active: len(live.active)}
+	live.mu.Unlock()
+	m.mu.Lock()
+	runsBefore := len(m.runs)
+	m.mu.Unlock()
+
+	m.HandleExecutionEvent(context.Background(), execution.BotReactionSet{
+		RunContext:      execution.RunContext{RunID: live.ID(), ChatID: -1, MessageID: 42},
+		At:              time.Now(),
+		TargetMessageID: 42,
+		BotUserID:       5,
+		Emoji:           "👍",
+	})
+
+	live.mu.Lock()
+	after := previewEventSnapshot{version: live.version, dirty: live.dirty, completed: len(live.completed), active: len(live.active)}
+	live.mu.Unlock()
+	m.mu.Lock()
+	runsAfter := len(m.runs)
+	m.mu.Unlock()
+
+	if after != before {
+		t.Fatalf("BotReactionSet must not touch a live run: %+v -> %+v", before, after)
+	}
+	if runsBefore != runsAfter {
+		t.Fatalf("BotReactionSet must not create preview runs, %d -> %d", runsBefore, runsAfter)
+	}
+
+	// An unknown run ID must be dropped by the manager as usual.
+	m.HandleExecutionEvent(context.Background(), execution.BotReactionSet{
+		RunContext:      execution.RunContext{RunID: "nonexistent", ChatID: -1, MessageID: 43},
+		At:              time.Now(),
+		TargetMessageID: 43,
+		BotUserID:       5,
+		Emoji:           "🎉",
+	})
+	m.mu.Lock()
+	runsFinal := len(m.runs)
+	m.mu.Unlock()
+	if runsFinal != runsAfter {
+		t.Fatalf("unknown-run BotReactionSet must not create preview runs, %d -> %d", runsAfter, runsFinal)
+	}
+}
+
 func TestPreviewManagerStateHygiene(t *testing.T) {
 	state := newPreviewServerState()
 	b := newPreviewTestBot(t, state)

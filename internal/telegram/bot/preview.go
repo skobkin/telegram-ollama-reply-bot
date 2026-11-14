@@ -581,6 +581,15 @@ func (r *previewRun) ID() string {
 // applyEvent updates run state from one execution event and requests a
 // flush. It never performs I/O and never blocks.
 func (r *previewRun) applyEvent(event execution.Event) {
+	if _, ok := event.(execution.BotReactionSet); ok {
+		// The outgoing reaction is a side effect of the run, not a preview
+		// state transition: the generic ToolCompleted for the set_reaction
+		// call already describes it. Ignore the event even when its RunID
+		// matches this active run — falling through would needlessly bump
+		// the render version and wake the worker for nothing.
+		return
+	}
+
 	r.mu.Lock()
 	if r.finalized {
 		r.mu.Unlock()

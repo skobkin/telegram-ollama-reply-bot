@@ -235,6 +235,41 @@ type MessageSent struct {
 	MessageID int
 }
 
+// BotReactionSet reports that the bot itself set an outgoing reaction on a
+// Telegram message, on behalf of a model-authored set_reaction tool call
+// (issue #135). Unlike ReactionChanged it is not an incoming observation:
+// it records a completed outgoing side effect.
+//
+// It is published only after Telegram confirmed the reaction and after the
+// synchronous best-effort history-mutation attempt — even when the target
+// message was no longer stored, so the event means "Telegram confirmed",
+// not "history retained it". It is observational: delivery never influences
+// the Telegram outcome, the stored state, or the run result, and the
+// history write is never driven through this event. A failed or rejected
+// reaction publishes nothing.
+//
+// The embedded RunContext is run-bound: it correlates the set_reaction call
+// with the run that issued it, and its MessageID is the run's triggering
+// message — which coincides with TargetMessageID in the current design
+// (reactions always target the triggering message). This is the contrast
+// with ReactionChanged, whose RunContext carries only ChatID.
+//
+// Never synthesized for incoming Telegram updates, and no Telegram UpdateID
+// exists for it (bots do not observe their own reactions; the authoritative
+// local record is written synchronously by the sender). Emoji is the exact
+// whitelisted string sent to Telegram; no message text, user data, or raw
+// API errors are included.
+type BotReactionSet struct {
+	RunContext
+	At time.Time
+	// TargetMessageID is the Telegram message ID the reaction was set on.
+	TargetMessageID int
+	// BotUserID is the bot's own Telegram user ID.
+	BotUserID int64
+	// Emoji is the exact supported emoji string that was set.
+	Emoji string
+}
+
 func (RunStarted) isExecutionEvent()          {}
 func (RunCompleted) isExecutionEvent()        {}
 func (RunFailed) isExecutionEvent()           {}
@@ -245,6 +280,7 @@ func (ToolCompleted) isExecutionEvent()       {}
 func (TextDelta) isExecutionEvent()           {}
 func (ReactionChanged) isExecutionEvent()     {}
 func (MessageSent) isExecutionEvent()         {}
+func (BotReactionSet) isExecutionEvent()      {}
 
 // RunContextOf extracts the run context carried by any event. Every event
 // embeds one, so the switch is exhaustive over the sealed set.
@@ -269,6 +305,8 @@ func RunContextOf(event Event) RunContext {
 	case ReactionChanged:
 		return e.RunContext
 	case MessageSent:
+		return e.RunContext
+	case BotReactionSet:
 		return e.RunContext
 	default:
 		return RunContext{}
