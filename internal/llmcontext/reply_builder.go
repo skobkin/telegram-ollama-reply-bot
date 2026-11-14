@@ -231,8 +231,11 @@ func renderAssistantMessage(message state.Message) string {
 	return sb.String()
 }
 
-// renderReactionsSuffix renders the feedback users left on a bot message so
-// the model can take it into account, e.g. "\n[reactions: 👍 Alice, 👎 Bob]".
+// renderReactionsSuffix renders the reactions stored on a history message so
+// the model can take them into account, e.g. "\n[reactions: 👍 Alice, 👎 Bob]".
+// Both directions are rendered identically: users' feedback on the bot's own
+// messages, and reactions the bot itself set on a user's message via the
+// set_reaction tool (where the displayed name is the bot's own).
 func renderReactionsSuffix(reactions []state.Reaction) string {
 	if len(reactions) == 0 {
 		return ""

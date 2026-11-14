@@ -357,6 +357,264 @@ func TestConversationStoreSetMessageReactionsRejectStaleUpdates(t *testing.T) {
 	}
 }
 
+// botReaction is the canonical bot actor used by SetBotReaction tests.
+var botReaction = state.Reaction{UserID: 999, Name: "MyBot", Username: "mybot"}
+
+func TestConversationStoreSetBotReactionRecordsOnUserMessage(t *testing.T) {
+	t.Parallel()
+
+	stores := New(Config{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	store := stores.Conversations()
+
+	scope := state.ConversationScope{ChatID: 900}
+	store.AppendMessage(scope, state.Message{Text: "terrible pun", FromID: 1, MessageID: 90})
+
+	if !store.SetBotReaction(scope, 90, withEmoji(botReaction, "😂")) {
+		t.Fatalf("expected the user message to be found")
+	}
+
+	snapshot := store.Snapshot(scope)
+	msg := snapshot.Messages[0]
+	if len(msg.Reactions) != 1 {
+		t.Fatalf("expected exactly one reaction, got %#v", msg.Reactions)
+	}
+	got := msg.Reactions[0]
+	if got.UserID != 999 || got.Name != "MyBot" || got.Username != "mybot" || got.Emoji != "😂" {
+		t.Fatalf("unexpected bot reaction: %#v", got)
+	}
+	if got.UpdatedAt.IsZero() {
+		t.Fatalf("expected reaction timestamp to be set")
+	}
+	if msg.Text != "terrible pun" || msg.FromID != 1 || msg.IsMe {
+		t.Fatalf("bot reaction must not touch message identity: %#v", msg)
+	}
+
+	// Bot messages are never targets of the outgoing path.
+	store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 91, Text: "bot answer"})
+	if store.SetBotReaction(scope, 91, withEmoji(botReaction, "👍")) {
+		t.Fatalf("bot message must not be a bot-reaction target")
+	}
+	if len(store.Snapshot(scope).Messages[1].Reactions) != 0 {
+		t.Fatalf("bot message must not gain reactions")
+	}
+}
+
+func TestConversationStoreSetBotReactionReplacesOnlyBotEntry(t *testing.T) {
+	t.Parallel()
+
+	stores := New(Config{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	store := stores.Conversations()
+
+	scope := state.ConversationScope{ChatID: 910}
+	// A user message that already carries another user's reaction and the
+	// bot's previous reaction.
+	store.AppendMessage(scope, state.Message{
+		Text: "question", FromID: 1, MessageID: 92,
+		Reactions: []state.Reaction{
+			{UserID: 7, Name: "Alice", Emoji: "🔥"},
+			{UserID: 999, Name: "MyBot", Username: "mybot", Emoji: "😐"},
+		},
+	})
+
+	if !store.SetBotReaction(scope, 92, withEmoji(botReaction, "👍")) {
+		t.Fatalf("expected the target to be found")
+	}
+
+	reactions := store.Snapshot(scope).Messages[0].Reactions
+	if len(reactions) != 2 {
+		t.Fatalf("expected bot entry replaced in place, got %#v", reactions)
+	}
+	if reactions[0].UserID != 7 || reactions[0].Emoji != "🔥" {
+		t.Fatalf("other users' reactions must be preserved: %#v", reactions)
+	}
+	if reactions[1].UserID != 999 || reactions[1].Emoji != "👍" {
+		t.Fatalf("bot entry must be replaced, not duplicated: %#v", reactions)
+	}
+}
+
+func TestConversationStoreSetBotReactionNoOpIdenticalSkipsAccounting(t *testing.T) {
+	t.Parallel()
+
+	stores := New(Config{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	store := stores.Conversations()
+
+	scope := state.ConversationScope{ChatID: 920}
+	store.AppendMessage(scope, state.Message{Text: "thanks", FromID: 1, MessageID: 93})
+
+	if !store.SetBotReaction(scope, 93, withEmoji(botReaction, "🙏")) {
+		t.Fatalf("expected first record to apply")
+	}
+	before := store.Snapshot(scope)
+
+	// Identical recording is a no-op: no revision bump, no byte churn, no
+	// duplicate entry.
+	if !store.SetBotReaction(scope, 93, withEmoji(botReaction, "🙏")) {
+		t.Fatalf("expected identical re-record to report the target as found")
+	}
+	after := store.Snapshot(scope)
+	if after.Revision != before.Revision || after.ApproxBytes != before.ApproxBytes {
+		t.Fatalf("identical re-record must not change accounting: rev %d -> %d, bytes %d -> %d",
+			before.Revision, after.Revision, before.ApproxBytes, after.ApproxBytes)
+	}
+	if got := len(after.Messages[0].Reactions); got != 1 {
+		t.Fatalf("identical re-record must not duplicate entries, got %d", got)
+	}
+
+	// A renamed bot (same emoji) is a real change and applies.
+	renamed := state.Reaction{UserID: 999, Name: "MyBot v2", Username: "mybot"}
+	if !store.SetBotReaction(scope, 93, withEmoji(renamed, "🙏")) {
+		t.Fatalf("expected renamed re-record to apply")
+	}
+	renamedSnapshot := store.Snapshot(scope)
+	if renamedSnapshot.Revision != before.Revision+1 {
+		t.Fatalf("renamed re-record must bump the revision, %d -> %d", before.Revision, renamedSnapshot.Revision)
+	}
+	if got := renamedSnapshot.Messages[0].Reactions; len(got) != 1 || got[0].Name != "MyBot v2" {
+		t.Fatalf("renamed re-record must update the entry: %#v", got)
+	}
+}
+
+func TestConversationStoreSetBotReactionUnmapped(t *testing.T) {
+	t.Parallel()
+
+	stores := New(Config{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	store := stores.Conversations()
+
+	scope := state.ConversationScope{ChatID: 930}
+	store.AppendMessage(scope, state.Message{Text: "hello", FromID: 1, MessageID: 94})
+
+	if store.SetBotReaction(state.ConversationScope{ChatID: 930}, 999, withEmoji(botReaction, "👍")) {
+		t.Fatalf("unknown message ID must not be found")
+	}
+	if store.SetBotReaction(state.ConversationScope{ChatID: 999}, 94, withEmoji(botReaction, "👍")) {
+		t.Fatalf("other chat scope must not be searched")
+	}
+	if store.SetBotReaction(state.ConversationScope{ChatID: 930, TopicID: 5}, 94, withEmoji(botReaction, "👍")) {
+		t.Fatalf("topic scope must not see the base-topic stream")
+	}
+	if store.SetBotReaction(scope, 0, withEmoji(botReaction, "👍")) || store.SetBotReaction(scope, -5, withEmoji(botReaction, "👍")) {
+		t.Fatalf("non-positive message IDs must be rejected")
+	}
+}
+
+func TestConversationStoreSetBotReactionInvalidatesStaleSummary(t *testing.T) {
+	t.Parallel()
+
+	stores := New(Config{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	store := stores.Conversations()
+
+	scope := state.ConversationScope{ChatID: 940}
+	store.AppendMessage(scope, state.Message{Text: "summarized question", FromID: 1, MessageID: 95})
+	store.AppendMessage(scope, state.Message{Text: "later question", FromID: 2, MessageID: 96})
+	_ = store.SetEarlierSummary(scope, "summary mentioning no reactions", 1, 0)
+
+	// The reacted message sits inside the summarized prefix: the cached
+	// summary embeds the old reaction rendering, so it must be dropped.
+	if !store.SetBotReaction(scope, 95, withEmoji(botReaction, "😂")) {
+		t.Fatalf("expected bot reaction to apply")
+	}
+	snapshot := store.Snapshot(scope)
+	if snapshot.EarlierSummary != "" || snapshot.SummaryMessageCount != 0 {
+		t.Fatalf("summary must be invalidated by a bot reaction inside the summarized prefix: %#v", snapshot)
+	}
+
+	// A bot reaction outside the summarized prefix leaves the summary
+	// intact; the commit must carry the revision current at commit time.
+	fresh := store.Snapshot(scope)
+	if !store.SetEarlierSummary(scope, "fresh summary", 1, fresh.Revision) {
+		t.Fatalf("summary commit against unchanged history must be accepted")
+	}
+	if !store.SetBotReaction(scope, 96, withEmoji(botReaction, "👍")) {
+		t.Fatalf("expected bot reaction to apply")
+	}
+	snapshot = store.Snapshot(scope)
+	if snapshot.EarlierSummary != "fresh summary" || snapshot.SummaryMessageCount != 1 {
+		t.Fatalf("summary must survive a bot reaction outside the summarized prefix: %#v", snapshot)
+	}
+}
+
+func TestConversationStoreSummaryCommitRejectedAfterBotReaction(t *testing.T) {
+	t.Parallel()
+
+	stores := New(Config{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	store := stores.Conversations()
+
+	scope := state.ConversationScope{ChatID: 950}
+	store.AppendMessage(scope, state.Message{Text: "question", FromID: 1, MessageID: 97})
+
+	built := store.Snapshot(scope)
+	if !store.SetEarlierSummary(scope, "summary without reactions", 1, built.Revision) {
+		t.Fatalf("commit against unchanged history must be accepted")
+	}
+
+	// The bot reacts while the summarizer is awaiting the LLM.
+	store.SetBotReaction(scope, 97, withEmoji(botReaction, "🤔"))
+
+	// The in-flight commit carries the old revision and must be rejected.
+	if store.SetEarlierSummary(scope, "stale summary", 1, built.Revision) {
+		t.Fatalf("summary commit after a bot reaction must be rejected")
+	}
+	snapshot := store.Snapshot(scope)
+	if snapshot.EarlierSummary != "" || snapshot.SummaryMessageCount != 0 {
+		t.Fatalf("stale summary must not be restored: %#v", snapshot)
+	}
+
+	// A commit based on the post-change snapshot is accepted.
+	fresh := store.Snapshot(scope)
+	if !store.SetEarlierSummary(scope, "fresh summary", 1, fresh.Revision) {
+		t.Fatalf("commit with current revision must be accepted")
+	}
+	if store.Snapshot(scope).EarlierSummary != "fresh summary" {
+		t.Fatalf("accepted summary must be stored")
+	}
+}
+
+func TestConversationStoreSetBotReactionConcurrent(t *testing.T) {
+	t.Parallel()
+
+	stores := New(Config{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	store := stores.Conversations()
+
+	scope := state.ConversationScope{ChatID: 960}
+	store.AppendMessage(scope, state.Message{Text: "user target", FromID: 1, MessageID: 98})
+	store.AppendMessage(scope, state.Message{IsMe: true, MessageID: 99, Text: "bot target"})
+
+	emojis := []string{"👍", "👎", "🔥", "🎉", "🤔", "👀", "😂", "🙏"}
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(2)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				store.SetBotReaction(scope, 98, withEmoji(botReaction, emojis[g]))
+			}
+		}(g)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				store.SetMessageReactions(960, 99, int64(g+1), int64(1000+i), []state.Reaction{{UserID: int64(g + 1), Emoji: emojis[g]}})
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	userMsg := store.Snapshot(scope).Messages[0]
+	if len(userMsg.Reactions) != 1 || userMsg.Reactions[0].UserID != 999 {
+		t.Fatalf("concurrent bot reactions must leave exactly one bot entry: %#v", userMsg.Reactions)
+	}
+	botMsg := store.Snapshot(scope).Messages[1]
+	if len(botMsg.Reactions) != 8 {
+		t.Fatalf("concurrent incoming reactions must be preserved: %#v", botMsg.Reactions)
+	}
+}
+
+func withEmoji(base state.Reaction, emoji string) state.Reaction {
+	reaction := base
+	reaction.Emoji = emoji
+
+	return reaction
+}
+
 func TestConversationStoreSetMessageReactionsInvalidatesStaleSummary(t *testing.T) {
 	t.Parallel()
 

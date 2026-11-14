@@ -335,6 +335,82 @@ func (s *ConversationStore) SetMessageReactions(chatID int64, messageID int, use
 	return false
 }
 
+// SetBotReaction records the bot's own reaction on a user message in the
+// exact conversation scope of the triggering message. See the
+// ConversationStore interface for the contract.
+func (s *ConversationStore) SetBotReaction(scope state.ConversationScope, messageID int, reaction state.Reaction) bool {
+	if messageID <= 0 {
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	bucket, ok := s.streams[scopeKey(scope)]
+	if !ok {
+		return false
+	}
+
+	// Telegram message IDs are unique per chat, so scanning backwards finds
+	// the target fastest: the triggering message is almost always recent.
+	for i := len(bucket.messages) - 1; i >= 0; i-- {
+		msg := &bucket.messages[i]
+		if msg.MessageID != messageID || msg.IsMe {
+			continue
+		}
+
+		// Recording the identical reaction again must not create duplicate
+		// entries or churn accounting/summaries.
+		for _, existing := range msg.Reactions {
+			if existing.UserID == reaction.UserID &&
+				existing.Emoji == reaction.Emoji &&
+				existing.Name == reaction.Name &&
+				existing.Username == reaction.Username {
+				return true
+			}
+		}
+
+		now := time.Now().UTC()
+		kept := make([]state.Reaction, 0, len(msg.Reactions)+1)
+		for _, existing := range msg.Reactions {
+			if existing.UserID != reaction.UserID {
+				kept = append(kept, existing)
+			}
+		}
+		reaction.UpdatedAt = now
+		kept = append(kept, reaction)
+
+		before := messageApproxBytes(*msg)
+		msg.Reactions = kept
+		after := messageApproxBytes(*msg)
+		bucket.bytes += after - before
+		s.totalBytes += after - before
+
+		// Unlike the incoming path there is no reactionSeq accounting: the
+		// bot never observes its own reactions, so there is no Telegram
+		// update sequence to track and no fake IDs are invented.
+
+		// A reaction change on an already-summarized message makes the
+		// cached summary stale (it embeds the old reaction rendering), so
+		// drop it and let the next summarization rebuild from raw history.
+		if i < bucket.summaryMessageCount {
+			s.clearBucketSummary(bucket)
+		}
+		// Any applied reaction change can invalidate in-flight summary
+		// generation, so bump the revision to reject its commit.
+		bucket.revision++
+
+		bucket.lastUpdatedAt = now
+		s.touchStreamOrder(scopeKey(scope))
+		s.evictIfNeeded()
+		s.budget.Set("conversation", s.totalBytes)
+
+		return true
+	}
+
+	return false
+}
+
 func (s *ConversationStore) Reset(scope state.ConversationScope) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

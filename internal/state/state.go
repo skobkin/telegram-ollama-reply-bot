@@ -47,10 +47,14 @@ type Message struct {
 	Reactions     []Reaction
 }
 
-// Reaction is a single user's reaction on one of the bot's own messages.
-// Only reactions on bot messages are observable by bots, and Telegram
-// reports each user's current reaction set in full, so reactions are
-// stored per user and replaced wholesale on every update.
+// Reaction is one actor's reaction stored on a history message. Reactions
+// come from two directions: users reacting to the bot's own messages (the
+// only direction Telegram reports to bots, stored via SetMessageReactions,
+// which replaces a user's set wholesale on every update), and the bot
+// itself reacting to a user's message on behalf of a model-authored tool
+// call (stored via SetBotReaction, which replaces only the bot's single
+// entry — Telegram allows one bot reaction per message). Rendering treats
+// both identically: `Emoji` plus the actor attribution.
 type Reaction struct {
 	UserID    int64
 	Name      string
@@ -86,16 +90,32 @@ type ConversationStore interface {
 	SetEarlierSummary(scope ConversationScope, text string, summaryMessageCount int, historyRevision int64) bool
 	// SetMessageReactions atomically replaces all reactions of a single user
 	// on one of the bot's own messages (IsMe) identified by its Telegram
-	// message ID within the chat. Reaction updates carry no topic, so all
-	// topic streams of the chat are searched; Telegram message IDs are
-	// unique per chat. updateSeq is the sequential Telegram update ID of the
-	// reaction update: concurrent handlers do not preserve arrival order, so
-	// a call whose updateSeq is not newer than the last applied one for this
-	// user and message is rejected as stale, including after removals. An
-	// empty reactions slice removes that user's reactions. Returns false
-	// when the target message is not in history (restart, trim, reset, or a
-	// reaction on a non-bot message).
+	// message ID within the chat. It handles incoming Telegram reaction
+	// updates only; bot-authored reactions use SetBotReaction. Reaction
+	// updates carry no topic, so all topic streams of the chat are searched;
+	// Telegram message IDs are unique per chat. updateSeq is the sequential
+	// Telegram update ID of the reaction update: concurrent handlers do not
+	// preserve arrival order, so a call whose updateSeq is not newer than the
+	// last applied one for this user and message is rejected as stale,
+	// including after removals. An empty reactions slice removes that user's
+	// reactions. Returns false when the target message is not in history
+	// (restart, trim, reset, or a reaction on a non-bot message).
 	SetMessageReactions(chatID int64, messageID int, userID int64, updateSeq int64, reactions []Reaction) bool
+	// SetBotReaction records the bot's own reaction on an existing user
+	// message (!IsMe) in the given conversation scope, identified by its
+	// Telegram message ID. It replaces only the bot's previous entry for
+	// that message (Telegram allows one bot reaction per message) and
+	// preserves every other user's reactions. Recording the identical
+	// reaction again reports true without touching accounting or revisions.
+	// Outgoing actions have no Telegram update sequence — bots never observe
+	// their own reactions — so ordering is the sender's responsibility
+	// (per-target serialization) and no staleness sequencing applies here.
+	// Unlike SetMessageReactions the lookup is scope-direct: the sender
+	// knows the exact conversation scope of the triggering message. Returns
+	// false when the stream or target message is missing (restart, trim,
+	// reset) or the target is a bot message; a confirmed Telegram send still
+	// counts as a successful tool action in that case.
+	SetBotReaction(scope ConversationScope, messageID int, reaction Reaction) bool
 	Reset(scope ConversationScope)
 	ResetChat(chatID int64)
 }

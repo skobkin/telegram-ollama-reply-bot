@@ -65,6 +65,10 @@ func (s *dmHistorySpy) SetMessageReactions(chatID int64, messageID int, userID i
 	return s.reactionFound
 }
 
+func (s *dmHistorySpy) SetBotReaction(state.ConversationScope, int, state.Reaction) bool {
+	return false
+}
+
 func (s *dmHistorySpy) reactionCallCount() int {
 	s.reactionMu.Lock()
 	defer s.reactionMu.Unlock()

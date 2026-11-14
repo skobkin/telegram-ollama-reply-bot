@@ -353,7 +353,33 @@ func TestPlainTextRenderingIncludesBotReactions(t *testing.T) {
 	})
 
 	if !strings.Contains(text, "👎 Alice") {
-		t.Fatalf("expected reactions to survive plain-text rendering for summaries, got %q", text)
+		t.Fatalf("expected user reactions to survive plain-text rendering for summaries, got %q", text)
+	}
+}
+
+// TestUserMessagesRenderBotReactionsForModel proves bot-authored reactions on
+// user messages (set_reaction) are shown to the model in later prompts, in
+// both chat-history and summary rendering.
+func TestUserMessagesRenderBotReactionsForModel(t *testing.T) {
+	t.Parallel()
+
+	message := state.Message{
+		Name:   "Alice",
+		Text:   "that's a terrible pun",
+		FromID: 1,
+		Reactions: []state.Reaction{
+			{UserID: 999, Name: "MyBot", Username: "mybot", Emoji: "😂"},
+		},
+	}
+
+	rendered := presentMessage(message)
+	if !strings.HasSuffix(rendered, "\n[reactions: 😂 MyBot]") {
+		t.Fatalf("expected bot reaction suffix on the user message, got %q", rendered)
+	}
+
+	text := RenderMessagesPlainText([]state.Message{message})
+	if !strings.Contains(text, "😂 MyBot") {
+		t.Fatalf("expected bot reactions to survive plain-text rendering for summaries, got %q", text)
 	}
 }
 

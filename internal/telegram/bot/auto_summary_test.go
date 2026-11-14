@@ -303,6 +303,9 @@ func (s *autoSummaryHistorySpy) SetEarlierSummary(state.ConversationScope, strin
 func (s *autoSummaryHistorySpy) SetMessageReactions(int64, int, int64, int64, []state.Reaction) bool {
 	return false
 }
+func (s *autoSummaryHistorySpy) SetBotReaction(state.ConversationScope, int, state.Reaction) bool {
+	return false
+}
 func (s *autoSummaryHistorySpy) Reset(state.ConversationScope) {}
 func (s *autoSummaryHistorySpy) ResetChat(int64)               {}
 
