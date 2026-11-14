@@ -51,6 +51,7 @@ const (
 	datetimeFormatResultCharBudget      = 700
 	listImagesResultCharBudget          = 1600
 	analyzeImageResultCharBudget        = 2600
+	setReactionResultCharBudget         = 600
 )
 
 // ToolResult is the value a Handler returns to the runtime. It is exported
@@ -136,6 +137,16 @@ func newRegistry(runtime *Runtime) *Registry {
 			Visibility:       VisibilityStandard,
 			ResultCharBudget: currentTimeResultCharBudget,
 			Handler:          currentTimeHandler,
+		},
+		{
+			Name:             "set_reaction",
+			Description:      setReactionDescription(),
+			Parameters:       setReactionParameters(),
+			InvocationPolicy: InvocationPolicyDiscretionary,
+			Visibility:       VisibilityStandard,
+			ResultCharBudget: setReactionResultCharBudget,
+			SideEffecting:    true,
+			Handler:          runtime.setReaction,
 		},
 		{
 			Name:             "list_recent_links",

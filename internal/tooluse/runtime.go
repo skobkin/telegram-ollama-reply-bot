@@ -30,6 +30,11 @@ type llmService interface {
 type TelegramActionSender interface {
 	SendPoll(ctx context.Context, params *t.SendPollParams) (*t.Message, error)
 	SendDice(ctx context.Context, params *t.SendDiceParams) (*t.Message, error)
+	// SetMessageReaction sets exactly one ordinary emoji reaction on a
+	// Telegram message. Unlike the send actions it creates no message, so
+	// callers must not treat it as one and the wrapper publishes no
+	// MessageSent event.
+	SetMessageReaction(ctx context.Context, params *t.SetMessageReactionParams) error
 }
 
 // ImageAnalyzer re-analyzes a retained image under a model-authored prompt.
@@ -41,10 +46,27 @@ type ImageAnalyzer interface {
 	AnalyzeImage(ctx context.Context, meta state.ImageMeta, prompt string) (string, error)
 }
 
+// BotIdentity is the verified identity of this bot, obtained from the
+// startup GetMe probe. Reaction tools need it to attribute stored reactions
+// without issuing per-reaction identity requests.
+type BotIdentity struct {
+	UserID   int64
+	Name     string
+	Username string
+}
+
+func (i BotIdentity) zero() bool {
+	return i.UserID == 0
+}
+
 type Config struct {
 	MaxIterations      int
 	AdminIDs           []int64
 	RecentHistoryLimit int
+	// BotIdentity is the bot's verified identity from the startup GetMe.
+	// The zero value disables identity-bound tools (set_reaction reports a
+	// pre-send error instead of inventing an actor).
+	BotIdentity BotIdentity
 	// Dispatcher receives execution events. Nil disables event emission;
 	// delivery is best-effort and never influences the run outcome.
 	Dispatcher execution.Dispatcher
@@ -130,6 +152,9 @@ type Runtime struct {
 	config        Config
 	registry      *Registry
 	closers       []registeredCloser
+	// reactions coordinates outgoing set-reaction API calls across
+	// concurrent runs; see tool_set_reaction.go. Zero value ready to use.
+	reactions reactionLimiter
 }
 
 type registeredCloser struct {

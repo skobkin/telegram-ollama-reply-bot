@@ -215,7 +215,7 @@ func TestRegistryDefaultDefinitionsStillReturnsBuiltins(t *testing.T) {
 	})
 
 	names := namesOf(runtime.registry.DefaultDefinitions())
-	for _, required := range []string{"get_current_time", "send_poll", "fetch_url_content"} {
+	for _, required := range []string{"get_current_time", "set_reaction", "send_poll", "fetch_url_content"} {
 		if !slices.Contains(names, required) {
 			t.Fatalf("expected built-in %s to remain in defaults after Register, got %v", required, names)
 		}

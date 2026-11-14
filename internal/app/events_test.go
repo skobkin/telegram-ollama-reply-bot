@@ -74,6 +74,13 @@ func newEventsTestAPI(t *testing.T, failing ...string) *eventsTestAPI {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
+		// setMessageReaction returns True, not a message object: telego
+		// decodes the result into bool.
+		if method == "setMessageReaction" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok": true,
 			"result": map[string]any{
@@ -180,6 +187,52 @@ func TestEventPublishingBotSilentOnFailure(t *testing.T) {
 	}
 	if _, err := bot.SendDice(ctx, &tg.SendDiceParams{ChatID: tu.ID(100)}); err == nil {
 		t.Fatal("expected SendDice failure")
+	}
+
+	requireMessageSent(t, rec, 0)
+}
+
+// TestEventPublishingBotSetMessageReactionPublishesNothing proves the
+// reaction path forwards to the API but publishes no MessageSent: a reaction
+// is not a message, and the run-correlated BotReactionSet is published by the
+// tool runtime instead.
+func TestEventPublishingBotSetMessageReactionPublishesNothing(t *testing.T) {
+	rec := &eventRecorder{}
+	fake := newEventsTestAPI(t)
+	bot := newEventsTestBot(t, fake, rec)
+	ctx := context.Background()
+
+	params := &tg.SetMessageReactionParams{
+		ChatID:    tu.ID(100),
+		MessageID: 42,
+		Reaction:  []tg.ReactionType{&tg.ReactionTypeEmoji{Type: tg.ReactionEmoji, Emoji: "👍"}},
+	}
+	if err := bot.SetMessageReaction(ctx, params); err != nil {
+		t.Fatalf("SetMessageReaction: %v", err)
+	}
+
+	fake.mu.Lock()
+	sent := append([]string(nil), fake.sent...)
+	fake.mu.Unlock()
+	if len(sent) != 1 || sent[0] != "setMessageReaction" {
+		t.Fatalf("expected exactly one setMessageReaction API call, got %v", sent)
+	}
+
+	requireMessageSent(t, rec, 0)
+}
+
+// TestEventPublishingBotSetMessageReactionForwardsFailure proves API errors
+// pass through unchanged and publish nothing.
+func TestEventPublishingBotSetMessageReactionForwardsFailure(t *testing.T) {
+	rec := &eventRecorder{}
+	fake := newEventsTestAPI(t, "setMessageReaction")
+	bot := newEventsTestBot(t, fake, rec)
+
+	if err := bot.SetMessageReaction(context.Background(), &tg.SetMessageReactionParams{
+		ChatID:    tu.ID(100),
+		MessageID: 42,
+	}); err == nil {
+		t.Fatal("expected SetMessageReaction failure")
 	}
 
 	requireMessageSent(t, rec, 0)

@@ -67,3 +67,11 @@ func (b *eventPublishingBot) SendDice(ctx context.Context, params *tg.SendDicePa
 
 	return message, nil
 }
+
+// SetMessageReaction sets an outgoing bot reaction. It creates no message,
+// so no MessageSent is published here; the tool runtime publishes the
+// run-correlated BotReactionSet event itself after the reaction and the
+// history write are confirmed.
+func (b *eventPublishingBot) SetMessageReaction(ctx context.Context, params *tg.SetMessageReactionParams) error {
+	return b.api.SetMessageReaction(ctx, params)
+}

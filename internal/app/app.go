@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
+
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	core "telegram-ollama-reply-bot/internal/adminui"
 	"telegram-ollama-reply-bot/internal/buildinfo"
@@ -155,6 +157,26 @@ func verifyTelegramIdentity(ctx context.Context, api *tg.Bot, logger *slog.Logge
 	logger.Info("telegram api connected", "bot_id", botUser.ID, "bot_username", botUser.Username)
 
 	return botUser, nil
+}
+
+// botIdentityFromUser converts the verified startup identity into the
+// tool runtime's actor identity, with the same display-name derivation the
+// bot package uses for its own stored replies.
+func botIdentityFromUser(botUser *tg.User) tooluse.BotIdentity {
+	if botUser == nil {
+		return tooluse.BotIdentity{}
+	}
+
+	name := strings.TrimSpace(botUser.FirstName + " " + botUser.LastName)
+	if name == "" {
+		name = botUser.Username
+	}
+
+	return tooluse.BotIdentity{
+		UserID:   botUser.ID,
+		Name:     name,
+		Username: botUser.Username,
+	}
 }
 
 // imageModelLogValue returns the value logged as image_model: the configured
@@ -443,6 +465,7 @@ func Run(ctx context.Context) error {
 			MaxIterations:      cfg.LLM.ToolLoopMaxIterations,
 			AdminIDs:           cfg.Bot.AdminIDs,
 			RecentHistoryLimit: cfg.Bot.UncompressedHistoryLimit,
+			BotIdentity:        botIdentityFromUser(botUser),
 			Dispatcher:         dispatcher,
 		},
 	)

@@ -34,14 +34,12 @@ func TestRunContextOfCoversSealedEventFamily(t *testing.T) {
 }
 
 // TestBotReactionSetIsSealedEventMember proves the new event joined the
-// sealed family: it satisfies the Event interface and its marker exists.
+// sealed family: it satisfies the Event interface and round-trips through it.
 func TestBotReactionSetIsSealedEventMember(t *testing.T) {
 	var event Event = BotReactionSet{RunContext: RunContext{RunID: "r"}, At: time.Now(), Emoji: "👍"}
-	if event == nil {
-		t.Fatal("BotReactionSet must satisfy execution.Event")
-	}
 
-	if _, ok := event.(BotReactionSet); !ok {
-		t.Fatal("BotReactionSet must round-trip through the Event interface")
+	typed, ok := event.(BotReactionSet)
+	if !ok || typed.Emoji != "👍" || typed.RunID != "r" {
+		t.Fatal("BotReactionSet must round-trip through the Event interface with its payload intact")
 	}
 }

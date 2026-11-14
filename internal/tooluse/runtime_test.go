@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -81,6 +82,14 @@ type stubActionSender struct {
 	message        *tg.Message
 	diceMessage    *tg.Message
 	err            error
+
+	reactionMu            sync.Mutex
+	lastReactionParams    *tg.SetMessageReactionParams
+	reactionErr           error
+	reactionDelay         time.Duration // blocks each reaction send when > 0
+	reactionCalls         int
+	reactionStartTimes    []time.Time // API call starts, for spacing/serialization assertions
+	reactionCallDurations []time.Duration
 }
 
 func (s *stubActionSender) SendPoll(_ context.Context, params *tg.SendPollParams) (*tg.Message, error) {
@@ -96,6 +105,37 @@ func (s *stubActionSender) SendDice(_ context.Context, params *tg.SendDiceParams
 	}
 
 	return s.message, s.err
+}
+
+func (s *stubActionSender) SetMessageReaction(_ context.Context, params *tg.SetMessageReactionParams) error {
+	start := time.Now()
+	if s.reactionDelay > 0 {
+		time.Sleep(s.reactionDelay)
+	}
+
+	s.reactionMu.Lock()
+	s.lastReactionParams = params
+	s.reactionCalls++
+	s.reactionStartTimes = append(s.reactionStartTimes, start)
+	s.reactionCallDurations = append(s.reactionCallDurations, time.Since(start))
+	err := s.reactionErr
+	s.reactionMu.Unlock()
+
+	return err
+}
+
+func (s *stubActionSender) reactionCallCount() int {
+	s.reactionMu.Lock()
+	defer s.reactionMu.Unlock()
+
+	return s.reactionCalls
+}
+
+func (s *stubActionSender) reactionStarts() []time.Time {
+	s.reactionMu.Lock()
+	defer s.reactionMu.Unlock()
+
+	return append([]time.Time(nil), s.reactionStartTimes...)
 }
 
 type stubSearcher struct {
