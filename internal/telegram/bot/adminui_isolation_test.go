@@ -65,7 +65,7 @@ func newAdminChainBot(t *testing.T, cfg config.BotConfig, store adminconfig.Stor
 		api:     botAPI,
 		me:      botInfo{ID: fusedBotID, Username: "test_bot"},
 	}
-	testBot.SetAdminUI(adminui.NewAdapter(controller, manager, cfg.AdminIDs, logger))
+	testBot.SetAdminUI(adminui.NewAdapter(controller, manager, cfg.AdminIDs, logger, botAPI))
 	testBot.registerRoutes(bh)
 
 	return &adminChainBot{bot: testBot, bh: bh, api: api, history: history, stats: stats, manager: manager}

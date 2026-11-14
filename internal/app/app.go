@@ -393,10 +393,24 @@ func Run(ctx context.Context) error {
 	}, logManager.Logger("state/memory"))
 
 	sanitizer := markdown.NewTgMarkdownV2Sanitizer()
+
+	// Execution event dispatcher: publishes run/tool lifecycle and chat
+	// interaction events to in-process subscribers (the live preview
+	// renderer, the admin UI menu re-creation). Nothing is persisted; no
+	// authoritative result depends on it. Created before the services that
+	// publish through the event-wrapped Telegram sender below.
+	dispatcher := execution.NewDispatcher(execution.DispatcherConfig{QueueSize: 256}, logManager.Logger("execution"))
+	dispatcher.Start(ctx)
+
+	// Telegram sends that can land in a chat the bot serves are wrapped so
+	// every visible message publishes MessageSent: reminders delivered into
+	// admin DMs, and the model-authored poll/quiz/dice actions.
+	eventAPI := &eventPublishingBot{api: telegramAPI, events: dispatcher}
+
 	// Reminder delivery respects the access policy. Admin DMs are always
 	// deliverable (positive chat IDs are private chats; only admin-owned ones
 	// are exempt), ordinary chats go through the same decision as messages.
-	reminderService := reminders.NewService(persistentStore, telegramAPI, cfg.Bot.AdminIDs, func(ctx context.Context, chatID int64) (bool, error) {
+	reminderService := reminders.NewService(persistentStore, eventAPI, cfg.Bot.AdminIDs, func(ctx context.Context, chatID int64) (bool, error) {
 		if chatID > 0 && slices.Contains(cfg.Bot.AdminIDs, chatID) {
 			return true, nil
 		}
@@ -417,18 +431,12 @@ func Run(ctx context.Context) error {
 		return err
 	}
 
-	// Execution event dispatcher: publishes run/tool lifecycle events to
-	// in-process subscribers (the live preview renderer). Nothing is
-	// persisted; the runtime's authoritative result never depends on it.
-	dispatcher := execution.NewDispatcher(execution.DispatcherConfig{QueueSize: 256}, logManager.Logger("execution"))
-	dispatcher.Start(ctx)
-
 	tools := tooluse.New(
 		llmc,
 		stores.Conversations(),
 		ext,
 		searcher,
-		telegramAPI,
+		eventAPI,
 		reminderService,
 		logManager.Logger("tooluse"),
 		tooluse.Config{
@@ -467,12 +475,14 @@ func Run(ctx context.Context) error {
 	adminUIController := core.NewController(adminUIManager, adminService, cfg.Bot.AdminIDs, func() string {
 		return stores.Stats().Snapshot().String()
 	})
-	botService.SetAdminUI(adminui.NewAdapter(
+	adminAdapter := adminui.NewAdapter(
 		adminUIController,
 		adminUIManager,
 		cfg.Bot.AdminIDs,
 		logManager.Logger("telegram/adminui"),
-	))
+		telegramAPI,
+	)
+	botService.SetAdminUI(adminAdapter)
 
 	attachImageTools(tools, botService, cfg.LLM.ImageRecognitionEnabled)
 
@@ -480,8 +490,17 @@ func Run(ctx context.Context) error {
 	// preview workers must be joined before the dispatcher drains and both
 	// before the tool runtime closes (LIFO with the deferred tools.Close).
 	stopPreviews := botService.SetExecutionDispatcher(dispatcher)
+	// The admin UI watches MessageSent to re-create menus buried under newer
+	// messages; its worker joins (unsubscribing first) before the preview
+	// workers and the dispatcher drain. The worker is bound to the runtime
+	// context so shutdown cancels a stalled menu send while handlers are
+	// still being joined — a handler waiting on the render gate behind that
+	// send cannot be interrupted itself, and would hold the handler join for
+	// the whole re-creation send timeout.
+	stopMenuRecreate := adminAdapter.StartWatching(ctx, dispatcher)
 
 	runErr := botService.Run()
+	stopMenuRecreate()
 	if stopPreviews != nil {
 		stopPreviews()
 	}

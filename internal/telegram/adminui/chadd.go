@@ -32,7 +32,15 @@ func (a *Adapter) sendPickerKeyboard(ctx *th.Context, session *core.Session, adm
 	params := tu.Message(tu.ID(adminID), picker.Text)
 	params.ReplyMarkup = tu.Keyboard(tu.KeyboardRow(button))
 
-	message, err := a.api.SendMessage(ctx, params)
+	// Same gate discipline as sendInputPrompt: the picker keyboard is a
+	// pending input and must not be buried by an in-flight menu re-creation.
+	var message *t.Message
+	err := a.manager.DeliverPendingInput(adminID, func() error {
+		sent, sendErr := a.api.SendMessage(ctx, params)
+		message = sent
+
+		return sendErr
+	})
 	if err != nil {
 		a.logger.Warn("admin ui picker keyboard failed", "admin_id", adminID,
 			"error", safeerr.WrapTransport(errAdminPromptSend, err))

@@ -81,6 +81,8 @@ func (b *Bot) sendReplyWithToolHistory(ctx context.Context, message t.Message, a
 
 	sent, err := b.api.SendRichMessage(ctx, buildRichMessageParams(tu.ID(message.Chat.ID), message, body+block))
 	if err == nil {
+		b.publishRichMessageSent(message.Chat.ID, sent)
+
 		return sent, nil
 	}
 	if isRateLimit(err) {
@@ -121,7 +123,7 @@ func (b *Bot) sendReplyWithToolHistory(ctx context.Context, message t.Message, a
 		params.MessageThreadID = message.MessageThreadID
 	}
 
-	return b.api.SendMessage(ctx, params)
+	return b.sendMessage(ctx, params)
 }
 
 // renderRichToolHistoryBlock renders the collapsible rich-markdown block

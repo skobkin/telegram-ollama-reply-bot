@@ -1909,3 +1909,76 @@ func TestOpenDashboardConcurrentWithCommits(t *testing.T) {
 	}
 	<-done
 }
+
+func TestRecreateMenuBuildsCurrentScreen(t *testing.T) {
+	c, _ := newTestController(t)
+	session := mustOpen(t, c)
+
+	var sentRender *Render
+	var sentSession *Session
+	err := c.RecreateMenu(context.Background(), testAdminID, func(render *Render, s *Session) error {
+		sentRender = render
+		sentSession = s
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RecreateMenu: %v", err)
+	}
+
+	if sentRender == nil || sentRender.Built == nil {
+		t.Fatal("expected a built render from the re-creation")
+	}
+	if !strings.Contains(sentRender.Built.Text, "🛠 Admin") {
+		t.Fatalf("expected the dashboard screen rebuilt, got %q", sentRender.Built.Text)
+	}
+	if sentRender.MsgID != 100 {
+		t.Fatalf("expected the adopted menu message id, got %d", sentRender.MsgID)
+	}
+	if sentRender.Seq != session.Seq {
+		t.Fatalf("re-creation must keep the current Seq: %d vs %d", sentRender.Seq, session.Seq)
+	}
+	if sentSession != session {
+		t.Fatal("send must receive the committing session")
+	}
+}
+
+func TestRecreateMenuSuppressedWhilePending(t *testing.T) {
+	c, _ := newTestController(t)
+	session := mustOpen(t, c)
+
+	// Enter a string-input pending, the way the field editor does.
+	tap(t, c, session, VerbGlobalSet)
+	tap(t, c, session, VerbField, "lg")
+	tap(t, c, session, VerbString, "lg")
+
+	calls := 0
+	err := c.RecreateMenu(context.Background(), testAdminID, func(*Render, *Session) error {
+		calls++
+
+		return nil
+	})
+	if !errors.Is(err, ErrRecreateSuppressed) {
+		t.Fatalf("suppression must report ErrRecreateSuppressed so the caller keeps its schedule, got %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("expected suppression while pending, got %d calls", calls)
+	}
+}
+
+func TestRecreateMenuSkipsNonAdmin(t *testing.T) {
+	c, _ := newTestController(t)
+
+	calls := 0
+	err := c.RecreateMenu(context.Background(), 424242, func(*Render, *Session) error {
+		calls++
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("non-admin must be a silent no-op, got %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("non-admin must not reach send, got %d calls", calls)
+	}
+}

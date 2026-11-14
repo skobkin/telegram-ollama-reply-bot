@@ -107,6 +107,13 @@ type Outcome struct {
 	// acknowledgement line. Empty keeps the keyboard: in particular, a stale
 	// or mismatched chat selection must never dismiss a newer active picker.
 	DropPicker string
+	// Reopened reports that the operation fell back to opening a fresh
+	// dashboard over the previous session — Cancel with nothing pending (or
+	// against a dead session). The adapter re-anchors menu re-creation for
+	// it exactly as for /admin: a dead previous session makes the fallback
+	// edit the buried menu in place, and admin-UI sends publish no events of
+	// their own.
+	Reopened bool
 }
 
 // fx accumulates the side effects a verb handler requests; it is discarded
@@ -262,8 +269,35 @@ func (c *Controller) OpenDashboard(ctx context.Context, adminID int64) (Outcome,
 	return outcome, nil
 }
 
+// RecreateMenu rebuilds the current screen from fresh store data and hands
+// it to the manager's gated re-create path: send receives a presentation
+// render (fresh epoch, current screen, Seq untouched) plus the committing
+// session, and performs the Telegram IO. Used by the adapter to bring a
+// menu buried under newer chat messages back into view. Non-admins are
+// silent no-ops; a suppressed re-creation (live pending input) reports
+// ErrRecreateSuppressed so the caller can keep its schedule alive; gone,
+// detached, expired sessions and screen-build failures return errors for
+// the caller to log.
+func (c *Controller) RecreateMenu(ctx context.Context, adminID int64, send func(render *Render, session *Session) error) error {
+	if !c.IsAdmin(adminID) {
+		return nil
+	}
+
+	return c.manager.RecreateRender(adminID, func(render *Render, session *Session) error {
+		screen, err := c.buildScreen(ctx, render.Seq, render.Screen)
+		if err != nil {
+			return err
+		}
+		render.Built = screen
+
+		return send(render, session)
+	})
+}
+
 // Cancel cancels any live pending input or confirmation; with nothing
-// pending it reopens the dashboard (the /cancel chosen default).
+// pending — or against a dead (replaced, expired, gone) session — it
+// reopens the dashboard (the /cancel chosen default) and marks the outcome
+// Reopened.
 func (c *Controller) Cancel(ctx context.Context, adminID int64) (Outcome, error) {
 	if !c.IsAdmin(adminID) {
 		return Outcome{}, nil
@@ -287,7 +321,10 @@ func (c *Controller) Cancel(ctx context.Context, adminID int64) (Outcome, error)
 		return nil
 	})
 	if err != nil || !hadPending {
-		return c.OpenDashboard(ctx, adminID)
+		outcome, openErr := c.OpenDashboard(ctx, adminID)
+		outcome.Reopened = true
+
+		return outcome, openErr
 	}
 
 	outcome := effects.outcome()

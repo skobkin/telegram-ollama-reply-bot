@@ -60,7 +60,7 @@ type imageDescriber interface {
 // statistics. SyncCommandMenus pushes the Telegram command menus (called once
 // from Run after GetMe resolves the bot identity).
 type AdminUI interface {
-	RegisterRoutes(bh *th.BotHandler, api *t.Bot, botUserID int64, commandForMe th.Predicate)
+	RegisterRoutes(bh *th.BotHandler, botUserID int64, commandForMe th.Predicate)
 	SyncCommandMenus(ctx context.Context)
 }
 
@@ -277,6 +277,7 @@ func (b *Bot) registerRoutes(bh *th.BotHandler) {
 	// Request and access control. The DM restriction gate runs before the
 	// catalog so denied private messages leave no trace at all.
 	bh.Use(b.requestLogger)
+	bh.Use(b.publishIncomingMessage)
 	bh.Use(b.dmAdminsOnlyGate)
 	bh.Use(b.collectChatCatalog)
 	bh.Use(b.accessGate)
@@ -286,7 +287,7 @@ func (b *Bot) registerRoutes(bh *th.BotHandler) {
 	// administrative update terminates before the ephemeral-state
 	// middlewares. Wired in Run when the adapter is present.
 	if b.adminUI != nil {
-		b.adminUI.RegisterRoutes(bh, b.api, b.me.ID, commandForMe)
+		b.adminUI.RegisterRoutes(bh, b.me.ID, commandForMe)
 	}
 
 	// Administrative commands: same handlers and authorization as before,
@@ -443,7 +444,7 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adm
 		if errors.Is(err, ErrRequestTimeout) {
 			logger.Error("llm request timed out", "chat_id", message.Chat.ID, "error", err)
 			timeout := b.cfg.ProcessingTimeout
-			_, _ = b.api.SendMessage(baseCtx, b.reply(message, tu.Message(
+			_, _ = b.sendMessage(baseCtx, b.reply(message, tu.Message(
 				chatID,
 				fmt.Sprintf("LLM request timed out after %s. Try again later.", timeout),
 			)))
@@ -454,7 +455,7 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adm
 		logger.Error("cannot get reply from llm connector", "error", err)
 		sentry.CaptureException(err)
 
-		_, _ = b.api.SendMessage(baseCtx, b.reply(message, tu.Message(
+		_, _ = b.sendMessage(baseCtx, b.reply(message, tu.Message(
 			chatID,
 			"LLM request error. Try again later.",
 		)))

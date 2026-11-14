@@ -436,6 +436,25 @@ func TestRunContextOfReactionChanged(t *testing.T) {
 	}
 }
 
+// TestRunContextOfMessageSent guards the same hazard for the chat-activity
+// interaction event: ChatID must be exposed, the event stays uncorrelated
+// to any run.
+func TestRunContextOfMessageSent(t *testing.T) {
+	event := MessageSent{
+		RunContext: RunContext{ChatID: 12345},
+		At:         time.Unix(1700000000, 0).UTC(),
+		MessageID:  77,
+	}
+
+	rc := RunContextOf(event)
+	if rc.ChatID != 12345 {
+		t.Fatalf("MessageSent must expose its ChatID, got %+v", rc)
+	}
+	if rc.RunID != "" || rc.TopicID != 0 {
+		t.Fatalf("MessageSent is not run-bound, got %+v", rc)
+	}
+}
+
 // TestReactionChangedDeliveredInPublishOrder proves FIFO delivery for
 // sequential publication from one goroutine: an interleaved reaction
 // observation is delivered exactly between the run events published

@@ -192,7 +192,7 @@ func (b *Bot) trySendReplyError(ctx context.Context, message t.Message) {
 	if ctx == nil {
 		ctx = b.ctx
 	}
-	_, _ = b.api.SendMessage(ctx, b.reply(message, tu.Message(
+	_, _ = b.sendMessage(ctx, b.reply(message, tu.Message(
 		tu.ID(message.Chat.ID),
 		"Error occurred while trying to send reply.",
 	)))

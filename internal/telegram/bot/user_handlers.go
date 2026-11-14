@@ -24,7 +24,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 	args := strings.SplitN(message.Text, " ", 3)
 
 	if len(args) < 2 {
-		_, _ = ctx.Bot().SendMessage(ctx.Context(), tu.Message(
+		_, _ = b.sendMessage(ctx.Context(), tu.Message(
 			tu.ID(message.Chat.ID),
 			"Usage: /summarize <link>\r\n\r\n"+
 				"Example:\r\n"+
@@ -42,7 +42,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 
 	if !isValidAndAllowedURL(url) {
 		logger.Warn("provided text is not a valid url")
-		_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(chatID, "URL is not valid.")))
+		_, _ = b.sendMessage(ctx.Context(), b.reply(message, tu.Message(chatID, "URL is not valid.")))
 
 		return nil
 	}
@@ -51,7 +51,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 	if err != nil {
 		logger.Error("cannot retrieve article using extractor", "error", err, "url", url)
 		sentry.CaptureException(err)
-		_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(chatID, "Failed to extract article content. Please check if the URL is correct.")))
+		_, _ = b.sendMessage(ctx.Context(), b.reply(message, tu.Message(chatID, "Failed to extract article content. Please check if the URL is correct.")))
 
 		return nil
 	}
@@ -67,7 +67,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 	if content == "" {
 		logger.Warn("article text is empty", "url", url)
 		sentry.CaptureMessage("Article text is empty")
-		_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(chatID, "No text extracted from the article. This resource is not supported at the moment.")))
+		_, _ = b.sendMessage(ctx.Context(), b.reply(message, tu.Message(chatID, "No text extracted from the article. This resource is not supported at the moment.")))
 
 		return nil
 	}
@@ -88,14 +88,14 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 		if errors.Is(err, ErrRequestTimeout) {
 			logger.Error("summarize request timed out", "chat_id", message.Chat.ID, "error", err)
 			timeout := b.cfg.ProcessingTimeout
-			_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(chatID, fmt.Sprintf("LLM request timed out after %s. Try again later.", timeout))))
+			_, _ = b.sendMessage(ctx.Context(), b.reply(message, tu.Message(chatID, fmt.Sprintf("LLM request timed out after %s. Try again later.", timeout))))
 
 			return nil
 		}
 
 		logger.Error("cannot get summarize reply from llm connector", "error", err)
 		sentry.CaptureException(err)
-		_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(chatID, "LLM request error. Try again later.")))
+		_, _ = b.sendMessage(ctx.Context(), b.reply(message, tu.Message(chatID, "LLM request error. Try again later.")))
 
 		return nil
 	}
@@ -137,7 +137,7 @@ func (b *Bot) helpHandler(ctx *th.Context, message t.Message) error {
 	chatID := tu.ID(message.Chat.ID)
 	b.sendTyping(ctx.Context(), chatID)
 
-	_, err := ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Messagef(
+	_, err := b.sendMessage(ctx.Context(), b.reply(message, tu.Messagef(
 		chatID,
 		`Instructions:
 Mention the bot, reply to it to chat; text and photos are supported.
@@ -164,7 +164,7 @@ func (b *Bot) startHandler(ctx *th.Context, message t.Message) error {
 	chatID := tu.ID(message.Chat.ID)
 	b.sendTyping(ctx.Context(), chatID)
 
-	_, err := ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(
+	_, err := b.sendMessage(ctx.Context(), b.reply(message, tu.Message(
 		chatID,
 		"Hey!\r\nCheck out /help to learn how to use this bot.",
 	)))
@@ -183,7 +183,7 @@ func (b *Bot) statsHandler(ctx *th.Context, message t.Message) error {
 
 	if !b.isFromAdmin(&message) {
 		logger.Warn("non-admin stats request denied", "chat_id", message.Chat.ID)
-		_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(tu.ID(message.Chat.ID), "This command is available only to administrators.")))
+		_, _ = b.sendMessage(ctx.Context(), b.reply(message, tu.Message(tu.ID(message.Chat.ID), "This command is available only to administrators.")))
 
 		return nil
 	}
@@ -208,7 +208,7 @@ func (b *Bot) resetHandler(ctx *th.Context, message t.Message) error {
 
 	if !b.isFromAdmin(&message) {
 		logger.Warn("non-admin reset request denied", "chat_id", message.Chat.ID)
-		_, _ = ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(tu.ID(message.Chat.ID), "This command is available only to administrators.")))
+		_, _ = b.sendMessage(ctx.Context(), b.reply(message, tu.Message(tu.ID(message.Chat.ID), "This command is available only to administrators.")))
 
 		return nil
 	}
@@ -219,7 +219,7 @@ func (b *Bot) resetHandler(ctx *th.Context, message t.Message) error {
 	b.ResetChatHistory(chatID)
 	b.stats.ChatHistoryReset()
 
-	_, err := ctx.Bot().SendMessage(ctx.Context(), b.reply(message, tu.Message(tu.ID(chatID), "Okay, let's start fresh.")))
+	_, err := b.sendMessage(ctx.Context(), b.reply(message, tu.Message(tu.ID(chatID), "Okay, let's start fresh.")))
 	if err != nil {
 		logger.Error("cannot send reset confirmation", "error", err)
 		sentry.CaptureException(err)

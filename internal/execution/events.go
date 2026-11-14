@@ -208,6 +208,33 @@ type ReactionChanged struct {
 	Reactions []string
 }
 
+// MessageSent reports that a message became visible in a chat the bot
+// serves — either a message the bot itself sent (ordinary replies, command
+// answers, error notices, reminders, tool-created polls and dice) or a
+// message a user sent (published at the update ingress). It exists so
+// in-process consumers can react to chat activity without coupling send
+// paths to them; the admin UI uses it to re-create a scrolled-away menu
+// message.
+//
+// Like ReactionChanged it is an interaction observation, not a run event:
+// the embedded RunContext carries only ChatID (RunID empty — sends are not
+// run-bound; TopicID 0 — consumers key on the chat). MessageID is the
+// Telegram message ID of the sent message, 0 when unknown (user ingress
+// publishes before handler dispatch, and some send paths have no message
+// ID). At carries no payload text — the event never includes message
+// content.
+//
+// Delivery is best-effort and observational: publication never blocks or
+// fails a send, subscribers must not treat it as a delivery receipt, and a
+// dropped event is invisible. Nothing here triggers model generation.
+type MessageSent struct {
+	RunContext
+	At time.Time
+	// MessageID is the Telegram message ID of the message that was sent,
+	// when the publisher knows it.
+	MessageID int
+}
+
 func (RunStarted) isExecutionEvent()          {}
 func (RunCompleted) isExecutionEvent()        {}
 func (RunFailed) isExecutionEvent()           {}
@@ -217,6 +244,7 @@ func (ToolStarted) isExecutionEvent()         {}
 func (ToolCompleted) isExecutionEvent()       {}
 func (TextDelta) isExecutionEvent()           {}
 func (ReactionChanged) isExecutionEvent()     {}
+func (MessageSent) isExecutionEvent()         {}
 
 // RunContextOf extracts the run context carried by any event. Every event
 // embeds one, so the switch is exhaustive over the sealed set.
@@ -239,6 +267,8 @@ func RunContextOf(event Event) RunContext {
 	case TextDelta:
 		return e.RunContext
 	case ReactionChanged:
+		return e.RunContext
+	case MessageSent:
 		return e.RunContext
 	default:
 		return RunContext{}

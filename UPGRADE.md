@@ -11,6 +11,16 @@ and the built-in default template gained a conditional line introducing it
 the previous built-in default; custom templates are untouched — add `{{.BotUsername}}` where you want
 the handle to appear (it renders as nothing when unknown, so guard with `{{if .BotUsername}}`).
 
+### Admin menu is re-created when chat activity buries it (#145)
+
+The interactive admin panel's menu message no longer stays scrolled away when other messages
+land in the admin chat (bot replies, `/summarize` output, reminders, tool-created polls, the
+admin's own messages). After chat activity stays quiet for ~1.5 s, the bot sends a fresh menu
+message at the bottom of the chat and deletes the buried one; button sequences stay valid and
+session lifetime is unaffected. While an input prompt (ForceReply) or chat-picker keyboard is
+awaiting a reply, re-creation is suppressed so the input stays at the bottom. Callback presses
+never trigger re-creation (the admin pressing a button proves the menu is visible).
+
 ### Startup validates MiniMax, Tavily, and Kagi credentials (#143)
 
 The bot now probes the configured MiniMax VLM key and the configured search

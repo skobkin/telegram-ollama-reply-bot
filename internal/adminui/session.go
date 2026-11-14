@@ -40,6 +40,12 @@ var (
 	// correlate is no longer the live, awaiting pending — the send is
 	// dropped rather than correlating the wrong prompt message.
 	ErrPendingReplaced = errors.New("pending input was replaced")
+	// ErrRecreateSuppressed means a menu re-creation was suppressed because a
+	// live pending input owns the bottom of the chat. It is a control signal,
+	// not a failure: the caller must keep its re-creation schedule alive,
+	// because resolving the input through inline navigation publishes no chat
+	// activity that would re-trigger the re-creation.
+	ErrRecreateSuppressed = errors.New("admin menu re-creation suppressed by pending input")
 )
 
 // ScreenKind enumerates the admin UI screens.
@@ -436,6 +442,17 @@ func (s *Session) LivePickerKeyboard() bool {
 	return p != nil && p.Kind == PendingChatPicker && p.RequestID != 0
 }
 
+// HasPendingInput reports whether the session awaits any input (ForceReply
+// prompt or chat picker). Like the pending matching, it counts
+// expired-but-uncleared pendings conservatively: while a pending exists, the
+// bottom of the chat belongs to the input, not to the menu.
+func (s *Session) HasPendingInput() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.Pending != nil
+}
+
 // DetachedSnapshot reports (under the lock) whether the session is detached
 // and its current screen; renderers use it to drop late renders.
 func (s *Session) DetachedSnapshot() (bool, ScreenState, int, uint64) {
@@ -533,24 +550,149 @@ func (m *Manager) gateFor(adminID int64) *renderGate {
 	return gate
 }
 
-// AdoptMsgID records a new screen message ID (after a successful edit or
-// resend) — but only on the session the render belongs to. A Telegram call
-// that completes after /admin replaced the session must never redirect the
-// replacement's menu to the old session's message. No-ops for missing or
-// replaced sessions.
+// RecreateRender re-creates the admin's visible menu message through the
+// render gate: it snapshots the current screen under a fresh render epoch
+// and hands render and session to send, which performs the Telegram IO (send
+// the fresh menu message, delete the buried one, AdoptMsgID). The whole
+// sequence runs under the per-admin render gate, so a re-creation can never
+// interleave with a concurrent visible render; send must not touch session
+// state except through the manager's scoped adoption helpers.
+//
+// Presentation-only by design: Seq (button sequences stay valid — old-menu
+// callbacks are refused by the origin/mismatch checks as before) and the
+// sliding TTL (no admin interaction happened) are untouched. A session that
+// is gone, detached, or expired is reported; a session with a live pending
+// input suppresses the re-creation and reports ErrRecreateSuppressed — an
+// input prompt or picker keyboard owns the bottom of the chat until it
+// resolves, and the caller must keep its schedule alive because inline
+// navigation publishes no activity to re-trigger the re-creation. Send
+// errors are returned to the caller for logging; the gate advances only on
+// success.
+//
+// Known interleaving: an Apply commit that lands between the snapshot and
+// send re-renders the session's OLD message id afterwards, takes the
+// message-gone resend path, and can leave the re-created message with stale
+// content next to the fresh one. The window is one send round-trip and the
+// stale copy recovers via the next navigation (or /admin); closing it fully
+// would require serializing Apply commits behind the render gate.
+func (m *Manager) RecreateRender(adminID int64, send func(render *Render, session *Session) error) error {
+	gate := m.gateFor(adminID)
+
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+
+	session := m.Session(adminID)
+	if session == nil {
+		return ErrSessionGone
+	}
+
+	session.mu.Lock()
+	switch {
+	case session.detached:
+		session.mu.Unlock()
+
+		return ErrDetached
+	case m.now().After(session.ExpiresAt):
+		session.mu.Unlock()
+
+		return ErrSessionExpired
+	case session.Pending != nil:
+		// Suppressed, not a failure: chat activity during an input flow is
+		// normal and must not fight the prompt for the bottom of the chat.
+		// Reported as a sentinel so the caller keeps its schedule alive —
+		// resolving the input through inline navigation publishes no new
+		// activity, so a dropped schedule would bury the menu forever.
+		session.mu.Unlock()
+
+		return ErrRecreateSuppressed
+	}
+	// The epoch counter is shared across ALL admins' sessions — mint under
+	// the manager lock like Apply and Replace do, or one admin's re-creation
+	// races another admin's Apply, loses increments, and duplicate epochs
+	// make ApplyRender silently discard later renders via lastApplied.
+	m.mu.Lock()
+	if m.sessions[adminID] != session {
+		// A concurrent command replaced this session between the Session
+		// lookup and this mint: Replace publishes the replacement before it
+		// marks the old one detached, so the detached check above can still
+		// pass. The replacement already minted a strictly greater epoch
+		// under this same lock — minting here anyway would advance
+		// lastApplied past it once the send completes, and ApplyRender
+		// would silently drop the replacement's initial render while the
+		// re-created message's adoption onto the old session is refused.
+		m.mu.Unlock()
+		session.mu.Unlock()
+
+		return ErrDetached
+	}
+	session.Epoch = m.nextEpochLocked()
+	m.mu.Unlock()
+	render := renderOf(session, true)
+	session.mu.Unlock()
+
+	if err := send(render, session); err != nil {
+		return err
+	}
+
+	gate.lastApplied = render.Epoch
+
+	return nil
+}
+
+// DeliverPendingInput performs one pending input's Telegram send (a
+// ForceReply prompt or a chat-picker keyboard) under the per-admin render
+// gate — the same lock that serializes visible renders and menu
+// re-creation. Two orderings are possible, and both keep the input at the
+// bottom of the chat:
+//
+//   - the input pending exists when a re-creation fires: RecreateRender's
+//     pending check (under this gate) suppresses the re-creation;
+//   - the input commits while a re-creation is in flight: the send waits
+//     here, so the prompt lands AFTER the re-created menu instead of being
+//     buried by it. String-input callbacks commit no render, so without
+//     this gate their prompts would bypass the re-creation entirely.
+//
+// The send callback must not touch session state; the pending's message-ID
+// stamp happens through SetPendingPromptMsgID after the gate is released.
+func (m *Manager) DeliverPendingInput(adminID int64, send func() error) error {
+	gate := m.gateFor(adminID)
+
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+
+	return send()
+}
+
+// AdoptMsgID records a new screen message ID (after a successful edit,
+// resend, or automatic re-creation) — but only on the session the render
+// belongs to. A Telegram call that completes after /admin replaced the
+// session must never redirect the replacement's menu to the old session's
+// message. No-ops for missing, replaced, detached, or expired sessions.
+//
+// Presentation-only by design: the sliding TTL is untouched. An automatic
+// menu re-creation adopts its replacement message without extending the
+// session's inactivity window — otherwise recurring chat activity would
+// keep an unused session alive indefinitely. Genuine interactions already
+// slide the TTL through their own Apply commits.
 func (m *Manager) AdoptMsgID(session *Session, msgID int) {
 	if session == nil {
 		return
 	}
 
-	_, _ = m.Apply(session.AdminID, 0, func(s *Session) error {
-		if s != session {
-			return ErrDetached
-		}
-		s.MsgID = msgID
+	m.mu.Lock()
+	current := m.sessions[session.AdminID]
+	m.mu.Unlock()
+	if current != session {
+		return
+	}
 
-		return nil
-	})
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	if session.detached || m.now().After(session.ExpiresAt) {
+		return
+	}
+	session.MsgID = msgID
 }
 
 // SetPendingPromptMsgID records the message ID of a sent input prompt as the

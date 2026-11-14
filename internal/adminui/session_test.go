@@ -687,6 +687,26 @@ func TestAdoptMsgIDRefusesReplacedSession(t *testing.T) {
 	m.AdoptMsgID(nil, 502) // nil session is a safe no-op
 }
 
+// TestAdoptMsgIDKeepsSessionExpiry pins the presentation-only adoption: an
+// automatic menu re-creation records its replacement message without
+// extending the session's inactivity window — recurring chat activity must
+// not keep an unused session alive indefinitely.
+func TestAdoptMsgIDKeepsSessionExpiry(t *testing.T) {
+	clock := time.Unix(1700000000, 0)
+	m := NewManager(func() time.Time { return clock })
+	session := m.Replace(7, ScreenState{Kind: ScreenDashboard})
+
+	m.AdoptMsgID(session, 500)
+	if _, _, msgID, _ := session.Snapshot(); msgID != 500 {
+		t.Fatalf("adoption must record the message id, got %d", msgID)
+	}
+
+	clock = clock.Add(SessionTTL + time.Minute)
+	if _, live := m.ActiveSession(7); live {
+		t.Fatal("adoption must not slide the session TTL")
+	}
+}
+
 func TestPendingExpiry(t *testing.T) {
 	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
 	pending := &Pending{ExpiresAt: now.Add(PendingTTL)}

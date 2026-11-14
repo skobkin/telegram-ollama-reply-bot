@@ -11,6 +11,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,8 @@ import (
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	core "telegram-ollama-reply-bot/internal/adminui"
+	"telegram-ollama-reply-bot/internal/execution"
+	"telegram-ollama-reply-bot/internal/support/httpclient"
 )
 
 const (
@@ -613,6 +616,13 @@ type harness struct {
 	botAPI     *tg.Bot
 	clock      *testClock
 	logs       *bytes.Buffer
+	dispatcher execution.Dispatcher
+	// stopRecreate stops the default (10ms) re-creation watcher, so a test
+	// can run its own with a different quiet window.
+	stopRecreate func()
+	// commandBlock, when set, parks the next command delivery inside the
+	// route predicate (before the /admin handler runs) until released.
+	commandBlock atomic.Pointer[commandBlock]
 }
 
 func newHarness(t *testing.T) *harness {
@@ -644,13 +654,17 @@ func newHarnessWithAdmins(t *testing.T, adminIDs ...int64) *harness {
 	controller := core.NewController(manager, service, adminIDs, func() string { return "stats-snapshot" })
 
 	api := newFakeAdminAPI(t)
-	botAPI, err := tg.NewBot(testToken, tg.WithAPIServer(api.server.URL), tg.WithDiscardLogger())
+	// The HTTP caller matches production (app.Run wires WithHTTPClient):
+	// telego's default fasthttp caller cannot abort an in-flight request on
+	// context cancellation, so shutdown cancellation of the worker's menu IO
+	// is not observable through it.
+	botAPI, err := tg.NewBot(testToken, tg.WithAPIServer(api.server.URL), tg.WithHTTPClient(httpclient.New()), tg.WithDiscardLogger())
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
 	}
 
 	logs := &bytes.Buffer{}
-	adapter := NewAdapter(controller, manager, adminIDs, slog.New(slog.NewTextHandler(logs, nil)))
+	adapter := NewAdapter(controller, manager, adminIDs, slog.New(slog.NewTextHandler(logs, nil)), botAPI)
 
 	bh, err := th.NewBotHandler(botAPI, make(chan tg.Update))
 	if err != nil {
@@ -658,9 +672,7 @@ func newHarnessWithAdmins(t *testing.T, adminIDs ...int64) *harness {
 	}
 	t.Cleanup(func() { _ = bh.Stop() })
 
-	adapter.RegisterRoutes(bh, botAPI, testBotID, anyCommand)
-
-	return &harness{
+	h := &harness{
 		adapter:    adapter,
 		manager:    manager,
 		controller: controller,
@@ -671,9 +683,45 @@ func newHarnessWithAdmins(t *testing.T, adminIDs ...int64) *harness {
 		clock:      clock,
 		logs:       logs,
 	}
+
+	// The command predicate doubles as a determinism lever: a test can park
+	// the /admin delivery inside route matching — before the command handler
+	// runs at all — to pin the ingress-event-before-handler interleaving the
+	// production middleware produces.
+	adapter.RegisterRoutes(bh, testBotID, func(_ context.Context, update tg.Update) bool {
+		if blocked := h.commandBlock.Load(); blocked != nil {
+			blocked.entered <- struct{}{}
+			<-blocked.release
+		}
+
+		return anyCommand(context.Background(), update)
+	})
+
+	// The menu re-creation rig: a live dispatcher the tests publish
+	// MessageSent into, and the adapter watching it with a short debounce.
+	// No publisher is wired into the harness routes, so tests without
+	// explicit publishes see no re-creations.
+	dispatcher := execution.NewDispatcher(execution.DispatcherConfig{QueueSize: 64}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	dispatcher.Start(context.Background())
+	t.Cleanup(dispatcher.Stop)
+	h.dispatcher = dispatcher
+
+	stopRecreate := adapter.startWatching(context.Background(), dispatcher, 10*time.Millisecond)
+	t.Cleanup(stopRecreate)
+	h.stopRecreate = stopRecreate
+
+	return h
 }
 
 func anyCommand(_ context.Context, _ tg.Update) bool { return true }
+
+// commandBlock parks one delivery inside the harness's command predicate:
+// entered fires when the update reached the predicate (no handler has run
+// yet), release lets it proceed.
+type commandBlock struct {
+	entered chan struct{}
+	release chan struct{}
+}
 
 func (h *harness) deliver(t *testing.T, update tg.Update) {
 	t.Helper()
@@ -1827,20 +1875,31 @@ func TestPickerKeyboardLifecycleEndToEnd(t *testing.T) {
 		<-entered // the picker send is in flight
 
 		// /admin replaces the session while the keyboard is being delivered.
-		h.deliver(t, privateUpdate(testAdmin, "/admin"))
+		// The reopen runs on its own goroutine: the picker send holds the
+		// render gate while parked, so the reopen's dashboard render waits
+		// for the gate and must not block the main goroutine that will
+		// release it.
+		var reopen sync.WaitGroup
+		reopen.Add(1)
+		go func() {
+			defer reopen.Done()
+			h.deliver(t, privateUpdate(testAdmin, "/admin"))
+		}()
 		releaseGate()
 		wg.Wait()
+		reopen.Wait()
 
 		pickers, removals := replyKeyboards(h)
 		if len(pickers) != 1 {
 			t.Fatalf("the keyboard must have been delivered, got %d", len(pickers))
 		}
-		// Two removals: the reopen cleans up the replaced session's picker,
-		// and the delayed send removes the keyboard again AFTER its delivery —
-		// the reopen's removal message raced the keyboard itself. Without the
-		// delayed-send cleanup the keyboard delivered last would linger.
-		if len(removals) != 2 {
-			t.Fatalf("reopen + delayed-send removals expected, got %d", len(removals))
+		// The keyboard must never linger: the delayed send's stamp is always
+		// refused (its session was replaced), so its cleanup removal always
+		// fires after the delivery. The reopen's own cleanup may then find no
+		// live picker and skip — behind the render gate that ordering is a
+		// legitimate single-removal resolution, so only a floor is asserted.
+		if len(removals) == 0 {
+			t.Fatalf("the delivered keyboard must be removed after the replacement, got none")
 		}
 		for _, removal := range removals {
 			if text := lastJSONText(removal); text != core.MsgPickerClosed {
@@ -1848,8 +1907,8 @@ func TestPickerKeyboardLifecycleEndToEnd(t *testing.T) {
 			}
 		}
 		pickerIdx, removalIdxs := keyboardRemovalSequence(h)
-		if pickerIdx == 0 || len(removalIdxs) != 2 || removalIdxs[len(removalIdxs)-1] < pickerIdx {
-			t.Fatalf("the last removal must land after the late keyboard delivery: picker=%d removals=%v",
+		if pickerIdx == 0 || len(removalIdxs) == 0 || removalIdxs[len(removalIdxs)-1] < pickerIdx {
+			t.Fatalf("a removal must land after the late keyboard delivery: picker=%d removals=%v",
 				pickerIdx, removalIdxs)
 		}
 		if pending := h.manager.Session(testAdmin).Pending; pending != nil {
@@ -1926,4 +1985,996 @@ func TestDocumentReplyWithAlteredMarkerUploadsEndToEnd(t *testing.T) {
 	if !found {
 		t.Fatalf("the unmarked document reply must be uploaded as admin input, calls: %v", h.store.writeCalls())
 	}
+}
+
+// ---- menu re-creation (MessageSent watching) ----
+
+// publishMessageSent feeds a MessageSent for chatID into the harness
+// dispatcher, standing in for the bot package's send-path publishers.
+func (h *harness) publishMessageSent(chatID int64) {
+	h.dispatcher.Publish(execution.MessageSent{
+		RunContext: execution.RunContext{ChatID: chatID},
+		At:         time.Now(),
+		MessageID:  77,
+	})
+}
+
+// waitFor polls cond until it holds or the deadline passes.
+func (h *harness) waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("%s did not settle in time", what)
+}
+
+// keyboardSends counts sendMessage requests carrying an inline keyboard —
+// menu sends and re-created menus, as opposed to prompts, pickers, and
+// notices. The admin UI's own sends never publish MessageSent, so only an
+// actual re-creation can grow this counter past its baseline.
+func (h *harness) keyboardSends() int {
+	count := 0
+	for _, request := range h.api.requestsOf("sendMessage") {
+		if strings.Contains(request.Body, `"inline_keyboard"`) {
+			count++
+		}
+	}
+
+	return count
+}
+
+// keyboardSendsFor counts sendMessage requests carrying an inline keyboard
+// for ONE chat — its menu sends and re-creations, distinguished per admin in
+// multi-admin scenarios.
+func (h *harness) keyboardSendsFor(chatID int64) int {
+	count := 0
+	for _, request := range h.api.requestsOf("sendMessage") {
+		var payload struct {
+			ChatID      int64 `json:"chat_id"`
+			ReplyMarkup struct {
+				InlineKeyboard []json.RawMessage `json:"inline_keyboard"`
+			} `json:"reply_markup"`
+		}
+		if err := json.Unmarshal([]byte(request.Body), &payload); err != nil {
+			continue
+		}
+		if payload.ChatID == chatID && len(payload.ReplyMarkup.InlineKeyboard) > 0 {
+			count++
+		}
+	}
+
+	return count
+}
+
+// sessionMsgID reports the message ID currently adopted by the admin's session.
+func (h *harness) sessionMsgID(t *testing.T) int {
+	t.Helper()
+
+	session := h.manager.Session(testAdmin)
+	if session == nil {
+		t.Fatalf("no session for admin %d", testAdmin)
+	}
+	_, _, msgID, _ := session.DetachedSnapshot()
+
+	return msgID
+}
+
+// quietElapse covers several harness quiet windows (10ms each): long enough
+// for any re-creation a misbehaving watcher would fire, short enough to keep
+// the suite fast.
+const quietElapse = 100 * time.Millisecond
+
+// waitForRecreate waits until one settled re-creation is visible past the
+// opening menu. Settled means all three steps of resendMenu landed: the
+// fresh keyboard send, the delete of the buried menu, and the adoption of
+// the new message ID — asserting right after the send would race the tail.
+func (h *harness) waitForRecreate(t *testing.T) {
+	t.Helper()
+
+	h.waitFor(t, "settled menu re-creation", func() bool {
+		return h.keyboardSends() == 2 &&
+			h.api.callCount("deleteMessage") == 1 &&
+			h.sessionMsgID(t) == int(h.api.lastSendMessageID())
+	})
+}
+
+// coreRecreateFrame is the stack symbol of the core's gated re-creation
+// entry — the only place a parked re-creation is observable while it waits
+// on a held render gate.
+const coreRecreateFrame = "internal/adminui.(*Manager).RecreateRender"
+
+// waitForStackFrame polls all goroutine stacks until the frame appears
+// (want) or disappears (!want). A positive, timing-free observation of
+// where the worker actually is: a held render gate parks the re-creation
+// inside RecreateRender, and once it is seen there, every following stage
+// of the interleaving is order-locked.
+func waitForStackFrame(t *testing.T, what, frame string, want bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	buf := make([]byte, 1<<20)
+	for time.Now().Before(deadline) {
+		n := runtime.Stack(buf, true)
+		if strings.Contains(string(buf[:n]), frame) == want {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("%s did not settle in time (frame %q presence=%v)", what, frame, want)
+}
+
+// TestMenuRecreatedAfterChatMessage is the headline flow: a chat message in
+// the admin DM re-creates the buried menu — fresh keyboard send, best-effort
+// delete of the buried one, new message ID adopted.
+func TestMenuRecreatedAfterChatMessage(t *testing.T) {
+	h := newHarness(t)
+
+	initialMsgID := h.open(t)
+	if got := h.keyboardSends(); got != 1 {
+		t.Fatalf("expected the opened menu to carry a keyboard, got %d keyboard sends", got)
+	}
+
+	h.publishMessageSent(testAdmin)
+
+	h.waitForRecreate(t)
+
+	deletes := h.api.requestsOf("deleteMessage")
+	if len(deletes) != 1 {
+		t.Fatalf("expected exactly one deleteMessage, got %d", len(deletes))
+	}
+	var params struct {
+		ChatID    int64 `json:"chat_id"`
+		MessageID int   `json:"message_id"`
+	}
+	if err := json.Unmarshal([]byte(deletes[0].Body), &params); err != nil {
+		t.Fatalf("deleteMessage body: %v", err)
+	}
+	if params.ChatID != testAdmin || params.MessageID != int(initialMsgID) {
+		t.Fatalf("expected delete of menu message %d in chat %d, got %+v", initialMsgID, testAdmin, params)
+	}
+
+	if got := h.sessionMsgID(t); got != int(h.api.lastSendMessageID()) {
+		t.Fatalf("session must adopt the re-created menu: session %d, last send %d", got, h.api.lastSendMessageID())
+	}
+
+	payload := h.api.lastBodyJSON("sendMessage")
+	markup, _ := payload["reply_markup"].(map[string]any)
+	if _, ok := markup["inline_keyboard"]; !ok {
+		t.Fatalf("re-created menu must carry a fresh inline keyboard, got %v", payload["reply_markup"])
+	}
+}
+
+// TestMenuRecreatePreservesSessionExpiry proves the automatic re-creation is
+// TTL-neutral: recurring chat activity cannot keep an unused admin session
+// alive past its original inactivity window.
+func TestMenuRecreatePreservesSessionExpiry(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+
+	h.publishMessageSent(testAdmin)
+	h.waitForRecreate(t)
+
+	// One full session TTL past the opening: the re-creation must not have
+	// extended the window.
+	h.clock.Advance(core.SessionTTL + time.Minute)
+	if _, live := h.manager.ActiveSession(testAdmin); live {
+		t.Fatal("automatic re-creation must not slide the session TTL")
+	}
+}
+
+// TestMenuRecreateDebouncesBurst proves the quiet window coalesces: five
+// messages in the admin DM cost exactly one re-creation.
+func TestMenuRecreateDebouncesBurst(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+
+	for range 5 {
+		h.publishMessageSent(testAdmin)
+	}
+
+	h.waitForRecreate(t)
+
+	time.Sleep(quietElapse)
+	if got := h.keyboardSends(); got != 2 {
+		t.Fatalf("a burst must cost one re-creation, got %d keyboard sends", got)
+	}
+	if got := h.api.callCount("deleteMessage"); got != 1 {
+		t.Fatalf("a burst must delete the buried menu once, got %d deletes", got)
+	}
+}
+
+// TestMenuRecreateSuppressedWhilePendingInput walks into a ForceReply flow and
+// proves chat activity during the flow neither sends nor deletes anything.
+func TestMenuRecreateSuppressedWhilePendingInput(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+
+	h.tap(t, core.VerbGlobalSet)
+	h.tap(t, core.VerbField, "lg")
+	h.tap(t, core.VerbString, "lg")
+
+	session := h.manager.Session(testAdmin)
+	if !session.HasPendingInput() {
+		t.Fatal("test setup: the string flow must leave a pending input")
+	}
+
+	baseline := h.keyboardSends()
+	h.publishMessageSent(testAdmin)
+
+	time.Sleep(quietElapse)
+	if got := h.keyboardSends(); got != baseline {
+		t.Fatalf("re-creation must be suppressed while an input is pending: %d keyboard sends after publish (baseline %d)", got, baseline)
+	}
+	if got := h.api.callCount("deleteMessage"); got != 0 {
+		t.Fatalf("a suppressed re-creation must not delete anything, got %d deletes", got)
+	}
+}
+
+// TestMenuRecreateSkipsWithoutSessionOrExpired covers the two dead-chat
+// cases: an admin DM with no session at all (plus a non-admin chat as
+// negative control), and a session that expired before the quiet window
+// elapsed.
+func TestMenuRecreateSkipsWithoutSessionOrExpired(t *testing.T) {
+	h := newHarnessWithAdmins(t, testAdmin, 8)
+
+	h.publishMessageSent(testAdmin) // admin, but no session
+	h.publishMessageSent(4242)      // not an admin chat at all
+
+	time.Sleep(quietElapse)
+	if got := h.api.callCount("sendMessage"); got != 0 {
+		t.Fatalf("no session, no re-creation: %d sends already", got)
+	}
+
+	h.open(t)
+	base := h.keyboardSends()
+
+	h.clock.Advance(core.SessionTTL + time.Minute)
+	h.publishMessageSent(testAdmin)
+
+	time.Sleep(quietElapse)
+	if got := h.keyboardSends(); got != base {
+		t.Fatalf("an expired session must not re-create: %d keyboard sends after publish (base %d)", got, base)
+	}
+	if got := h.api.callCount("deleteMessage"); got != 0 {
+		t.Fatalf("an expired session must not delete anything, got %d deletes", got)
+	}
+}
+
+// TestPromptSendSurvivesInFlightRecreation pins the burial fix: a
+// string-input callback committing while a menu re-creation's send is still
+// in flight must wait for it — VerbString produces no render, so the prompt
+// would otherwise bypass the render gate entirely and land BEFORE the
+// re-created menu, which then buries it.
+func TestPromptSendSurvivesInFlightRecreation(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+
+	// Navigate to a string field so the input flow is one tap away.
+	h.tap(t, core.VerbGlobalSet)
+	h.tap(t, core.VerbField, "lg")
+
+	// Park the re-creation's send inside the API: RecreateRender holds the
+	// render gate for the whole send.
+	entered, release := h.api.armGate("sendMessage")
+	h.publishMessageSent(testAdmin)
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("recreation send never reached the API")
+	}
+
+	// The string-input callback commits its pending mid-re-creation and its
+	// prompt send blocks on the render gate. Wait for the commit (the
+	// origin check precedes it, so the callback is safely accepted against
+	// the not-yet-replaced menu) before letting the re-creation finish.
+	promptDone := make(chan struct{})
+	go func() {
+		defer close(promptDone)
+		h.tap(t, core.VerbString, "lg")
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !h.manager.Session(testAdmin).HasPendingInput() {
+		time.Sleep(time.Millisecond)
+	}
+	if !h.manager.Session(testAdmin).HasPendingInput() {
+		t.Fatal("the string callback never committed its pending input")
+	}
+
+	close(release)
+	<-promptDone
+
+	// The re-created menu must precede the prompt: find the last inline
+	// keyboard send and the first ForceReply send after it.
+	sends := h.api.requestsOf("sendMessage")
+	menuIdx, promptIdx := -1, -1
+	for i, request := range sends {
+		switch {
+		case strings.Contains(request.Body, `"inline_keyboard"`):
+			menuIdx = i
+		case promptIdx == -1 && strings.Contains(request.Body, `"force_reply"`):
+			promptIdx = i
+		}
+	}
+	if menuIdx == -1 || promptIdx == -1 {
+		t.Fatalf("expected a re-created menu and an input prompt, menu=%d prompt=%d (%d sends)", menuIdx, promptIdx, len(sends))
+	}
+	if menuIdx > promptIdx {
+		t.Fatalf("the re-created menu buried the input prompt: menu at send %d, prompt at send %d", menuIdx, promptIdx)
+	}
+
+	// The prompt is a live, correlated pending input anchored at the bottom.
+	if !h.manager.MatchesPendingInput(testAdmin, int(h.api.lastSendMessageID())) {
+		t.Fatal("the prompt must be correlated to the pending input")
+	}
+	if got := h.api.callCount("deleteMessage"); got != 1 {
+		t.Fatalf("expected exactly one buried-menu delete, got %d", got)
+	}
+}
+
+// TestMenuRecreateSettlesWithInFlightEdit parks a navigation edit mid-API and
+// fires a re-creation while it still holds the render gate. The re-creation
+// must wait for the gate, land on the post-edit state, and cost exactly one
+// send + one delete.
+func TestMenuRecreateSettlesWithInFlightEdit(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+
+	entered, release := h.api.armGate("editMessageText")
+	tapDone := make(chan struct{})
+	go func() {
+		defer close(tapDone)
+		h.tap(t, core.VerbCatalog, "1")
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("navigation edit never reached the API")
+	}
+
+	h.publishMessageSent(testAdmin)
+
+	close(release)
+	<-tapDone
+
+	// The navigation edit itself allocates a fake message ID in its
+	// response, so the settled state is: exactly one extra keyboard send
+	// (the re-created menu), one delete, and the session on the last send.
+	h.waitForRecreate(t)
+
+	if got := h.api.callCount("deleteMessage"); got != 1 {
+		t.Fatalf("expected exactly one buried-menu delete, got %d", got)
+	}
+	if got := h.sessionMsgID(t); got != int(h.api.lastSendMessageID()) {
+		t.Fatalf("session must adopt the re-created message: session %d, last send %d", got, h.api.lastSendMessageID())
+	}
+}
+
+// TestMenuRecreateGateReadyBeforeRoutesRegistered pins the startup-window
+// fix: the re-creation worker watches the event dispatcher from BEFORE the
+// bot's routes are registered (that happens inside Bot.Run), so a reminder
+// delivered to an admin during the startup interval reaches canRecreate
+// while RegisterRoutes has not run yet. A lazily-bound API client made the
+// gate blind there — and the unsynchronized bind raced the worker's reads
+// (confirmed under -race). The client is bound at construction instead.
+func TestMenuRecreateGateReadyBeforeRoutesRegistered(t *testing.T) {
+	manager := core.NewManager(nil)
+	controller := core.NewController(manager, adminconfig.NewService(newMemStore(), nil, nil), []int64{testAdmin}, nil)
+
+	api := newFakeAdminAPI(t)
+	// The HTTP caller matches production (app.Run wires WithHTTPClient):
+	// telego's default fasthttp caller cannot abort an in-flight request on
+	// context cancellation, so shutdown cancellation of the worker's menu IO
+	// is not observable through it.
+	botAPI, err := tg.NewBot(testToken, tg.WithAPIServer(api.server.URL), tg.WithHTTPClient(httpclient.New()), tg.WithDiscardLogger())
+	if err != nil {
+		t.Fatalf("NewBot: %v", err)
+	}
+
+	// Constructed; routes deliberately NOT registered — the startup window.
+	adapter := NewAdapter(controller, manager, []int64{testAdmin}, slog.New(slog.NewTextHandler(io.Discard, nil)), botAPI)
+
+	manager.Replace(testAdmin, core.ScreenState{Kind: core.ScreenDashboard})
+	if !adapter.canRecreate(testAdmin) {
+		t.Fatal("the re-creation gate must be functional before routes are registered: a reminder delivered during startup reaches it first")
+	}
+}
+
+// TestMenuRecreateSurfacesAfterAdminDuringPendingInput pins the
+// lost-activity fix: /admin arriving while an input is pending publishes its
+// activity event BEFORE the command handler clears the pending. The old
+// arm-time pending check discarded exactly that event, and /admin's
+// dashboard render edits the buried menu IN PLACE — admin UI sends publish
+// no further events, so the menu never surfaced. Now the event arms
+// regardless of the pending, the pending is validated when the window
+// elapses, and a suppressed fire re-arms so the menu surfaces as soon as the
+// input resolves.
+func TestMenuRecreateSurfacesAfterAdminDuringPendingInput(t *testing.T) {
+	h := newHarnessWithAdmins(t, testAdmin, 8)
+
+	h.open(t)                                // admin 7's menu
+	h.deliver(t, privateUpdate(8, "/admin")) // admin 8's menu — the FIFO witness
+
+	// Walk admin 7 into a string input so a pending input is live.
+	h.tap(t, core.VerbGlobalSet)
+	h.tap(t, core.VerbField, "lg")
+	h.tap(t, core.VerbString, "lg")
+
+	// The /admin-like activity lands while the pending is still set, and
+	// admin 8's event acts as the witness: one dispatcher queue, one worker
+	// — once 8's re-creation has landed, admin 7's event has provably been
+	// consumed, and the /admin command below has provably NOT run yet, so
+	// the consumption happened with the pending still set.
+	h.publishMessageSent(testAdmin)
+	h.publishMessageSent(8)
+
+	h.waitFor(t, "witness re-creation for admin 8", func() bool {
+		return h.keyboardSendsFor(8) == 2
+	})
+
+	// Suppression while the input is genuinely pending still holds.
+	if got := h.keyboardSendsFor(testAdmin); got != 1 {
+		t.Fatalf("no re-creation may happen while the input is pending, got %d keyboard sends for admin 7", got)
+	}
+
+	// NOW the handler runs: the fresh dashboard replaces the session (the
+	// pending dies with it) and edits the buried menu in place.
+	h.deliver(t, privateUpdate(testAdmin, "/admin"))
+
+	// The preserved activity must surface the menu at the bottom.
+	h.waitFor(t, "menu re-creation after /admin cleared the pending", func() bool {
+		return h.keyboardSendsFor(testAdmin) == 2
+	})
+
+	// Exactly one re-creation: the re-arm loop ends, nothing else fires.
+	time.Sleep(quietElapse)
+	if got := h.keyboardSendsFor(testAdmin); got != 2 {
+		t.Fatalf("exactly one re-creation expected after /admin, got %d keyboard sends", got)
+	}
+	if got := h.keyboardSendsFor(8); got != 2 {
+		t.Fatalf("admin 8 must stay untouched by admin 7's flow, got %d keyboard sends", got)
+	}
+}
+
+// TestMenuRecreateIgnoresSupersededExpiry pins the stale-notification fix:
+// a debounce notification of a superseded schedule must be discarded when it
+// finally arrives, without disturbing the newer schedule. (The original
+// interleaving — the timer firing while the worker's re-arm sat blocked on
+// an in-flight session commit — ceased to be constructable once the arm-time
+// gate stopped touching session state; the supersession-vs-fire race now
+// lives in the worker's select between the events and due queues, and the
+// same generation check covers it.) This shape also pins the fire-time
+// re-arm: a fire landing while an input is pending keeps the activity alive
+// until the input resolves, then surfaces the menu exactly once.
+func TestMenuRecreateIgnoresSupersededExpiry(t *testing.T) {
+	h := newHarness(t)
+
+	// The default 10ms harness window is too fast for the deterministic
+	// interleaving below; run a slow one instead.
+	h.stopRecreate()
+	stopSlow := h.adapter.startWatching(context.Background(), h.dispatcher.(execution.Subscriber), 300*time.Millisecond)
+	t.Cleanup(stopSlow)
+
+	h.open(t)
+	if got := h.keyboardSends(); got != 1 {
+		t.Fatalf("expected the opened menu to carry a keyboard, got %d keyboard sends", got)
+	}
+
+	// Walk into a string input so a pending input owns the bottom of the chat.
+	h.tap(t, core.VerbGlobalSet)
+	h.tap(t, core.VerbField, "lg")
+	h.tap(t, core.VerbString, "lg")
+
+	// Arm the first schedule, then supersede it before its deadline elapses.
+	// Arming succeeds despite the pending input (arm-time session state is
+	// stale by construction) — which is what makes the stale fire
+	// deterministic: T1(gen1) fires into T2(gen2)'s schedule and must be
+	// discarded there.
+	h.publishMessageSent(testAdmin)
+	time.Sleep(150 * time.Millisecond) // T1(gen1) armed, deadline +300ms
+	h.publishMessageSent(testAdmin)    // supersedes: T2(gen2), deadline +450ms
+
+	// T1's deadline elapses; its notification must be dropped as stale.
+	time.Sleep(200 * time.Millisecond) // now ~350ms: T1 fired at 300ms
+	if got := h.keyboardSends(); got != 1 {
+		t.Fatalf("the superseded expiry must be discarded: %d keyboard sends", got)
+	}
+
+	// T2 then fires into the live pending input: suppressed, and the
+	// activity is kept alive by re-arming rather than dropped.
+	time.Sleep(150 * time.Millisecond) // now ~500ms: T2 fired at 450ms, re-armed
+	if got := h.keyboardSends(); got != 1 {
+		t.Fatalf("no re-creation while the input is pending, got %d keyboard sends", got)
+	}
+
+	// The input resolves: /admin replaces the session (the pending dies with
+	// it) and edits the buried menu in place. The re-armed schedule then
+	// surfaces the menu at the bottom — exactly once.
+	editsBefore := h.api.callCount("editMessageText")
+	h.deliver(t, privateUpdate(testAdmin, "/admin"))
+	if got := h.api.callCount("editMessageText"); got != editsBefore+1 {
+		t.Fatalf("expected the reopen to edit the buried menu in place once, edits went %d → %d", editsBefore, got)
+	}
+
+	h.waitForRecreate(t)
+
+	time.Sleep(quietElapse)
+	if got := h.keyboardSends(); got != 2 {
+		t.Fatalf("exactly one re-creation expected after the input resolved, got %d keyboard sends", got)
+	}
+}
+
+// TestMenuRecreateSurvivesReopenAfterSessionExpiry pins the reopen fix:
+// /admin arriving after the previous session expired publishes its activity
+// event BEFORE the command handler replaces that session. An arm-time
+// liveness check discarded exactly that event, and the reopen then only
+// edits the buried menu in place (the fresh render carries the old message
+// ID) — admin-UI sends publish no events, so the menu never resurfaced
+// without another message.
+func TestMenuRecreateSurvivesReopenAfterSessionExpiry(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+
+	// Expire the session; the reopen must still be able to surface the menu.
+	h.clock.Advance(core.SessionTTL + time.Minute)
+
+	// The harness default window (10ms) would fire while the parked handler
+	// is still waiting; run a slow watcher so the fire lands after the
+	// reopen's replacement exists.
+	h.stopRecreate()
+	stopSlow := h.adapter.startWatching(context.Background(), h.dispatcher.(execution.Subscriber), 300*time.Millisecond)
+	t.Cleanup(stopSlow)
+
+	// Park the /admin delivery inside the route predicate: no handler has
+	// run yet, the expired session is still in place — the exact shape of an
+	// ingress event consumed before its command handler.
+	block := &commandBlock{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	h.commandBlock.Store(block)
+
+	reopenDone := make(chan struct{})
+	go func() {
+		defer close(reopenDone)
+		h.deliver(t, privateUpdate(testAdmin, "/admin"))
+	}()
+
+	select {
+	case <-block.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the /admin delivery never reached the route predicate")
+	}
+
+	// The reopen's activity event lands while the expired session is still
+	// the live one — the handler is parked before it can replace anything.
+	h.publishMessageSent(testAdmin)
+
+	// Let the handler through: the fresh dashboard replaces the expired
+	// session and edits the buried menu in place.
+	close(block.release)
+	<-reopenDone
+
+	if got := h.api.callCount("editMessageText"); got != 1 {
+		t.Fatalf("expected the reopen to edit the buried menu in place, got %d edits", got)
+	}
+
+	// The preserved activity must surface the menu at the bottom once the
+	// quiet window elapses past the reopen.
+	h.waitForRecreate(t)
+
+	time.Sleep(quietElapse)
+	if got := h.keyboardSends(); got != 2 {
+		t.Fatalf("exactly one re-creation expected after the reopen, got %d keyboard sends", got)
+	}
+}
+
+// TestMenuRecreateResurfacesAfterSkippedFireBeforeReopen pins the
+// delayed-handler fix: the quiet window can elapse while the /admin handler is
+// still stuck behind the route middlewares, and the fire then consumes the
+// reopen's only activity event against the session the command is about to
+// replace — the core silently skips a dead (expired) session, and the reopen
+// afterwards just edits the buried menu in place, because admin-UI sends
+// publish no events of their own. A successful reopen of a dead session that
+// carried a rendered menu must re-anchor the quiet window itself.
+func TestMenuRecreateResurfacesAfterSkippedFireBeforeReopen(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+
+	// Expire the session the command is about to replace.
+	h.clock.Advance(core.SessionTTL + time.Minute)
+
+	// Park the /admin delivery inside the route predicate — no handler has
+	// run, the expired session is still in place. The default 10ms window
+	// fires against it long before the handler gets to run.
+	block := &commandBlock{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	h.commandBlock.Store(block)
+
+	reopenDone := make(chan struct{})
+	go func() {
+		defer close(reopenDone)
+		h.deliver(t, privateUpdate(testAdmin, "/admin"))
+	}()
+
+	select {
+	case <-block.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the /admin delivery never reached the route predicate")
+	}
+
+	// The ingress event is consumed while the handler is parked: the window
+	// elapses, the fire sees the expired session, and the core skips
+	// silently — the event is gone.
+	h.publishMessageSent(testAdmin)
+	time.Sleep(quietElapse)
+	if got := h.keyboardSends(); got != 1 {
+		t.Fatalf("the fire against the expired session must be a silent skip, got %d keyboard sends", got)
+	}
+	if got := h.api.callCount("deleteMessage"); got != 0 {
+		t.Fatalf("the skipped fire must not delete anything, got %d deletes", got)
+	}
+
+	// The handler finally runs and edits the buried menu in place.
+	close(block.release)
+	<-reopenDone
+
+	if got := h.api.callCount("editMessageText"); got != 1 {
+		t.Fatalf("expected the reopen to edit the buried menu in place, got %d edits", got)
+	}
+
+	// The reopen itself must resurface the menu at the bottom.
+	h.waitForRecreate(t)
+
+	time.Sleep(quietElapse)
+	if got := h.keyboardSends(); got != 2 {
+		t.Fatalf("exactly one re-creation expected after the delayed reopen, got %d keyboard sends", got)
+	}
+}
+
+// TestMenuRecreateDrainsQueuedActivityBeforeHonoringExpiry pins the
+// select-race fix: while the worker is parked inside one admin's re-creation,
+// another admin's debounce expiry and newer activity can both queue up.
+// select hands out one ready case at random, and honoring the expiry first
+// re-creates before the queued activity's quiet window has elapsed — then the
+// event schedules a second re-creation. Queued activity must re-anchor its
+// window first, superseding the expiry by generation. The defect loses a coin
+// flip per cycle, so the test runs enough cycles for a regression to surface
+// with overwhelming probability while the fixed behavior is deterministic.
+func TestMenuRecreateDrainsQueuedActivityBeforeHonoringExpiry(t *testing.T) {
+	h := newHarnessWithAdmins(t, testAdmin, 8)
+
+	h.open(t)                                // admin 7's menu
+	h.deliver(t, privateUpdate(8, "/admin")) // admin 8's menu
+
+	const cycles = 16
+	for cycle := 1; cycle <= cycles; cycle++ {
+		// Arm admin 7's window and let it get a firm head start before
+		// admin 8's: the 5ms gap makes admin 7's timer fire strictly first,
+		// so admin 7's re-creation is the one that parks on the gate —
+		// regardless of AfterFunc scheduling.
+		h.publishMessageSent(testAdmin)
+		time.Sleep(5 * time.Millisecond)
+		entered, release := h.api.armGate("sendMessage")
+		h.publishMessageSent(8)
+
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("admin 7's re-creation send never reached the API")
+		}
+
+		// While the worker is parked: admin 8's expiry queues (its timer
+		// fires 5ms behind admin 7's), then newer admin 8 activity is
+		// published and settles — the subscriber records its timestamp and
+		// the event queues behind the expiry. Neither can be consumed until
+		// the release.
+		h.publishMessageSent(8)
+		time.Sleep(quietElapse)
+
+		// Released: the recorded activity belongs to a later window, so the
+		// expiry re-anchors from its timestamp instead of re-creating under
+		// it — one re-creation per admin. Honoring the expiry would send
+		// twice for admin 8.
+		close(release)
+
+		want := cycle + 1
+		h.waitFor(t, "both re-creations to settle", func() bool {
+			return h.keyboardSendsFor(testAdmin) == want && h.keyboardSendsFor(8) == want
+		})
+		time.Sleep(quietElapse)
+		if got := h.keyboardSendsFor(8); got != want {
+			t.Fatalf("cycle %d: the expiry must not be honored before the queued activity's window elapsed: want %d keyboard sends for admin 8, got %d", cycle, want, got)
+		}
+		if got := h.keyboardSendsFor(testAdmin); got != want {
+			t.Fatalf("cycle %d: admin 7 must cost one re-creation per cycle, want %d, got %d", cycle, want, got)
+		}
+	}
+}
+
+// TestMenuRecreateAdoptsFreshMenuBeforeCleanup pins the adoption fix: the
+// fresh menu is already visible when its buried predecessor's best-effort
+// delete starts, and callbacks on it are validated against the session's
+// message ID — deferring adoption behind the delete bounced every press on
+// the new menu as "no longer active" until the delete finished or the
+// shared re-creation timeout expired.
+func TestMenuRecreateAdoptsFreshMenuBeforeCleanup(t *testing.T) {
+	h := newHarness(t)
+	h.open(t) // the buried menu
+
+	// Park the delete: the fresh send has landed, cleanup is in flight.
+	entered, release := h.api.armGate("deleteMessage")
+	h.publishMessageSent(testAdmin)
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the re-created menu's delete never reached the API")
+	}
+
+	// The session must already identify the fresh menu.
+	fresh := int(h.api.lastSendMessageID())
+	if got := h.sessionMsgID(t); got != fresh {
+		t.Fatalf("session must adopt the fresh menu before cleanup: session %d, fresh menu %d", got, fresh)
+	}
+
+	// A press on the fresh menu while the delete is still parked must be
+	// accepted (silent answer), not bounced as a stale menu. The callback is
+	// answered before it is processed, so the acceptance is observable while
+	// the delete parks — the render itself waits on the re-creation's render
+	// gate and only completes after the release.
+	session := h.manager.Session(testAdmin)
+	seq, _, _, _ := session.Snapshot()
+
+	callbackDone := make(chan struct{})
+	go func() {
+		defer close(callbackDone)
+		h.deliver(t, callbackUpdate(testAdmin, fresh, core.EncodeAction(core.VerbCatalog, seq, "1")))
+	}()
+
+	h.waitFor(t, "callback answer while the delete parks", func() bool {
+		return len(h.api.requestsOf("answerCallbackQuery")) == 1
+	})
+	if body := h.api.requestsOf("answerCallbackQuery")[0].Body; strings.Contains(body, "no longer active") {
+		t.Fatalf("a press on the fresh menu must be accepted while cleanup is in flight, got %q", body)
+	}
+
+	close(release)
+	<-callbackDone
+
+	if got := h.api.callCount("deleteMessage"); got != 1 {
+		t.Fatalf("expected exactly one buried-menu delete, got %d", got)
+	}
+	if got := h.sessionMsgID(t); got != fresh {
+		t.Fatalf("session must stay on the fresh menu: session %d, fresh menu %d", got, fresh)
+	}
+}
+
+// TestMenuRecreateResurfacesAfterDelayedCancel pins the /cancel fallback
+// fix: with the session expired, the command's ingress event is consumed by
+// a fire against the dead session while the /cancel handler sits behind the
+// route middlewares, and Cancel then falls back to reopening the dashboard —
+// editing the buried menu in place. Only the /admin branch used to wake the
+// worker, so /cancel left the menu buried until another unrelated message
+// arrived. The fallback must re-anchor the quiet window exactly like the
+// /admin reopen.
+func TestMenuRecreateResurfacesAfterDelayedCancel(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+
+	// Expire the session the command is about to fall back over.
+	h.clock.Advance(core.SessionTTL + time.Minute)
+
+	// Park the /cancel delivery inside the route predicate — no handler has
+	// run, the expired session is still in place, and the default 10ms
+	// window fires against it long before the handler gets to run.
+	block := &commandBlock{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	h.commandBlock.Store(block)
+
+	cancelDone := make(chan struct{})
+	go func() {
+		defer close(cancelDone)
+		h.deliver(t, privateUpdate(testAdmin, "/cancel"))
+	}()
+
+	select {
+	case <-block.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the /cancel delivery never reached the route predicate")
+	}
+
+	// The ingress event is consumed while the handler is parked: the fire
+	// sees the expired session and the core skips silently — the event is
+	// gone, and nothing else will publish.
+	h.publishMessageSent(testAdmin)
+	time.Sleep(quietElapse)
+	if got := h.keyboardSends(); got != 1 {
+		t.Fatalf("the fire against the expired session must be a silent skip, got %d keyboard sends", got)
+	}
+	if got := h.api.callCount("deleteMessage"); got != 0 {
+		t.Fatalf("the skipped fire must not delete anything, got %d deletes", got)
+	}
+
+	// The handler finally runs: nothing pending to cancel, so Cancel falls
+	// back to the dashboard reopen and edits the buried menu in place.
+	close(block.release)
+	<-cancelDone
+
+	if got := h.api.callCount("editMessageText"); got != 1 {
+		t.Fatalf("expected the cancellation fallback to edit the buried menu in place, got %d edits", got)
+	}
+
+	// The fallback itself must resurface the menu at the bottom.
+	h.waitForRecreate(t)
+
+	time.Sleep(quietElapse)
+	if got := h.keyboardSends(); got != 2 {
+		t.Fatalf("exactly one re-creation expected after the delayed /cancel, got %d keyboard sends", got)
+	}
+}
+
+// TestMenuRecreateRearmsAfterGateSuppression pins the lost-wakeup fix: the
+// fire's inputPending check passes a moment before an input callback commits
+// its pending, and the re-creation then waits behind another render on the
+// render gate — the core's own pending check runs at gate time and
+// suppresses the send. That suppression is the authoritative state, and the
+// input resolves through inline navigation, which publishes no chat
+// activity: a dropped schedule would leave the menu buried forever, so the
+// suppressed fire must re-arm instead.
+func TestMenuRecreateRearmsAfterGateSuppression(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+
+	// Hold the render gate so the re-creation parks in front of it.
+	releaseGate := make(chan struct{})
+	gateHeld := make(chan struct{})
+	holderDone := make(chan struct{})
+	go func() {
+		defer close(holderDone)
+		_ = h.manager.DeliverPendingInput(testAdmin, func() error {
+			close(gateHeld)
+			<-releaseGate
+
+			return nil
+		})
+	}()
+
+	select {
+	case <-gateHeld:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the render gate never became held")
+	}
+
+	// The fire lands against the held gate: the input has not committed yet,
+	// so inputPending is false, the timer is deleted, and the re-creation
+	// parks on the gate. The park is detected positively on the worker's
+	// stack — no timing assumption, so dispatcher hop lag cannot re-order
+	// the staging (an arrive-after-commit would take the inputPending re-arm
+	// branch and pass for the wrong reason).
+	h.publishMessageSent(testAdmin)
+	waitForStackFrame(t, "the re-creation to park on the held render gate", coreRecreateFrame, true)
+
+	// The input commits while the re-creation waits on the gate.
+	if _, err := h.manager.Apply(testAdmin, 0, func(s *core.Session) error {
+		s.Pending = &core.Pending{
+			ID:        s.NextPendingID(),
+			Kind:      core.PendingStringInput,
+			ExpiresAt: h.clock.Now().Add(core.PendingTTL),
+		}
+
+		return nil
+	}); err != nil {
+		t.Fatalf("commit pending input: %v", err)
+	}
+
+	// Release: the re-creation reaches the gate, sees the pending input, and
+	// is suppressed — the authoritative state at gate time. The worker must
+	// have fully returned from the suppressed call before the input
+	// resolves, or the resolution would race the gate-time check.
+	close(releaseGate)
+	<-holderDone
+	waitForStackFrame(t, "the worker to leave the suppressed re-creation", coreRecreateFrame, false)
+
+	// The input resolves through inline navigation: no MessageSent event is
+	// published — the re-armed schedule is the only thing left to surface
+	// the menu.
+	if _, err := h.manager.Apply(testAdmin, 0, func(s *core.Session) error {
+		s.Pending = nil
+
+		return nil
+	}); err != nil {
+		t.Fatalf("resolve pending input: %v", err)
+	}
+
+	h.waitForRecreate(t)
+
+	time.Sleep(quietElapse)
+	if got := h.keyboardSends(); got != 2 {
+		t.Fatalf("exactly one re-creation expected after the suppressed fire re-armed, got %d keyboard sends", got)
+	}
+}
+
+// TestMenuRecreateStopCancelsInFlightSend pins the shutdown fix: the worker
+// executes re-creations on its own loop goroutine, so stopping the watcher
+// must cancel the in-flight menu IO instead of waiting out the send timeout —
+// otherwise a stalled Telegram API holds dispatcher shutdown and the deferred
+// tool/store cleanup past the deployment's stop grace (Docker's default 10s
+// vs the 15s send timeout).
+func TestMenuRecreateStopCancelsInFlightSend(t *testing.T) {
+	h := newHarness(t)
+	h.open(t)
+
+	// Park the re-creation's send inside the fake API.
+	entered, release := h.api.armGate("sendMessage")
+	h.publishMessageSent(testAdmin)
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the re-creation send never reached the API")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		h.stopRecreate()
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("stopping the watcher must cancel the in-flight send, not wait out its timeout")
+	}
+
+	// The canceled send surfaces as a quiet abort, not a transport failure.
+	time.Sleep(50 * time.Millisecond)
+	if logs := h.logs.String(); strings.Contains(logs, "admin ui menu recreate failed") {
+		t.Fatalf("a shutdown-aborted re-creation must not log a transport failure: %s", logs)
+	}
+
+	close(release)
+}
+
+// TestMenuRecreateParentCancelAbortsInFlightSend pins the shutdown-ordering
+// fix: the watcher's stop function is only reachable after Bot.Run returns,
+// and Bot.Run joins handlers first — a handler waiting on the render gate
+// behind a stalled re-creation send cannot be interrupted by canceling its
+// own context, so with the worker bound to context.Background() the stalled
+// send holds the gate (and the handler join) for the whole send timeout,
+// exceeding the container's stop grace. The worker's IO must abort through
+// the runtime context alone, while stop() has not been called.
+func TestMenuRecreateParentCancelAbortsInFlightSend(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+
+	h := newHarness(t)
+	h.stopRecreate() // the harness watcher is bound to Background; run our own
+	stop := h.adapter.startWatching(parent, h.dispatcher.(execution.Subscriber), 10*time.Millisecond)
+	t.Cleanup(stop)
+
+	h.open(t)
+
+	// Park the re-creation's send inside the fake API.
+	entered, release := h.api.armGate("sendMessage")
+	defer close(release)
+	h.publishMessageSent(testAdmin)
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the re-creation send never reached the API")
+	}
+
+	// Shutdown begins: the runtime context is canceled while the handler
+	// join is still pending — the watcher's stop function has NOT run.
+	cancelParent()
+
+	// The stalled send must abort through the parent cancellation alone:
+	// the worker must leave the gated re-creation — freeing the gate for any
+	// handler waiting on it — without the stop function being involved.
+	waitForStackFrame(t, "the stalled send to abort through the parent cancellation", coreRecreateFrame, false)
 }

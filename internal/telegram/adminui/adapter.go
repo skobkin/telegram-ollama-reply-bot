@@ -39,30 +39,43 @@ type Adapter struct {
 
 	menuMu     sync.Mutex
 	menuFailed map[int64]bool // admins whose per-chat command menu sync failed
+
+	// wake hands chat IDs to the menu re-creation worker; nil until
+	// StartWatching runs (and best-effort afterwards). Reopens use it when
+	// their own ingress event can no longer cover the reopened menu — see
+	// reopenDashboard.
+	wakeMu sync.Mutex
+	wake   func(int64)
 }
 
-// NewAdapter wires the adapter. The API client and bot user ID are bound at
-// RegisterRoutes time (Run resolves GetMe first).
-func NewAdapter(controller *core.Controller, manager *core.Manager, adminIDs []int64, logger *slog.Logger) *Adapter {
+// NewAdapter wires the adapter. The API client is bound at construction, not
+// at route registration: the menu re-creation worker starts before the bot's
+// routes exist (the dispatcher is watched from startup on), so a reminder
+// delivered to an admin in that startup window reaches the worker's gate
+// while RegisterRoutes has not run yet — a late bind would both blind the
+// gate and race the write against the worker's reads. The bot user ID is
+// still bound at RegisterRoutes time.
+func NewAdapter(controller *core.Controller, manager *core.Manager, adminIDs []int64, logger *slog.Logger, api *t.Bot) *Adapter {
 	return &Adapter{
 		controller: controller,
 		manager:    manager,
 		adminIDs:   adminIDs,
 		logger:     logger,
+		api:        api,
 		menuFailed: make(map[int64]bool),
 	}
 }
 
-// RegisterRoutes registers the admin UI routes. It must be called after the
-// generic gates (logging, DM restrictions, access policy) so admin updates
-// terminate before the conversation pipeline (history, stats, LLM).
+// RegisterRoutes registers the admin UI routes and binds the bot user ID. It
+// must be called after the generic gates (logging, DM restrictions, access
+// policy) so admin updates terminate before the conversation pipeline
+// (history, stats, LLM).
 //
 // Route order inside is load-bearing: the /admin + /cancel command route
 // comes first so replying to a prompt with /admin reopens the panel instead
 // of being consumed as input; the input-consumption route precedes the
 // conversation pipeline so correlated replies never reach the LLM.
-func (a *Adapter) RegisterRoutes(bh *th.BotHandler, api *t.Bot, botUserID int64, commandForMe th.Predicate) {
-	a.api = api
+func (a *Adapter) RegisterRoutes(bh *th.BotHandler, botUserID int64, commandForMe th.Predicate) {
 	a.botUserID = botUserID
 
 	adminCommand := th.And(
@@ -126,9 +139,9 @@ func (a *Adapter) handleAdminCommand(ctx *th.Context, message t.Message) error {
 		err     error
 	)
 	if strings.EqualFold(command, "cancel") {
-		outcome, err = a.controller.Cancel(ctx, adminID)
+		outcome, err = a.cancelCommand(ctx, adminID)
 	} else {
-		outcome, err = a.controller.OpenDashboard(ctx, adminID)
+		outcome, err = a.reopenDashboard(ctx, adminID)
 		if err == nil {
 			a.retryAdminMenu(ctx, adminID)
 		}
@@ -145,6 +158,75 @@ func (a *Adapter) handleAdminCommand(ctx *th.Context, message t.Message) error {
 	a.applyOutcome(ctx, adminID, outcome)
 
 	return nil
+}
+
+// preCommandSessionState snapshots whether the admin's current session is
+// live and carries a rendered menu, before a command replaces or reopens
+// over it.
+func (a *Adapter) preCommandSessionState(adminID int64) (wasLive, hadMenu bool) {
+	if session := a.manager.Session(adminID); session != nil {
+		_, _, msgID, _ := session.DetachedSnapshot()
+		hadMenu = msgID != 0
+		_, wasLive = a.manager.ActiveSession(adminID)
+	}
+
+	return wasLive, hadMenu
+}
+
+// reopenDashboard opens the dashboard, re-anchoring the quiet window when the
+// reopen cannot be covered by its own ingress event. The /admin ingress event
+// publishes before the handler runs — and while the handler is delayed behind
+// the route middlewares, the debounce can fire against the session the command
+// is about to replace: a dead (expired or detached) session makes the core
+// silently skip, consuming the only activity notification, and the reopen then
+// just edits the buried menu in place because admin-UI sends publish no events
+// of their own. A dead previous session that carried a rendered menu is exactly
+// that unrecoverable shape, so the successful reopen itself wakes the worker.
+// A live previous session needs no wake — its event lands on a live session and
+// re-creates normally — and no previous menu means a fresh menu was just sent
+// to the bottom of the chat.
+func (a *Adapter) reopenDashboard(ctx context.Context, adminID int64) (core.Outcome, error) {
+	wasLive, hadMenu := a.preCommandSessionState(adminID)
+
+	outcome, err := a.controller.OpenDashboard(ctx, adminID)
+	if err == nil && hadMenu && !wasLive {
+		a.notifyRecreate(adminID)
+	}
+
+	return outcome, err
+}
+
+// cancelCommand cancels any pending input, re-anchoring the quiet window when
+// the cancellation falls back to reopening the dashboard over a dead session
+// — the same unrecoverable shape as the delayed /admin reopen: with the
+// session expired, the command's ingress event fires against a session the
+// core silently skips (Cancel's own Apply reports the session expired and
+// falls back), and the fallback edits the buried menu in place because
+// admin-UI sends publish no events of their own. The core marks the fallback
+// on the outcome (Outcome.Reopened). A live session needs no wake: cancelling
+// its input re-renders the session's own message, and the event path's
+// pending re-arm loop covers a fire that landed before the handler.
+func (a *Adapter) cancelCommand(ctx context.Context, adminID int64) (core.Outcome, error) {
+	wasLive, hadMenu := a.preCommandSessionState(adminID)
+
+	outcome, err := a.controller.Cancel(ctx, adminID)
+	if err == nil && outcome.Reopened && hadMenu && !wasLive {
+		a.notifyRecreate(adminID)
+	}
+
+	return outcome, err
+}
+
+// notifyRecreate hands one chat ID to the re-creation worker. Non-blocking:
+// a busy or stopped worker drops it, matching the event path's best-effort
+// contract. No-op before StartWatching.
+func (a *Adapter) notifyRecreate(chatID int64) {
+	a.wakeMu.Lock()
+	wake := a.wake
+	a.wakeMu.Unlock()
+	if wake != nil {
+		wake(chatID)
+	}
 }
 
 // handleCallback acknowledges exactly once and pre-answers: fast validation

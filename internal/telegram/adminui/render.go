@@ -87,7 +87,9 @@ func inlineKeyboard(screen *core.Screen) *t.InlineKeyboardMarkup {
 
 // sendInputPrompt sends a correlated ForceReply prompt and records its message
 // ID as the very next statement after the API call — a pending input is never
-// matchable before its prompt message ID is known. The stamp is scoped to the
+// matchable before its prompt message ID is known. The send runs under the
+// per-admin render gate (DeliverPendingInput), so an in-flight menu
+// re-creation cannot overtake and bury the prompt. The stamp is scoped to the
 // committing session: a send completing after /admin replaced the session is
 // dropped instead of correlating the replacement session's pending.
 func (a *Adapter) sendInputPrompt(ctx *th.Context, session *core.Session, adminID int64, request *core.InputRequest) {
@@ -97,7 +99,13 @@ func (a *Adapter) sendInputPrompt(ctx *th.Context, session *core.Session, adminI
 		InputFieldPlaceholder: request.Placeholder,
 	}
 
-	message, err := a.api.SendMessage(ctx, params)
+	var message *t.Message
+	err := a.manager.DeliverPendingInput(adminID, func() error {
+		sent, sendErr := a.api.SendMessage(ctx, params)
+		message = sent
+
+		return sendErr
+	})
 	if err != nil {
 		a.logger.Warn("admin ui input prompt failed", "admin_id", adminID,
 			"error", safeerr.WrapTransport(errAdminPromptSend, err))
