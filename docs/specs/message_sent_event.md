@@ -45,6 +45,23 @@ per-admin render gate, presentation-only (`Seq` and session TTL untouched; see
 `Manager.RecreateRender`). The old menu message is deleted best-effort after the fresh one is
 sent; callbacks on deleted or stale menus are refused by the existing origin/stale-seq checks.
 
+Re-creation also defers while a conversation run is active in the admin chat (issue #148): in a
+private chat the live preview is a rich-message *draft*, and any other bot send — the fresh menu
+included — dismisses it, so a debounce fire landing right after the draft appears would
+flash-remove it. The watcher counts active runs per admin chat from the same subscription
+(`RunStarted` increments, `RunCompleted`/`RunFailed` decrement, clamped at zero; non-admin chats
+filtered exactly like `MessageSent`) and re-arms the quiet window instead of re-creating while
+the count is positive. A run's triggering message publishes its ingress `MessageSent` before the
+handler publishes `RunStarted` (same update goroutine, FIFO delivery), so an armed window
+normally observes the run before it can fire. When the run ends, the next fire re-creates; the
+final answer's own `MessageSent` re-anchors the window, so the menu typically surfaces exactly
+once, one quiet window after the answer. Three benign residuals remain: a fire landing between
+`RunCompleted` and the final answer's send re-creates once extra and self-corrects at the next
+window; a `/admin` arriving mid-run has its menu re-surfacing deferred to the run's end (the
+command itself still edits the menu in place immediately); a fire can still land after a
+slow-preprocessing run's draft appears but before its late `RunStarted` — at most one dismissal,
+self-correcting at the run's end.
+
 ## Best-effort delivery
 
 Like every execution event: `Publish` never blocks or fails a producer, an unwired or stopped

@@ -1999,6 +1999,45 @@ func (h *harness) publishMessageSent(chatID int64) {
 	})
 }
 
+// publishRunStarted feeds a conversation run start for chatID into the
+// harness dispatcher, standing in for the tool-use runtime's publishers.
+func (h *harness) publishRunStarted(chatID int64) {
+	h.dispatcher.Publish(execution.RunStarted{
+		RunContext: execution.RunContext{ChatID: chatID},
+		At:         time.Now(),
+	})
+}
+
+// publishRunCompleted feeds a conversation run completion for chatID into
+// the harness dispatcher.
+func (h *harness) publishRunCompleted(chatID int64) {
+	h.dispatcher.Publish(execution.RunCompleted{
+		RunContext: execution.RunContext{ChatID: chatID},
+		At:         time.Now(),
+	})
+}
+
+// publishRunFailed feeds a conversation run failure for chatID into the
+// harness dispatcher.
+func (h *harness) publishRunFailed(chatID int64) {
+	h.dispatcher.Publish(execution.RunFailed{
+		RunContext: execution.RunContext{ChatID: chatID},
+		At:         time.Now(),
+		Reason:     execution.ReasonBackend,
+	})
+}
+
+// slowWatcher swaps the default 10ms re-creation watcher for a 300ms one —
+// the default window is too fast for witness-based interleavings. The
+// replacement is stopped with the test's cleanup.
+func (h *harness) slowWatcher(t *testing.T) {
+	t.Helper()
+
+	h.stopRecreate()
+	stopSlow := h.adapter.startWatching(context.Background(), h.dispatcher.(execution.Subscriber), 300*time.Millisecond)
+	t.Cleanup(stopSlow)
+}
+
 // waitFor polls cond until it holds or the deadline passes.
 func (h *harness) waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
@@ -2440,6 +2479,233 @@ func TestMenuRecreateSurfacesAfterAdminDuringPendingInput(t *testing.T) {
 	}
 	if got := h.keyboardSendsFor(8); got != 2 {
 		t.Fatalf("admin 8 must stay untouched by admin 7's flow, got %d keyboard sends", got)
+	}
+}
+
+// TestMenuRecreateDefersWhileRunActiveAndSurfacesAfterRunEnd pins the issue
+// #148 fix: in an admin DM the live reply preview is a rich-message draft,
+// and any other bot send — the fresh menu included — dismisses it. A
+// re-creation firing while a conversation run is active would flash-remove
+// the draft right after it appears. The re-creation must instead defer
+// until the run ends, then surface exactly once.
+func TestMenuRecreateDefersWhileRunActiveAndSurfacesAfterRunEnd(t *testing.T) {
+	h := newHarnessWithAdmins(t, testAdmin, 8)
+	h.slowWatcher(t)
+
+	h.open(t)                                // admin 7's menu
+	h.deliver(t, privateUpdate(8, "/admin")) // admin 8's menu — the FIFO witness
+
+	// Arm admin 7's window, then start a conversation run before it elapses.
+	// Admin 8's event acts as the witness: one dispatcher queue, one
+	// subscriber goroutine — once 8's re-creation has landed, admin 7's run
+	// start has provably been recorded, so the deferral below is
+	// order-locked, not a timing assumption.
+	h.publishMessageSent(testAdmin)
+	h.publishRunStarted(testAdmin)
+	h.publishMessageSent(8)
+
+	h.waitFor(t, "witness re-creation for admin 8", func() bool {
+		return h.keyboardSendsFor(8) == 2 &&
+			h.api.callCount("deleteMessage") == 1 // admin 8's buried menu
+	})
+
+	// The run is active: past the armed deadline the re-creation must be
+	// deferred — no fresh menu send for admin 7, and no delete of its
+	// buried menu on top of admin 8's.
+	time.Sleep(400 * time.Millisecond)
+	if got := h.keyboardSendsFor(testAdmin); got != 1 {
+		t.Fatalf("no re-creation may happen while the run is active, got %d keyboard sends for admin 7", got)
+	}
+	if got := h.api.callCount("deleteMessage"); got != 1 {
+		t.Fatalf("no delete may happen while the run is active, got %d deletes", got)
+	}
+
+	// The run completes: the re-armed schedule surfaces the menu — all three
+	// settled steps of one re-creation.
+	h.publishRunCompleted(testAdmin)
+	h.waitFor(t, "settled menu re-creation after the run ended", func() bool {
+		return h.keyboardSendsFor(testAdmin) == 2 &&
+			h.api.callCount("deleteMessage") == 2 &&
+			h.sessionMsgID(t) == int(h.api.lastSendMessageID())
+	})
+
+	// Exactly one: the re-arm loop ends once the run is gone.
+	time.Sleep(quietElapse)
+	if got := h.keyboardSendsFor(testAdmin); got != 2 {
+		t.Fatalf("exactly one re-creation expected after the run ended, got %d keyboard sends", got)
+	}
+	if got := h.keyboardSendsFor(8); got != 2 {
+		t.Fatalf("admin 8 must stay untouched by admin 7's flow, got %d keyboard sends", got)
+	}
+}
+
+// TestMenuRecreateRunFailedReleasesDeferral is the failure twin of the
+// headline deferral test: a failed run releases the deferral exactly like a
+// completed one.
+func TestMenuRecreateRunFailedReleasesDeferral(t *testing.T) {
+	h := newHarnessWithAdmins(t, testAdmin, 8)
+	h.slowWatcher(t)
+
+	h.open(t)                                // admin 7's menu
+	h.deliver(t, privateUpdate(8, "/admin")) // admin 8's menu — the FIFO witness
+
+	h.publishMessageSent(testAdmin)
+	h.publishRunStarted(testAdmin)
+	h.publishMessageSent(8)
+
+	h.waitFor(t, "witness re-creation for admin 8", func() bool {
+		return h.keyboardSendsFor(8) == 2
+	})
+
+	time.Sleep(400 * time.Millisecond)
+	if got := h.keyboardSendsFor(testAdmin); got != 1 {
+		t.Fatalf("no re-creation may happen while the run is active, got %d keyboard sends for admin 7", got)
+	}
+
+	h.publishRunFailed(testAdmin)
+	h.waitFor(t, "settled menu re-creation after the run failed", func() bool {
+		return h.keyboardSendsFor(testAdmin) == 2 &&
+			h.api.callCount("deleteMessage") == 2 &&
+			h.sessionMsgID(t) == int(h.api.lastSendMessageID())
+	})
+
+	time.Sleep(quietElapse)
+	if got := h.keyboardSendsFor(testAdmin); got != 2 {
+		t.Fatalf("exactly one re-creation expected after the run failed, got %d keyboard sends", got)
+	}
+}
+
+// TestMenuRecreateSpuriousRunEndNeverWedges pins the clamp: a run end
+// without a matching start (subscription began mid-run) must be ignored —
+// never treated as activity, never left as a negative or sticky count. The
+// chat must keep re-creating normally.
+func TestMenuRecreateSpuriousRunEndNeverWedges(t *testing.T) {
+	h := newHarness(t)
+
+	h.open(t)
+	if got := h.keyboardSends(); got != 1 {
+		t.Fatalf("expected the opened menu to carry a keyboard, got %d keyboard sends", got)
+	}
+
+	h.publishRunCompleted(testAdmin)
+	h.publishMessageSent(testAdmin)
+
+	h.waitFor(t, "menu re-creation after a spurious run end", func() bool {
+		return h.keyboardSends() == 2 &&
+			h.api.callCount("deleteMessage") == 1 &&
+			h.sessionMsgID(t) == int(h.api.lastSendMessageID())
+	})
+}
+
+// TestMenuRecreateDeferredUntilLastConcurrentRunEnds pins the counter: two
+// concurrent runs in the chat keep the re-creation deferred until the LAST
+// one ends.
+func TestMenuRecreateDeferredUntilLastConcurrentRunEnds(t *testing.T) {
+	h := newHarnessWithAdmins(t, testAdmin, 8)
+	h.slowWatcher(t)
+
+	h.open(t)                                // admin 7's menu
+	h.deliver(t, privateUpdate(8, "/admin")) // admin 8's menu — the FIFO witness
+
+	h.publishMessageSent(testAdmin)
+	h.publishRunStarted(testAdmin)
+	h.publishRunStarted(testAdmin)
+	h.publishMessageSent(8)
+
+	h.waitFor(t, "witness re-creation for admin 8", func() bool {
+		return h.keyboardSendsFor(8) == 2
+	})
+
+	// Both runs active: deferred past the armed deadline and one re-armed
+	// window.
+	time.Sleep(400 * time.Millisecond)
+	if got := h.keyboardSendsFor(testAdmin); got != 1 {
+		t.Fatalf("no re-creation may happen while both runs are active, got %d keyboard sends for admin 7", got)
+	}
+
+	// One run completes: the other still owns the bottom of the chat.
+	h.publishRunCompleted(testAdmin)
+	time.Sleep(400 * time.Millisecond)
+	if got := h.keyboardSendsFor(testAdmin); got != 1 {
+		t.Fatalf("no re-creation may happen while one run is still active, got %d keyboard sends for admin 7", got)
+	}
+
+	// The last run completes: exactly one re-creation.
+	h.publishRunCompleted(testAdmin)
+	h.waitFor(t, "settled menu re-creation after the last run ended", func() bool {
+		return h.keyboardSendsFor(testAdmin) == 2 &&
+			h.api.callCount("deleteMessage") == 2 &&
+			h.sessionMsgID(t) == int(h.api.lastSendMessageID())
+	})
+
+	time.Sleep(quietElapse)
+	if got := h.keyboardSendsFor(testAdmin); got != 2 {
+		t.Fatalf("exactly one re-creation expected after the last run ended, got %d keyboard sends", got)
+	}
+}
+
+// TestMenuRecreateIgnoresNonAdminRunEvents pins the chat filter: run
+// lifecycle events of non-admin chats must neither create a deferral for
+// admin chats nor leak into their counts.
+func TestMenuRecreateIgnoresNonAdminRunEvents(t *testing.T) {
+	h := newHarness(t)
+
+	h.open(t)
+	if got := h.keyboardSends(); got != 1 {
+		t.Fatalf("expected the opened menu to carry a keyboard, got %d keyboard sends", got)
+	}
+
+	h.publishRunStarted(4242)
+	h.publishRunCompleted(4242)
+	h.publishMessageSent(testAdmin)
+
+	// The re-creation proceeds promptly: no global deferral, no cross-chat
+	// counter pollution — and no run-end event for admin 7 is needed to
+	// release anything.
+	h.waitFor(t, "menu re-creation despite non-admin run events", func() bool {
+		return h.keyboardSends() == 2 &&
+			h.api.callCount("deleteMessage") == 1 &&
+			h.sessionMsgID(t) == int(h.api.lastSendMessageID())
+	})
+}
+
+// TestMenuRecreateDefersAdminWakeDuringRun documents the accepted /admin
+// trade-off: the command itself still edits the buried menu in place
+// immediately (its handler runs synchronously), but the resurfacing wake is
+// deferred while a run is active, surfacing the menu once the run ends.
+func TestMenuRecreateDefersAdminWakeDuringRun(t *testing.T) {
+	h := newHarnessWithAdmins(t, testAdmin, 8)
+	h.slowWatcher(t)
+
+	h.open(t)                                // admin 7's menu
+	h.deliver(t, privateUpdate(8, "/admin")) // admin 8's menu — the FIFO witness
+
+	h.publishMessageSent(testAdmin)
+	h.publishRunStarted(testAdmin)
+	h.publishMessageSent(8)
+
+	h.waitFor(t, "witness re-creation for admin 8", func() bool {
+		return h.keyboardSendsFor(8) == 2
+	})
+
+	// The reopen wake lands mid-run: deferred, no re-creation.
+	h.adapter.notifyRecreate(testAdmin)
+	time.Sleep(400 * time.Millisecond)
+	if got := h.keyboardSendsFor(testAdmin); got != 1 {
+		t.Fatalf("the wake must be deferred while the run is active, got %d keyboard sends for admin 7", got)
+	}
+
+	// The run ends: the (kept-alive) schedule surfaces the menu.
+	h.publishRunCompleted(testAdmin)
+	h.waitFor(t, "settled menu re-creation after the run released the wake", func() bool {
+		return h.keyboardSendsFor(testAdmin) == 2 &&
+			h.api.callCount("deleteMessage") == 2 &&
+			h.sessionMsgID(t) == int(h.api.lastSendMessageID())
+	})
+
+	time.Sleep(quietElapse)
+	if got := h.keyboardSendsFor(testAdmin); got != 2 {
+		t.Fatalf("exactly one re-creation expected after the run ended, got %d keyboard sends", got)
 	}
 }
 

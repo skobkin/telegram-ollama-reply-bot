@@ -26,8 +26,10 @@ const menuRecreateSendTimeout = 15 * time.Second
 
 // menuRecreator is the adapter's debounce worker for menu re-creation. It
 // owns all timer state on its single goroutine; Telegram IO happens on the
-// AfterFunc goroutines only through the bounded `due` hand-off, so no locks
-// are needed. The core (internal/adminui) stays Telegram-free and
+// AfterFunc goroutines only through the bounded `due` hand-off. The two
+// subscriber-written maps (lastMsg, activeRuns) carry their own mutexes: the
+// subscriber callback runs on the dispatcher's delivery goroutine, not the
+// worker's. The core (internal/adminui) stays Telegram-free and
 // timer-free: this is the only place the two meet.
 type menuRecreator struct {
 	adapter *Adapter
@@ -54,6 +56,16 @@ type menuRecreator struct {
 	// goroutine and the queue is empty.
 	lastMsg map[int64]time.Time
 	lastMu  sync.Mutex
+
+	// activeRuns counts the conversation runs currently active per admin
+	// chat, updated synchronously in the subscriber before the events enter
+	// the queue (same rationale as lastMsg): the fire-time gate must see a
+	// RunStarted whose event is still in flight behind the dispatcher
+	// goroutine. A positive count defers re-creation (issue #148): in a
+	// private chat the live preview is a rich-message draft, and any other
+	// bot send — the fresh menu included — dismisses it.
+	activeRuns map[int64]int
+	runsMu     sync.Mutex
 
 	// gen is the next schedule generation; touched only on the worker
 	// goroutine. Every re-arm supersedes the previous schedule, so a fired
@@ -103,6 +115,32 @@ func (r *menuRecreator) latestActivity(chatID int64) time.Time {
 	return r.lastMsg[chatID]
 }
 
+// noteRun applies one run-lifecycle delta to the chat's active-run count.
+// Ends without a matching start (the subscription began mid-run) clamp at
+// zero: an unmatched run end must never read as activity. A count wedged
+// positive by a lost run end — possible only in the dispatcher's documented
+// degradation mode — costs one no-op timer fire per quiet window until
+// stop; the schedule itself stays alive, so nothing leaks.
+func (r *menuRecreator) noteRun(chatID int64, delta int) {
+	r.runsMu.Lock()
+	defer r.runsMu.Unlock()
+
+	if n := r.activeRuns[chatID] + delta; n > 0 {
+		r.activeRuns[chatID] = n
+	} else {
+		delete(r.activeRuns, chatID)
+	}
+}
+
+// runsActive reports whether a conversation run is currently active in the
+// chat.
+func (r *menuRecreator) runsActive(chatID int64) bool {
+	r.runsMu.Lock()
+	defer r.runsMu.Unlock()
+
+	return r.activeRuns[chatID] > 0
+}
+
 // StartWatching subscribes the adapter to execution events and starts the
 // debounce worker. The worker's menu IO is bound to ctx: its cancellation
 // must reach the worker even while the bot's handlers are still being
@@ -120,14 +158,15 @@ func (a *Adapter) StartWatching(ctx context.Context, dispatcher execution.Subscr
 func (a *Adapter) startWatching(parent context.Context, dispatcher execution.Subscriber, quiet time.Duration) func() {
 	workerCtx, cancelWorker := context.WithCancel(parent)
 	r := &menuRecreator{
-		adapter:   a,
-		quiet:     quiet,
-		events:    make(chan activity, 64),
-		due:       make(chan dueMenu, 64),
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
-		lastMsg:   make(map[int64]time.Time),
-		workerCtx: workerCtx,
+		adapter:    a,
+		quiet:      quiet,
+		events:     make(chan activity, 64),
+		due:        make(chan dueMenu, 64),
+		stop:       make(chan struct{}),
+		done:       make(chan struct{}),
+		lastMsg:    make(map[int64]time.Time),
+		activeRuns: make(map[int64]int),
+		workerCtx:  workerCtx,
 	}
 
 	// The reopen wake: the /admin handler hands chat IDs straight to the
@@ -145,29 +184,45 @@ func (a *Adapter) startWatching(parent context.Context, dispatcher execution.Sub
 	a.wakeMu.Unlock()
 
 	unsubscribe := dispatcher.Subscribe(execution.HandlerFunc(func(_ context.Context, event execution.Event) {
-		sent, ok := event.(execution.MessageSent)
-		if !ok {
-			return
-		}
-		chatID := execution.RunContextOf(sent).ChatID
-		if !slices.Contains(a.adminIDs, chatID) {
-			// Admin DMs carry the admin's user ID as the chat ID; everything
-			// else (groups, non-admin private chats) cannot hold a menu.
-			return
-		}
+		// Run lifecycle events defer the re-creation while a conversation
+		// run owns the bottom of the chat (its live preview draft); the
+		// MessageSent branch re-anchors the quiet window. Both share the
+		// chat filter: admin DMs carry the admin's user ID as the chat ID;
+		// everything else (groups, non-admin private chats) cannot hold a
+		// menu.
+		switch e := event.(type) {
+		case execution.RunStarted:
+			if chatID := e.ChatID; slices.Contains(a.adminIDs, chatID) {
+				// Recorded synchronously, before the event could enter any
+				// queue: the fire-time gate reads this map, so a run start
+				// still in flight behind this goroutine is already
+				// accounted for.
+				r.noteRun(chatID, 1)
+			}
+		case execution.RunCompleted, execution.RunFailed:
+			if chatID := execution.RunContextOf(e).ChatID; slices.Contains(a.adminIDs, chatID) {
+				r.noteRun(chatID, -1)
+			}
+		case execution.MessageSent:
+			chatID := e.ChatID
+			if !slices.Contains(a.adminIDs, chatID) {
+				return
+			}
 
-		// Record the message time synchronously, before the event is queued:
-		// a fire-time expiry check reads this map, so the timestamp of an
-		// event still in flight behind this goroutine is already accounted
-		// for.
-		r.noteActivity(chatID, sent.At)
+			// Record the message time synchronously, before the event is
+			// queued: a fire-time expiry check reads this map, so the
+			// timestamp of an event still in flight behind this goroutine
+			// is already accounted for.
+			r.noteActivity(chatID, e.At)
 
-		select {
-		case r.events <- activity{chatID: chatID, at: sent.At}:
-		default:
-			// Best-effort by contract: a flooded worker drops the event, but
-			// its timestamp is already recorded — a pending schedule re-arms
-			// for it at fire time instead of re-creating under it.
+			select {
+			case r.events <- activity{chatID: chatID, at: e.At}:
+			default:
+				// Best-effort by contract: a flooded worker drops the
+				// event, but its timestamp is already recorded — a pending
+				// schedule re-arms for it at fire time instead of
+				// re-creating under it.
+			}
 		}
 	}))
 
@@ -271,6 +326,18 @@ func (r *menuRecreator) run() {
 				// surface once the input resolves even if no further message
 				// arrives (e.g. /admin consumed its event before its handler
 				// cleared the pending).
+				arm(fired.chatID, time.Now())
+
+				continue
+			}
+			if r.runsActive(fired.chatID) {
+				// A conversation run owns the bottom of the chat: its live
+				// preview draft is dismissed by any other bot send, the
+				// fresh menu included (issue #148). Keep the schedule alive
+				// exactly like the pending-input case — the run's final
+				// answer publishes MessageSent, whose quiet window re-creates
+				// the menu once the answer has landed. A run end delivered
+				// just after this check costs one extra quiet window.
 				arm(fired.chatID, time.Now())
 
 				continue
