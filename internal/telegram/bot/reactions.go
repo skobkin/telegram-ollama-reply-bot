@@ -3,6 +3,7 @@ package bot
 import (
 	"cmp"
 	"context"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -40,14 +41,16 @@ var trackedReactionEmojis = map[string]struct{}{
 	"🥴": {}, "🥱": {}, "🤮": {}, "💩": {},
 }
 
-// messageReactionHandler records reactions to the bot's own messages in
-// conversation history so the model sees the feedback in later replies.
-// It is registered as a generic route (not the typed HandleMessageReaction)
-// so the update envelope's sequential UpdateID reaches the store for
-// stale-update rejection: handlers run concurrently and do not preserve
-// Telegram's delivery order. Reaction updates carry no Message payload, so
-// the shared middlewares (including the access gate) never run for them —
-// the gate is enforced here.
+// messageReactionHandler is the ingress adapter for reaction updates: it
+// validates the update, enforces access, normalizes the tracked reaction
+// change (authorizedReactionChange), and processes it synchronously against
+// conversation history (applyReactionChange). It is registered as a generic
+// route (not the typed HandleMessageReaction) so the update envelope's
+// sequential UpdateID reaches the store for stale-update rejection:
+// handlers run concurrently and do not preserve Telegram's delivery order.
+// Reaction updates carry no Message payload, so the shared middlewares
+// (including the access gate) never run for them — the gate is enforced in
+// authorizedReactionChange.
 func (b *Bot) messageReactionHandler(ctx *th.Context, update t.Update) error {
 	reaction := update.MessageReaction
 	if reaction == nil {
@@ -56,13 +59,33 @@ func (b *Bot) messageReactionHandler(ctx *th.Context, update t.Update) error {
 
 	logger := b.handlerLogger(ctx).With("chat_id", reaction.Chat.ID, "message_id", reaction.MessageID)
 
+	change, eligible, err := b.authorizedReactionChange(ctx, update, logger)
+	if err != nil || !eligible {
+		return err
+	}
+
+	b.applyReactionChange(change, logger)
+
+	return nil
+}
+
+// authorizedReactionChange validates a reaction update, enforces the
+// access restrictions, and normalizes the tracked reaction change. It
+// reports whether the update is eligible: rejected or irrelevant updates
+// (anonymous actors, access denials, nothing tracked) produce no change.
+// The complete update envelope is taken so the change carries the exact
+// sequential UpdateID used for ordering; the MessageReaction payload must
+// already be non-nil.
+func (b *Bot) authorizedReactionChange(ctx *th.Context, update t.Update, logger *slog.Logger) (reactionChange, bool, error) {
+	reaction := update.MessageReaction
+
 	if reaction.User == nil {
 		// Anonymous reactions (on behalf of a chat) arrive as
 		// MessageReactionCount updates in group chats; User == nil here is a
 		// defensive leftover of that path and carries no per-user feedback.
 		logger.Debug("ignoring anonymous reaction")
 
-		return nil
+		return reactionChange{}, false, nil
 	}
 
 	// The shared dmAdminsOnlyGate only inspects Message updates, so the
@@ -72,18 +95,18 @@ func (b *Bot) messageReactionHandler(ctx *th.Context, update t.Update) error {
 	if b.cfg.DMAdminsOnly && reaction.Chat.Type == t.ChatTypePrivate && !b.isAdminReactionDM(reaction) {
 		logger.Info("dropping non-admin private reaction (BOT__DM_ADMINS_ONLY)", "from_id", reaction.User.ID)
 
-		return nil
+		return reactionChange{}, false, nil
 	}
 
 	if b.admin != nil {
 		allowed, err := b.admin.ShouldAllowChat(ctx.Context(), reaction.Chat.ID, b.isAdminReactionDM(reaction))
 		if err != nil {
-			return err
+			return reactionChange{}, false, err
 		}
 		if !allowed {
 			logger.Info("ignoring reaction from non-whitelisted chat", "from_id", reaction.User.ID)
 
-			return nil
+			return reactionChange{}, false, nil
 		}
 	}
 
@@ -101,33 +124,19 @@ func (b *Bot) messageReactionHandler(ctx *th.Context, update t.Update) error {
 	if len(tracked) == 0 && !hasTrackedEmoji(reaction.OldReaction) {
 		logger.Debug("reaction change not tracked")
 
-		return nil
+		return reactionChange{}, false, nil
 	}
 
-	key := pendingReactionKey{chatID: reaction.Chat.ID, messageID: reaction.MessageID}
-	seq := int64(update.UpdateID)
-
-	// Hold before applying: if the store lookup misses because the target
-	// reply's history insertion is racing this handler, the hold still
-	// precedes that insertion's pending-update drain, so the update is
-	// replayed instead of stranded after it. Holding strictly before the
-	// lookup closes the window: whatever the interleaving, the update is
-	// either replayed by the drain or found live by this lookup.
-	b.pendingReactions.hold(key, reaction.User.ID, seq, tracked)
-
-	if b.history.SetMessageReactions(reaction.Chat.ID, reaction.MessageID, reaction.User.ID, seq, tracked) {
-		// Applied, or rejected as stale against an existing message: drop
-		// the hold so it does not linger until the TTL. If the insertion
-		// drained it concurrently, release is a no-op and the sequence guard
-		// made that replay idempotent.
-		b.pendingReactions.release(key, reaction.User.ID, seq)
-
-		return nil
-	}
-
-	logger.Debug("holding reaction for reply not yet in history")
-
-	return nil
+	return reactionChange{
+		chatID:    reaction.Chat.ID,
+		messageID: reaction.MessageID,
+		userID:    reaction.User.ID,
+		name:      strings.TrimSpace(reaction.User.FirstName + " " + reaction.User.LastName),
+		username:  reaction.User.Username,
+		updateSeq: int64(update.UpdateID),
+		at:        at,
+		reactions: tracked,
+	}, true, nil
 }
 
 const (
