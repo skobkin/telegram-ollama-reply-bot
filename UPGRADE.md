@@ -2,6 +2,15 @@
 
 ## 0.27.0 (unreleased) — changes since 0.26.0
 
+### Bot's Telegram handle available in chat prompts (#142)
+
+The chat system prompt now knows the bot's own Telegram handle. A new `{{.BotUsername}}` placeholder
+(the handle without the leading `@`, from GetMe; empty when unknown) is available to `chat` templates,
+and the built-in default template gained a conditional line introducing it
+(`Твой username в Telegram: @...`). Schema version 9 (applied automatically) upgrades stored copies of
+the previous built-in default; custom templates are untouched — add `{{.BotUsername}}` where you want
+the handle to appear (it renders as nothing when unknown, so guard with `{{if .BotUsername}}`).
+
 ### Reactions to bot replies are recorded and shown to the model (#100)
 
 The bot now subscribes to `message_reaction` updates and stores reactions to its own replies on the

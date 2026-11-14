@@ -1728,7 +1728,7 @@ func searchInputPrompt() string {
 func promptTextInputPrompt(feature adminconfig.PromptFeature, scopeChatID int64) string {
 	return AdminInputMarker + " — " + promptFeatureLabel(feature) + " template (" + promptScopeLabel(scopeChatID) + ")\n\n" +
 		"Send the complete new template as a reply to this message. " +
-		"Tip: download the current template first and edit it; placeholders like {{.Language}} stay intact."
+		"Tip: download the current template first and edit it; placeholders like {{.Language}} or {{.BotUsername}} stay intact."
 }
 
 func promptUploadPrompt(feature adminconfig.PromptFeature, scopeChatID int64) string {

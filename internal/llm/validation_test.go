@@ -25,7 +25,7 @@ func TestValidatePromptTemplateAcceptsBuiltins(t *testing.T) {
 
 func TestValidatePromptTemplateAcceptsAllLegitimatePlaceholders(t *testing.T) {
 	body := "{{.Language}} {{.Model}} {{.Context}} {{.Gender}} {{.CharacterName}} {{.ToneMode}} " +
-		"{{.AllowTeasing}} {{.ImageRecognitionEnabled}} {{.ToolPolicy}}"
+		"{{.AllowTeasing}} {{.ImageRecognitionEnabled}} {{.ToolPolicy}} {{.BotUsername}}"
 
 	if err := ValidatePromptTemplate(adminconfig.PromptFeatureChat, body); err != nil {
 		t.Fatalf("all chat placeholders must validate: %v", err)
@@ -62,6 +62,8 @@ func TestValidatePromptTemplateRejectsBranchConditionalDefects(t *testing.T) {
 		{"true-branch", "{{if .ImageRecognitionEnabled}}{{.Bogus}}{{else}}ok{{end}}"},
 		// Unknown field inside a boolean-driven range of either flag.
 		{"recognition-gated", "{{if .ImageRecognitionEnabled}}{{.Nope}}{{end}}"},
+		// The else branch only executes on the empty-username dataset.
+		{"username-else-branch", "{{if .BotUsername}}ok{{else}}{{.Bogus}}{{end}}"},
 	}
 
 	for _, testCase := range cases {

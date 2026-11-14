@@ -170,6 +170,81 @@ WHERE scope_type = 'global' AND scope_id = 0 AND feature = 'chat'
 	}
 }
 
+func TestApplyUpgradesPreviousDefaultChatPromptWithBotUsername(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", "file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	for _, migration := range schemaMigrations[:8] {
+		if err := applyMigration(ctx, db, migration, nil); err != nil {
+			t.Fatalf("apply migration %s: %v", migration.name, err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+UPDATE prompt_templates
+SET template_text = ?
+WHERE scope_type = 'global' AND scope_id = 0 AND feature = 'chat'
+`, llm.PreviousDefaultChatPromptTemplate); err != nil {
+		t.Fatalf("set previous default chat prompt: %v", err)
+	}
+
+	if err := Apply(ctx, db, nil); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	var body string
+	if err := db.QueryRowContext(ctx, `
+SELECT template_text FROM prompt_templates
+WHERE scope_type = 'global' AND scope_id = 0 AND feature = 'chat'
+`).Scan(&body); err != nil {
+		t.Fatalf("read chat prompt: %v", err)
+	}
+	if body != llm.DefaultChatPromptTemplate {
+		t.Fatalf("expected upgraded default chat prompt")
+	}
+}
+
+func TestApplyPreservesCustomChatPromptAcrossBotUsernameUpgrade(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", "file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	for _, migration := range schemaMigrations[:8] {
+		if err := applyMigration(ctx, db, migration, nil); err != nil {
+			t.Fatalf("apply migration %s: %v", migration.name, err)
+		}
+	}
+	const customPrompt = "custom chat {{.CharacterName}} {{.BotUsername}}"
+	if _, err := db.ExecContext(ctx, `
+UPDATE prompt_templates
+SET template_text = ?
+WHERE scope_type = 'global' AND scope_id = 0 AND feature = 'chat'
+`, customPrompt); err != nil {
+		t.Fatalf("set custom chat prompt: %v", err)
+	}
+
+	if err := Apply(ctx, db, nil); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	var body string
+	if err := db.QueryRowContext(ctx, `
+SELECT template_text FROM prompt_templates
+WHERE scope_type = 'global' AND scope_id = 0 AND feature = 'chat'
+`).Scan(&body); err != nil {
+		t.Fatalf("read chat prompt: %v", err)
+	}
+	if body != customPrompt {
+		t.Fatalf("expected custom chat prompt to be preserved, got %q", body)
+	}
+}
+
 func TestApplyRenamesChatAliasToCharacterName(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", "file::memory:?cache=shared")
@@ -205,6 +280,15 @@ CREATE TABLE chat_settings (
 );
 INSERT INTO chat_settings(chat_id, alias, language, gender, tone_mode, allow_teasing, interactivity_mode, updated_at, updated_by)
 VALUES(123, 'kitsune', 'English', 'female', 'sharp', 1, 'mentions_only', CURRENT_TIMESTAMP, 42);
+CREATE TABLE prompt_templates (
+  scope_type TEXT NOT NULL,
+  scope_id INTEGER NOT NULL,
+  feature TEXT NOT NULL,
+  template_text TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  updated_by INTEGER NOT NULL,
+  PRIMARY KEY (scope_type, scope_id, feature)
+);
 PRAGMA user_version = 4;
 `); err != nil {
 		t.Fatalf("prepare old schema: %v", err)

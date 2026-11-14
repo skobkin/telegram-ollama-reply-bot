@@ -1,18 +1,24 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+
+	tg "github.com/mymmrac/telego"
 
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/state"
+	"telegram-ollama-reply-bot/internal/support/httpclient"
 	"telegram-ollama-reply-bot/internal/tooluse"
 )
 
@@ -207,5 +213,47 @@ func TestAttachImageToolsGatedOnEnabledFlag(t *testing.T) {
 	attachImageTools(enabled, stubAnalyzer{}, true)
 	if !enabled.HasTool("analyze_image") || !enabled.HasTool("list_recent_images") {
 		t.Fatal("image tools must be registered while recognition is enabled")
+	}
+}
+
+// TestVerifyTelegramIdentitySanitizesFailures pins the credential-leak fix:
+// telego's transport errors embed the token-bearing API URL, so a failed
+// bootstrap GetMe must surface a sanitized error — in the log line and in
+// the returned startup error alike.
+func TestVerifyTelegramIdentitySanitizesFailures(t *testing.T) {
+	t.Parallel()
+
+	token := "1:" + strings.Repeat("A", 35)
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := dead.URL
+	dead.Close() // every request is now refused at transport level
+
+	api, err := tg.NewBot(token, tg.WithAPIServer(url), tg.WithDiscardLogger(),
+		tg.WithHTTPClient(httpclient.New()))
+	if err != nil {
+		t.Fatalf("NewBot: %v", err)
+	}
+
+	_, rawErr := api.GetMe(context.Background())
+	if rawErr == nil {
+		t.Fatal("premise: expected GetMe against a dead server to fail")
+	}
+	if !strings.Contains(rawErr.Error(), token) {
+		t.Fatalf("premise: expected the raw transport error to embed the token-bearing URL, got %q", rawErr.Error())
+	}
+
+	logs := &bytes.Buffer{}
+	_, err = verifyTelegramIdentity(context.Background(), api, slog.New(slog.NewTextHandler(logs, nil)))
+	if err == nil {
+		t.Fatal("expected verifyTelegramIdentity to fail")
+	}
+	if strings.Contains(err.Error(), token) || strings.Contains(err.Error(), url) {
+		t.Fatalf("returned startup error must not retain the token-bearing URL: %q", err.Error())
+	}
+	if logged := logs.String(); strings.Contains(logged, token) || strings.Contains(logged, url) {
+		t.Fatalf("log output must not retain the token-bearing URL: %q", logged)
+	}
+	if !errors.Is(err, ErrTelegramConnect) {
+		t.Fatalf("failure must identify the telegram connection: %v", err)
 	}
 }

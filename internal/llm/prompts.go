@@ -30,11 +30,13 @@ type StaticPromptRenderer struct {
 	allowTeasing             bool
 	imageRecognitionEnabled  bool
 	maxSummaryLength         int
+	botUsername              string
 }
 
 type AdminPromptRenderer struct {
 	config                  *adminconfig.Service
 	imageRecognitionEnabled bool
+	botUsername             string
 }
 
 // ChatPromptData is the data contract of chat system prompts. The renderers
@@ -50,6 +52,10 @@ type ChatPromptData struct {
 	AllowTeasing            bool
 	ImageRecognitionEnabled bool
 	ToolPolicy              string
+	// BotUsername is the bot's own Telegram handle without the leading @,
+	// from GetMe. Empty when unknown — templates must stay renderable
+	// without it (guard with {{if .BotUsername}}).
+	BotUsername string
 }
 
 // SummarizePromptData is the data contract of summarize system prompts.
@@ -94,8 +100,12 @@ func NewStaticPromptRenderer(imageRecognitionEnabled bool) (*StaticPromptRendere
 	}, nil
 }
 
-func NewAdminPromptRenderer(config *adminconfig.Service, imageRecognitionEnabled bool) *AdminPromptRenderer {
-	return &AdminPromptRenderer{config: config, imageRecognitionEnabled: imageRecognitionEnabled}
+// NewAdminPromptRenderer builds the production prompt renderer. botUsername
+// is the bot's own Telegram handle from GetMe (without the leading @) and is
+// exposed to chat templates as {{.BotUsername}}; an empty value renders
+// templates with the handle clause omitted.
+func NewAdminPromptRenderer(config *adminconfig.Service, imageRecognitionEnabled bool, botUsername string) *AdminPromptRenderer {
+	return &AdminPromptRenderer{config: config, imageRecognitionEnabled: imageRecognitionEnabled, botUsername: botUsername}
 }
 
 func (p *StaticPromptRenderer) RenderChatSystemPrompt(_ context.Context, _ PromptScope, model, compactContext, toolPolicy string) (string, error) {
@@ -109,6 +119,7 @@ func (p *StaticPromptRenderer) RenderChatSystemPrompt(_ context.Context, _ Promp
 		AllowTeasing:            p.allowTeasing,
 		ImageRecognitionEnabled: p.imageRecognitionEnabled,
 		ToolPolicy:              toolPolicy,
+		BotUsername:             p.botUsername,
 	})
 }
 
@@ -151,6 +162,7 @@ func (p *AdminPromptRenderer) RenderChatSystemPrompt(ctx context.Context, scope 
 		AllowTeasing:            resolved.AllowTeasing,
 		ImageRecognitionEnabled: p.imageRecognitionEnabled,
 		ToolPolicy:              toolPolicy,
+		BotUsername:             p.botUsername,
 	})
 }
 

@@ -89,7 +89,7 @@ overrides are now stored in SQLite and managed from Telegram admin DMs.
 
 Stored prompt templates use Go's [`text/template`](https://pkg.go.dev/text/template) placeholders:
 
-- `chat` – `{{.Model}}`, `{{.Language}}`, `{{.Gender}}`, `{{.CharacterName}}`, `{{.ToneMode}}`, `{{.AllowTeasing}}`, `{{.Context}}`, `{{.ToolPolicy}}`
+- `chat` – `{{.Model}}`, `{{.Language}}`, `{{.Gender}}`, `{{.CharacterName}}`, `{{.ToneMode}}`, `{{.AllowTeasing}}`, `{{.Context}}`, `{{.ToolPolicy}}`, `{{.BotUsername}}` (the bot's own Telegram handle without the leading `@`; empty when unknown, so guard with `{{if .BotUsername}}`)
 - `summarize` – `{{.Language}}`, `{{.MaxLength}}`
 - `image_recognition` – `{{.Language}}`
 

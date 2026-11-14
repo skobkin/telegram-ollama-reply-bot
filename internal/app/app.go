@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	core "telegram-ollama-reply-bot/internal/adminui"
@@ -20,6 +22,7 @@ import (
 	"telegram-ollama-reply-bot/internal/state/memory"
 	"telegram-ollama-reply-bot/internal/support/httpclient"
 	"telegram-ollama-reply-bot/internal/support/markdown"
+	"telegram-ollama-reply-bot/internal/support/safeerr"
 	adminui "telegram-ollama-reply-bot/internal/telegram/adminui"
 	"telegram-ollama-reply-bot/internal/telegram/bot"
 	"telegram-ollama-reply-bot/internal/telegram/transport"
@@ -30,6 +33,11 @@ import (
 	"github.com/getsentry/sentry-go"
 	tg "github.com/mymmrac/telego"
 )
+
+// ErrTelegramConnect reports a failed Telegram API identity check. The
+// underlying transport error is never retained: telego's request errors embed
+// the full API URL, which carries the bot token in its path.
+var ErrTelegramConnect = errors.New("cannot connect to telegram api")
 
 // verifyStartupModels checks that every required feature model is available
 // on the service that will actually serve it. The main service always covers
@@ -57,6 +65,25 @@ func verifyStartupModels(ctx context.Context, main, image *llm.Service, imageChe
 	}
 
 	return hasMain && hasImage, mainResult
+}
+
+// verifyTelegramIdentity resolves the bot's own identity, logging the
+// outcome. A failed GetMe is sanitized before it is logged or returned:
+// telego's transport errors embed the token-bearing API URL, and the telego
+// logger's redaction does not cover this path. The caller may report the
+// returned error to Sentry and to the startup failure as-is.
+func verifyTelegramIdentity(ctx context.Context, api *tg.Bot, logger *slog.Logger) (*tg.User, error) {
+	botUser, err := api.GetMe(ctx)
+	if err != nil {
+		sanitized := safeerr.WrapTransport(ErrTelegramConnect, err)
+		logger.Error("telegram api connect failed", "error", sanitized)
+
+		return nil, sanitized
+	}
+
+	logger.Info("telegram api connected", "bot_id", botUser.ID, "bot_username", botUser.Username)
+
+	return botUser, nil
 }
 
 // imageModelLogValue returns the value logged as image_model: the configured
@@ -123,6 +150,27 @@ func Run(ctx context.Context) error {
 	)
 	transport.LogNetworkRouting(logger, cfg)
 
+	// Telegram identity is resolved before any wiring that needs it: the bot
+	// handle is baked into the prompt renderer below, and bot.Run performs its
+	// own (idempotent) GetMe later.
+	telegramAPI, err := tg.NewBot(cfg.Bot.Telegram.Token, tg.WithLogger(bot.NewLogger(
+		logManager.Logger("telegram/bot").With("source", "telego"),
+		cfg.Bot.Telegram.Token,
+	)), tg.WithHTTPClient(httpclient.New()))
+	if err != nil {
+		logger.Error("telegram api initialization failed", "error", err)
+		sentry.CaptureException(err)
+
+		return err
+	}
+
+	botUser, err := verifyTelegramIdentity(ctx, telegramAPI, logger)
+	if err != nil {
+		sentry.CaptureException(err)
+
+		return err
+	}
+
 	persistentStore, err := psqlite.Open(ctx, cfg.Persistence.StorePath, logManager.Logger("persistence/sqlite"))
 	if err != nil {
 		logger.Error("failed to initialize persistent store", "error", err)
@@ -138,7 +186,7 @@ func Run(ctx context.Context) error {
 		adminconfig.PromptFeatureImageRecognition: llm.DefaultImageRecognitionPromptTemplate,
 	}, llm.ValidatePromptTemplate)
 
-	prompts := llm.NewAdminPromptRenderer(adminService, cfg.LLM.ImageRecognitionEnabled)
+	prompts := llm.NewAdminPromptRenderer(adminService, cfg.LLM.ImageRecognitionEnabled, botUser.Username)
 
 	llmc, err := llm.NewService(cfg.LLM, prompts, logManager.Logger("llm"))
 	if err != nil {
@@ -256,17 +304,6 @@ func Run(ctx context.Context) error {
 		ImageCacheMaxBytes: cfg.State.ImageCacheMaxBytes,
 		ImageCacheTTL:      cfg.State.ImageCacheTTL,
 	}, logManager.Logger("state/memory"))
-
-	telegramAPI, err := tg.NewBot(cfg.Bot.Telegram.Token, tg.WithLogger(bot.NewLogger(
-		logManager.Logger("telegram/bot").With("source", "telego"),
-		cfg.Bot.Telegram.Token,
-	)), tg.WithHTTPClient(httpclient.New()))
-	if err != nil {
-		logger.Error("telegram api initialization failed", "error", err)
-		sentry.CaptureException(err)
-
-		return err
-	}
 
 	sanitizer := markdown.NewTgMarkdownV2Sanitizer()
 	// Reminder delivery respects the access policy. Admin DMs are always

@@ -78,7 +78,7 @@ func TestAdminPromptRendererUsesPerChatLanguageAndGender(t *testing.T) {
 		},
 	}, nil, nil)
 
-	renderer := NewAdminPromptRenderer(svc, true)
+	renderer := NewAdminPromptRenderer(svc, true, "kitsune_bot")
 	rendered, err := renderer.RenderChatSystemPrompt(context.Background(), PromptScope{ChatID: 5}, "gemma", "", "policy")
 	if err != nil {
 		t.Fatalf("render chat prompt: %v", err)
@@ -86,6 +86,65 @@ func TestAdminPromptRendererUsesPerChatLanguageAndGender(t *testing.T) {
 
 	if !strings.Contains(rendered, "name=kitsune") || !strings.Contains(rendered, "lang=English") || !strings.Contains(rendered, "gender=female") {
 		t.Fatalf("unexpected rendered prompt: %q", rendered)
+	}
+}
+
+func TestAdminPromptRendererRendersBotUsername(t *testing.T) {
+	svc := adminconfig.NewService(&promptStoreStub{
+		global: adminconfig.GlobalSettings{
+			CharacterName:            "bot",
+			Language:                 "Russian",
+			Gender:                   "neutral",
+			ToneMode:                 "default",
+			DefaultInteractivityMode: adminconfig.InteractivityDisabled,
+		},
+		prompts: map[string]string{
+			"chat:0": "handle=@{{.BotUsername}}",
+		},
+	}, nil, nil)
+
+	rendered, err := NewAdminPromptRenderer(svc, true, "kitsune_bot").RenderChatSystemPrompt(context.Background(), PromptScope{}, "gemma", "", "")
+	if err != nil {
+		t.Fatalf("render chat prompt: %v", err)
+	}
+	if !strings.Contains(rendered, "handle=@kitsune_bot") {
+		t.Fatalf("expected bot username in prompt, got %q", rendered)
+	}
+
+	empty, err := NewAdminPromptRenderer(svc, true, "").RenderChatSystemPrompt(context.Background(), PromptScope{}, "gemma", "", "")
+	if err != nil {
+		t.Fatalf("render chat prompt without username: %v", err)
+	}
+	if !strings.Contains(empty, "handle=@") {
+		t.Fatalf("expected bare @ when username unset, got %q", empty)
+	}
+}
+
+func TestDefaultChatPromptTemplateBotUsernameClause(t *testing.T) {
+	svc := adminconfig.NewService(&promptStoreStub{
+		global: adminconfig.GlobalSettings{
+			CharacterName:            "bot",
+			Language:                 "Russian",
+			Gender:                   "neutral",
+			ToneMode:                 "default",
+			DefaultInteractivityMode: adminconfig.InteractivityDisabled,
+		},
+	}, nil, nil)
+
+	rendered, err := NewAdminPromptRenderer(svc, true, "kitsune_bot").RenderChatSystemPrompt(context.Background(), PromptScope{}, "gemma", "", "")
+	if err != nil {
+		t.Fatalf("render default chat prompt: %v", err)
+	}
+	if !strings.Contains(rendered, "Твой username в Telegram: @kitsune_bot.") {
+		t.Fatalf("expected bot username clause in default prompt, got %q", rendered)
+	}
+
+	rendered, err = NewAdminPromptRenderer(svc, true, "").RenderChatSystemPrompt(context.Background(), PromptScope{}, "gemma", "", "")
+	if err != nil {
+		t.Fatalf("render default chat prompt without username: %v", err)
+	}
+	if strings.Contains(rendered, "Твой username в Telegram") {
+		t.Fatalf("expected no bot username clause when unset, got %q", rendered)
 	}
 }
 
@@ -103,7 +162,7 @@ func TestAdminPromptRendererRendersToolPolicyInChatPrompt(t *testing.T) {
 		},
 	}, nil, nil)
 
-	renderer := NewAdminPromptRenderer(svc, true)
+	renderer := NewAdminPromptRenderer(svc, true, "")
 	rendered, err := renderer.RenderChatSystemPrompt(context.Background(), PromptScope{}, "gemma", "ctx", "line one")
 	if err != nil {
 		t.Fatalf("render chat prompt: %v", err)
