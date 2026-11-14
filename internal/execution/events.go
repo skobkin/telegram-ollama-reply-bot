@@ -1,8 +1,9 @@
 // Package execution provides a small, typed, in-process event mechanism for
-// observing the bot's conversation runs, LLM generation steps, and tool
-// calls. Producers publish events through a Dispatcher; subscribers (such as
-// the Telegram progress-preview renderer) consume them without coupling
-// execution logic to presentation.
+// observing the bot's conversation runs, LLM generation steps, tool calls,
+// and Telegram interaction observations such as reaction changes. Producers
+// publish events through a Dispatcher; subscribers (such as the Telegram
+// progress-preview renderer) consume them without coupling execution logic
+// to presentation.
 //
 // Events describe execution state and completed actions. They are transient:
 // nothing in this package persists anything, and event payloads deliberately
@@ -28,7 +29,9 @@ type Event interface {
 
 // RunContext correlates every event of one processing run. It is embedded by
 // value in every event so subscribers can group events per run and keep
-// concurrent runs in the same chat isolated from each other.
+// concurrent runs in the same chat isolated from each other. Interaction
+// events (ReactionChanged) embed it with only ChatID set: they are
+// observations of Telegram activity, not correlated to a run.
 type RunContext struct {
 	// RunID uniquely identifies one processing run.
 	RunID string
@@ -157,6 +160,54 @@ type TextDelta struct {
 	Text string
 }
 
+// ReactionChanged reports one authorized, relevant incoming Telegram
+// reaction update targeting a message in a chat the bot serves. The
+// handler does not verify the target is a stored bot reply — an eligible
+// update on an unknown or no-longer-stored message still publishes.
+//
+// It is an interaction observation, not a run event: the embedded
+// RunContext carries only ChatID (RunID empty — not run-bound; TopicID 0 —
+// Telegram reaction updates carry no topic). TargetMessageID identifies
+// the message targeted by the incoming reaction, not an originating
+// message (contrast RunContext.MessageID).
+//
+// The event is published exactly once per eligible incoming update, after
+// the synchronous history-mutation attempt, and never again during
+// pending-reaction replay. It does NOT guarantee that the target message
+// existed in history, that the change was applied rather than rejected as
+// stale, or that a newer state was not committed afterwards: conversation
+// history remains the authoritative state, mutated synchronously by the
+// reaction pipeline, while delivery of this event is best-effort like
+// every execution event. Nothing here triggers model generation.
+//
+// Reactions is the actor's complete tracked (whitelist-filtered) reaction
+// set after the change, as exact Telegram emoji strings; an empty set
+// means the actor's reactions were removed. Name and Username carry the
+// display attribution the conversation-history rendering needs.
+//
+// The payload is immutable after publication: the publisher constructs a
+// fresh Reactions slice and never mutates it afterwards. Events are
+// transient and in-process; do not log actor names, usernames, or
+// reaction payloads.
+type ReactionChanged struct {
+	RunContext
+	At time.Time
+	// TargetMessageID is the Telegram message ID of the message the
+	// incoming reaction targets.
+	TargetMessageID int
+	// UserID is the reacting Telegram user.
+	UserID int64
+	// Name and Username are the actor's display attribution.
+	Name     string
+	Username string
+	// UpdateID is Telegram's sequential update ID of the update the change
+	// arrived in: the ordering authority for stale-update rejection per
+	// user and target message.
+	UpdateID int64
+	// Reactions is the tracked emoji set after the change; empty = removal.
+	Reactions []string
+}
+
 func (RunStarted) isExecutionEvent()          {}
 func (RunCompleted) isExecutionEvent()        {}
 func (RunFailed) isExecutionEvent()           {}
@@ -165,6 +216,7 @@ func (GenerationCompleted) isExecutionEvent() {}
 func (ToolStarted) isExecutionEvent()         {}
 func (ToolCompleted) isExecutionEvent()       {}
 func (TextDelta) isExecutionEvent()           {}
+func (ReactionChanged) isExecutionEvent()     {}
 
 // RunContextOf extracts the run context carried by any event. Every event
 // embeds one, so the switch is exhaustive over the sealed set.
@@ -185,6 +237,8 @@ func RunContextOf(event Event) RunContext {
 	case ToolCompleted:
 		return e.RunContext
 	case TextDelta:
+		return e.RunContext
+	case ReactionChanged:
 		return e.RunContext
 	default:
 		return RunContext{}

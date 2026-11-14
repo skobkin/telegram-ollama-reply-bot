@@ -406,3 +406,163 @@ func TestNewRunIDUnique(t *testing.T) {
 		seen[id] = struct{}{}
 	}
 }
+
+// reactionChangedSeq builds one ReactionChanged with the given update ID and
+// producer fingerprint (chat and user), so concurrent-attribution tests can
+// detect lost or mixed-up deliveries.
+func reactionChanged(updateID int64, chatID, userID int64) ReactionChanged {
+	return ReactionChanged{
+		RunContext:      RunContext{ChatID: chatID},
+		At:              time.Unix(1700000000+updateID, 0).UTC(),
+		TargetMessageID: 777,
+		UserID:          userID,
+		UpdateID:        updateID,
+		Reactions:       []string{"👍"},
+	}
+}
+
+// TestRunContextOfReactionChanged guards the silent-default hazard: the
+// interaction event must expose its ChatID through RunContextOf and stay
+// uncorrelated to any run.
+func TestRunContextOfReactionChanged(t *testing.T) {
+	event := reactionChanged(9, -100123, 42)
+
+	rc := RunContextOf(event)
+	if rc.ChatID != -100123 {
+		t.Fatalf("ReactionChanged must expose its ChatID, got %+v", rc)
+	}
+	if rc.RunID != "" || rc.TopicID != 0 || rc.MessageID != 0 {
+		t.Fatalf("reaction events are not run-bound, got %+v", rc)
+	}
+}
+
+// TestReactionChangedDeliveredInPublishOrder proves FIFO delivery for
+// sequential publication from one goroutine: an interleaved reaction
+// observation is delivered exactly between the run events published
+// around it.
+func TestReactionChangedDeliveredInPublishOrder(t *testing.T) {
+	d := testDispatcher(t, 0)
+
+	rec := &recorder{}
+	d.Subscribe(rec)
+
+	rc := runCtx("mixed")
+	now := time.Now()
+	d.Publish(RunStarted{RunContext: rc, At: now})
+	d.Publish(reactionChanged(9, rc.ChatID, 42))
+	d.Publish(RunCompleted{RunContext: rc, At: now, Duration: time.Second})
+	d.Stop()
+
+	events := rec.snapshot()
+	if len(events) != 3 {
+		t.Fatalf("delivered %d events, want 3", len(events))
+	}
+	if _, ok := events[1].(ReactionChanged); !ok {
+		t.Fatalf("reaction event must be delivered second in publish order, got %T", events[1])
+	}
+}
+
+// TestReactionChangedConcurrentAttributionIntact proves correct attribution
+// under concurrent publication: every event arrives with its own payload
+// intact and none are lost while the subscriber is healthy. Delivery order
+// across producers is deliberately not asserted — the dispatcher preserves
+// publication order per producer only, never global Telegram UpdateID
+// order; reaction ordering remains the store's per-user and per-message
+// UpdateID comparison.
+func TestReactionChangedConcurrentAttributionIntact(t *testing.T) {
+	d := testDispatcher(t, 0)
+
+	rec := &recorder{}
+	d.Subscribe(rec)
+
+	const producers = 8
+	const perProducer = 16
+	var wg sync.WaitGroup
+	for p := range producers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			chatID, userID := int64(-100000-p), int64(10+p)
+			for i := range perProducer {
+				d.Publish(reactionChanged(int64(p*perProducer+i), chatID, userID))
+			}
+		}()
+	}
+	wg.Wait()
+	d.Stop()
+
+	events := rec.snapshot()
+	if len(events) != producers*perProducer {
+		t.Fatalf("delivered %d events, want %d", len(events), producers*perProducer)
+	}
+
+	seen := make(map[int64]ReactionChanged, len(events))
+	for _, event := range events {
+		got, ok := event.(ReactionChanged)
+		if !ok {
+			t.Fatalf("unexpected event type %T", event)
+		}
+		if len(got.Reactions) != 1 || got.Reactions[0] != "👍" || got.TargetMessageID != 777 {
+			t.Fatalf("event payload not intact: %+v", got)
+		}
+		if _, dup := seen[got.UpdateID]; dup {
+			t.Fatalf("duplicate delivery for update %d", got.UpdateID)
+		}
+		seen[got.UpdateID] = got
+	}
+	for p := range producers {
+		chatID, userID := int64(-100000-p), int64(10+p)
+		for i := range perProducer {
+			updateID := int64(p*perProducer + i)
+			got, ok := seen[updateID]
+			if !ok {
+				t.Fatalf("producer %d update %d was lost", p, updateID)
+			}
+			if got.ChatID != chatID || got.UserID != userID {
+				t.Fatalf("update %d delivered with mixed-up attribution: %+v", updateID, got)
+			}
+		}
+	}
+}
+
+// TestReactionChangedIsNonExpendable documents the degradation semantics of
+// the interaction family: a queue full of ReactionChanged events
+// unsubscribes a lagging subscriber instead of silently dropping them.
+// Authoritative reaction state never depends on delivery, so this is
+// degradation, not data loss.
+func TestReactionChangedIsNonExpendable(t *testing.T) {
+	d := testDispatcher(t, 2)
+
+	release := make(chan struct{})
+	seen := make(chan Event, 4)
+	blocking := HandlerFunc(func(_ context.Context, event Event) {
+		seen <- event
+		<-release
+	})
+	unsubscribe := d.Subscribe(blocking)
+	defer unsubscribe()
+
+	d.Publish(reactionChanged(3, -100999, 2))
+	if !waitFor(t, func() bool {
+		select {
+		case <-seen:
+			return true
+		default:
+			return false
+		}
+	}) {
+		t.Fatal("handler never received the first event")
+	}
+
+	// The handler is blocked mid-delivery: the next two events fill the
+	// queue and the third overflows it, so the subscriber is unsubscribed.
+	d.Publish(reactionChanged(4, -100999, 2))
+	d.Publish(reactionChanged(5, -100999, 2))
+	d.Publish(reactionChanged(6, -100999, 2))
+	if !waitFor(t, func() bool { return d.subscriberCount() == 0 }) {
+		t.Fatal("lagging subscriber was not unsubscribed on reaction overflow")
+	}
+
+	close(release)
+	d.Stop()
+}
