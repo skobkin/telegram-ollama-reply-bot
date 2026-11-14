@@ -153,6 +153,20 @@ func TestMiniMaxRecognize_HTTPAndProviderStatuses(t *testing.T) {
 			wantText:   "1004",
 		},
 		{
+			name:       "credential rejection over http 401",
+			statusCode: http.StatusUnauthorized,
+			body:       `{"base_resp":{"status_code":1004,"status_msg":"invalid api key"}}`,
+			wantErr:    ErrRecognizerAuth,
+			wantText:   "1004",
+		},
+		{
+			name:       "non-auth http 401 stays transient",
+			statusCode: http.StatusUnauthorized,
+			body:       `{"error":"throttled upstream"}`,
+			wantErr:    ErrRecognizerUnavailable,
+			wantText:   "401",
+		},
+		{
 			name:       "provider status 2038",
 			statusCode: http.StatusOK,
 			body:       `{"base_resp":{"status_code":2038,"status_msg":"realname verification"}}`,
@@ -364,6 +378,122 @@ func TestMiniMaxRecognize_NoSecretsInErrorsOrChains(t *testing.T) {
 
 		assertErrorChainClean(t, recErr, secretStatusMsg, secretContent, secretURLPart)
 	})
+}
+
+func TestMiniMaxValidateAuth(t *testing.T) {
+	t.Parallel()
+
+	t.Run("auth rejection is definitive", func(t *testing.T) {
+		t.Parallel()
+
+		fake := newMinimaxTestServer(t, http.StatusOK, `{"base_resp":{"status_code":1004,"status_msg":"invalid api key"}}`)
+		recognizer := newTestMiniMax(t, fake.server.URL)
+
+		err := recognizer.ValidateAuth(context.Background())
+		if !errors.Is(err, ErrRecognizerAuth) {
+			t.Fatalf("expected ErrRecognizerAuth, got %v", err)
+		}
+		if fake.requests() != 1 {
+			t.Fatalf("expected exactly one probe request, got %d", fake.requests())
+		}
+	})
+
+	t.Run("rejection over non-2xx status is still definitive", func(t *testing.T) {
+		t.Parallel()
+
+		// The gateway answers the rejected key with HTTP 401 and the
+		// provider's own status in the body: the probe must read the body
+		// before the status verdict, or the explicit rejection passes as a
+		// transient outage and the bot starts with a dead key.
+		fake := newMinimaxTestServer(t, http.StatusUnauthorized, `{"base_resp":{"status_code":1004,"status_msg":"invalid api key"}}`)
+		recognizer := newTestMiniMax(t, fake.server.URL)
+
+		err := recognizer.ValidateAuth(context.Background())
+		if !errors.Is(err, ErrRecognizerAuth) {
+			t.Fatalf("a 401-carried 1004 rejection must classify as auth, got %v", err)
+		}
+	})
+
+	t.Run("success validates cleanly", func(t *testing.T) {
+		t.Parallel()
+
+		fake := newMinimaxTestServer(t, http.StatusOK, `{"content":"ok","base_resp":{"status_code":0}}`)
+		recognizer := newTestMiniMax(t, fake.server.URL)
+
+		if err := recognizer.ValidateAuth(context.Background()); err != nil {
+			t.Fatalf("ValidateAuth() error = %v", err)
+		}
+	})
+
+	t.Run("connection failure is transient", func(t *testing.T) {
+		t.Parallel()
+
+		recognizer := newTestMiniMax(t, "http://127.0.0.1:1")
+
+		err := recognizer.ValidateAuth(context.Background())
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if errors.Is(err, ErrRecognizerAuth) {
+			t.Fatalf("connection failure must not look like an auth rejection: %v", err)
+		}
+	})
+}
+
+// TestMiniMaxValidateAuth_ProbeShape pins the probe's cost and leak
+// guarantees: a tiny embedded PNG data URL, a fixed short prompt, and the
+// API key absent from the returned error.
+func TestMiniMaxValidateAuth_ProbeShape(t *testing.T) {
+	t.Parallel()
+
+	fake := newMinimaxTestServer(t, http.StatusOK, `{"base_resp":{"status_code":1004,"status_msg":"invalid"}}`)
+	recognizer := newTestMiniMax(t, fake.server.URL)
+
+	err := recognizer.ValidateAuth(context.Background())
+	if err == nil {
+		t.Fatal("expected auth error")
+	}
+
+	fake.mu.Lock()
+	imageURL, _ := fake.lastRequest.body["image_url"].(string)
+	prompt, _ := fake.lastRequest.body["prompt"].(string)
+	fake.mu.Unlock()
+
+	const prefix = "data:image/png;base64,"
+	if !strings.HasPrefix(imageURL, prefix) {
+		t.Fatalf("expected %s data url, got %q", prefix, imageURL)
+	}
+	decoded, decodeErr := base64.StdEncoding.DecodeString(strings.TrimPrefix(imageURL, prefix))
+	if decodeErr != nil {
+		t.Fatalf("probe data url must decode: %v", decodeErr)
+	}
+	if len(decoded) > 200 {
+		t.Fatalf("probe image must stay tiny, got %d bytes", len(decoded))
+	}
+	if strings.TrimSpace(prompt) == "" {
+		t.Fatal("probe must carry a non-empty prompt")
+	}
+
+	if strings.Contains(err.Error(), "test-key") {
+		t.Fatalf("probe error must never carry the api key: %q", err.Error())
+	}
+}
+
+func TestMiniMaxAuthProbeImageIsValidPNG(t *testing.T) {
+	t.Parallel()
+
+	probe, err := minimaxAuthProbeImage()
+	if err != nil {
+		t.Fatalf("minimaxAuthProbeImage: %v", err)
+	}
+
+	mime, err := DetectMIME(probe.Data)
+	if err != nil {
+		t.Fatalf("DetectMIME: %v", err)
+	}
+	if mime != "image/png" {
+		t.Fatalf("expected image/png, got %q", mime)
+	}
 }
 
 func TestNewMiniMaxRecognizer_ValidatesConfig(t *testing.T) {

@@ -55,6 +55,20 @@ func KindOf(err error) ErrorKind {
 	return ErrorKindUnknown
 }
 
+// IsDefinitiveRejection reports whether err is a provider rejection that
+// retrying cannot fix: the credentials were refused (auth failed) or the
+// account cannot pay for the call (credits exhausted). Everything else —
+// rate limits, network failures, upstream outages — is transient from a
+// caller's perspective.
+func IsDefinitiveRejection(err error) bool {
+	switch KindOf(err) {
+	case ErrorKindAuthFailed, ErrorKindCreditsExhausted:
+		return true
+	default:
+		return false
+	}
+}
+
 type Attempt struct {
 	Provider string
 	Kind     ErrorKind

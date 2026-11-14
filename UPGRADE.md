@@ -11,6 +11,21 @@ and the built-in default template gained a conditional line introducing it
 the previous built-in default; custom templates are untouched — add `{{.BotUsername}}` where you want
 the handle to appear (it renders as nothing when unknown, so guard with `{{if .BotUsername}}`).
 
+### Startup validates MiniMax, Tavily, and Kagi credentials (#143)
+
+The bot now probes the configured MiniMax VLM key and the configured search
+provider keys (Tavily, Kagi, including each chain member) at startup with one
+minimal real API call each (bounded at 15 s per probe). A definitive
+rejection — the key is refused or the account is out of credits — aborts the
+boot with the provider named in the error; transient failures (network,
+timeouts, rate limits, upstream errors) are logged and the boot continues.
+This catches dead keys at deploy time instead of at first use. Deployments
+booting today with invalid or exhausted keys will now exit 1 until the key
+is fixed or the feature is disabled. No Sentry DSN validation is added:
+sentry-go verifies the DSN format at Init and offers no verification API.
+The chat/image LLM tokens keep being validated by the existing model
+listing; the Telegram token by GetMe; MCP by its connect handshake.
+
 ### Reactions to bot replies are recorded and shown to the model (#100)
 
 The bot now subscribes to `message_reaction` updates and stores reactions to its own replies on the

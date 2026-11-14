@@ -35,6 +35,16 @@ func NewKagiSearcher(client *http.Client, apiKey string, logger *slog.Logger) *K
 	}
 }
 
+// ValidateAuth probes the configured API key with a minimal one-result
+// search. The returned error is the regular classified provider error; a
+// definitive rejection (auth failed, credits exhausted) proves the key
+// cannot work, anything else may be transient.
+func (s *KagiSearcher) ValidateAuth(ctx context.Context) error {
+	_, err := s.Search(ctx, Request{Query: "test", MaxResults: 1})
+
+	return err
+}
+
 func (s *KagiSearcher) Search(ctx context.Context, req Request) (Result, error) {
 	queryURL, err := url.Parse(s.searchURL)
 	if err != nil {
@@ -104,10 +114,19 @@ func (s *KagiSearcher) Search(ctx context.Context, req Request) (Result, error) 
 	}, nil
 }
 
+// classifyKagiError maps a failed Kagi response to a provider error. An
+// upstream failure (5xx) classifies before any body content: startup
+// validation treats credits-exhausted and auth failures as fatal, and an
+// outage body can carry stale in-body error codes or outage wording
+// ("billing service temporarily unavailable") that must stay transient.
 func classifyKagiError(status int, errs []struct {
 	Code int    `json:"code"`
 	Msg  string `json:"msg"`
 }, body []byte) error {
+	if status >= http.StatusInternalServerError {
+		return provider.NewError("kagi", provider.ErrorKindUpstreamUnavailable)
+	}
+
 	if len(errs) > 0 {
 		switch errs[0].Code {
 		case 2:

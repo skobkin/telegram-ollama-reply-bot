@@ -34,6 +34,16 @@ func NewTavilySearcher(client *http.Client, apiKey string, logger *slog.Logger) 
 	}
 }
 
+// ValidateAuth probes the configured API key with a minimal one-result
+// search. The returned error is the regular classified provider error; a
+// definitive rejection (auth failed, credits exhausted) proves the key
+// cannot work, anything else may be transient.
+func (s *TavilySearcher) ValidateAuth(ctx context.Context) error {
+	_, err := s.Search(ctx, Request{Query: "test", MaxResults: 1})
+
+	return err
+}
+
 func (s *TavilySearcher) Search(ctx context.Context, req Request) (Result, error) {
 	payload := map[string]any{
 		"query":        req.Query,
@@ -100,6 +110,15 @@ func (s *TavilySearcher) Search(ctx context.Context, req Request) (Result, error
 	}, nil
 }
 
+// classifyTavilyError maps a failed Tavily response to a provider error.
+// Canonical HTTP statuses classify first, and an upstream failure (5xx)
+// classifies before any body wording: startup validation treats
+// credits-exhausted and auth failures as fatal, so outage bodies carrying
+// credential-adjacent words ("credit accounting service temporarily
+// unavailable") must stay transient, exactly like a quota-worded 429 body
+// must never upgrade a transient status into a definitive one. Body wording
+// classifies only the remaining statuses where it is the sole available
+// signal.
 func classifyTavilyError(status int, body []byte) error {
 	var payload struct {
 		Error   string `json:"error"`
@@ -116,13 +135,24 @@ func classifyTavilyError(status int, body []byte) error {
 		string(body),
 	}, " "))
 
-	switch {
-	case status == http.StatusUnauthorized || status == http.StatusForbidden || strings.Contains(text, "unauthorized") || strings.Contains(text, "invalid api key"):
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden:
 		return provider.NewError("tavily", provider.ErrorKindAuthFailed)
-	case status == http.StatusPaymentRequired || strings.Contains(text, "credit") || strings.Contains(text, "quota") || strings.Contains(text, "insufficient balance"):
+	case http.StatusPaymentRequired:
 		return provider.NewError("tavily", provider.ErrorKindCreditsExhausted)
-	case status == http.StatusTooManyRequests:
+	case http.StatusTooManyRequests:
 		return provider.NewError("tavily", provider.ErrorKindRateLimited)
+	}
+
+	if status >= http.StatusInternalServerError {
+		return provider.NewError("tavily", provider.ErrorKindUpstreamUnavailable)
+	}
+
+	switch {
+	case strings.Contains(text, "unauthorized") || strings.Contains(text, "invalid api key"):
+		return provider.NewError("tavily", provider.ErrorKindAuthFailed)
+	case strings.Contains(text, "credit") || strings.Contains(text, "quota") || strings.Contains(text, "insufficient balance"):
+		return provider.NewError("tavily", provider.ErrorKindCreditsExhausted)
 	case status >= 400 && status < 500:
 		return provider.NewError("tavily", provider.ErrorKindBadRequest)
 	default:

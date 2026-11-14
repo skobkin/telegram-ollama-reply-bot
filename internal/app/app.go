@@ -18,6 +18,7 @@ import (
 	"telegram-ollama-reply-bot/internal/logging"
 	"telegram-ollama-reply-bot/internal/mcp"
 	psqlite "telegram-ollama-reply-bot/internal/persistence/sqlite"
+	"telegram-ollama-reply-bot/internal/provider"
 	"telegram-ollama-reply-bot/internal/reminders"
 	"telegram-ollama-reply-bot/internal/state/memory"
 	"telegram-ollama-reply-bot/internal/support/httpclient"
@@ -65,6 +66,76 @@ func verifyStartupModels(ctx context.Context, main, image *llm.Service, imageChe
 	}
 
 	return hasMain && hasImage, mainResult
+}
+
+// authProbeTimeout bounds one startup credential probe. It must stay well
+// under a tolerable boot delay while allowing slow providers to answer.
+const authProbeTimeout = 15 * time.Second
+
+// authValidator probes external-service credentials with a minimal real API
+// call. Implemented optionally by the search backends and the MiniMax
+// recognizer; plain interfaces stay untouched.
+type authValidator interface {
+	ValidateAuth(ctx context.Context) error
+}
+
+// verifyRecognizerAuth validates the active image recognizer's credentials
+// when it implements authValidator. A rejected key (ErrRecognizerAuth) is a
+// definitive misconfiguration and returns an error to abort the boot; any
+// other probe failure is transient (the probe call itself may fail for
+// reasons unrelated to the key) and only logs — recognition may still work
+// at runtime.
+func verifyRecognizerAuth(ctx context.Context, recognizer vision.Recognizer, logger *slog.Logger) error {
+	validator, ok := recognizer.(authValidator)
+	if !ok {
+		return nil
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, authProbeTimeout)
+	defer cancel()
+
+	err := validator.ValidateAuth(probeCtx)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, vision.ErrRecognizerAuth) {
+		return err
+	}
+
+	logger.Error("image recognizer auth validation failed, continuing", "recognizer", recognizer.Name(), "error", err)
+
+	return nil
+}
+
+// verifySearcherAuth validates the configured search backend's credentials
+// when it implements authValidator. Definitive rejections (auth failed,
+// credits exhausted) return an error to abort the boot; transient failures
+// only log, and a searcher without a validator (or a disabled backend) is
+// skipped.
+func verifySearcherAuth(ctx context.Context, searcher search.Searcher, logger *slog.Logger) error {
+	if searcher == nil {
+		return nil
+	}
+
+	validator, ok := searcher.(authValidator)
+	if !ok {
+		return nil
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, authProbeTimeout)
+	defer cancel()
+
+	err := validator.ValidateAuth(probeCtx)
+	if err == nil {
+		return nil
+	}
+	if provider.IsDefinitiveRejection(err) {
+		return err
+	}
+
+	logger.Error("search provider auth validation failed, continuing", "error", err)
+
+	return nil
 }
 
 // verifyTelegramIdentity resolves the bot's own identity, logging the
@@ -266,6 +337,16 @@ func Run(ctx context.Context) error {
 
 	logger.Info("all required models are available")
 
+	// Credential probes for the services without a cheaper existing check:
+	// the model listing above already validates the chat/image LLM tokens,
+	// and the MiniMax VLM key is only exercised here.
+	if err := verifyRecognizerAuth(ctx, recognizer, logger); err != nil {
+		logger.Error("image recognizer rejected credentials", "error", err)
+		sentry.CaptureException(err)
+
+		return err
+	}
+
 	contentFetcher, err := fetch.New(fetch.Options{
 		Timeout:      cfg.Content.Fetch.Timeout,
 		MaxBodyBytes: cfg.Content.Fetch.MaxBodyBytes,
@@ -293,6 +374,12 @@ func Run(ctx context.Context) error {
 	searcher, err := search.NewFromConfig(*cfg, httpclient.New(), logManager.Logger("content/search"))
 	if err != nil {
 		logger.Error("failed to initialize search capability", "error", err)
+		sentry.CaptureException(err)
+
+		return err
+	}
+	if err := verifySearcherAuth(ctx, searcher, logger); err != nil {
+		logger.Error("search provider rejected credentials", "error", err)
 		sentry.CaptureException(err)
 
 		return err

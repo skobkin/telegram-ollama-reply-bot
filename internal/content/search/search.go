@@ -24,3 +24,13 @@ type Result struct {
 type Searcher interface {
 	Search(ctx context.Context, req Request) (Result, error)
 }
+
+// AuthValidator is an optional startup credential probe implemented by
+// searchers that can cheaply verify their configured API key. ValidateAuth
+// performs a minimal real API call and returns the classified provider
+// error: a definitive rejection (auth failed, credits exhausted) means the
+// configured key cannot work, while any other error may be transient and
+// must not block a boot on its own.
+type AuthValidator interface {
+	ValidateAuth(ctx context.Context) error
+}

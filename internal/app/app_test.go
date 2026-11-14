@@ -12,14 +12,18 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	tg "github.com/mymmrac/telego"
 
 	"telegram-ollama-reply-bot/internal/config"
+	"telegram-ollama-reply-bot/internal/content/search"
 	"telegram-ollama-reply-bot/internal/llm"
+	"telegram-ollama-reply-bot/internal/provider"
 	"telegram-ollama-reply-bot/internal/state"
 	"telegram-ollama-reply-bot/internal/support/httpclient"
 	"telegram-ollama-reply-bot/internal/tooluse"
+	"telegram-ollama-reply-bot/internal/vision"
 )
 
 // modelServer is a fake OpenAI-compatible backend serving /models. It counts
@@ -213,6 +217,144 @@ func TestAttachImageToolsGatedOnEnabledFlag(t *testing.T) {
 	attachImageTools(enabled, stubAnalyzer{}, true)
 	if !enabled.HasTool("analyze_image") || !enabled.HasTool("list_recent_images") {
 		t.Fatal("image tools must be registered while recognition is enabled")
+	}
+}
+
+// stubRecognizer is a vision.Recognizer without ValidateAuth, proving the
+// startup credential probe skips recognizers that cannot self-validate.
+type stubRecognizer struct{}
+
+func (stubRecognizer) Name() string         { return "stub" }
+func (stubRecognizer) Supports(string) bool { return true }
+func (stubRecognizer) RequiresModel() bool  { return false }
+func (stubRecognizer) Recognize(context.Context, vision.Image, string) (vision.Recognition, error) {
+	return vision.Recognition{}, nil
+}
+
+// stubValidatingSearcher is a search.Searcher with an independent
+// ValidateAuth outcome, used instead of HTTP-level fakes here because the
+// HTTP classification behavior is covered in the search package itself.
+type stubValidatingSearcher struct {
+	validateErr error
+	probes      atomic.Int32
+}
+
+func (s *stubValidatingSearcher) Search(context.Context, search.Request) (search.Result, error) {
+	return search.Result{}, nil
+}
+
+func (s *stubValidatingSearcher) ValidateAuth(context.Context) error {
+	s.probes.Add(1)
+
+	return s.validateErr
+}
+
+func appTestLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func TestVerifyRecognizerAuthDefinitiveFails(t *testing.T) {
+	t.Parallel()
+
+	// A real MiniMax recognizer against a fake endpoint that reports the
+	// provider auth status 1004.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"base_resp":{"status_code":1004,"status_msg":"invalid api key"}}`)
+	}))
+	t.Cleanup(server.Close)
+
+	recognizer, err := vision.NewMiniMaxRecognizer(server.URL, "test-key", 5*time.Second, appTestLogger())
+	if err != nil {
+		t.Fatalf("new minimax recognizer: %v", err)
+	}
+
+	if err := verifyRecognizerAuth(context.Background(), recognizer, appTestLogger()); !errors.Is(err, vision.ErrRecognizerAuth) {
+		t.Fatalf("expected definitive auth failure, got %v", err)
+	}
+}
+
+func TestVerifyRecognizerAuthTransientContinues(t *testing.T) {
+	t.Parallel()
+
+	t.Run("http 500", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		t.Cleanup(server.Close)
+
+		recognizer, err := vision.NewMiniMaxRecognizer(server.URL, "test-key", 5*time.Second, appTestLogger())
+		if err != nil {
+			t.Fatalf("new minimax recognizer: %v", err)
+		}
+
+		if err := verifyRecognizerAuth(context.Background(), recognizer, appTestLogger()); err != nil {
+			t.Fatalf("transient failure must not abort the boot, got %v", err)
+		}
+	})
+
+	t.Run("connection refused", func(t *testing.T) {
+		t.Parallel()
+
+		recognizer, err := vision.NewMiniMaxRecognizer("http://127.0.0.1:1", "test-key", 5*time.Second, appTestLogger())
+		if err != nil {
+			t.Fatalf("new minimax recognizer: %v", err)
+		}
+
+		if err := verifyRecognizerAuth(context.Background(), recognizer, appTestLogger()); err != nil {
+			t.Fatalf("transient failure must not abort the boot, got %v", err)
+		}
+	})
+
+	t.Run("recognizer without validator", func(t *testing.T) {
+		t.Parallel()
+
+		if err := verifyRecognizerAuth(context.Background(), stubRecognizer{}, appTestLogger()); err != nil {
+			t.Fatalf("recognizer without ValidateAuth must be skipped, got %v", err)
+		}
+	})
+}
+
+func TestVerifySearcherAuthClassification(t *testing.T) {
+	t.Parallel()
+
+	definitive := map[bool]provider.ErrorKind{true: provider.ErrorKindAuthFailed, false: provider.ErrorKindCreditsExhausted}
+
+	for _, kind := range definitive {
+		searcher := &stubValidatingSearcher{validateErr: provider.NewError("tavily", kind)}
+		err := verifySearcherAuth(context.Background(), searcher, appTestLogger())
+		if err == nil {
+			t.Fatalf("kind %s must abort the boot", kind)
+		}
+		if !provider.IsDefinitiveRejection(err) || !strings.Contains(err.Error(), "tavily") {
+			t.Fatalf("error must name the provider and kind, got %v", err)
+		}
+	}
+
+	transient := []provider.ErrorKind{provider.ErrorKindRateLimited, provider.ErrorKindUpstreamUnavailable, provider.ErrorKindUnknown}
+	for _, kind := range transient {
+		searcher := &stubValidatingSearcher{validateErr: provider.NewError("tavily", kind)}
+		if err := verifySearcherAuth(context.Background(), searcher, appTestLogger()); err != nil {
+			t.Fatalf("transient kind %s must not abort the boot, got %v", kind, err)
+		}
+	}
+
+	plain := &stubValidatingSearcher{}
+	if err := verifySearcherAuth(context.Background(), struct{ search.Searcher }{plain}, appTestLogger()); err != nil {
+		t.Fatalf("searcher without ValidateAuth must be skipped, got %v", err)
+	}
+	if plain.probes.Load() != 0 {
+		t.Fatalf("searcher without ValidateAuth must not be probed, got %d probes", plain.probes.Load())
+	}
+}
+
+func TestVerifySearcherAuthNilSearcherNoProbe(t *testing.T) {
+	t.Parallel()
+
+	if err := verifySearcherAuth(context.Background(), nil, appTestLogger()); err != nil {
+		t.Fatalf("disabled search must skip validation, got %v", err)
 	}
 }
 
