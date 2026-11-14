@@ -933,6 +933,51 @@ func TestReactionLimiterPrunesExpiredCooldownsOnOrdinarySends(t *testing.T) {
 	}
 }
 
+// TestSetReactionGateAcquisitionIsBounded proves waiting for a busy target
+// gate respects the per-call wait bound: a stalled holder must not stall the
+// run's remaining tools and response indefinitely, and a refused wait must
+// not consume the run attempt.
+func TestSetReactionGateAcquisitionIsBounded(t *testing.T) {
+	t.Parallel()
+
+	sender := &stubActionSender{}
+	runtime := newSetReactionRuntime(t, nil, sender)
+	scope := state.ConversationScope{ChatID: 1100}
+
+	// Hold the target gate from another run. No defer: the explicit release
+	// below must be the only one, a double release would deadlock.
+	gate, err := runtime.reactions.acquire(context.Background(), 1100, 42)
+	if err != nil {
+		t.Fatalf("acquire holder gate: %v", err)
+	}
+
+	start := time.Now()
+	result := callSetReaction(t, runtime, reactionCallCtx(scope, state.Message{FromID: 11, ChatID: 1100, MessageID: 42}), `{"emoji":"👍"}`)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		runtime.reactions.release(1100, 42, gate)
+		t.Fatalf("bounded wait must refuse promptly, took %v", elapsed)
+	}
+	if code := reactionErrorCode(t, result); code != "target_busy" {
+		runtime.reactions.release(1100, 42, gate)
+		t.Fatalf("expected target_busy, got %q", code)
+	}
+	if sender.reactionCallCount() != 0 {
+		runtime.reactions.release(1100, 42, gate)
+		t.Fatal("a refused gate wait must not send")
+	}
+
+	// The refusal consumed nothing: once the gate frees, the same run
+	// proceeds.
+	runtime.reactions.release(1100, 42, gate)
+	result = callSetReaction(t, runtime, reactionCallCtx(scope, state.Message{FromID: 11, ChatID: 1100, MessageID: 42}), `{"emoji":"👍"}`)
+	if result.Status != execution.StatusOK {
+		t.Fatalf("proceeding call after release must succeed, got %+v", result.Data)
+	}
+	if sender.reactionCallCount() != 1 {
+		t.Fatalf("unexpected call count: %d", sender.reactionCallCount())
+	}
+}
+
 // --- runtime flows ---
 
 func reactionRuntimeFlow(t *testing.T, sender *stubActionSender, recorder *recordingDispatcher) *Runtime {

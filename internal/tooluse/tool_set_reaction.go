@@ -45,6 +45,10 @@ const (
 // Telegram rate-limit window.
 var errReactionRateLimited = errors.New("reaction rate limited")
 
+// errReactionTargetBusy marks a call that gave up waiting for its target
+// gate: another run's send to the same message held it for too long.
+var errReactionTargetBusy = errors.New("reaction target busy")
+
 // reactionTargetKey identifies the Telegram message a reaction send
 // serializes on. Telegram allows one bot reaction per message and the
 // remote apply order of concurrent sends is undefined, so same-target sends
@@ -108,7 +112,8 @@ func (l *reactionLimiter) maxWaitDuration() time.Duration {
 
 // acquire serializes on the target message and returns the gate the caller
 // must release after its send attempt (success or failure). Waiting is
-// bounded by the caller's context.
+// bounded by the per-call wait bound and the caller's context, whichever
+// comes first — a stalled holder must never stall other runs indefinitely.
 func (l *reactionLimiter) acquire(ctx context.Context, chatID int64, messageID int) (*reactionGate, error) {
 	key := reactionTargetKey{chatID: chatID, messageID: messageID}
 
@@ -125,6 +130,9 @@ func (l *reactionLimiter) acquire(ctx context.Context, chatID int64, messageID i
 	gate.refs++
 	l.mu.Unlock()
 
+	timer := time.NewTimer(l.maxWaitDuration())
+	defer timer.Stop()
+
 	select {
 	case gate.slots <- struct{}{}:
 		return gate, nil
@@ -132,6 +140,10 @@ func (l *reactionLimiter) acquire(ctx context.Context, chatID int64, messageID i
 		l.unregister(key, gate)
 
 		return nil, ctx.Err()
+	case <-timer.C:
+		l.unregister(key, gate)
+
+		return nil, errReactionTargetBusy
 	}
 }
 
@@ -317,9 +329,15 @@ func (r *Runtime) setReaction(ctx context.Context, callCtx CallContext, args jso
 
 	// Serialize per target before pacing: two runs reacting to the same
 	// message must send one after another, and each reserves its chat slot
-	// only once it is the gate holder, immediately before its send.
+	// only once it is the gate holder, immediately before its send. The
+	// wait is bounded: a stalled holder must not stall this run's remaining
+	// tools and response indefinitely.
 	gate, err := r.reactions.acquire(ctx, target.chatID, target.messageID)
 	if err != nil {
+		if errors.Is(err, errReactionTargetBusy) {
+			return setReactionError("target_busy", "Another reaction to this message is still being sent; try again later."), nil
+		}
+
 		return setReactionCancelledResult(), nil
 	}
 	defer r.reactions.release(target.chatID, target.messageID, gate)
