@@ -199,10 +199,14 @@ func (l *reactionLimiter) awaitChat(ctx context.Context, chatID int64) error {
 
 		// The slot is free: reserve it for this chat under the same lock
 		// step that verified it, so no other caller can squeeze in between.
+		// Ordinary reservations prune too — without a 429 nothing else
+		// would ever collect expired entries, and one chat per entry the
+		// map would grow for the process lifetime.
 		if l.cooldowns == nil {
 			l.cooldowns = make(map[int64]time.Time)
 		}
 		l.cooldowns[chatID] = now.Add(l.spacingDuration())
+		l.pruneCooldownsLocked()
 		l.mu.Unlock()
 
 		return nil

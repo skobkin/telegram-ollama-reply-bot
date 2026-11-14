@@ -897,6 +897,42 @@ func TestReactionLimiterNeverDropsActiveEntries(t *testing.T) {
 	}
 }
 
+// TestReactionLimiterPrunesExpiredCooldownsOnOrdinarySends proves expired
+// cooldown entries are collected by the normal reservation path too, not
+// only when a 429 penalizes the chat: without it the map would grow by one
+// entry per chat ever reacted to, for the process lifetime.
+func TestReactionLimiterPrunesExpiredCooldownsOnOrdinarySends(t *testing.T) {
+	t.Parallel()
+
+	var limiter reactionLimiter
+	limiter.spacing = time.Millisecond
+	limiter.maxWait = 50 * time.Millisecond
+
+	now := time.Now()
+	limiter.mu.Lock()
+	limiter.cooldowns = make(map[int64]time.Time)
+	for i := 0; i < reactionCooldownMaxEntries+5; i++ {
+		limiter.cooldowns[int64(i)] = now.Add(-time.Hour) // all expired
+	}
+	limiter.mu.Unlock()
+
+	// An ordinary spaced send in a fresh chat must collect them.
+	if err := limiter.awaitChat(context.Background(), -1); err != nil {
+		t.Fatalf("awaitChat: %v", err)
+	}
+
+	limiter.mu.Lock()
+	count := len(limiter.cooldowns)
+	reserved := limiter.cooldowns[-1]
+	limiter.mu.Unlock()
+	if count > reactionCooldownMaxEntries {
+		t.Fatalf("expired cooldowns must be pruned by ordinary sends, map holds %d", count)
+	}
+	if reserved.IsZero() {
+		t.Fatal("the fresh chat's reservation must be recorded")
+	}
+}
+
 // --- runtime flows ---
 
 func reactionRuntimeFlow(t *testing.T, sender *stubActionSender, recorder *recordingDispatcher) *Runtime {
