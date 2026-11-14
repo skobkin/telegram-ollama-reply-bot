@@ -10,36 +10,15 @@ import (
 	"time"
 
 	"telegram-ollama-reply-bot/internal/state"
+	"telegram-ollama-reply-bot/internal/telegram/reactionemoji"
 
 	t "github.com/mymmrac/telego"
 	th "github.com/mymmrac/telego/telegohandler"
 )
 
-// trackedReactionEmojis is the hardcoded feedback whitelist: reactions whose
-// emoji the backend model is known to read reliably. Everything else is
-// ignored — unlisted emoji, premium custom emoji, and paid reaction types.
-// Telegram's per-chat reaction availability acts as the outer whitelist; this
-// list only filters what reaches history and the model context.
-//
-// Entries must be the exact strings Telegram transmits (see the reaction
-// emoji list in the Bot API docs): notably the heart is U+2764 without the
-// variation selector ("❤", not "❤️") and the bolt is U+26A1 ("⚡"). A typo here
-// simply never matches — there is no startup validation on purpose, so the
-// list needs no coupling to Telegram's current emoji set.
-var trackedReactionEmojis = map[string]struct{}{
-	// Best clarity: unambiguous sentiment the model reads directly.
-	"👍": {}, "👎": {}, "❤": {}, "😂": {}, "😭": {}, "😴": {}, "💯": {},
-	"🏆": {}, "⚡": {}, "🙏": {}, "🤝": {}, "👏": {}, "👌": {},
-
-	// Good clarity: reliably understood in conversational context.
-	"🔥": {}, "🎉": {}, "🤔": {}, "👀": {}, "😐": {}, "🤨": {}, "😎": {},
-	"🥰": {}, "🤩": {}, "😍": {}, "🥳": {}, "🫡": {}, "🤯": {}, "😱": {},
-	"💔": {}, "😈": {}, "🤡": {}, "🤓": {},
-
-	// Contextual: usually clear from context, but can be trimmed here if
-	// they start misleading the model.
-	"🥴": {}, "🥱": {}, "🤮": {}, "💩": {},
-}
+// The tracked feedback whitelist lives in the shared reactionemoji package so
+// the inbound pipeline and the model-facing set_reaction tool refer to the
+// same definition (see the package documentation for the exact-form rules).
 
 // messageReactionHandler is the ingress adapter for reaction updates: it
 // validates the update, enforces access, normalizes the tracked reaction
@@ -344,7 +323,7 @@ func (b *Bot) trackedReactions(list []t.ReactionType, user *t.User, at time.Time
 		if !ok {
 			continue
 		}
-		if _, ok := trackedReactionEmojis[emoji]; !ok {
+		if !reactionemoji.Supported(emoji) {
 			continue
 		}
 
@@ -374,7 +353,7 @@ func reactionEmoji(reactionType t.ReactionType) (string, bool) {
 func hasTrackedEmoji(list []t.ReactionType) bool {
 	for _, reactionType := range list {
 		if emoji, ok := reactionEmoji(reactionType); ok {
-			if _, tracked := trackedReactionEmojis[emoji]; tracked {
+			if reactionemoji.Supported(emoji) {
 				return true
 			}
 		}

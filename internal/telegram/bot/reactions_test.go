@@ -12,6 +12,7 @@ import (
 	"telegram-ollama-reply-bot/internal/state"
 	"telegram-ollama-reply-bot/internal/state/memory"
 	"telegram-ollama-reply-bot/internal/support/markdown"
+	"telegram-ollama-reply-bot/internal/telegram/reactionemoji"
 
 	tg "github.com/mymmrac/telego"
 	th "github.com/mymmrac/telego/telegohandler"
@@ -424,28 +425,16 @@ func TestRichReplyCapturesSentMessageID(t *testing.T) {
 	}
 }
 
-// TestTrackedReactionEmojiExactTelegramForms proves the whitelist uses the
-// exact strings Telegram transmits (no variation selectors): a mismatched
-// entry would silently never match.
-func TestTrackedReactionEmojiExactTelegramForms(t *testing.T) {
-	if len(trackedReactionEmojis) == 0 {
-		t.Fatalf("whitelist must not be empty")
-	}
-
-	for emoji := range trackedReactionEmojis {
-		if emoji == "" {
-			t.Fatalf("empty whitelist entry")
-		}
-		if strings.ContainsRune(emoji, '️') {
-			t.Fatalf("whitelist entry %q contains a variation selector; Telegram sends plain codepoints", emoji)
+// TestTrackedReactionEmojiMatchesSharedWhitelist proves the inbound pipeline
+// uses the shared reactionemoji whitelist: the exact-form guarantees (plain
+// codepoints, no variation selectors) are pinned by the package's own tests.
+func TestTrackedReactionEmojiMatchesSharedWhitelist(t *testing.T) {
+	for _, emoji := range reactionemoji.All() {
+		if !reactionemoji.Supported(emoji) {
+			t.Fatalf("shared whitelist member %q is not supported", emoji)
 		}
 	}
-
-	// The heart and the bolt are the classic mismatch cases.
-	if _, ok := trackedReactionEmojis["❤"]; !ok {
-		t.Fatalf("whitelist must track the plain heart U+2764 that Telegram sends")
-	}
-	if _, ok := trackedReactionEmojis["⚡"]; !ok {
-		t.Fatalf("whitelist must track the plain bolt U+26A1 that Telegram sends")
+	if !reactionemoji.Supported("❤") || !reactionemoji.Supported("⚡") {
+		t.Fatalf("shared whitelist must track the plain heart U+2764 and bolt U+26A1 that Telegram sends")
 	}
 }
