@@ -19,7 +19,17 @@ into the `chat` prompt template (admin panel → Prompts → chat).
   upgrade the placeholders render nothing, template execution fails, and the bot stops replying in chats served
   by that template.
 
-## 0.27.0 (unreleased) — changes since 0.26.0
+## 0.29.1 (2026-11-15) — changes since 0.29.0
+
+### Admin menu is not re-created while a conversation run is active (#148)
+
+The admin menu re-creation added in 0.29.0 (#145) fires ~1.5 s after chat activity goes quiet — the same
+delay at which a conversation run's live preview draft appears in private chats, so in an admin DM with an
+open session the fresh menu send landed right after the draft and flash-removed it, replacing the tool-status
+preview with the admin menu for the whole run. Re-creation is now deferred while a conversation run (LLM/tool
+loop) is active in that admin DM (tracked via run-lifecycle events) and happens only after the run finishes.
+
+## 0.29.0 (2026-11-15) — changes since 0.28.0
 
 ### Bot's Telegram handle available in chat prompts (#142)
 
@@ -55,19 +65,16 @@ sentry-go verifies the DSN format at Init and offers no verification API.
 The chat/image LLM tokens keep being validated by the existing model
 listing; the Telegram token by GetMe; MCP by its connect handshake.
 
-### Reactions to bot replies are recorded and shown to the model (#100)
+### The model can react to messages with `set_reaction` (#135)
 
-The bot now subscribes to `message_reaction` updates and stores reactions to its own replies on the
-conversation history entry; later model requests and history summaries include them with reactor names
-(`[reactions: 👍 Alice, 👎 Bob]`). Receive-only, fixed emoji set, no configuration.
+New `set_reaction` tooluse tool: the model can attach one reaction from a fixed, Telegram-valid emoji
+whitelist to messages in the chat (see README, "Model-authored reactions"). The bot's own reactions are
+recorded on the history entries of the target messages like user reactions, so later model requests see them
+in the same `[reactions: …]` context and can reuse them as outgoing candidates. Guards: already-used
+("spent") reaction attempts are rejected before delivery, per-message cooldowns are pruned on ordinary sends,
+and ambiguous send outcomes are reported to the model as unknown instead of guessed.
 
-- The update stream is now requested explicitly (`message`, `callback_query`, `message_reaction`) instead of
-  Telegram's default set. Previously-delivered-but-ignored update types stop arriving; nothing in the old behavior is
-  lost, since no handler consumed them.
-- **Group chats**: Telegram delivers per-user reaction updates only to bots that are administrators in the chat.
-  Deployments where the bot is a plain group member silently see no reactions; private chats are unaffected.
-- Rollback is a plain redeploy of the old version: its long polling sends no `allowed_updates`, so Telegram returns to
-  the default delivery set.
+## 0.28.0 (2026-11-14) — changes since 0.27.0
 
 ### Live reply previews and collapsible tool history
 
@@ -87,7 +94,23 @@ README.md ("Live reply previews") for behavior details.
 - Rollback: redeploying the previous version leaves the new columns in place (they are simply ignored); no manual
   data migration is needed.
 
-## 0.26.0 (unreleased) — changes since 0.25.0
+## 0.27.0 (2026-11-13) — changes since 0.26.0
+
+### Reactions to bot replies are recorded and shown to the model (#100)
+
+The bot now subscribes to `message_reaction` updates and stores reactions to its own replies on the
+conversation history entry; later model requests and history summaries include them with reactor names
+(`[reactions: 👍 Alice, 👎 Bob]`). Receive-only, fixed emoji set, no configuration.
+
+- The update stream is now requested explicitly (`message`, `callback_query`, `message_reaction`) instead of
+  Telegram's default set. Previously-delivered-but-ignored update types stop arriving; nothing in the old behavior is
+  lost, since no handler consumed them.
+- **Group chats**: Telegram delivers per-user reaction updates only to bots that are administrators in the chat.
+  Deployments where the bot is a plain group member silently see no reactions; private chats are unaffected.
+- Rollback is a plain redeploy of the old version: its long polling sends no `allowed_updates`, so Telegram returns to
+  the default delivery set.
+
+## 0.26.0 (2026-11-12) — changes since 0.25.0
 
 ### Extraction gate tolerates reference-dense pages; backend order is re-ranked per page
 
@@ -115,6 +138,26 @@ Non-breaking behavior changes in article extraction (`/summarize`, `fetch_url_co
 - Rescue-mode tie-break: when nothing passes the quality gate, the delivered result is still
   the best-scoring non-empty extraction, but exact score ties between backends are now
   resolved in the per-page voted order rather than the configured order.
+
+## 0.25.0 (2026-11-11) — changes since 0.24.0 (breaking)
+
+### GoOse extraction backend removed (breaking)
+
+The `goose` extraction backend is gone, replaced by a new `domdistiller` backend
+([go-domdistiller](https://github.com/markusmobius/go-domdistiller), a Go port of Chromium's
+DOM Distiller).
+
+- **Breaking**: `CONTENT__EXTRACT__BACKENDS` no longer accepts `goose`; a configured list
+  containing it fails validation at startup (the error lists the valid names). Drop `goose`
+  from the value — the default chain is now `readability,trafilatura,domdistiller`.
+- Why: the #127 extraction benchmark shows GoOse pathological on large pages (~1.7 s CPU and
+  ~9.6 GB of allocations on a 142 KB fixture) and systematically leaking navigation/comment
+  boilerplate into its output, while domdistiller posts the best mean F1 on non-Wikipedia
+  pages. Pagination following is disabled in the backend — the pipeline never follows
+  next-page links.
+- Pages where every configured backend abstains (no extractable text — near-empty stubs,
+  some media-only shells) now end in an extraction error, where GoOse previously delivered a
+  title-only remnant through the rescue path.
 
 ## 0.24.0 (2026-11-11) — changes since 0.23.1 (breaking)
 
@@ -187,26 +230,6 @@ Extraction is now a configurable pipeline (`CONTENT__EXTRACT__BACKENDS`, default
 - The GoOse backend itself remains in 0.24.0; its removal (replaced by the new
   `domdistiller` backend) ships in 0.25.0 — see below. The extraction benchmark that drove
   that decision is tracked in issue #127.
-
-## 0.25.0 (2026-11-11) — changes since 0.24.0 (breaking)
-
-### GoOse extraction backend removed (breaking)
-
-The `goose` extraction backend is gone, replaced by a new `domdistiller` backend
-([go-domdistiller](https://github.com/markusmobius/go-domdistiller), a Go port of Chromium's
-DOM Distiller).
-
-- **Breaking**: `CONTENT__EXTRACT__BACKENDS` no longer accepts `goose`; a configured list
-  containing it fails validation at startup (the error lists the valid names). Drop `goose`
-  from the value — the default chain is now `readability,trafilatura,domdistiller`.
-- Why: the #127 extraction benchmark shows GoOse pathological on large pages (~1.7 s CPU and
-  ~9.6 GB of allocations on a 142 KB fixture) and systematically leaking navigation/comment
-  boilerplate into its output, while domdistiller posts the best mean F1 on non-Wikipedia
-  pages. Pagination following is disabled in the backend — the pipeline never follows
-  next-page links.
-- Pages where every configured backend abstains (no extractable text — near-empty stubs,
-  some media-only shells) now end in an extraction error, where GoOse previously delivered a
-  title-only remnant through the rescue path.
 
 ## 0.23.0 (2026-11-11) — changes since 0.22.1 (breaking)
 
