@@ -2935,14 +2935,19 @@ func TestMenuRecreateDrainsQueuedActivityBeforeHonoringExpiry(t *testing.T) {
 
 	const cycles = 16
 	for cycle := 1; cycle <= cycles; cycle++ {
-		// Arm admin 7's window and let it get a firm head start before
-		// admin 8's: the 5ms gap makes admin 7's timer fire strictly first,
-		// so admin 7's re-creation is the one that parks on the gate —
-		// regardless of AfterFunc scheduling.
-		h.publishMessageSent(testAdmin)
-		time.Sleep(5 * time.Millisecond)
+		// Park admin 7's re-creation BEFORE admin 8's window exists: waiting
+		// for `entered` makes "the worker is parked inside one admin's
+		// re-creation" an observed fact rather than a scheduling bet. The
+		// earlier sequencing armed admin 8's window 5ms behind admin 7's and
+		// relied on that deadline gap making admin 7's timer callback run
+		// first — but a loaded CI runner delays AfterFunc callbacks past a
+		// 5ms margin. With admin 8's expiry processed first, its fire-time
+		// check legitimately sees no newer activity yet (the test had not
+		// published it), so the re-creation of admin 8 parks on the gate and
+		// the test's own newer activity lands mid-recreate — costing admin 8
+		// a second send the code must not be blamed for.
 		entered, release := h.api.armGate("sendMessage")
-		h.publishMessageSent(8)
+		h.publishMessageSent(testAdmin)
 
 		select {
 		case <-entered:
@@ -2950,11 +2955,13 @@ func TestMenuRecreateDrainsQueuedActivityBeforeHonoringExpiry(t *testing.T) {
 			t.Fatal("admin 7's re-creation send never reached the API")
 		}
 
-		// While the worker is parked: admin 8's expiry queues (its timer
-		// fires 5ms behind admin 7's), then newer admin 8 activity is
-		// published and settles — the subscriber records its timestamp and
-		// the event queues behind the expiry. Neither can be consumed until
-		// the release.
+		// While the worker is parked: admin 8's window is armed and its
+		// expiry fires into the queue (the parked worker cannot consume it),
+		// then newer admin 8 activity is published and settles — the
+		// subscriber records its timestamp and the event queues behind the
+		// expiry. Neither can be consumed until the release.
+		h.publishMessageSent(8)
+		time.Sleep(quietElapse)
 		h.publishMessageSent(8)
 		time.Sleep(quietElapse)
 
