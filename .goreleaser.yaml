@@ -23,7 +23,9 @@ archives:
     ids:
       - telegram-llm-bot
     formats:
-      - tar.gz
+      - tar.zst
+    zstd:
+      level: best
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
