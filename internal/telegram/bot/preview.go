@@ -697,9 +697,13 @@ func (m *previewManager) awaitChatGate(ctx context.Context, chatID int64) bool {
 // deliveryBudgetError names the caller-facing error for a delivery stopped
 // by its exhausted budget: parent cancellation keeps its own cause, and the
 // budget deadline surfaces chat-scoped, wrapped around sentinel. A nil
-// return means the budget is not what stopped the delivery.
+// return means the budget is not what stopped the delivery. The budget's
+// exhaustion is compared against the clock, not waitCtx.Err alone: the
+// transport reports its own timeout identity for an in-flight cancellation
+// a beat before the context timer marks the context done, and a nil Err
+// there would let the raw transport error escape instead of the deadline.
 func deliveryBudgetError(waitCtx context.Context, chatID int64, sentinel error) error {
-	if waitCtx.Err() == nil {
+	if !ctxDeadlineReached(waitCtx) {
 		return nil
 	}
 	cause := context.Cause(waitCtx)

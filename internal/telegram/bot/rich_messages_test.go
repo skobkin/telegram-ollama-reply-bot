@@ -371,3 +371,77 @@ func TestSendRichMarkdownReplyWithSuffix_KeepsFooterOnLegacyFallback(t *testing.
 		t.Fatalf("expected reserved footer to survive fallback crop, got tail %q", sent[len(sent)-60:])
 	}
 }
+
+// racedDeadlineContext is the state the transport race creates: the
+// deadline has passed, the transport has already reported its timeout
+// identity, but the context timer has not marked the context done yet —
+// ctx.Err is still nil.
+type racedDeadlineContext struct{ context.Context }
+
+func (racedDeadlineContext) Deadline() (time.Time, bool) {
+	return time.Now().Add(-time.Hour), true
+}
+
+func (racedDeadlineContext) Err() error { return nil }
+
+// TestCtxDeadlineReached pins that the send-abort decision compares the
+// budget's deadline against the clock instead of racing ctx.Err: a context
+// whose deadline passed must read as exhausted even while its timer has not
+// flipped Err yet, or an aborted send walks into a doomed fallback and the
+// raw transport error escapes instead of the deadline.
+func TestCtxDeadlineReached(t *testing.T) {
+	if ctxDeadlineReached(context.Background()) {
+		t.Fatal("a context without a deadline must not read as exhausted")
+	}
+
+	live, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	if ctxDeadlineReached(live) {
+		t.Fatal("a context with a future deadline must not read as exhausted")
+	}
+
+	past, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+	defer cancel()
+	if !ctxDeadlineReached(past) {
+		t.Fatal("a context with a passed deadline must read as exhausted")
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if !ctxDeadlineReached(cancelled) {
+		t.Fatal("a cancelled context must read as exhausted")
+	}
+
+	if !ctxDeadlineReached(racedDeadlineContext{Context: context.Background()}) {
+		t.Fatal("a raced context (deadline passed, Err still nil) must read as exhausted")
+	}
+}
+
+// TestSendRichMarkdownReply_NoFallbackOnSpentDeadline pins that a rich send
+// aborted by its deadline does not walk into the legacy fallback: the raced
+// window (transport timeout already surfaced, ctx.Err not yet set) must be
+// read as aborted, so the original transport error is returned unchanged
+// instead of a mismatching fallback error.
+func TestSendRichMarkdownReply_NoFallbackOnSpentDeadline(t *testing.T) {
+	srv := newPreviewServerState()
+	b := newPreviewTestBot(t, srv)
+	srv.delayMethod("sendRichMessage", time.Hour)
+
+	message := tg.Message{MessageID: 42, Chat: tg.Chat{ID: 100}}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	sent, err := b.sendRichMarkdownReplyWithSuffix(ctx, message, "the answer", "")
+	if sent != nil {
+		t.Fatalf("an aborted send must not deliver, got %+v", sent)
+	}
+	if err == nil {
+		t.Fatal("the abort must surface the original send error, got nil")
+	}
+	if isRateLimit(err) {
+		t.Fatalf("expected the transport abort, got a rate limit: %v", err)
+	}
+	if n := srv.callCount("sendMessage"); n != 0 {
+		t.Fatalf("a spent budget must not carry the fallback, got %d sendMessage calls", n)
+	}
+}

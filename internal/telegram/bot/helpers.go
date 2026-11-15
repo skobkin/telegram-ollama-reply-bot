@@ -53,6 +53,21 @@ func (b *Bot) loggerFromContext(ctx context.Context) *slog.Logger {
 	return logging.FromContext(ctx, b.logger)
 }
 
+// ctxDeadlineReached reports whether the context's budget is spent: the
+// deadline has passed, or the context is otherwise done. The deadline is
+// compared against the clock, not ctx.Err alone: the transport enforces the
+// deadline as a value (telego hands fasthttp the absolute deadline), so its
+// timeout identity can surface a beat before the context timer marks the
+// context done, and decisions keyed on Err alone race under load.
+func ctxDeadlineReached(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	deadline, ok := ctx.Deadline()
+
+	return ok && !time.Now().Before(deadline)
+}
+
 func (b *Bot) handlerLogger(ctx *th.Context) *slog.Logger {
 	return b.loggerFromContext(b.handlerContext(ctx))
 }

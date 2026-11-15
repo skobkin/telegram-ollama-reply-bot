@@ -71,12 +71,16 @@ func (b *Bot) sendRichMarkdownReplyWithSuffix(ctx context.Context, message t.Mes
 		// it — flattening it into a fallback error would hide the signal.
 		return nil, err
 	}
-	if ctx.Err() != nil {
-		// A send context that is already done cannot carry the fallback:
+	if ctxDeadlineReached(ctx) {
+		// A send context whose budget is spent cannot carry the fallback:
 		// the rich attempt was aborted (deadline or cancellation), the
 		// fallback is a guaranteed-failing call on the same dead context,
-		// and its differing error would mask the abort. The original error
-		// is returned unchanged.
+		// and its differing error would mask the abort. ctx.Err alone
+		// races the transport's timeout identity here: fasthttp fires on
+		// the absolute deadline a beat before the context timer marks the
+		// context done, and the fallback send on the passed deadline fails
+		// instantly with a mismatched error. The original error is
+		// returned unchanged.
 		return nil, err
 	}
 
