@@ -1,6 +1,4 @@
-# Telegram LLM Bot
-
-[![Build Status](https://ci.skobk.in/api/badges/skobkin/telegram-ollama-reply-bot/status.svg)](https://ci.skobk.in/skobkin/telegram-ollama-reply-bot)
+# Telegram LLM Bot [![build status](https://ci.skobk.in/api/badges/skobkin/telegram-ollama-reply-bot/status.svg)](https://ci.skobk.in/skobkin/telegram-ollama-reply-bot) [![latest release](https://git.skobk.in/skobkin/telegram-ollama-reply-bot/badges/release.svg)](https://git.skobk.in/skobkin/telegram-ollama-reply-bot/releases)
 
 ![Project Banner](/docs/images/banner.webp)
 
