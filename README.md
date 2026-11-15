@@ -85,17 +85,17 @@ The bot can be configured using the following environment variables:
 
 ### Prompt and persona management
 
-Prompt templates, response language, character name, tone mode, interactivity mode, whitelist rules, and per-chat
+Prompt templates, response language, character name, interactivity mode, whitelist rules, and per-chat
 overrides are now stored in SQLite and managed from Telegram admin DMs.
 
 Stored prompt templates use Go's [`text/template`](https://pkg.go.dev/text/template) placeholders:
 
-- `chat` – `{{.Model}}`, `{{.Language}}`, `{{.Gender}}`, `{{.CharacterName}}`, `{{.ToneMode}}`, `{{.AllowTeasing}}`, `{{.Context}}`, `{{.ToolPolicy}}`, `{{.BotUsername}}` (the bot's own Telegram handle without the leading `@`; empty when unknown, so guard with `{{if .BotUsername}}`)
+- `chat` – `{{.Model}}`, `{{.Language}}`, `{{.Gender}}`, `{{.CharacterName}}`, `{{.Context}}`, `{{.ToolPolicy}}`, `{{.BotUsername}}` (the bot's own Telegram handle without the leading `@`; empty when unknown, so guard with `{{if .BotUsername}}`)
 - `summarize` – `{{.Language}}`, `{{.MaxLength}}`
 - `image_recognition` – `{{.Language}}`
 
-Global fields: `character_name`, `language`, `gender`, `tone_mode`, `allow_teasing`, `default_interactivity_mode`, `default_auto_summary_enabled`, `show_reply_previews`, `default_preview_mode`, `keep_tool_history`.
-Per-chat fields: `character_name`, `language`, `gender`, `tone_mode`, `allow_teasing`, `interactivity_mode`, `auto_summary_enabled`, `preview_mode`, `keep_tool_history`.
+Global fields: `character_name`, `language`, `gender`, `default_interactivity_mode`, `default_auto_summary_enabled`, `show_reply_previews`, `default_preview_mode`, `keep_tool_history`.
+Per-chat fields: `character_name`, `language`, `gender`, `interactivity_mode`, `auto_summary_enabled`, `preview_mode`, `keep_tool_history`.
 
 ## Usage
 

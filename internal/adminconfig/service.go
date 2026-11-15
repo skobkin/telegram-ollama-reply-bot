@@ -32,11 +32,11 @@ func (s *Service) Store() Store {
 }
 
 func (s *Service) GlobalFields() []string {
-	return []string{"character_name", "language", "gender", "tone_mode", "allow_teasing", "default_interactivity_mode", "default_auto_summary_enabled", "show_reply_previews", "default_preview_mode", "keep_tool_history"}
+	return []string{"character_name", "language", "gender", "default_interactivity_mode", "default_auto_summary_enabled", "show_reply_previews", "default_preview_mode", "keep_tool_history"}
 }
 
 func (s *Service) ChatFields() []string {
-	return []string{"character_name", "language", "gender", "tone_mode", "allow_teasing", "interactivity_mode", "auto_summary_enabled", "preview_mode", "keep_tool_history"}
+	return []string{"character_name", "language", "gender", "interactivity_mode", "auto_summary_enabled", "preview_mode", "keep_tool_history"}
 }
 
 func (s *Service) PromptFeatures() []PromptFeature {
@@ -67,8 +67,6 @@ func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (Resolved
 		CharacterName:      global.CharacterName,
 		Language:           global.Language,
 		Gender:             global.Gender,
-		ToneMode:           global.ToneMode,
-		AllowTeasing:       global.AllowTeasing,
 		InteractivityMode:  global.DefaultInteractivityMode,
 		AutoSummaryEnabled: global.DefaultAutoSummaryEnabled,
 		PreviewMode:        previewMode,
@@ -98,12 +96,6 @@ func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (Resolved
 	}
 	if chat.Gender != "" {
 		resolved.Gender = chat.Gender
-	}
-	if chat.ToneMode != "" {
-		resolved.ToneMode = chat.ToneMode
-	}
-	if chat.AllowTeasing != nil {
-		resolved.AllowTeasing = *chat.AllowTeasing
 	}
 	if chat.HasInteractivity && chat.InteractivityMode != "" {
 		resolved.InteractivityMode = chat.InteractivityMode

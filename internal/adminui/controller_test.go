@@ -48,8 +48,6 @@ func newRecordingStore() *recordingStore {
 		CharacterName:            "Ada",
 		Language:                 "English",
 		Gender:                   "female",
-		ToneMode:                 "friendly",
-		AllowTeasing:             true,
 		DefaultInteractivityMode: adminconfig.InteractivityMentionsOnly,
 	}
 	store.catalog = []adminconfig.ChatCatalogEntry{
@@ -113,10 +111,6 @@ func (s *recordingStore) SetGlobalField(_ context.Context, field, value string, 
 		s.global.Language = value
 	case "gender":
 		s.global.Gender = value
-	case "tone_mode":
-		s.global.ToneMode = value
-	case "allow_teasing":
-		s.global.AllowTeasing = value == "true"
 	case "default_interactivity_mode":
 		s.global.DefaultInteractivityMode = adminconfig.InteractivityMode(value)
 	case "default_auto_summary_enabled":
@@ -145,10 +139,6 @@ func (s *recordingStore) GetChatSettings(_ context.Context, chatID int64) (admin
 	settings.CharacterName = fields["character_name"]
 	settings.Language = fields["language"]
 	settings.Gender = fields["gender"]
-	settings.ToneMode = fields["tone_mode"]
-	if value, ok := fields["allow_teasing"]; ok {
-		settings.AllowTeasing = adminconfig.BoolPointer(value == "true")
-	}
 	if value, ok := fields["interactivity_mode"]; ok && value != "" {
 		settings.HasInteractivity = true
 		settings.InteractivityMode = adminconfig.InteractivityMode(value)
@@ -538,21 +528,21 @@ func TestTriStateBoolEditor(t *testing.T) {
 	tap(t, c, session, VerbChat, strconv.FormatInt(testGroupID, 10))
 	tap(t, c, session, VerbChatSet)
 
-	outcome := tap(t, c, session, VerbField, "at")
-	if outcome.Render.Screen.Kind != ScreenFieldEditor || outcome.Render.Screen.Field != "allow_teasing" {
+	outcome := tap(t, c, session, VerbField, "kh")
+	if outcome.Render.Screen.Kind != ScreenFieldEditor || outcome.Render.Screen.Field != "keep_tool_history" {
 		t.Fatalf("field tap must open the editor: %+v", outcome.Render.Screen)
 	}
 	if !strings.Contains(screenButtons(outcome.Render.Built), "Inherit") {
 		t.Fatalf("tri-state editor must offer inherit: %q", screenButtons(outcome.Render.Built))
 	}
 
-	tap(t, c, session, VerbValue, "at", "on")
-	store.assertCalls(t, "SetChatField:-100200300400:allow_teasing=true")
+	tap(t, c, session, VerbValue, "kh", "on")
+	store.assertCalls(t, "SetChatField:-100200300400:keep_tool_history=true")
 
-	tap(t, c, session, VerbValue, "at", "inh")
+	tap(t, c, session, VerbValue, "kh", "inh")
 	store.assertCalls(t,
-		"SetChatField:-100200300400:allow_teasing=true",
-		"ClearChatField:-100200300400:allow_teasing",
+		"SetChatField:-100200300400:keep_tool_history=true",
+		"ClearChatField:-100200300400:keep_tool_history",
 	)
 }
 
@@ -842,10 +832,10 @@ func TestStringInputFlowSaveAndAttemptsCancel(t *testing.T) {
 	}
 
 	// Invalid replies retry with a warning, then cancel after three tries.
-	tap(t, c, session, VerbField, "tm")
-	tap(t, c, session, VerbString, "tm")
+	tap(t, c, session, VerbField, "cn")
+	tap(t, c, session, VerbString, "cn")
 
-	tooLong := strings.Repeat("x", 129) // tone_mode max is 128
+	tooLong := strings.Repeat("x", 129) // character_name max is 128
 	for attempt, msgID := range []int{61, 62} {
 		armPending(t, c, msgID)
 		outcome, err = c.HandleReply(context.Background(), testAdminID, ReplyInput{
@@ -885,7 +875,7 @@ func TestStringInputFlowSaveAndAttemptsCancel(t *testing.T) {
 		t.Fatalf("cancelled input must show a notice: %+v", outcome.Render)
 	}
 
-	// Only the successful language write happened; no tone_mode write.
+	// Only the successful language write happened; no character_name write.
 	store.assertCalls(t, "SetGlobalField:language=Русский")
 }
 

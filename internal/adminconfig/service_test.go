@@ -113,8 +113,6 @@ func TestResolveChatConfigUsesChatOverrides(t *testing.T) {
 			CharacterName:            "global",
 			Language:                 "Russian",
 			Gender:                   "neutral",
-			ToneMode:                 "default",
-			AllowTeasing:             false,
 			DefaultInteractivityMode: InteractivityDisabled,
 		},
 		chatFound: true,
@@ -122,8 +120,6 @@ func TestResolveChatConfigUsesChatOverrides(t *testing.T) {
 			CharacterName:     "kitsune",
 			Language:          "English",
 			Gender:            "female",
-			ToneMode:          "chaotic",
-			AllowTeasing:      BoolPointer(true),
 			InteractivityMode: InteractivityMentionsReplies,
 			HasInteractivity:  true,
 		},
@@ -134,7 +130,7 @@ func TestResolveChatConfigUsesChatOverrides(t *testing.T) {
 		t.Fatalf("resolve chat config: %v", err)
 	}
 
-	if resolved.CharacterName != "kitsune" || resolved.Language != "English" || resolved.Gender != "female" || resolved.ToneMode != "chaotic" || !resolved.AllowTeasing || resolved.InteractivityMode != InteractivityMentionsReplies {
+	if resolved.CharacterName != "kitsune" || resolved.Language != "English" || resolved.Gender != "female" || resolved.InteractivityMode != InteractivityMentionsReplies {
 		t.Fatalf("unexpected resolved config: %+v", resolved)
 	}
 }
@@ -145,8 +141,6 @@ func TestResolveChatConfigFallsBackToGlobalCharacterName(t *testing.T) {
 			CharacterName:            "global",
 			Language:                 "Russian",
 			Gender:                   "neutral",
-			ToneMode:                 "default",
-			AllowTeasing:             false,
 			DefaultInteractivityMode: InteractivityDisabled,
 		},
 		chatFound: true,

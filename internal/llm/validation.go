@@ -10,10 +10,10 @@ import (
 
 // ValidatePromptTemplate checks that a prompt template not only parses but
 // also executes against representative datasets for its feature. Chat prompt
-// data carries two booleans (AllowTeasing, ImageRecognitionEnabled) and the
-// optional BotUsername, so all boolean combinations execute both with and
-// without the handle — catching branch-conditional defects such as
-// {{if .AllowTeasing}}…{{else}}{{.Bogus}}{{end}} or
+// data carries a boolean (ImageRecognitionEnabled) and the optional
+// BotUsername, so all boolean combinations execute both with and without the
+// handle — catching branch-conditional defects such as
+// {{if .ImageRecognitionEnabled}}…{{else}}{{.Bogus}}{{end}} or
 // {{if .BotUsername}}…{{else}}{{.Bogus}}{{end}} that parse-only validation
 // misses. Summarize and image-recognition data has no booleans, so a single
 // dataset covers them.
@@ -51,26 +51,22 @@ type promptValidationDataset struct {
 func promptValidationDatasets(feature adminconfig.PromptFeature) ([]promptValidationDataset, error) {
 	switch feature {
 	case adminconfig.PromptFeatureChat:
-		datasets := make([]promptValidationDataset, 0, 8)
-		for _, allowTeasing := range []bool{false, true} {
-			for _, imageRecognition := range []bool{false, true} {
-				for _, botUsername := range []string{"", "kitsune_bot"} {
-					datasets = append(datasets, promptValidationDataset{
-						label: fmt.Sprintf("allow_teasing=%t, image_recognition_enabled=%t, bot_username=%q", allowTeasing, imageRecognition, botUsername),
-						data: ChatPromptData{
-							Language:                "English",
-							Model:                   "test-model",
-							Context:                 "Recent conversation context.",
-							Gender:                  "neutral",
-							CharacterName:           "Kitsune",
-							ToneMode:                "playful",
-							AllowTeasing:            allowTeasing,
-							ImageRecognitionEnabled: imageRecognition,
-							ToolPolicy:              "Tools: image recognition enabled.",
-							BotUsername:             botUsername,
-						},
-					})
-				}
+		datasets := make([]promptValidationDataset, 0, 4)
+		for _, imageRecognition := range []bool{false, true} {
+			for _, botUsername := range []string{"", "kitsune_bot"} {
+				datasets = append(datasets, promptValidationDataset{
+					label: fmt.Sprintf("image_recognition_enabled=%t, bot_username=%q", imageRecognition, botUsername),
+					data: ChatPromptData{
+						Language:                "English",
+						Model:                   "test-model",
+						Context:                 "Recent conversation context.",
+						Gender:                  "neutral",
+						CharacterName:           "Kitsune",
+						ImageRecognitionEnabled: imageRecognition,
+						ToolPolicy:              "Tools: image recognition enabled.",
+						BotUsername:             botUsername,
+					},
+				})
 			}
 		}
 

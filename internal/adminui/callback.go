@@ -120,8 +120,6 @@ var fieldCodes = map[string]string{
 	"character_name":               "cn",
 	"language":                     "lg",
 	"gender":                       "gd",
-	"tone_mode":                    "tm",
-	"allow_teasing":                "at",
 	"interactivity_mode":           "im",
 	"default_interactivity_mode":   "im",
 	"auto_summary_enabled":         "as",

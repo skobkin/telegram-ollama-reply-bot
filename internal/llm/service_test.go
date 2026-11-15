@@ -191,8 +191,6 @@ func TestServiceBuildChatToolRequestUsesChatScopedPromptAndResolvedPersona(t *te
 			CharacterName:            "global",
 			Language:                 "Russian",
 			Gender:                   "neutral",
-			ToneMode:                 "default",
-			AllowTeasing:             false,
 			DefaultInteractivityMode: adminconfig.InteractivityDisabled,
 		},
 		chatFound: true,
@@ -200,12 +198,10 @@ func TestServiceBuildChatToolRequestUsesChatScopedPromptAndResolvedPersona(t *te
 			CharacterName: "kitsune",
 			Language:      "English",
 			Gender:        "female",
-			ToneMode:      "sharp",
-			AllowTeasing:  adminconfig.BoolPointer(true),
 		},
 		prompts: map[string]string{
 			"chat:0": "global name={{.CharacterName}}",
-			"chat:5": "chat name={{.CharacterName}} lang={{.Language}} gender={{.Gender}} tone={{.ToneMode}} tease={{.AllowTeasing}} model={{.Model}} context={{.Context}} policy={{.ToolPolicy}}",
+			"chat:5": "chat name={{.CharacterName}} lang={{.Language}} gender={{.Gender}} model={{.Model}} context={{.Context}} policy={{.ToolPolicy}}",
 		},
 	}
 
@@ -235,8 +231,6 @@ func TestServiceBuildChatToolRequestUsesChatScopedPromptAndResolvedPersona(t *te
 		"chat name=kitsune",
 		"lang=English",
 		"gender=female",
-		"tone=sharp",
-		"tease=true",
 		"model=gpt",
 		"context=compact context",
 		"policy=tool policy",

@@ -12,14 +12,13 @@ import (
 
 func (s *Store) GetGlobalSettings(ctx context.Context) (adminconfig.GlobalSettings, error) {
 	var settings adminconfig.GlobalSettings
-	var allowTeasing int
 	var defaultAutoSummaryEnabled int
 	var showReplyPreviews int
 	var keepToolHistory int
 	var updatedAt string
 
 	err := s.db.QueryRowContext(ctx, `
-SELECT character_name, language, gender, tone_mode, allow_teasing, default_interactivity_mode, default_auto_summary_enabled,
+SELECT character_name, language, gender, default_interactivity_mode, default_auto_summary_enabled,
        show_reply_previews, default_preview_mode, keep_tool_history, updated_at, updated_by
 FROM global_settings
 WHERE id = 1
@@ -27,8 +26,6 @@ WHERE id = 1
 		&settings.CharacterName,
 		&settings.Language,
 		&settings.Gender,
-		&settings.ToneMode,
-		&allowTeasing,
 		&settings.DefaultInteractivityMode,
 		&defaultAutoSummaryEnabled,
 		&showReplyPreviews,
@@ -41,7 +38,6 @@ WHERE id = 1
 		return adminconfig.GlobalSettings{}, fmt.Errorf("get global settings: %w", err)
 	}
 
-	settings.AllowTeasing = allowTeasing == 1
 	settings.DefaultAutoSummaryEnabled = defaultAutoSummaryEnabled == 1
 	settings.ShowReplyPreviews = showReplyPreviews == 1
 	settings.KeepToolHistory = keepToolHistory == 1
@@ -74,15 +70,13 @@ func (s *Store) GetChatSettings(ctx context.Context, chatID int64) (adminconfig.
 	var characterName string
 	var language string
 	var gender string
-	var toneMode string
-	var allow sql.NullInt64
 	var interactivity string
 	var autoSummaryEnabled sql.NullInt64
 	var keepToolHistory sql.NullInt64
 	var updatedAt string
 
 	err := s.db.QueryRowContext(ctx, `
-SELECT chat_id, character_name, language, gender, tone_mode, allow_teasing, interactivity_mode, auto_summary_enabled,
+SELECT chat_id, character_name, language, gender, interactivity_mode, auto_summary_enabled,
        preview_mode, keep_tool_history, updated_at, updated_by
 FROM chat_settings
 WHERE chat_id = ?
@@ -91,8 +85,6 @@ WHERE chat_id = ?
 		&characterName,
 		&language,
 		&gender,
-		&toneMode,
-		&allow,
 		&interactivity,
 		&autoSummaryEnabled,
 		&settings.PreviewMode,
@@ -111,13 +103,8 @@ WHERE chat_id = ?
 	settings.CharacterName = characterName
 	settings.Language = language
 	settings.Gender = gender
-	settings.ToneMode = toneMode
 	settings.InteractivityMode = adminconfig.InteractivityMode(interactivity)
 	settings.HasInteractivity = interactivity != ""
-	if allow.Valid {
-		v := allow.Int64 == 1
-		settings.AllowTeasing = &v
-	}
 	if autoSummaryEnabled.Valid {
 		v := autoSummaryEnabled.Int64 == 1
 		settings.AutoSummaryEnabled = &v
@@ -139,8 +126,8 @@ func (s *Store) SetChatField(ctx context.Context, chatID int64, field, value str
 	}
 
 	if _, err := s.db.ExecContext(ctx, `
-INSERT INTO chat_settings(chat_id, character_name, language, gender, tone_mode, allow_teasing, interactivity_mode, auto_summary_enabled, preview_mode, keep_tool_history, updated_at, updated_by)
-VALUES(?, '', '', '', '', NULL, '', NULL, '', NULL, CURRENT_TIMESTAMP, ?)
+INSERT INTO chat_settings(chat_id, character_name, language, gender, interactivity_mode, auto_summary_enabled, preview_mode, keep_tool_history, updated_at, updated_by)
+VALUES(?, '', '', '', '', NULL, '', NULL, CURRENT_TIMESTAMP, ?)
 ON CONFLICT(chat_id) DO NOTHING
 `, chatID, actorID); err != nil {
 		return fmt.Errorf("bootstrap chat settings: %w", err)

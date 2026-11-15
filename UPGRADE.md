@@ -1,5 +1,24 @@
 # Upgrade Notes
 
+## 0.30.0 (unreleased) — changes since 0.29.1
+
+### Tone mode and teasing prompt parameters removed (breaking, #153)
+
+The `tone_mode` and `allow_teasing` settings are gone: both were pure prompt fragments (no code branched on
+them), and the editable prompt templates are strictly more expressive — bake any tone or teasing rules directly
+into the `chat` prompt template (admin panel → Prompts → chat).
+
+- The default chat prompt no longer contains the «Твой режим тона: …» and «Шутливые поддразнивания …» lines, and
+  the `{{.ToneMode}}` / `{{.AllowTeasing}}` placeholders no longer exist in the template data. Schema version 11
+  (applied automatically at startup) refreshes stored copies of the built-in default prompt and drops the
+  `tone_mode` / `allow_teasing` columns from `global_settings` and `chat_settings`; no operator action is needed
+  for stock deployments.
+- **Breaking for customized prompts**: the migration does not touch custom template text (only copies that
+  byte-exactly match the previous built-in default are auto-upgraded). If your edited `chat` prompt still
+  contains `{{.ToneMode}}` or `{{.AllowTeasing}}`, remove those lines manually before upgrading — after the
+  upgrade the placeholders render nothing, template execution fails, and the bot stops replying in chats served
+  by that template.
+
 ## 0.27.0 (unreleased) — changes since 0.26.0
 
 ### Bot's Telegram handle available in chat prompts (#142)

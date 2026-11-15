@@ -560,7 +560,7 @@ func TestSetPendingPromptMsgID(t *testing.T) {
 	// live one (out-of-order double-tap on two fields).
 	replaced := session.Pending.ID + 1
 	if _, err := m.Apply(7, session.Seq, func(s *Session) error {
-		s.Pending = &Pending{ID: replaced, Kind: PendingStringInput, Field: "tone_mode"}
+		s.Pending = &Pending{ID: replaced, Kind: PendingStringInput, Field: "gender"}
 
 		return nil
 	}); err != nil {

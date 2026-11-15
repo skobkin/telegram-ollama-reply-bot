@@ -67,7 +67,7 @@ INSERT INTO global_settings(
 )
 VALUES(1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 0)
 ON CONFLICT(id) DO NOTHING
-`, llm.DefaultCharacterName, llm.DefaultLanguage, llm.DefaultGender, llm.DefaultToneMode, boolToInt(llm.DefaultAllowTeasing), "disabled"); err != nil {
+`, llm.DefaultCharacterName, llm.DefaultLanguage, llm.DefaultGender, "default", 0, "disabled"); err != nil {
 		return fmt.Errorf("seed global settings: %w", err)
 	}
 
@@ -89,12 +89,4 @@ ON CONFLICT(scope_type, scope_id, feature) DO NOTHING
 	}
 
 	return nil
-}
-
-func boolToInt(v bool) int {
-	if v {
-		return 1
-	}
-
-	return 0
 }

@@ -98,16 +98,6 @@ func effectiveChatField(spec FieldSpec, global GlobalSettings, chat ChatSettings
 		if found && chat.Gender != "" {
 			field.Effective, field.Source, field.Overridden = chat.Gender, SourceChatOverride, true
 		}
-	case "tone_mode":
-		field.GlobalValue = global.ToneMode
-		if found && chat.ToneMode != "" {
-			field.Effective, field.Source, field.Overridden = chat.ToneMode, SourceChatOverride, true
-		}
-	case "allow_teasing":
-		field.GlobalValue = strconv.FormatBool(global.AllowTeasing)
-		if found && chat.AllowTeasing != nil {
-			field.Effective, field.Source, field.Overridden = strconv.FormatBool(*chat.AllowTeasing), SourceChatOverride, true
-		}
 	case "interactivity_mode":
 		field.GlobalValue = string(global.DefaultInteractivityMode)
 		if found && chat.HasInteractivity && chat.InteractivityMode != "" {

@@ -243,7 +243,6 @@ func TestStoreClearAllChatOverridesDeletesRow(t *testing.T) {
 	for field, value := range map[string]string{
 		"character_name": "kitsune",
 		"language":       "English",
-		"tone_mode":      "playful",
 	} {
 		if err := store.SetChatField(ctx, 123, field, value, 42); err != nil {
 			t.Fatalf("set chat %s: %v", field, err)

@@ -26,8 +26,6 @@ type StaticPromptRenderer struct {
 	language                 string
 	gender                   string
 	characterName            string
-	toneMode                 string
-	allowTeasing             bool
 	imageRecognitionEnabled  bool
 	maxSummaryLength         int
 	botUsername              string
@@ -48,8 +46,6 @@ type ChatPromptData struct {
 	Context                 string
 	Gender                  string
 	CharacterName           string
-	ToneMode                string
-	AllowTeasing            bool
 	ImageRecognitionEnabled bool
 	ToolPolicy              string
 	// BotUsername is the bot's own Telegram handle without the leading @,
@@ -93,8 +89,6 @@ func NewStaticPromptRenderer(imageRecognitionEnabled bool) (*StaticPromptRendere
 		language:                 DefaultLanguage,
 		gender:                   DefaultGender,
 		characterName:            DefaultCharacterName,
-		toneMode:                 DefaultToneMode,
-		allowTeasing:             DefaultAllowTeasing,
 		imageRecognitionEnabled:  imageRecognitionEnabled,
 		maxSummaryLength:         DefaultMaxSummaryLength,
 	}, nil
@@ -115,8 +109,6 @@ func (p *StaticPromptRenderer) RenderChatSystemPrompt(_ context.Context, _ Promp
 		Context:                 compactContext,
 		Gender:                  p.gender,
 		CharacterName:           p.characterName,
-		ToneMode:                p.toneMode,
-		AllowTeasing:            p.allowTeasing,
 		ImageRecognitionEnabled: p.imageRecognitionEnabled,
 		ToolPolicy:              toolPolicy,
 		BotUsername:             p.botUsername,
@@ -158,8 +150,6 @@ func (p *AdminPromptRenderer) RenderChatSystemPrompt(ctx context.Context, scope 
 		Context:                 compactContext,
 		Gender:                  resolved.Gender,
 		CharacterName:           resolved.CharacterName,
-		ToneMode:                resolved.ToneMode,
-		AllowTeasing:            resolved.AllowTeasing,
 		ImageRecognitionEnabled: p.imageRecognitionEnabled,
 		ToolPolicy:              toolPolicy,
 		BotUsername:             p.botUsername,

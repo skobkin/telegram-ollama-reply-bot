@@ -24,8 +24,8 @@ func TestValidatePromptTemplateAcceptsBuiltins(t *testing.T) {
 }
 
 func TestValidatePromptTemplateAcceptsAllLegitimatePlaceholders(t *testing.T) {
-	body := "{{.Language}} {{.Model}} {{.Context}} {{.Gender}} {{.CharacterName}} {{.ToneMode}} " +
-		"{{.AllowTeasing}} {{.ImageRecognitionEnabled}} {{.ToolPolicy}} {{.BotUsername}}"
+	body := "{{.Language}} {{.Model}} {{.Context}} {{.Gender}} {{.CharacterName}} " +
+		"{{.ImageRecognitionEnabled}} {{.ToolPolicy}} {{.BotUsername}}"
 
 	if err := ValidatePromptTemplate(adminconfig.PromptFeatureChat, body); err != nil {
 		t.Fatalf("all chat placeholders must validate: %v", err)
@@ -56,8 +56,8 @@ func TestValidatePromptTemplateRejectsBranchConditionalDefects(t *testing.T) {
 		body  string
 	}{
 		// The false branch references an unknown field: parse-only checks
-		// pass, execution on the allow_teasing=false dataset must fail.
-		{"false-branch", "{{if .AllowTeasing}}ok{{else}}{{.Bogus}}{{end}}"},
+		// pass, execution on the recognition-disabled dataset must fail.
+		{"false-branch", "{{if .ImageRecognitionEnabled}}ok{{else}}{{.Bogus}}{{end}}"},
 		// Symmetric case: only the true branch is broken.
 		{"true-branch", "{{if .ImageRecognitionEnabled}}{{.Bogus}}{{else}}ok{{end}}"},
 		// Unknown field inside a boolean-driven range of either flag.
@@ -74,11 +74,11 @@ func TestValidatePromptTemplateRejectsBranchConditionalDefects(t *testing.T) {
 }
 
 func TestValidatePromptTemplateReportsFailingDataset(t *testing.T) {
-	err := ValidatePromptTemplate(adminconfig.PromptFeatureChat, "{{if .AllowTeasing}}ok{{else}}{{.Bogus}}{{end}}")
+	err := ValidatePromptTemplate(adminconfig.PromptFeatureChat, "{{if .ImageRecognitionEnabled}}ok{{else}}{{.Bogus}}{{end}}")
 	if err == nil {
 		t.Fatalf("expected rejection")
 	}
-	if !strings.Contains(err.Error(), "allow_teasing=false") {
+	if !strings.Contains(err.Error(), "image_recognition_enabled=false") {
 		t.Fatalf("error should name the failing dataset, got: %v", err)
 	}
 }

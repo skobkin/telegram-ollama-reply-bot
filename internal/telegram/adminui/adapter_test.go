@@ -137,10 +137,6 @@ func (s *memStore) SetGlobalField(_ context.Context, field, value string, _ int6
 		s.global.Language = value
 	case "gender":
 		s.global.Gender = value
-	case "tone_mode":
-		s.global.ToneMode = value
-	case "allow_teasing":
-		s.global.AllowTeasing = value == "true"
 	case "default_interactivity_mode":
 		s.global.DefaultInteractivityMode = adminconfig.InteractivityMode(value)
 	}
@@ -162,11 +158,6 @@ func (s *memStore) GetChatSettings(_ context.Context, chatID int64) (adminconfig
 	settings.CharacterName = row["character_name"]
 	settings.Language = row["language"]
 	settings.Gender = row["gender"]
-	settings.ToneMode = row["tone_mode"]
-	if value, ok := row["allow_teasing"]; ok {
-		teasing := value == "true"
-		settings.AllowTeasing = &teasing
-	}
 	if value, ok := row["interactivity_mode"]; ok {
 		settings.InteractivityMode = adminconfig.InteractivityMode(value)
 		settings.HasInteractivity = true
@@ -1106,12 +1097,12 @@ func TestRetryPromptCorrelatesEndToEnd(t *testing.T) {
 	h := newHarness(t)
 	h.open(t)
 	h.tap(t, core.VerbGlobalSet)
-	h.tap(t, core.VerbField, "tm")
-	h.tap(t, core.VerbString, "tm")
+	h.tap(t, core.VerbField, "cn")
+	h.tap(t, core.VerbString, "cn")
 
-	// First reply is invalid (tone_mode max is 128 bytes): the controller
+	// First reply is invalid (character_name max is 128 bytes): the controller
 	// keeps the pending and sends a retry prompt for it.
-	first := botPromptMessage(int(h.api.lastSendMessageID()), core.AdminInputMarker+" — tone mode")
+	first := botPromptMessage(int(h.api.lastSendMessageID()), core.AdminInputMarker+" — character name")
 	h.deliver(t, replyToBotUpdate(strings.Repeat("x", 129), first))
 
 	prompts := h.api.requestsOf("sendMessage")
@@ -1134,7 +1125,7 @@ func TestRetryPromptCorrelatesEndToEnd(t *testing.T) {
 
 	found := false
 	for _, call := range h.store.writeCalls() {
-		if strings.Contains(call, "SetGlobalField:tone_mode=playful") {
+		if strings.Contains(call, "SetGlobalField:character_name=playful") {
 			found = true
 		}
 	}

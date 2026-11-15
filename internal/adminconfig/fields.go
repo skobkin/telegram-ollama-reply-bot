@@ -46,14 +46,12 @@ type FieldSpec struct {
 	MaxLen int
 }
 
-// GlobalFieldSpecs describes the ten editable global settings fields.
+// GlobalFieldSpecs describes the eight editable global settings fields.
 func GlobalFieldSpecs() []FieldSpec {
 	return []FieldSpec{
 		{Name: "character_name", Label: "Character name", Kind: KindString, MaxLen: 128},
 		{Name: "language", Label: "Language", Kind: KindString, MaxLen: 64},
 		{Name: "gender", Label: "Gender", Kind: KindString, MaxLen: 64},
-		{Name: "tone_mode", Label: "Tone mode", Kind: KindString, MaxLen: 128},
-		{Name: "allow_teasing", Label: "Allow teasing", Kind: KindBool},
 		{Name: "default_interactivity_mode", Label: "Default interactivity mode", Kind: KindEnum, Enum: InteractivityEnumOptions()},
 		{Name: "default_auto_summary_enabled", Label: "Default auto summary", Kind: KindBool},
 		{Name: "show_reply_previews", Label: "Show reply previews", Kind: KindBool},
@@ -62,14 +60,12 @@ func GlobalFieldSpecs() []FieldSpec {
 	}
 }
 
-// ChatFieldSpecs describes the nine editable per-chat settings fields.
+// ChatFieldSpecs describes the seven editable per-chat settings fields.
 func ChatFieldSpecs() []FieldSpec {
 	return []FieldSpec{
 		{Name: "character_name", Label: "Character name", Kind: KindString, MaxLen: 128},
 		{Name: "language", Label: "Language", Kind: KindString, MaxLen: 64},
 		{Name: "gender", Label: "Gender", Kind: KindString, MaxLen: 64},
-		{Name: "tone_mode", Label: "Tone mode", Kind: KindString, MaxLen: 128},
-		{Name: "allow_teasing", Label: "Allow teasing", Kind: KindBoolTriState},
 		{Name: "interactivity_mode", Label: "Interactivity mode", Kind: KindEnum, Enum: InteractivityEnumOptions()},
 		{Name: "auto_summary_enabled", Label: "Auto summary", Kind: KindBoolTriState},
 		{Name: "preview_mode", Label: "Preview mode", Kind: KindEnum, Enum: ChatPreviewModeEnumOptions()},

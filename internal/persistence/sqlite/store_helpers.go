@@ -17,12 +17,6 @@ func globalFieldAssignment(field, value string) (string, any, error) {
 		return "language", value, nil
 	case "gender":
 		return "gender", value, nil
-	case "tone_mode":
-		return "tone_mode", value, nil
-	case "allow_teasing":
-		parsed, err := parseBoolValue(value)
-
-		return "allow_teasing", boolToSQLite(parsed), err
 	case "default_interactivity_mode":
 		mode := adminconfig.InteractivityMode(value)
 		if !isValidInteractivityMode(mode) {
@@ -62,12 +56,6 @@ func chatFieldAssignment(field, value string) (string, any, error) {
 		return "language", value, nil
 	case "gender":
 		return "gender", value, nil
-	case "tone_mode":
-		return "tone_mode", value, nil
-	case "allow_teasing":
-		parsed, err := parseBoolValue(value)
-
-		return "allow_teasing", boolToSQLite(parsed), err
 	case "interactivity_mode":
 		mode := adminconfig.InteractivityMode(value)
 		if !isValidInteractivityMode(mode) {
@@ -103,10 +91,6 @@ func chatFieldClearValue(field string) (string, any, error) {
 		return "language", "", nil
 	case "gender":
 		return "gender", "", nil
-	case "tone_mode":
-		return "tone_mode", "", nil
-	case "allow_teasing":
-		return "allow_teasing", nil, nil
 	case "interactivity_mode":
 		return "interactivity_mode", "", nil
 	case "auto_summary_enabled":
@@ -189,10 +173,6 @@ func globalFieldUpdateQuery(column string) (string, error) {
 		return `UPDATE global_settings SET language = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
 	case "gender":
 		return `UPDATE global_settings SET gender = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
-	case "tone_mode":
-		return `UPDATE global_settings SET tone_mode = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
-	case "allow_teasing":
-		return `UPDATE global_settings SET allow_teasing = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
 	case "default_interactivity_mode":
 		return `UPDATE global_settings SET default_interactivity_mode = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
 	case "default_auto_summary_enabled":
@@ -216,10 +196,6 @@ func chatFieldUpdateQuery(column string) (string, error) {
 		return `UPDATE chat_settings SET language = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
 	case "gender":
 		return `UPDATE chat_settings SET gender = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
-	case "tone_mode":
-		return `UPDATE chat_settings SET tone_mode = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
-	case "allow_teasing":
-		return `UPDATE chat_settings SET allow_teasing = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
 	case "interactivity_mode":
 		return `UPDATE chat_settings SET interactivity_mode = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
 	case "auto_summary_enabled":

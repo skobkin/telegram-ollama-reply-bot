@@ -119,7 +119,7 @@ func TestParseAndValidateEnum(t *testing.T) {
 }
 
 func TestParseAndValidateBool(t *testing.T) {
-	spec := FieldSpec{Name: "allow_teasing", Kind: KindBool}
+	spec := FieldSpec{Name: "default_auto_summary_enabled", Kind: KindBool}
 
 	for _, raw := range []string{"true", "TRUE", " 1", "True"} {
 		value, err := spec.ParseAndValidate(raw)

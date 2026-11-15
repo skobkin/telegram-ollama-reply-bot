@@ -64,7 +64,6 @@ func TestAdminPromptRendererUsesPerChatLanguageAndGender(t *testing.T) {
 			CharacterName:            "bot",
 			Language:                 "Russian",
 			Gender:                   "neutral",
-			ToneMode:                 "default",
 			DefaultInteractivityMode: adminconfig.InteractivityDisabled,
 		},
 		chatFound: true,
@@ -95,7 +94,6 @@ func TestAdminPromptRendererRendersBotUsername(t *testing.T) {
 			CharacterName:            "bot",
 			Language:                 "Russian",
 			Gender:                   "neutral",
-			ToneMode:                 "default",
 			DefaultInteractivityMode: adminconfig.InteractivityDisabled,
 		},
 		prompts: map[string]string{
@@ -126,7 +124,6 @@ func TestDefaultChatPromptTemplateBotUsernameClause(t *testing.T) {
 			CharacterName:            "bot",
 			Language:                 "Russian",
 			Gender:                   "neutral",
-			ToneMode:                 "default",
 			DefaultInteractivityMode: adminconfig.InteractivityDisabled,
 		},
 	}, nil, nil)
@@ -154,7 +151,6 @@ func TestAdminPromptRendererRendersToolPolicyInChatPrompt(t *testing.T) {
 			CharacterName:            "bot",
 			Language:                 "Russian",
 			Gender:                   "neutral",
-			ToneMode:                 "default",
 			DefaultInteractivityMode: adminconfig.InteractivityDisabled,
 		},
 		prompts: map[string]string{

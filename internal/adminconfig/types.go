@@ -125,8 +125,6 @@ type GlobalSettings struct {
 	CharacterName            string
 	Language                 string
 	Gender                   string
-	ToneMode                 string
-	AllowTeasing             bool
 	DefaultInteractivityMode InteractivityMode
 	// DefaultAutoSummaryEnabled is the global default of the per-chat
 	// auto-summarizer toggle. Chats without an explicit override inherit it.
@@ -149,8 +147,6 @@ type ChatSettings struct {
 	CharacterName     string
 	Language          string
 	Gender            string
-	ToneMode          string
-	AllowTeasing      *bool
 	InteractivityMode InteractivityMode
 	HasInteractivity  bool
 	// AutoSummaryEnabled opts the chat into automatic summarization of
@@ -190,8 +186,6 @@ type ResolvedChatConfig struct {
 	CharacterName     string
 	Language          string
 	Gender            string
-	ToneMode          string
-	AllowTeasing      bool
 	InteractivityMode InteractivityMode
 	// AutoSummaryEnabled is the effective auto-summarizer switch for the
 	// chat: the global default unless the chat overrides it.

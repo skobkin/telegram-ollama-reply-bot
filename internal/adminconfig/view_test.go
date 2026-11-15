@@ -10,8 +10,6 @@ func viewTestGlobal() GlobalSettings {
 		CharacterName:            "global-name",
 		Language:                 "Russian",
 		Gender:                   "neutral",
-		ToneMode:                 "default",
-		AllowTeasing:             false,
 		DefaultInteractivityMode: InteractivityDisabled,
 	}
 }
@@ -62,7 +60,6 @@ func TestEffectiveChatConfigMarksOverridesExistenceBased(t *testing.T) {
 		chat: ChatSettings{
 			CharacterName:      "kitsune",
 			Language:           "Russian",
-			AllowTeasing:       BoolPointer(true),
 			InteractivityMode:  InteractivityMentionsReplies,
 			HasInteractivity:   true,
 			AutoSummaryEnabled: BoolPointer(false),
@@ -81,15 +78,14 @@ func TestEffectiveChatConfigMarksOverridesExistenceBased(t *testing.T) {
 
 	assertOverride(t, byName["character_name"], "kitsune")
 	assertOverride(t, byName["language"], "Russian") // equal-valued override still flagged
-	assertOverride(t, byName["allow_teasing"], "true")
 	assertOverride(t, byName["interactivity_mode"], string(InteractivityMentionsReplies))
 	assertOverride(t, byName["auto_summary_enabled"], "false")
 
 	if field := byName["gender"]; field.Overridden || field.Source != SourceGlobal {
 		t.Fatalf("gender should be inherited, got %+v", field)
 	}
-	if field := byName["allow_teasing"]; field.GlobalValue != "false" {
-		t.Fatalf("allow_teasing global value should be false, got %q", field.GlobalValue)
+	if field := byName["auto_summary_enabled"]; field.GlobalValue != "false" {
+		t.Fatalf("auto_summary_enabled global value should be false, got %q", field.GlobalValue)
 	}
 }
 
@@ -152,8 +148,8 @@ func TestEffectiveChatConfigNilBoolAndUnsetInteractivityInherit(t *testing.T) {
 	for _, field := range view.Fields {
 		byName[field.Spec.Name] = field
 	}
-	if got := byName["allow_teasing"].Effective; got != "false" {
-		t.Fatalf("allow_teasing effective should be global false, got %q", got)
+	if got := byName["auto_summary_enabled"].Effective; got != "false" {
+		t.Fatalf("auto_summary_enabled effective should be global false, got %q", got)
 	}
 	if got := byName["interactivity_mode"].Effective; got != string(InteractivityDisabled) {
 		t.Fatalf("interactivity effective should be global disabled, got %q", got)

@@ -78,7 +78,7 @@ func newSettingsTestService(t *testing.T) (*Service, *recordingSettingsStore) {
 func TestSetGlobalSettingValidatesAndCanonicalizes(t *testing.T) {
 	service, store := newSettingsTestService(t)
 
-	if err := service.SetGlobalSetting(context.Background(), "allow_teasing", " True ", 1); err != nil {
+	if err := service.SetGlobalSetting(context.Background(), "default_auto_summary_enabled", " True ", 1); err != nil {
 		t.Fatalf("valid boolean: %v", err)
 	}
 	if err := service.SetGlobalSetting(context.Background(), "language", "  Русский ", 1); err != nil {
@@ -89,7 +89,7 @@ func TestSetGlobalSettingValidatesAndCanonicalizes(t *testing.T) {
 	}
 
 	want := []string{
-		"SetGlobalField:allow_teasing=true",
+		"SetGlobalField:default_auto_summary_enabled=true",
 		"SetGlobalField:language=Русский",
 		"SetGlobalField:default_interactivity_mode=mentions_only",
 	}
@@ -105,10 +105,10 @@ func TestSetGlobalSettingRejectsInvalidWithoutWrite(t *testing.T) {
 	invalid := []struct {
 		field, value string
 	}{
-		{"default_interactivity_mode", "proactive"}, // unsupported enum
-		{"language", "   "},                         // empty after trim
-		{"tone_mode", strings.Repeat("x", 129)},     // over MaxLen
-		{"access_policy", "allow_all"},              // not a settings field
+		{"default_interactivity_mode", "proactive"},  // unsupported enum
+		{"language", "   "},                          // empty after trim
+		{"character_name", strings.Repeat("x", 129)}, // over MaxLen
+		{"access_policy", "allow_all"},               // not a settings field
 		{"no_such_field", "x"},
 	}
 	for _, testCase := range invalid {
@@ -124,10 +124,10 @@ func TestSetGlobalSettingRejectsInvalidWithoutWrite(t *testing.T) {
 func TestSetChatSettingAndClearOverride(t *testing.T) {
 	service, store := newSettingsTestService(t)
 
-	if err := service.SetChatSetting(context.Background(), -1, "allow_teasing", "false", 1); err != nil {
+	if err := service.SetChatSetting(context.Background(), -1, "auto_summary_enabled", "false", 1); err != nil {
 		t.Fatalf("valid tri-state value: %v", err)
 	}
-	if err := service.SetChatSetting(context.Background(), -1, "allow_teasing", "maybe", 1); err == nil {
+	if err := service.SetChatSetting(context.Background(), -1, "auto_summary_enabled", "maybe", 1); err == nil {
 		t.Fatalf("invalid boolean must be rejected")
 	}
 	if err := service.ClearChatOverride(context.Background(), -1, "interactivity_mode", 1); err != nil {
@@ -137,7 +137,7 @@ func TestSetChatSettingAndClearOverride(t *testing.T) {
 		t.Fatalf("access_policy must not be clearable as an override")
 	}
 
-	want := []string{"SetChatField:allow_teasing=false", "ClearChatField:interactivity_mode"}
+	want := []string{"SetChatField:auto_summary_enabled=false", "ClearChatField:interactivity_mode"}
 	got := store.writeCalls()
 	if strings.Join(got, ";") != strings.Join(want, ";") {
 		t.Fatalf("calls mismatch:\ngot:  %v\nwant: %v", got, want)

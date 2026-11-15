@@ -335,10 +335,6 @@ func globalSettingsValue(settings adminconfig.GlobalSettings, spec adminconfig.F
 		return settings.Language
 	case "gender":
 		return settings.Gender
-	case "tone_mode":
-		return settings.ToneMode
-	case "allow_teasing":
-		return strconv.FormatBool(settings.AllowTeasing)
 	case "default_interactivity_mode":
 		return string(settings.DefaultInteractivityMode)
 	case "default_auto_summary_enabled":
