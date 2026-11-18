@@ -37,6 +37,7 @@ type Config struct {
 	Search      SearchConfig      `koanf:"search"`
 	Content     ContentConfig     `koanf:"content"`
 	MCP         MCPConfig         `koanf:"mcp"`
+	SystemOne   SystemOneConfig   `koanf:"systemone"`
 }
 
 const (
@@ -402,6 +403,77 @@ type ImageOpenAICompatConfig struct {
 	APIToken string `koanf:"api_token"`
 }
 
+// SystemOneConfig is the SYSTEMONE__* section: the connection to the System
+// One decision backend (the Jev protocol, POST /v1/systemone as served by
+// llama.cpp ≥ b11361 or llama-swap ≥ v262). Empty BaseURL means the whole
+// System One feature is unconfigured: the interaction decision engine stays
+// NoOp, decision tools are never advertised, and no decision request is ever
+// sent. The endpoint is deployment configuration on purpose — runtime model
+// selection lives in SQLite, but endpoint URLs and credentials never do.
+type SystemOneConfig struct {
+	// BaseURL is the decision backend root, e.g. http://llama-swap.internal:8080.
+	// The client appends /v1/systemone and /v1/models.
+	BaseURL string `koanf:"base_url"`
+	// APIKey is the optional bearer token. llama-swap deployments typically
+	// require it; a llama.cpp server without --api-key accepts requests
+	// without any Authorization header.
+	APIKey string `koanf:"api_key"`
+	// Timeout bounds a single /v1/systemone request. Decision models answer
+	// in forward passes without token generation, but CPU-only deployments
+	// still prefill a persona-sized state, so the default is generous.
+	Timeout time.Duration `koanf:"timeout"`
+	// MaxResponseBytes caps how much of an error or answer body the client is
+	// willing to read. The protocol allows bodies up to 32 MiB; this bot never
+	// needs more than a fraction of that.
+	MaxResponseBytes int64 `koanf:"max_response_bytes"`
+	// InputBudgetBytes bounds the serialized decision request (state +
+	// questions + protocol overhead). It is a composition limit, not a
+	// guarantee that the request fits the model's context window or the
+	// server's batch limits — those are deployment concerns.
+	InputBudgetBytes int64 `koanf:"input_budget_bytes"`
+}
+
+// Validate checks the System One section so a mistyped value refuses the boot
+// instead of misbehaving at request time. Connection settings are only
+// enforced while an endpoint is configured, so an unconfigured feature never
+// demands anything. An API key without a base URL is rejected as ambiguous,
+// mirroring the image-recognition endpoint rules: credentials must never
+// silently attach to an unspecified destination.
+func (c SystemOneConfig) Validate() error {
+	if c.Timeout <= 0 {
+		return fmt.Errorf(
+			"systemone.timeout must be positive (env SYSTEMONE__TIMEOUT), got %s",
+			c.Timeout,
+		)
+	}
+
+	if c.MaxResponseBytes <= 0 {
+		return fmt.Errorf(
+			"systemone.max_response_bytes must be positive (env SYSTEMONE__MAX_RESPONSE_BYTES), got %d",
+			c.MaxResponseBytes,
+		)
+	}
+
+	if c.InputBudgetBytes <= 0 {
+		return fmt.Errorf(
+			"systemone.input_budget_bytes must be positive (env SYSTEMONE__INPUT_BUDGET_BYTES), got %d",
+			c.InputBudgetBytes,
+		)
+	}
+
+	if c.BaseURL == "" {
+		if c.APIKey != "" {
+			return fmt.Errorf(
+				"systemone.api_key is set without base_url; set base_url to configure the decision backend or remove the key (env SYSTEMONE__{BASE_URL,API_KEY})",
+			)
+		}
+
+		return nil
+	}
+
+	return validateHTTPSEndpoint("systemone.base_url", c.BaseURL)
+}
+
 // Load reads configuration from environment variables, applies defaults,
 // and returns a populated *Config. An error is returned when a value is
 // present but cannot be parsed (e.g. an integer that fails to convert).
@@ -501,6 +573,9 @@ func Load() (*Config, error) {
 	cfg.LLM.ImageRecognition.MiniMaxVLM.BaseURL = strings.TrimSpace(cfg.LLM.ImageRecognition.MiniMaxVLM.BaseURL)
 	cfg.LLM.ImageRecognition.OpenAICompat.BaseURL = strings.TrimSpace(cfg.LLM.ImageRecognition.OpenAICompat.BaseURL)
 
+	// The System One endpoint follows the same rule.
+	cfg.SystemOne.BaseURL = strings.TrimSpace(cfg.SystemOne.BaseURL)
+
 	// Per-feature model fallback: summarize and image_recognition inherit the
 	// chat model when not explicitly set. This keeps the existing operator
 	// experience of "set CHAT and you're done" while still allowing overrides.
@@ -531,6 +606,10 @@ func Load() (*Config, error) {
 	}
 
 	if err := cfg.Bot.AutoSummary.Validate(); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+
+	if err := cfg.SystemOne.Validate(); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 
@@ -567,6 +646,9 @@ func applyDefaults(k *koanf.Koanf) error {
 		"content.fetch.max_redirects":                5,
 		"content.fetch.user_agent":                   DefaultContentUserAgent,
 		"content.extract.backends":                   "readability,trafilatura,domdistiller",
+		"systemone.timeout":                          "60s",
+		"systemone.max_response_bytes":               int64(4 << 20),
+		"systemone.input_budget_bytes":               int64(96 << 10),
 	}
 	for key, value := range defaults {
 		if err := k.Set(key, value); err != nil {
