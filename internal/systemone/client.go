@@ -145,7 +145,7 @@ func (c *Client) Evaluate(ctx context.Context, req Request) (map[string]Answer, 
 
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: cannot encode request: %s", ErrInvalidRequest, err)
+		return nil, fmt.Errorf("%w: cannot encode request", ErrInvalidRequest)
 	}
 	if int64(len(body)) > c.budget {
 		return nil, fmt.Errorf("%w: serialized request of %d bytes exceeds the %d byte input budget", ErrInvalidRequest, len(body), c.budget)
@@ -272,16 +272,16 @@ func statusError(status int) error {
 	}
 }
 
-// readBody reads up to max+1 bytes and rejects oversized bodies before any
+// readBody reads up to limit+1 bytes and rejects oversized bodies before any
 // content is buffered whole. A truncated read (the limit hit) is a malformed
 // response, never a partial success.
-func readBody(body io.ReadCloser, max int64) ([]byte, error) {
-	raw, err := io.ReadAll(io.LimitReader(body, max+1))
+func readBody(body io.ReadCloser, limit int64) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(body, limit+1))
 	if err != nil {
 		return nil, safeerr.WrapTransport(ErrUnavailable, err)
 	}
-	if int64(len(raw)) > max {
-		return nil, fmt.Errorf("%w: response exceeds %d bytes", ErrMalformed, max)
+	if int64(len(raw)) > limit {
+		return nil, fmt.Errorf("%w: response exceeds %d bytes", ErrMalformed, limit)
 	}
 
 	return raw, nil

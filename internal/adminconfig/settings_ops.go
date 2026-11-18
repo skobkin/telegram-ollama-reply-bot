@@ -39,6 +39,25 @@ func (s *Service) SetChatSetting(ctx context.Context, chatID int64, field, rawVa
 	return s.store.SetChatField(ctx, chatID, field, value, actorID)
 }
 
+// ClearGlobalSetting empties a clearable global field, restoring its unset
+// semantics. For the generation model fields the unset state means the
+// environment-configured model routes take effect again; for systemone_model
+// it means the decision backend is unconfigured for chats without a per-chat
+// override — clearing the global default does not disable the backend where
+// overrides exist. Only fields marked Clearable in their spec may be cleared;
+// booleans and enums have no unset state.
+func (s *Service) ClearGlobalSetting(ctx context.Context, field string, actorID int64) error {
+	spec, err := globalFieldSpecByName(field)
+	if err != nil {
+		return err
+	}
+	if !spec.Clearable {
+		return fmt.Errorf("field %s has no unset state and cannot be cleared", field)
+	}
+
+	return s.store.SetGlobalField(ctx, field, "", actorID)
+}
+
 // ClearChatOverride removes one chat override so the field inherits the
 // global value again.
 func (s *Service) ClearChatOverride(ctx context.Context, chatID int64, field string, actorID int64) error {

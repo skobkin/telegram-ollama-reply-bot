@@ -128,6 +128,13 @@ var fieldCodes = map[string]string{
 	"preview_mode":                 "pv",
 	"default_preview_mode":         "pv",
 	"keep_tool_history":            "kh",
+	"chat_model":                   "cm",
+	"summarize_model":              "sm",
+	"image_recognition_model":      "iv",
+	"systemone_model":              "so",
+	"interaction_profile":          "ip",
+	"default_interaction_profile":  "ip",
+	"decision_instructions":        "di",
 }
 
 var codeFields = func() map[string]string {
@@ -154,6 +161,10 @@ var scopedFieldNames = map[string]struct {
 	"as": {global: "default_auto_summary_enabled", chat: "auto_summary_enabled"},
 	"pv": {global: "default_preview_mode", chat: "preview_mode"},
 	"kh": {global: "keep_tool_history", chat: "keep_tool_history"},
+	"cm": {global: "chat_model", chat: "chat_model"},
+	"so": {global: "systemone_model", chat: "systemone_model"},
+	"ip": {global: "default_interaction_profile", chat: "interaction_profile"},
+	"di": {global: "decision_instructions", chat: "decision_instructions"},
 }
 
 // FieldCode returns the short callback code for a settings field name.

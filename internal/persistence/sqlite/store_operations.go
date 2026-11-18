@@ -19,7 +19,9 @@ func (s *Store) GetGlobalSettings(ctx context.Context) (adminconfig.GlobalSettin
 
 	err := s.db.QueryRowContext(ctx, `
 SELECT character_name, language, gender, default_interactivity_mode, default_auto_summary_enabled,
-       show_reply_previews, default_preview_mode, keep_tool_history, updated_at, updated_by
+       show_reply_previews, default_preview_mode, keep_tool_history, chat_model, summarize_model,
+       image_recognition_model, systemone_model, default_interaction_profile, decision_instructions,
+       updated_at, updated_by
 FROM global_settings
 WHERE id = 1
 `).Scan(
@@ -31,6 +33,12 @@ WHERE id = 1
 		&showReplyPreviews,
 		&settings.DefaultPreviewMode,
 		&keepToolHistory,
+		&settings.ChatModel,
+		&settings.SummarizeModel,
+		&settings.ImageRecognitionModel,
+		&settings.SystemOneModel,
+		&settings.DefaultInteractionProfile,
+		&settings.DecisionInstructions,
 		&updatedAt,
 		&settings.UpdatedBy,
 	)
@@ -77,7 +85,8 @@ func (s *Store) GetChatSettings(ctx context.Context, chatID int64) (adminconfig.
 
 	err := s.db.QueryRowContext(ctx, `
 SELECT chat_id, character_name, language, gender, interactivity_mode, auto_summary_enabled,
-       preview_mode, keep_tool_history, updated_at, updated_by
+       preview_mode, keep_tool_history, chat_model, systemone_model, interaction_profile,
+       decision_instructions, updated_at, updated_by
 FROM chat_settings
 WHERE chat_id = ?
 `, chatID).Scan(
@@ -89,6 +98,10 @@ WHERE chat_id = ?
 		&autoSummaryEnabled,
 		&settings.PreviewMode,
 		&keepToolHistory,
+		&settings.ChatModel,
+		&settings.SystemOneModel,
+		&settings.InteractionProfile,
+		&settings.DecisionInstructions,
 		&updatedAt,
 		&settings.UpdatedBy,
 	)

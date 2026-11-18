@@ -10,7 +10,9 @@ import (
 type FieldKind int
 
 const (
-	// KindString is a free-form single-line text field.
+	// KindString is a free-form text field. Most instances are single-line;
+	// decision_instructions may span multiple lines and is edited through a
+	// multi-line pending input in the UI.
 	KindString FieldKind = iota
 	// KindBool is a global boolean field with On/Off states only.
 	KindBool
@@ -44,9 +46,15 @@ type FieldSpec struct {
 	Enum []EnumOption
 	// MaxLen is the byte limit for KindString input (0 means unlimited).
 	MaxLen int
+	// Clearable marks global string fields where an explicit empty value is
+	// meaningful (model overrides returning to their environment route,
+	// decision instructions cleared). Clearable fields are emptied through
+	// Service.ClearGlobalSetting instead of a normal set; non-clearable
+	// fields have no global unset.
+	Clearable bool
 }
 
-// GlobalFieldSpecs describes the eight editable global settings fields.
+// GlobalFieldSpecs describes the editable global settings fields.
 func GlobalFieldSpecs() []FieldSpec {
 	return []FieldSpec{
 		{Name: "character_name", Label: "Character name", Kind: KindString, MaxLen: 128},
@@ -57,10 +65,16 @@ func GlobalFieldSpecs() []FieldSpec {
 		{Name: "show_reply_previews", Label: "Show reply previews", Kind: KindBool},
 		{Name: "default_preview_mode", Label: "Default preview mode", Kind: KindEnum, Enum: GlobalPreviewModeEnumOptions()},
 		{Name: "keep_tool_history", Label: "Keep tool history", Kind: KindBool},
+		{Name: "chat_model", Label: "Generation model", Kind: KindString, MaxLen: 128, Clearable: true},
+		{Name: "summarize_model", Label: "Summarize model", Kind: KindString, MaxLen: 128, Clearable: true},
+		{Name: "image_recognition_model", Label: "Image recognition model", Kind: KindString, MaxLen: 128, Clearable: true},
+		{Name: "systemone_model", Label: "System One decision model", Kind: KindString, MaxLen: 128, Clearable: true},
+		{Name: "default_interaction_profile", Label: "Default interaction profile", Kind: KindEnum, Enum: InteractionProfileEnumOptions()},
+		{Name: "decision_instructions", Label: "Decision instructions", Kind: KindString, MaxLen: 4000, Clearable: true},
 	}
 }
 
-// ChatFieldSpecs describes the seven editable per-chat settings fields.
+// ChatFieldSpecs describes the editable per-chat settings fields.
 func ChatFieldSpecs() []FieldSpec {
 	return []FieldSpec{
 		{Name: "character_name", Label: "Character name", Kind: KindString, MaxLen: 128},
@@ -70,6 +84,10 @@ func ChatFieldSpecs() []FieldSpec {
 		{Name: "auto_summary_enabled", Label: "Auto summary", Kind: KindBoolTriState},
 		{Name: "preview_mode", Label: "Preview mode", Kind: KindEnum, Enum: ChatPreviewModeEnumOptions()},
 		{Name: "keep_tool_history", Label: "Keep tool history", Kind: KindBoolTriState},
+		{Name: "chat_model", Label: "Generation model", Kind: KindString, MaxLen: 128},
+		{Name: "systemone_model", Label: "System One decision model", Kind: KindString, MaxLen: 128},
+		{Name: "interaction_profile", Label: "Interaction profile", Kind: KindEnum, Enum: InteractionProfileEnumOptions()},
+		{Name: "decision_instructions", Label: "Decision instructions", Kind: KindString, MaxLen: 4000},
 	}
 }
 
@@ -105,6 +123,18 @@ func GlobalPreviewModeEnumOptions() []EnumOption {
 	options := make([]EnumOption, 0, len(modes))
 	for _, mode := range modes {
 		options = append(options, EnumOption{Value: string(mode), Label: PreviewModeLabel(mode)})
+	}
+
+	return options
+}
+
+// InteractionProfileEnumOptions derives enum options from the supported
+// interaction profiles so a new profile is picked up everywhere at once.
+func InteractionProfileEnumOptions() []EnumOption {
+	profiles := InteractionProfiles()
+	options := make([]EnumOption, 0, len(profiles))
+	for _, profile := range profiles {
+		options = append(options, EnumOption{Value: string(profile), Label: InteractionProfileLabel(profile)})
 	}
 
 	return options

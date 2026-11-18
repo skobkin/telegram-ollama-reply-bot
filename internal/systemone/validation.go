@@ -248,14 +248,14 @@ func weightedLevelMean(probs map[string]float64) float64 {
 }
 
 func maxProbability(probs map[string]float64) float64 {
-	max := 0.0
+	highest := 0.0
 	for _, p := range probs {
-		if p > max {
-			max = p
+		if p > highest {
+			highest = p
 		}
 	}
 
-	return max
+	return highest
 }
 
 func withinTolerance(value, target, tolerance float64) bool {

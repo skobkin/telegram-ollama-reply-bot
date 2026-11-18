@@ -32,11 +32,20 @@ func (s *Service) Store() Store {
 }
 
 func (s *Service) GlobalFields() []string {
-	return []string{"character_name", "language", "gender", "default_interactivity_mode", "default_auto_summary_enabled", "show_reply_previews", "default_preview_mode", "keep_tool_history"}
+	return []string{
+		"character_name", "language", "gender", "default_interactivity_mode",
+		"default_auto_summary_enabled", "show_reply_previews", "default_preview_mode",
+		"keep_tool_history", "chat_model", "summarize_model", "image_recognition_model",
+		"systemone_model", "default_interaction_profile", "decision_instructions",
+	}
 }
 
 func (s *Service) ChatFields() []string {
-	return []string{"character_name", "language", "gender", "interactivity_mode", "auto_summary_enabled", "preview_mode", "keep_tool_history"}
+	return []string{
+		"character_name", "language", "gender", "interactivity_mode",
+		"auto_summary_enabled", "preview_mode", "keep_tool_history",
+		"chat_model", "systemone_model", "interaction_profile", "decision_instructions",
+	}
 }
 
 func (s *Service) PromptFeatures() []PromptFeature {
@@ -63,14 +72,23 @@ func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (Resolved
 		previewMode = PreviewModeTools
 	}
 
+	profile := global.DefaultInteractionProfile
+	if profile == "" {
+		profile = ProfileNonInteractive
+	}
+
 	resolved := ResolvedChatConfig{
-		CharacterName:      global.CharacterName,
-		Language:           global.Language,
-		Gender:             global.Gender,
-		InteractivityMode:  global.DefaultInteractivityMode,
-		AutoSummaryEnabled: global.DefaultAutoSummaryEnabled,
-		PreviewMode:        previewMode,
-		KeepToolHistory:    global.KeepToolHistory,
+		CharacterName:        global.CharacterName,
+		Language:             global.Language,
+		Gender:               global.Gender,
+		InteractivityMode:    global.DefaultInteractivityMode,
+		AutoSummaryEnabled:   global.DefaultAutoSummaryEnabled,
+		PreviewMode:          previewMode,
+		KeepToolHistory:      global.KeepToolHistory,
+		ChatModel:            global.ChatModel,
+		SystemOneModel:       global.SystemOneModel,
+		InteractionProfile:   profile,
+		DecisionInstructions: global.DecisionInstructions,
 	}
 
 	if chatID == 0 {
@@ -108,6 +126,18 @@ func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (Resolved
 	}
 	if chat.KeepToolHistory != nil {
 		resolved.KeepToolHistory = *chat.KeepToolHistory
+	}
+	if chat.ChatModel != "" {
+		resolved.ChatModel = chat.ChatModel
+	}
+	if chat.SystemOneModel != "" {
+		resolved.SystemOneModel = chat.SystemOneModel
+	}
+	if chat.InteractionProfile != "" {
+		resolved.InteractionProfile = chat.InteractionProfile
+	}
+	if chat.DecisionInstructions != "" {
+		resolved.DecisionInstructions = chat.DecisionInstructions
 	}
 
 	// The master switch outranks every per-chat override: stored overrides

@@ -27,7 +27,68 @@ func InteractivityModes() []InteractivityMode {
 	}
 }
 
-// PreviewMode selects the live tool-progress preview behavior for a chat.
+// InteractionProfile selects how proactively the bot participates in a chat
+// when a message did not produce an explicit trigger. The values are stable
+// storage identifiers for the five built-in decision profiles; their policy
+// parameters live in the interactivity engine, not here.
+type InteractionProfile string
+
+const (
+	// ProfileNonInteractive disables proactive participation entirely: the
+	// decision engine is a NoOp that makes no backend call. This is the
+	// global default.
+	ProfileNonInteractive InteractionProfile = "non_interactive"
+	// ProfileReactionsLow reacts rarely, never replies.
+	ProfileReactionsLow InteractionProfile = "reactions_low"
+	// ProfileReactionsHigh reacts more eagerly, never replies.
+	ProfileReactionsHigh InteractionProfile = "reactions_high"
+	// ProfileTalkLow reacts rarely and replies very conservatively.
+	ProfileTalkLow InteractionProfile = "talk_low"
+	// ProfileTalkHigh reacts and replies most eagerly of the built-ins.
+	ProfileTalkHigh InteractionProfile = "talk_high"
+)
+
+// InteractionProfiles lists the supported interaction profile identifiers.
+func InteractionProfiles() []InteractionProfile {
+	return []InteractionProfile{
+		ProfileNonInteractive,
+		ProfileReactionsLow,
+		ProfileReactionsHigh,
+		ProfileTalkLow,
+		ProfileTalkHigh,
+	}
+}
+
+// IsValidInteractionProfile reports whether the value is a supported profile.
+func IsValidInteractionProfile(profile InteractionProfile) bool {
+	for _, supported := range InteractionProfiles() {
+		if profile == supported {
+			return true
+		}
+	}
+
+	return false
+}
+
+// InteractionProfileLabel returns the display label of a profile, used in
+// screen text.
+func InteractionProfileLabel(profile InteractionProfile) string {
+	switch profile {
+	case ProfileNonInteractive:
+		return "Non-interactive"
+	case ProfileReactionsLow:
+		return "Reactions (low)"
+	case ProfileReactionsHigh:
+		return "Reactions (high)"
+	case ProfileTalkLow:
+		return "Talk (low)"
+	case ProfileTalkHigh:
+		return "Talk (high)"
+	default:
+		return string(profile)
+	}
+}
+
 type PreviewMode string
 
 const (
@@ -138,8 +199,29 @@ type GlobalSettings struct {
 	// KeepToolHistory controls whether completed tool calls are appended as
 	// a collapsible section to final replies when previews are enabled.
 	KeepToolHistory bool
-	UpdatedAt       time.Time
-	UpdatedBy       int64
+	// ChatModel is the global default generation model override. "" means
+	// unset: the model routes configured in the environment stay in effect.
+	ChatModel string
+	// SummarizeModel is the global default summarize model override. ""
+	// means unset (environment route).
+	SummarizeModel string
+	// ImageRecognitionModel is the global default image-recognition model
+	// override. "" means unset (environment route). It has no effect while
+	// the active recognizer is MiniMax, which takes no model selection.
+	ImageRecognitionModel string
+	// SystemOneModel is the global default decision model used by the
+	// interaction engine and the decision tools. Unlike the generation
+	// models there is no environment fallback: "" means the decision backend
+	// is unconfigured for chats without an explicit override.
+	SystemOneModel string
+	// DefaultInteractionProfile is the global default proactive-participation
+	// profile. "" resolves to Non-Interactive.
+	DefaultInteractionProfile InteractionProfile
+	// DecisionInstructions carries operator guidance for the decision engine
+	// (topics to engage with, expected social behavior). "" means unset.
+	DecisionInstructions string
+	UpdatedAt            time.Time
+	UpdatedBy            int64
 }
 
 type ChatSettings struct {
@@ -159,8 +241,21 @@ type ChatSettings struct {
 	// KeepToolHistory overrides the global tool-history retention. nil means
 	// inherit the global default.
 	KeepToolHistory *bool
-	UpdatedAt       time.Time
-	UpdatedBy       int64
+	// ChatModel overrides the generation model. "" means inherit the global
+	// default (which may itself be unset — the environment route applies).
+	ChatModel string
+	// SystemOneModel overrides the decision model. "" means inherit the
+	// global default.
+	SystemOneModel string
+	// InteractionProfile overrides the proactive-participation profile.
+	// "" means inherit the global default.
+	InteractionProfile InteractionProfile
+	// DecisionInstructions overrides the decision-engine guidance. "" means
+	// inherit; an explicitly-empty override is not representable (cleared
+	// overrides inherit), mirroring every other inheritable string field.
+	DecisionInstructions string
+	UpdatedAt            time.Time
+	UpdatedBy            int64
 }
 
 type PromptTemplate struct {
@@ -196,6 +291,20 @@ type ResolvedChatConfig struct {
 	PreviewMode PreviewMode
 	// KeepToolHistory is the effective tool-history retention switch.
 	KeepToolHistory bool
+	// ChatModel is the effective generation model override chain result:
+	// the chat override, else the global default. "" means the environment
+	// model routes stay in effect.
+	ChatModel string
+	// SystemOneModel is the effective decision model: the chat override,
+	// else the global default. "" means the decision backend is
+	// unconfigured for this chat.
+	SystemOneModel string
+	// InteractionProfile is the effective proactive-participation profile:
+	// the chat override, else the global default, else Non-Interactive.
+	InteractionProfile InteractionProfile
+	// DecisionInstructions is the effective decision-engine guidance: the
+	// chat override, else the global default.
+	DecisionInstructions string
 }
 
 type Store interface {
