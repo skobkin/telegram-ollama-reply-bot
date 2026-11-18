@@ -16,7 +16,8 @@ func TestResolveChatConfigModelAndProfileResolution(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolve: %v", err)
 		}
-		if resolved.ChatModel != "" || resolved.SystemOneModel != "" || resolved.DecisionInstructions != "" {
+		if resolved.ChatModel != "" || resolved.SystemOneModel != "" || resolved.DecisionInstructions != "" ||
+			resolved.SummarizeModel != "" || resolved.ImageRecognitionModel != "" {
 			t.Fatalf("expected unset models and instructions, got %+v", resolved)
 		}
 		if resolved.InteractionProfile != ProfileNonInteractive {
@@ -44,8 +45,36 @@ func TestResolveChatConfigModelAndProfileResolution(t *testing.T) {
 		if resolved.ChatModel != "gemma4:e4b" || resolved.SystemOneModel != "laya" {
 			t.Fatalf("unexpected models: %+v", resolved)
 		}
+		if resolved.SummarizeModel != "summarizer-8b" || resolved.ImageRecognitionModel != "vision-mini" {
+			t.Fatalf("global-only summarize and image models must resolve for every chat: %+v", resolved)
+		}
 		if resolved.InteractionProfile != ProfileTalkLow || resolved.DecisionInstructions != "Be curious." {
 			t.Fatalf("unexpected profile/instructions: %+v", resolved)
+		}
+	})
+
+	t.Run("summarize and image recognition have no chat overrides", func(t *testing.T) {
+		// The global defaults are the effective values for those features;
+		// a chat row cannot carry them at all.
+		store := &stubStore{
+			global: GlobalSettings{
+				SummarizeModel:        "summarizer-8b",
+				ImageRecognitionModel: "vision-mini",
+			},
+			chat:      ChatSettings{ChatID: chatID, ChatModel: "chat-override-8b"},
+			chatFound: true,
+		}
+		svc := NewService(store, nil, nil)
+
+		resolved, err := svc.ResolveChatConfig(context.Background(), chatID)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if resolved.SummarizeModel != "summarizer-8b" || resolved.ImageRecognitionModel != "vision-mini" {
+			t.Fatalf("global-only models must stay in effect: %+v", resolved)
+		}
+		if resolved.ChatModel != "chat-override-8b" {
+			t.Fatalf("chat generation override must still win: %+v", resolved)
 		}
 	})
 

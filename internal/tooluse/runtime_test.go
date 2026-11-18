@@ -27,14 +27,19 @@ type stubLLM struct {
 	generateErrs    []error
 	buildCount      int
 	responses       []llm.Response
+	lastBuildModel  string
+	buildModels     []string
 	lastBuildPolicy string
 	lastBuildTools  []llm.ToolDefinition
 	lastBuildExtras []llm.Message
 	lastGenerateReq llm.Request
+	generateModels  []string
 }
 
-func (s *stubLLM) BuildChatToolRequest(_ context.Context, _ llm.PromptScope, _ llm.ChatReplyContext, tools []llm.ToolDefinition, toolPolicy string, extraMessages []llm.Message) (llm.Request, error) {
+func (s *stubLLM) BuildChatToolRequest(_ context.Context, _ llm.PromptScope, _ llm.ChatReplyContext, generationModel string, tools []llm.ToolDefinition, toolPolicy string, extraMessages []llm.Message) (llm.Request, error) {
 	s.buildCount++
+	s.lastBuildModel = generationModel
+	s.buildModels = append(s.buildModels, generationModel)
 	s.lastBuildPolicy = toolPolicy
 	s.lastBuildTools = append([]llm.ToolDefinition(nil), tools...)
 	s.lastBuildExtras = append([]llm.Message(nil), extraMessages...)
@@ -42,11 +47,12 @@ func (s *stubLLM) BuildChatToolRequest(_ context.Context, _ llm.PromptScope, _ l
 		return llm.Request{}, s.buildErr
 	}
 
-	return llm.Request{Feature: llm.FeatureChat, Tools: tools, Messages: extraMessages}, nil
+	return llm.Request{Feature: llm.FeatureChat, Model: generationModel, Tools: tools, Messages: extraMessages}, nil
 }
 
 func (s *stubLLM) Generate(_ context.Context, req llm.Request) (llm.Response, error) {
 	s.lastGenerateReq = req
+	s.generateModels = append(s.generateModels, req.Model)
 	if len(s.generateErrs) > 0 {
 		err := s.generateErrs[0]
 		s.generateErrs = s.generateErrs[1:]

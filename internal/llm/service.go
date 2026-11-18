@@ -16,20 +16,27 @@ import (
 type Service struct {
 	cfg     config.LLMConfig
 	prompts PromptRenderer
-	logger  *slog.Logger
-	backend backend
+	// resolver resolves runtime model overrides. Nil keeps the pure
+	// environment-route behavior; a resolver may still return "" (unset),
+	// which degrades to the same route fallback.
+	resolver ModelResolver
+	logger   *slog.Logger
+	backend  backend
 }
 
-func NewService(cfg config.LLMConfig, prompts PromptRenderer, logger *slog.Logger) (*Service, error) {
+// NewService builds a service. The resolver may be nil when the deployment
+// runs without runtime model settings.
+func NewService(cfg config.LLMConfig, prompts PromptRenderer, resolver ModelResolver, logger *slog.Logger) (*Service, error) {
 	if cfg.Backends.OpenAICompat.BaseURL == "" {
 		return nil, errors.Join(ErrBackendNotConfigured, fmt.Errorf("%s base url is empty", config.LLMBackendOpenAICompat))
 	}
 
 	return &Service{
-		cfg:     cfg,
-		prompts: prompts,
-		logger:  logger,
-		backend: newOpenAICompatBackend(cfg.Backends.OpenAICompat, logger.With("backend", config.LLMBackendOpenAICompat)),
+		cfg:      cfg,
+		prompts:  prompts,
+		resolver: resolver,
+		logger:   logger,
+		backend:  newOpenAICompatBackend(cfg.Backends.OpenAICompat, logger.With("backend", config.LLMBackendOpenAICompat)),
 	}, nil
 }
 
@@ -94,15 +101,22 @@ func (s *Service) Generate(ctx context.Context, req Request) (Response, error) {
 	return resp, nil
 }
 
+// BuildChatToolRequest assembles one generation request for the chat tool
+// loop. generationModel is the turn's resolved model: when set it drives
+// both the wire request and the {{.Model}} prompt placeholder, keeping them
+// consistent across every iteration of the turn; when empty the environment
+// route model renders in the prompt and the wire model stays unset for
+// Generate to fill from the route.
 func (s *Service) BuildChatToolRequest(
 	ctx context.Context,
 	scope PromptScope,
 	requestContext ChatReplyContext,
+	generationModel string,
 	tools []ToolDefinition,
 	toolPolicy string,
 	extraMessages []Message,
 ) (Request, error) {
-	messages, err := s.buildConversationMessages(ctx, scope, requestContext, toolPolicy)
+	messages, err := s.buildConversationMessages(ctx, scope, requestContext, generationModel, toolPolicy)
 	if err != nil {
 		return Request{}, err
 	}
@@ -111,11 +125,15 @@ func (s *Service) BuildChatToolRequest(
 
 	return Request{
 		Feature:  FeatureChat,
+		Model:    generationModel,
 		Messages: messages,
 		Tools:    tools,
 	}, nil
 }
 
+// Summarize renders the summarize prompt and generates one summary. The
+// runtime model override (global summarize model setting) resolves once per
+// call; a resolution failure is an error, never a silent route fallback.
 func (s *Service) Summarize(ctx context.Context, scope PromptScope, text string, instructions string) (string, *TokenUsage, error) {
 	logger := logging.FromContext(ctx, s.logger)
 
@@ -131,8 +149,20 @@ func (s *Service) Summarize(ctx context.Context, scope PromptScope, text string,
 		systemPrompt = systemPrompt + "\n\nAdditional instruction from user:\n\n>" + instructions
 	}
 
+	model := ""
+	if s.resolver != nil {
+		model, err = s.resolver.ResolveModel(ctx, FeatureSummarize, scope.ChatID)
+		if err != nil {
+			logger.Error("summarize model resolution failed", "error", err)
+			sentry.CaptureException(err)
+
+			return "", nil, err
+		}
+	}
+
 	resp, err := s.Generate(ctx, Request{
 		Feature: FeatureSummarize,
+		Model:   model,
 		Messages: []Message{
 			TextMessage(RoleSystem, systemPrompt),
 			TextMessage(RoleUser, text),
@@ -154,11 +184,14 @@ func (s *Service) Summarize(ctx context.Context, scope PromptScope, text string,
 	return resp.Message.Text(), &usage, nil
 }
 
-// HasModelsFor reports whether every given feature's configured model is
-// offered by the backend, along with a per-feature result map. Callers decide
-// which features to gate on: the startup check passes chat and summarize
-// always, and image_recognition only for a model-routed recognizer on its
-// actual connection.
+// HasModelsFor reports whether every given feature's effective model is
+// offered by the backend, along with a per-feature result map. The effective
+// model is the environment route plus, when a resolver is configured, its
+// global runtime override — both must be served, because either can become
+// the wire model at runtime (an override may be cleared back to the route).
+// Callers decide which features to gate on: the startup check passes chat
+// and summarize always, and image_recognition only for a model-routed
+// recognizer on its actual connection.
 func (s *Service) HasModelsFor(ctx context.Context, features ...Feature) (bool, map[string]bool) {
 	logger := logging.FromContext(ctx, s.logger)
 	result := make(map[string]bool)
@@ -196,6 +229,20 @@ func (s *Service) HasModelsFor(ctx context.Context, features ...Feature) (bool, 
 		}
 
 		result[string(feature)] = slices.Contains(models, route.Model)
+
+		// The chatID is 0 because the startup check covers global defaults
+		// only; per-chat overrides are runtime concerns verified when used.
+		if result[string(feature)] && s.resolver != nil {
+			override, err := s.resolver.ResolveModel(ctx, feature, 0)
+			if err != nil {
+				logger.Error("runtime model resolution failed", "feature", feature, "error", err)
+				sentry.CaptureException(err)
+				result[string(feature)] = false
+			} else if override != "" && !slices.Contains(models, override) {
+				logger.Error("runtime model override is not offered by the backend", "feature", feature)
+				result[string(feature)] = false
+			}
+		}
 	}
 
 	for _, available := range result {
@@ -207,14 +254,32 @@ func (s *Service) HasModelsFor(ctx context.Context, features ...Feature) (bool, 
 	return true, result
 }
 
-func (s *Service) buildConversationMessages(ctx context.Context, scope PromptScope, requestContext ChatReplyContext, toolPolicy string) ([]Message, error) {
+// ListModels returns the backend's served model list, used by the admin UI
+// model pickers. Transport errors are sanitized before returning: the raw
+// SDK error can embed the endpoint URL, which may carry credentials, and
+// the list feeds UI flows that must never surface it.
+func (s *Service) ListModels(ctx context.Context) ([]string, error) {
+	models, err := s.backend.ListModels(ctx)
+	if err != nil {
+		return nil, safeerr.WrapTransport(ErrLlmBackendRequestFailed, err)
+	}
+
+	return models, nil
+}
+
+func (s *Service) buildConversationMessages(ctx context.Context, scope PromptScope, requestContext ChatReplyContext, generationModel string, toolPolicy string) ([]Message, error) {
 	logger := logging.FromContext(ctx, s.logger)
 	route, err := s.cfg.RouteForFeature(string(FeatureChat))
 	if err != nil {
 		return nil, errors.Join(ErrFeatureRouteInvalid, err)
 	}
 
-	systemPrompt, err := s.prompts.RenderChatSystemPrompt(ctx, scope, route.Model, requestContext.SystemHint, toolPolicy)
+	model := generationModel
+	if model == "" {
+		model = route.Model
+	}
+
+	systemPrompt, err := s.prompts.RenderChatSystemPrompt(ctx, scope, model, requestContext.SystemHint, toolPolicy)
 	if err != nil {
 		logger.Error("chat template processing failed", "error", err)
 		sentry.CaptureException(err)

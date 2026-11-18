@@ -42,6 +42,32 @@ import (
 // the full API URL, which carries the bot token in its path.
 var ErrTelegramConnect = errors.New("cannot connect to telegram api")
 
+// modelResolver adapts operator-managed settings to llm.ModelResolver: chat
+// resolves per chat, summarize and image recognition are global-only
+// features whose values are the same for every chat. Unknown features have
+// no runtime override and resolve as unset.
+type modelResolver struct {
+	admin *adminconfig.Service
+}
+
+func (r modelResolver) ResolveModel(ctx context.Context, feature llm.Feature, chatID int64) (string, error) {
+	resolved, err := r.admin.ResolveChatConfig(ctx, chatID)
+	if err != nil {
+		return "", err
+	}
+
+	switch feature {
+	case llm.FeatureChat:
+		return resolved.ChatModel, nil
+	case llm.FeatureSummarize:
+		return resolved.SummarizeModel, nil
+	case llm.FeatureImageRecognition:
+		return resolved.ImageRecognitionModel, nil
+	default:
+		return "", nil
+	}
+}
+
 // verifyStartupModels checks that every required feature model is available
 // on the service that will actually serve it. The main service always covers
 // chat and summarize. The image-recognition model is appended to the main
@@ -281,7 +307,9 @@ func Run(ctx context.Context) error {
 
 	prompts := llm.NewAdminPromptRenderer(adminService, cfg.LLM.ImageRecognitionEnabled, botUser.Username)
 
-	llmc, err := llm.NewService(cfg.LLM, prompts, logManager.Logger("llm"))
+	resolver := modelResolver{admin: adminService}
+
+	llmc, err := llm.NewService(cfg.LLM, prompts, resolver, logManager.Logger("llm"))
 	if err != nil {
 		logger.Error("failed to initialize llm service", "error", err)
 		sentry.CaptureException(err)
@@ -321,7 +349,7 @@ func Run(ctx context.Context) error {
 			APIToken: cfg.LLM.ImageRecognition.OpenAICompat.APIToken,
 		}
 
-		imageLLM, err = llm.NewService(imageCfg, prompts, logManager.Logger("llm/image"))
+		imageLLM, err = llm.NewService(imageCfg, prompts, resolver, logManager.Logger("llm/image"))
 		if err != nil {
 			logger.Error("failed to initialize image llm service", "error", err)
 			sentry.CaptureException(err)
@@ -329,9 +357,9 @@ func Run(ctx context.Context) error {
 			return err
 		}
 
-		recognizer = vision.NewOpenAIRecognizer(imageLLM)
+		recognizer = vision.NewOpenAIRecognizer(imageLLM, resolver)
 	default:
-		recognizer = vision.NewOpenAIRecognizer(llmc)
+		recognizer = vision.NewOpenAIRecognizer(llmc, resolver)
 	}
 
 	visionService := vision.NewService(

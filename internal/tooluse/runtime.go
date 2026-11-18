@@ -23,7 +23,7 @@ import (
 var ErrToolLoopLimitReached = errors.New("tool loop iteration limit reached")
 
 type llmService interface {
-	BuildChatToolRequest(ctx context.Context, scope llm.PromptScope, requestContext llm.ChatReplyContext, tools []llm.ToolDefinition, toolPolicy string, extraMessages []llm.Message) (llm.Request, error)
+	BuildChatToolRequest(ctx context.Context, scope llm.PromptScope, requestContext llm.ChatReplyContext, generationModel string, tools []llm.ToolDefinition, toolPolicy string, extraMessages []llm.Message) (llm.Request, error)
 	Generate(ctx context.Context, req llm.Request) (llm.Response, error)
 }
 
@@ -86,6 +86,11 @@ type ChatRequest struct {
 	// identity Telegram may redirect (album reactions land on the first
 	// non-deleted member), never to address messages.
 	RequesterMediaGroupID string
+	// TurnConfig carries the model selection resolved once from one settings
+	// snapshot when the enclosing operation started; it stays fixed for the
+	// whole run, so settings changes mid-run affect only later operations.
+	// An empty GenerationModel falls back to the environment route.
+	TurnConfig llm.TurnConfig
 }
 
 // ToolCallRecord is the authoritative record of one tool invocation, in
@@ -341,7 +346,7 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 		genStart := time.Now()
 		emitter.publish(execution.GenerationStarted{RunContext: emitter.rc, At: genStart, Iteration: i})
 
-		request, err := r.llm.BuildChatToolRequest(ctx, req.PromptScope, req.ReplyContext, modelTools, toolPolicy, extraMessages)
+		request, err := r.llm.BuildChatToolRequest(ctx, req.PromptScope, req.ReplyContext, req.TurnConfig.GenerationModel, modelTools, toolPolicy, extraMessages)
 		if err != nil {
 			if !started {
 				logger.Warn("chat request preparation failed", "error", err)

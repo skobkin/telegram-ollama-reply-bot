@@ -427,11 +427,17 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adm
 		defer cancel()
 
 		result, runErr := b.tools.ReplyWithTools(llmCtx, tooluse.ChatRequest{
-			Scope:                 scopeFromMessage(message),
-			PromptScope:           llm.PromptScope{ChatID: message.Chat.ID},
-			ReplyContext:          requestContext,
-			RequestMessage:        userMessageData,
-			RunID:                 run.ID(),
+			Scope:          scopeFromMessage(message),
+			PromptScope:    llm.PromptScope{ChatID: message.Chat.ID},
+			ReplyContext:   requestContext,
+			RequestMessage: userMessageData,
+			RunID:          run.ID(),
+			// The model selection comes from the chat config resolved when
+			// this message was accepted; it stays fixed for the whole turn.
+			TurnConfig: llm.TurnConfig{
+				GenerationModel: resolved.ChatModel,
+				SystemOneModel:  resolved.SystemOneModel,
+			},
 			RequesterMediaGroupID: message.MediaGroupID,
 		})
 		llmReply, usage, err = result.Reply, result.Usage, runErr

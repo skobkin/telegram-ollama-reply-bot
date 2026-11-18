@@ -295,6 +295,14 @@ type ResolvedChatConfig struct {
 	// the chat override, else the global default. "" means the environment
 	// model routes stay in effect.
 	ChatModel string
+	// SummarizeModel is the effective summarize model. Summarize is a
+	// global-only feature (no per-chat override exists), so this is the
+	// global default for every chat. "" means the environment route applies.
+	SummarizeModel string
+	// ImageRecognitionModel is the effective image-recognition model, a
+	// global-only setting like SummarizeModel. It has no effect while the
+	// active recognizer is MiniMax, which takes no model selection.
+	ImageRecognitionModel string
 	// SystemOneModel is the effective decision model: the chat override,
 	// else the global default. "" means the decision backend is
 	// unconfigured for this chat.

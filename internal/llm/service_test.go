@@ -147,7 +147,7 @@ func TestServiceBuildChatToolRequestBuildsFeatureChatFromCompactContext(t *testi
 			TextMessage(RoleAssistant, "history 2"),
 		},
 		UserMessage: TextMessage(RoleUser, "current"),
-	}, []ToolDefinition{{Name: "search_history"}}, "tool policy", []Message{TextMessage(RoleTool, "tool result")})
+	}, "", []ToolDefinition{{Name: "search_history"}}, "tool policy", []Message{TextMessage(RoleTool, "tool result")})
 	if err != nil {
 		t.Fatalf("BuildChatToolRequest: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestServiceBuildChatToolRequestUsesChatScopedPromptAndResolvedPersona(t *te
 	request, err := service.BuildChatToolRequest(context.Background(), PromptScope{ChatID: 5}, ChatReplyContext{
 		SystemHint:  "compact context",
 		UserMessage: TextMessage(RoleUser, "current"),
-	}, nil, "tool policy", nil)
+	}, "", nil, "tool policy", nil)
 	if err != nil {
 		t.Fatalf("BuildChatToolRequest: %v", err)
 	}

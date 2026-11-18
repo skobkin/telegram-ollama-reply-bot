@@ -78,17 +78,19 @@ func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (Resolved
 	}
 
 	resolved := ResolvedChatConfig{
-		CharacterName:        global.CharacterName,
-		Language:             global.Language,
-		Gender:               global.Gender,
-		InteractivityMode:    global.DefaultInteractivityMode,
-		AutoSummaryEnabled:   global.DefaultAutoSummaryEnabled,
-		PreviewMode:          previewMode,
-		KeepToolHistory:      global.KeepToolHistory,
-		ChatModel:            global.ChatModel,
-		SystemOneModel:       global.SystemOneModel,
-		InteractionProfile:   profile,
-		DecisionInstructions: global.DecisionInstructions,
+		CharacterName:         global.CharacterName,
+		Language:              global.Language,
+		Gender:                global.Gender,
+		InteractivityMode:     global.DefaultInteractivityMode,
+		AutoSummaryEnabled:    global.DefaultAutoSummaryEnabled,
+		PreviewMode:           previewMode,
+		KeepToolHistory:       global.KeepToolHistory,
+		ChatModel:             global.ChatModel,
+		SummarizeModel:        global.SummarizeModel,
+		ImageRecognitionModel: global.ImageRecognitionModel,
+		SystemOneModel:        global.SystemOneModel,
+		InteractionProfile:    profile,
+		DecisionInstructions:  global.DecisionInstructions,
 	}
 
 	if chatID == 0 {
