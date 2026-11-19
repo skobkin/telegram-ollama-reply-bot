@@ -514,3 +514,51 @@ func TestChatCardHasInteractivityEntry(t *testing.T) {
 		t.Fatalf("chat card must offer the interactivity entry: %q", screenButtons(outcome.Render.Built))
 	}
 }
+
+// TestChatInstructionsInheritViaInteractivitySubmenu pins the chat-scope
+// decision-instructions inherit control: instructions bypass the field
+// editor (they edit through VerbString, and blank input is a rejected
+// value), so the interactivity submenu itself must offer "Inherit global"
+// while an override exists and stop offering it once cleared.
+func TestChatInstructionsInheritViaInteractivitySubmenu(t *testing.T) {
+	c, store := newTestController(t)
+	session := mustOpen(t, c)
+
+	// Seed a chat instructions override directly.
+	store.mu.Lock()
+	store.chatRows[testGroupID] = map[string]string{"decision_instructions": "stay brief and factual"}
+	store.mu.Unlock()
+
+	tap(t, c, session, VerbCatalog, "1")
+	tap(t, c, session, VerbChat, strconv.FormatInt(testGroupID, 10))
+	outcome := tap(t, c, session, VerbInteractivity)
+	if outcome.Render == nil || outcome.Render.Screen.Kind != ScreenInteractivity {
+		t.Fatalf("interactivity tap must open the submenu: %+v", outcome.Render)
+	}
+	if !strings.Contains(outcome.Render.Built.Text, "stay brief and factual") {
+		t.Fatalf("submenu must show the effective instructions: %q", outcome.Render.Built.Text)
+	}
+	if !strings.Contains(screenButtons(outcome.Render.Built), "Inherit global") {
+		t.Fatalf("overridden instructions must offer inherit in the submenu: %q", screenButtons(outcome.Render.Built))
+	}
+
+	outcome = tap(t, c, session, VerbClear, "di")
+
+	store.mu.Lock()
+	_, still := store.chatRows[testGroupID]["decision_instructions"]
+	store.mu.Unlock()
+	if still {
+		t.Fatalf("inherit must clear the decision_instructions override row")
+	}
+	if outcome.Render == nil || outcome.Render.Screen.Kind != ScreenInteractivity {
+		t.Fatalf("inherit must stay on the interactivity submenu: %+v", outcome.Render)
+	}
+
+	// With the override gone the button disappears again.
+	if strings.Contains(screenButtons(outcome.Render.Built), "Inherit global") {
+		t.Fatalf("inherit must be hidden without an override: %q", screenButtons(outcome.Render.Built))
+	}
+	if !strings.Contains(outcome.Render.Built.Text, "(unset)") {
+		t.Fatalf("cleared instructions must fall back to the global value: %q", outcome.Render.Built.Text)
+	}
+}

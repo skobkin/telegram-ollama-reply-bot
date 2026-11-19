@@ -682,6 +682,12 @@ func (b screenBuilder) interactivity(data InteractivityData) *Screen {
 
 	instructionsCode, _ := FieldCode("decision_instructions")
 	rows = append(rows, ButtonRow{b.btn("✏️ Edit instructions…", VerbString, instructionsCode)})
+	// Instructions edit through a dedicated input, never the field editor,
+	// so the chat-scope inherit row lives here: blank input is a rejected
+	// value, and this button is the only way back to the global text.
+	if !data.Global && data.InstructionsOverridden {
+		rows = append(rows, ButtonRow{b.btn("Inherit global", VerbClear, instructionsCode)})
+	}
 	if data.Global && data.Instructions != "" {
 		rows = append(rows, ButtonRow{b.danger("Clear instructions", VerbClearGlobal, instructionsCode)})
 	}
