@@ -650,3 +650,43 @@ func TestSentryBeforeSendDoesNotMutateSharedBreadcrumb(t *testing.T) {
 		}
 	}
 }
+
+func TestSentryBeforeSendDoesNotMutateSharedUserData(t *testing.T) {
+	t.Parallel()
+
+	scrubber := newSecretScrubber(scrubTestConfig())
+	hook := newSentryBeforeSend(scrubber)
+
+	// The scope user is copied into events shallowly, so its Data map is
+	// shared by every capture; scrubbing must replace it on the event, not
+	// rewrite the scope-owned map in place.
+	shared := map[string]string{"token": "LLMFIXTURE"}
+
+	events := make([]*sentry.Event, 4)
+	for i := range events {
+		events[i] = &sentry.Event{User: sentry.User{ID: "u-1", Data: shared}}
+	}
+
+	var group sync.WaitGroup
+
+	for _, event := range events {
+		group.Add(1)
+
+		go func(ev *sentry.Event) {
+			defer group.Done()
+			hook(ev, nil)
+		}(event)
+	}
+
+	group.Wait()
+
+	if shared["token"] != "LLMFIXTURE" {
+		t.Fatalf("scope-owned user data was mutated: %v", shared["token"])
+	}
+
+	for i, event := range events {
+		if got := event.User.Data["token"]; got != "[REDACTED:llm-api-token]" {
+			t.Fatalf("event %d: user data not scrubbed: %q", i, got)
+		}
+	}
+}

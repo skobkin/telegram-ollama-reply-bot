@@ -232,7 +232,17 @@ func scrubEvent(scrubber *secretscrub.Scrubber, event *sentry.Event) {
 	event.User.IPAddress = scrubber.Scrub(event.User.IPAddress)
 	event.User.Username = scrubber.Scrub(event.User.Username)
 	event.User.Name = scrubber.Scrub(event.User.Name)
-	scrubStringMap(scrubber, event.User.Data)
+	// The scope user is copied into the event shallowly, so the Data map is
+	// shared with the scope and must be replaced, not scrubbed in place.
+	if event.User.Data != nil {
+		userData := make(map[string]string, len(event.User.Data))
+
+		for key, value := range event.User.Data {
+			userData[key] = scrubber.Scrub(value)
+		}
+
+		event.User.Data = userData
+	}
 
 	for i := range event.Threads {
 		event.Threads[i].Name = scrubber.Scrub(event.Threads[i].Name)
