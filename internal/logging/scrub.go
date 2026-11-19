@@ -157,7 +157,13 @@ func (h *scrubHandler) scrubAttr(attr slog.Attr) slog.Attr {
 	case slog.KindString:
 		attr.Value = slog.StringValue(h.scrubber.Scrub(attr.Value.String()))
 	case slog.KindGroup:
-		attrs := attr.Value.Group()
+		// Group() exposes the caller's underlying slice, so the scrubbed
+		// children go into a fresh slice — mutating in place would change
+		// the caller's attribute and race when the same attribute is logged
+		// concurrently.
+		source := attr.Value.Group()
+		attrs := make([]slog.Attr, len(source))
+		copy(attrs, source)
 
 		for i := range attrs {
 			attrs[i] = h.scrubAttr(attrs[i])

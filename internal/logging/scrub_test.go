@@ -2,10 +2,12 @@ package logging
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -234,5 +236,62 @@ func TestScrubHandlerPreservesAttributeAttachmentGroup(t *testing.T) {
 
 	if details["secret"] != "[REDACTED:fixture]" {
 		t.Fatalf("in-group attribute not scrubbed: %v", details["secret"])
+	}
+}
+
+func TestScrubHandlerDoesNotMutateCallerGroupAttr(t *testing.T) {
+	t.Parallel()
+
+	logger, buf := scrubTestLogger(t, scrubTestScrubber())
+
+	// slog.Value.Group() exposes the caller's underlying slice; scrubbing
+	// must copy it, or this attribute would change under the caller and
+	// concurrent log calls would race on it.
+	reusedGroup := slog.Group("details", "secret", "LOGFIXTURE")
+
+	logger.LogAttrs(context.Background(), slog.LevelError, "with group attr", reusedGroup)
+
+	if got := reusedGroup.Value.Group()[0].Value.String(); got != "LOGFIXTURE" {
+		t.Fatalf("caller's group attribute was mutated: %q", got)
+	}
+
+	entry := decodeLastLine(t, buf)
+	details, ok := entry["details"].(map[string]any)
+	if !ok {
+		t.Fatalf("group attribute missing: %v", entry)
+	}
+
+	if details["secret"] != "[REDACTED:fixture]" {
+		t.Fatalf("group attribute not scrubbed: %v", details["secret"])
+	}
+
+	// Logging the same attribute from several goroutines exercises the race
+	// the in-place scrubbing used to cause; -race watches this section.
+	loggers := make([]*slog.Logger, 4)
+	buffers := make([]*bytes.Buffer, 4)
+
+	for i := range loggers {
+		loggers[i], buffers[i] = scrubTestLogger(t, scrubTestScrubber())
+	}
+
+	var group sync.WaitGroup
+
+	for i := range loggers {
+		group.Add(1)
+
+		go func(idx int) {
+			defer group.Done()
+			loggers[idx].LogAttrs(context.Background(), slog.LevelError, "concurrent", reusedGroup)
+
+			if strings.Contains(buffers[idx].String(), "LOGFIXTURE") {
+				t.Errorf("fixture survived concurrent scrubbing")
+			}
+		}(i)
+	}
+
+	group.Wait()
+
+	if got := reusedGroup.Value.Group()[0].Value.String(); got != "LOGFIXTURE" {
+		t.Fatalf("caller's group attribute was mutated concurrently: %q", got)
 	}
 }
