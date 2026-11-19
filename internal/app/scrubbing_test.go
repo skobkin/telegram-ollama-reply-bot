@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -598,6 +599,32 @@ func TestURLUserinfoPrefix(t *testing.T) {
 		if ok != testCase.ok || got != testCase.want {
 			t.Fatalf("%s: got (%q, %v), want (%q, %v)", testCase.name, got, ok, testCase.want, testCase.ok)
 		}
+	}
+}
+
+func TestNewSecretScrubberRegistersQuotedURLPassword(t *testing.T) {
+	t.Parallel()
+
+	cfg := scrubTestConfig()
+	cfg.LLM.Backends.OpenAICompat.BaseURL = `https://ops:QUOTEPW"SSFIXTURE@llm.internal/%zz`
+
+	scrubber := newSecretScrubber(cfg)
+
+	// The credential carries a character that %q — the rendering net/url uses
+	// for its own parse errors — escapes, so the escaped form must be
+	// registered too.
+	_, parseErr := url.Parse(cfg.LLM.Backends.OpenAICompat.BaseURL)
+	if parseErr == nil {
+		t.Fatal("malformed fixture URL parsed cleanly")
+	}
+
+	diagnostic := parseErr.Error()
+	if !strings.Contains(diagnostic, `QUOTEPW\"SSFIXTURE`) {
+		t.Fatalf("expected the quoted rendering in the diagnostic: %q", diagnostic)
+	}
+
+	if got := scrubber.Scrub(diagnostic); strings.Contains(got, "QUOTEPW") {
+		t.Fatalf("quoted password rendering survived: %q", got)
 	}
 }
 

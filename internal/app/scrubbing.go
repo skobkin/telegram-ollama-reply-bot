@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"telegram-ollama-reply-bot/internal/config"
@@ -127,6 +128,16 @@ func appendURLPassword(secrets []secretscrub.Secret, name, rawURL string) []secr
 
 	if decoded, err := url.PathUnescape(password); err == nil && decoded != password {
 		secrets = append(secrets, secretscrub.Secret{Name: name + "-decoded", Value: decoded})
+	}
+
+	// Rendering a URL through %q — what net/url's own parse errors and every
+	// *url.Error message do — escapes the password's special characters. The
+	// escaped form must match too, or those diagnostics still carry the
+	// credential; strconv.Quote's inner text is that rendering.
+	if quoted := strconv.Quote(password); len(quoted) >= 2 {
+		if inner := quoted[1 : len(quoted)-1]; inner != password {
+			secrets = append(secrets, secretscrub.Secret{Name: name + "-quoted", Value: inner})
+		}
 	}
 
 	return secrets
