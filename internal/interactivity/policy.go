@@ -23,15 +23,7 @@ func EvaluatePolicy(profile Profile, scores DecisionScores) ActionDecision {
 		return ignoreDecision(ReasonIntrusionVeto, scores)
 	}
 
-	base := profile.RelevanceWeight*scores.Relevance +
-		profile.ContributionWeight*scores.Contribution -
-		profile.IntrusionPenalty*scores.Intrusion
-	if base < 0 {
-		base = 0
-	}
-	if base > 1 {
-		base = 1
-	}
+	base := Base(profile, scores)
 
 	// Reply first: a suitable reply dominates a suitable reaction. A
 	// reaction may still be selected above the reply threshold when the
@@ -52,4 +44,23 @@ func EvaluatePolicy(profile Profile, scores DecisionScores) ActionDecision {
 
 func ignoreDecision(reason DecisionReason, scores DecisionScores) ActionDecision {
 	return ActionDecision{Action: ActionIgnore, Scores: scores, Reason: reason}
+}
+
+// Base computes the policy base score of one score set under a profile: the
+// weighted relevance and contribution minus the scaled intrusion penalty,
+// clamped to [0,1]. It is the exact formula EvaluatePolicy applies, exported
+// so external aggregation (interaction statistics) can record the same base
+// score the policy gated on without reimplementing it.
+func Base(profile Profile, scores DecisionScores) float64 {
+	base := profile.RelevanceWeight*scores.Relevance +
+		profile.ContributionWeight*scores.Contribution -
+		profile.IntrusionPenalty*scores.Intrusion
+	if base < 0 {
+		return 0
+	}
+	if base > 1 {
+		return 1
+	}
+
+	return base
 }

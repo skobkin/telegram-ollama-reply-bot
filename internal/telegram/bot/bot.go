@@ -99,6 +99,10 @@ type Bot struct {
 	// participation serializes proactive decision tasks per chat and tracks
 	// their lifecycle; set together with decisions.
 	participation *participationRunner
+	// proactiveChatRouteModel is the environment chat route model, wired
+	// with the proactive feature: the effective generation model statistics
+	// record when a chat's model override is empty.
+	proactiveChatRouteModel string
 }
 
 func NewBot(

@@ -34,6 +34,19 @@ type fakeAPIServer struct {
 	mu            sync.Mutex
 	requests      []fakeAPIRequest
 	nextMessageID atomic.Int64
+	failures      map[string]int
+}
+
+// failNext schedules the next `times` calls of a method to fail with an API
+// error, regardless of payload.
+func (f *fakeAPIServer) failNext(method string, times int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.failures == nil {
+		f.failures = make(map[string]int)
+	}
+	f.failures[method] += times
 }
 
 func newFakeAPIServer(t *testing.T) *fakeAPIServer {
@@ -49,6 +62,18 @@ func newFakeAPIServer(t *testing.T) *fakeAPIServer {
 		fake.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
+
+		// Injected failures exhaust per method, so delivery-failure tests
+		// can take down every fallback path of a delivery helper at once.
+		fake.mu.Lock()
+		if fake.failures[method] > 0 {
+			fake.failures[method]--
+			fake.mu.Unlock()
+			_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"injected failure"}`))
+
+			return
+		}
+		fake.mu.Unlock()
 
 		switch method {
 		case "sendMessage", "sendRichMessage", "editMessageText":

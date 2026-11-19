@@ -75,14 +75,91 @@ type turnOptions struct {
 	persona *llm.CapturedPersona
 }
 
+// turnFailure is the bounded failure classification of one conversation
+// turn, computed inside the pipeline where the error is fresh.
+type turnFailure uint8
+
+const (
+	turnFailureNone turnFailure = iota
+	turnFailureTimeout
+	turnFailureCancelled
+	turnFailureGeneration
+	turnFailureDelivery
+)
+
+// turnEffects is the statistics-facing summary of one conversation turn.
+// The per-call classifications are mutually exclusive at the tool level
+// (each successful call contributes to exactly one of reaction confirmed /
+// other side effect / neither), while the turn-level flags may co-occur: a
+// reply turn with a successful reaction and another side-effecting tool
+// sets both. Effect flags are counted regardless of completion — a partial
+// success (reaction applied, generation failed) reports both the flag and
+// the failure.
+type turnEffects struct {
+	ReactionConfirmed         bool
+	TextConfirmed             bool
+	OtherSideEffectsConfirmed bool
+	Failure                   turnFailure
+}
+
+// turnFailureFromError classifies a turn's terminal error. The pipeline's
+// processing deadline surfaces as ErrRequestTimeout (not the bare
+// context sentinel) on two of its three branches, so that identity leads;
+// in-flight backend aborts keep context.Canceled in their chain.
+func turnFailureFromError(err error) turnFailure {
+	switch {
+	case err == nil:
+		return turnFailureNone
+	case errors.Is(err, ErrRequestTimeout):
+		return turnFailureTimeout
+	case errors.Is(err, context.Canceled):
+		return turnFailureCancelled
+	default:
+		return turnFailureGeneration
+	}
+}
+
+// turnEffectsFromToolCalls derives the effect flags from the run's
+// authoritative tool-call records. set_reaction success is the reaction
+// fact; any OTHER successful side-effecting definition is the other-side
+// effect fact (read-only tools also return OK and are excluded by the
+// SideEffecting metadata).
+func turnEffectsFromToolCalls(records []tooluse.ToolCallRecord) (reaction, other bool) {
+	for _, record := range records {
+		if record.Status != execution.StatusOK {
+			continue
+		}
+		if record.Name == "set_reaction" {
+			reaction = true
+
+			continue
+		}
+		if record.SideEffecting {
+			other = true
+		}
+	}
+
+	return reaction, other
+}
+
+// effectsFromCalls builds the summary from the run's tool records plus the
+// text-delivery fact.
+func effectsFromCalls(records []tooluse.ToolCallRecord, textConfirmed bool) turnEffects {
+	effects := turnEffects{TextConfirmed: textConfirmed}
+	effects.ReactionConfirmed, effects.OtherSideEffectsConfirmed = turnEffectsFromToolCalls(records)
+
+	return effects
+}
+
 // runConversationTurn is the shared generation-turn pipeline: preview
 // registration, history summarization, reply-context construction, the
 // tool loop, error presentation, delivery, and history recording. Explicit
 // and proactive turns share it; the options carry the per-kind policies.
 // The caller supplies the base context (the handler context for explicit
 // turns, the task deadline context for proactive ones) and the message data
-// built once for the operation.
-func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMessageData state.Message, resolved adminconfig.ResolvedChatConfig, opts turnOptions) {
+// built once for the operation. It returns the turn's effect summary for
+// statistics; explicit callers may ignore it.
+func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMessageData state.Message, resolved adminconfig.ResolvedChatConfig, opts turnOptions) turnEffects {
 	chatID := tu.ID(message.Chat.ID)
 
 	// The preview starts before preprocessing so the neutral indicator
@@ -183,6 +260,9 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 		err = b.withinProcessingDeadline(deadlineCtx, turnWork)
 	}
 	if err != nil {
+		effects := effectsFromCalls(toolCalls, false)
+		effects.Failure = turnFailureFromError(err)
+
 		if opts.errorPolicy == silentErrors {
 			// Proactive turns fail silent: no user-facing notices, no
 			// fallback provider — content-free diagnostics only. The failed
@@ -192,7 +272,7 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 			logger.Error("proactive turn failed", "error", err)
 			sentry.CaptureException(err)
 
-			return
+			return effects
 		}
 
 		run.Abort()
@@ -205,7 +285,7 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 				fmt.Sprintf("LLM request timed out after %s. Try again later.", timeout),
 			)))
 
-			return
+			return effects
 		}
 
 		logger.Error("cannot get reply from llm connector", "error", err)
@@ -216,7 +296,7 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 			"LLM request error. Try again later.",
 		)))
 
-		return
+		return effects
 	}
 
 	if usage != nil {
@@ -229,14 +309,15 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 		logger.Debug("llm interaction completed without final text reply")
 		run.CompleteNoText(toolCalls)
 
-		return
+		return effectsFromCalls(toolCalls, false)
 	}
 
 	if opts.delivery == discardText {
 		// The suppressed text is never published and never recorded in
 		// history: the reaction-only outcome is the applied side effect, or
 		// nothing.
-		return
+
+		return effectsFromCalls(toolCalls, false)
 	}
 
 	// Join all preview writes before delivery: a 429 landing on a
@@ -269,7 +350,10 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 			b.trySendReplyError(ctx, message)
 		}
 
-		return
+		effects := effectsFromCalls(toolCalls, false)
+		effects.Failure = turnFailureDelivery
+
+		return effects
 	}
 
 	run.FinalDelivered()
@@ -280,4 +364,6 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 	}
 
 	b.saveBotReplyToHistory(ctx, message, llmReply, replyMessageID)
+
+	return effectsFromCalls(toolCalls, true)
 }

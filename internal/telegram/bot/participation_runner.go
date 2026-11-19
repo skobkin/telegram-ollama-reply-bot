@@ -39,7 +39,12 @@ func newParticipationRunner(parent context.Context, timeout time.Duration, logge
 
 // Submit schedules one proactive task for the chat. It returns false when
 // the runner is already shutting down — no new tasks exist after Close.
-func (r *participationRunner) Submit(chatID int64, task func(ctx context.Context)) bool {
+// Exactly one of task and onDiscard runs: an accepted task whose goroutine
+// exits before the callback starts (cancelled while parked on the chat
+// slot, or at the post-acquisition re-check) invokes onDiscard instead, so
+// callers can account for accepted-but-never-executed work. A nil onDiscard
+// is allowed.
+func (r *participationRunner) Submit(chatID int64, task func(ctx context.Context), onDiscard func()) bool {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -63,6 +68,8 @@ func (r *participationRunner) Submit(chatID int64, task func(ctx context.Context
 			// Shutdown while waiting: the task ends without evaluating
 			// anything, and the update was already recorded in history by
 			// the middleware — nothing is dropped mid-flight.
+			r.discard(onDiscard)
+
 			return
 		}
 		defer func() { <-slot }()
@@ -72,6 +79,8 @@ func (r *participationRunner) Submit(chatID int64, task func(ctx context.Context
 		// settings read or inference starts, so a cancellation racing slot
 		// acquisition can never initiate a proactive action.
 		if r.ctx.Err() != nil {
+			r.discard(onDiscard)
+
 			return
 		}
 
@@ -91,6 +100,13 @@ func (r *participationRunner) Submit(chatID int64, task func(ctx context.Context
 	}()
 
 	return true
+}
+
+// discard runs the caller's discard hook, tolerating nil.
+func (r *participationRunner) discard(onDiscard func()) {
+	if onDiscard != nil {
+		onDiscard()
+	}
 }
 
 // Close cancels the lifecycle: waiting tasks exit through their select,

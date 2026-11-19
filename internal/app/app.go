@@ -582,7 +582,9 @@ func Run(ctx context.Context) error {
 		tools.AttachDecisionTools(systemOneClient)
 	}
 	defer tools.Close()
-	statsCollector := statistics.NewCollector(statistics.Config{})
+	statsCollector := statistics.NewCollector(statistics.Config{
+		RubricVersion: interactivity.RubricVersion,
+	})
 	botService := bot.NewBot(
 		ctx,
 		telegramAPI,
@@ -651,6 +653,7 @@ func Run(ctx context.Context) error {
 			systemOneClient,
 			decisionPersonaSource{prompts: prompts, fallbackChatModel: envChatRouteModel(cfg.LLM)},
 			cfg.SystemOne.InputBudgetBytes,
+			envChatRouteModel(cfg.LLM),
 		)
 	}
 
