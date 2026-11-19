@@ -600,6 +600,32 @@ func TestNewSecretScrubberRegistersQuotedHeaderForms(t *testing.T) {
 	}
 }
 
+func TestNewSecretScrubberRegistersDSNComponents(t *testing.T) {
+	t.Parallel()
+
+	cfg := scrubTestConfig()
+	cfg.Sentry.DSN = "https://DSNKEYFIXTURE:DSNSECRETSELFIXTURE@o.example.test/123" //nolint:gosec // fake fixture, not a credential
+
+	scrubber := newSecretScrubber(cfg)
+
+	// Both credential components of the DSN match on their own.
+	for _, component := range []string{"DSNKEYFIXTURE", "DSNSECRETSELFIXTURE"} {
+		text := "credential echo: " + component
+
+		if got := scrubber.Scrub(text); got == text {
+			t.Fatalf("DSN component survived: %q", component)
+		}
+	}
+
+	// net/url re-renders the parsed URL in its errors, dropping the
+	// fragment, so a rendering can omit DSN parts no full-DSN string
+	// matches; the component still matches there.
+	rendered := `invalid url: parse "https://DSNKEYFIXTURE@host/%zz": invalid URL escape "%zz"`
+	if got := scrubber.Scrub(rendered); strings.Contains(got, "DSNKEYFIXTURE") {
+		t.Fatalf("DSN public key survived in a partial rendering: %q", got)
+	}
+}
+
 func TestNewSecretScrubberRegistersEndpointURLPasswords(t *testing.T) {
 	t.Parallel()
 

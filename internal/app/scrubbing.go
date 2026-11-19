@@ -38,6 +38,13 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 		secrets = withDerivedForms(secrets, secret)
 	}
 
+	// The DSN's userinfo parts are credential components, not a username.
+	// Register them individually: net/url re-renders the parsed URL in its
+	// errors (dropping the fragment, say), so renderings exist that no
+	// full-DSN string matches, while the components match wherever they
+	// appear.
+	secrets = withURLCredentials(secrets, "sentry-dsn", cfg.Sentry.DSN)
+
 	// Backend endpoint URLs may carry basic-auth userinfo; only the password
 	// part is registered (see appendURLPassword). Startup diagnostics and
 	// validation errors quote these URLs verbatim.
@@ -114,6 +121,29 @@ func withDerivedForms(secrets []secretscrub.Secret, secret secretscrub.Secret) [
 	}
 
 	return withQuoted(secrets, secret.Name, secret.Value)
+}
+
+// withURLCredentials registers the credential components embedded in a DSN's
+// userinfo — the public key, and the legacy secret key when present. Both
+// are authentication material rather than a generic username, so unlike
+// endpoint URLs, the whole userinfo registers.
+func withURLCredentials(secrets []secretscrub.Secret, name, rawURL string) []secretscrub.Secret {
+	userinfo, ok := urlUserinfoPrefix(rawURL)
+	if !ok {
+		return secrets
+	}
+
+	publicKey, secretKey, hasSecret := strings.Cut(userinfo, ":")
+
+	if publicKey != "" {
+		secrets = append(secrets, secretscrub.Secret{Name: name + "-public-key", Value: publicKey})
+	}
+
+	if hasSecret && secretKey != "" {
+		secrets = append(secrets, secretscrub.Secret{Name: name + "-secret-key", Value: secretKey})
+	}
+
+	return secrets
 }
 
 // withQuoted registers the %q rendering of a value alongside the value
