@@ -29,6 +29,7 @@
 - Use structured logging with actionable fields.
 - Keep normal log levels free of full prompts, raw chat history dumps, admin data, secrets, tokens, and large article or image payloads.
 - DEBUG logging may include extra investigation detail when needed, but keep it narrowly scoped and do not leave broad sensitive dumps enabled by default.
+- Register every new secret-bearing configuration value (API tokens, keys, credential header values, URL-embedded passwords) in `newSecretScrubber` (`internal/app/scrubbing.go`) so Sentry events, log records, and HTTP-client error chains stay secret-free. The scrubber is the content-based backstop for the shape-based layers (`safeerr`, `urlredact`); a secret missing from that registry can surface verbatim in error messages, logs, and Sentry issue titles.
 
 ## Testing And Completion
 
