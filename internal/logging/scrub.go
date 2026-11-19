@@ -14,15 +14,26 @@ import (
 // carries secret material at write time.
 //
 // slog handlers own their preformatted state (WithAttrs/WithGroup), so this
-// wrapper buffers the scrubbed preformatted attributes and the open group
-// path itself and rebuilds the record at Handle time; the delegate only ever
-// sees plain Handle calls with fully scrubbed records. Rebuilding keeps the
-// time, level, and caller PC of the original record.
+// wrapper buffers the scrubbed With/WithGroup timeline itself and rebuilds
+// the record at Handle time; the delegate only ever sees plain Handle calls
+// with fully scrubbed records. Rebuilding keeps the time, level, and caller
+// PC of the original record.
+//
+// The timeline matters because slog group semantics are positional: a
+// WithGroup opens its group for every attribute attached AFTER it, while
+// attributes attached before stay outside. A flat attribute list plus an
+// open-group path would wrongly move pre-group attributes under the group.
 type scrubHandler struct {
 	scrubber *secretscrub.Scrubber
 	next     slog.Handler
-	attrs    []slog.Attr // preformatted, already scrubbed
-	groups   []string    // open group path
+	entries  []scrubEntry
+}
+
+// scrubEntry is one step of the With/WithGroup timeline: either an
+// already-scrubbed attribute or a group opened from that point on.
+type scrubEntry struct {
+	group string    // non-empty: a group opened here
+	attr  slog.Attr // valid when group is empty
 }
 
 func newScrubHandler(scrubber *secretscrub.Scrubber, next slog.Handler) slog.Handler {
@@ -40,26 +51,58 @@ func (h *scrubHandler) Handle(ctx context.Context, record slog.Record) error {
 	rebuilt.PC = record.PC
 	rebuilt.Message = h.scrubber.Scrub(record.Message)
 
-	attrs := make([]slog.Attr, 0, len(h.attrs))
-	attrs = append(attrs, h.attrs...)
+	callAttrs := make([]slog.Attr, 0, 4)
 
 	record.Attrs(func(attr slog.Attr) bool {
-		attrs = append(attrs, h.scrubAttr(attr))
+		callAttrs = append(callAttrs, h.scrubAttr(attr))
 
 		return true
 	})
 
-	// slog applies the open group path to both preformatted and per-call
-	// attributes, so the fold covers everything added above. An open group
-	// with no attributes is never materialized, matching slog's empty-group
-	// omission.
-	for i := len(h.groups) - 1; i >= 0; i-- {
-		attrs = []slog.Attr{groupAttr(h.groups[i], attrs)}
-	}
-
-	rebuilt.AddAttrs(attrs...)
+	rebuilt.AddAttrs(h.rebuild(callAttrs)...)
 
 	return h.next.Handle(ctx, rebuilt)
+}
+
+// rebuild folds the buffered timeline plus the per-call attributes into the
+// attribute tree slog would have produced. An open group with no attributes
+// is never materialized, matching slog's empty-group omission.
+func (h *scrubHandler) rebuild(callAttrs []slog.Attr) []slog.Attr {
+	type frame struct {
+		name  string
+		attrs []slog.Attr
+	}
+
+	// Frames map one-to-one onto the timeline's group markers; the root
+	// frame holds everything attached before the first group.
+	frames := []frame{{}}
+
+	for _, entry := range h.entries {
+		if entry.group != "" {
+			frames = append(frames, frame{name: entry.group})
+
+			continue
+		}
+
+		last := len(frames) - 1
+		frames[last].attrs = append(frames[last].attrs, entry.attr)
+	}
+
+	// Per-call attributes attach after everything buffered, so they land in
+	// the innermost open group.
+	last := len(frames) - 1
+	frames[last].attrs = append(frames[last].attrs, callAttrs...)
+
+	out := frames[last].attrs
+
+	for i := len(frames) - 1; i >= 1; i-- {
+		parent := make([]slog.Attr, 0, len(frames[i-1].attrs)+1)
+		parent = append(parent, frames[i-1].attrs...)
+		parent = append(parent, groupAttr(frames[i].name, out))
+		out = parent
+	}
+
+	return out
 }
 
 // groupAttr builds a group attribute from a slice of attributes, adapting
@@ -74,14 +117,14 @@ func groupAttr(name string, attrs []slog.Attr) slog.Attr {
 }
 
 func (h *scrubHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	merged := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
-	merged = append(merged, h.attrs...)
+	entries := make([]scrubEntry, 0, len(h.entries)+len(attrs))
+	entries = append(entries, h.entries...)
 
 	for _, attr := range attrs {
-		merged = append(merged, h.scrubAttr(attr))
+		entries = append(entries, scrubEntry{attr: h.scrubAttr(attr)})
 	}
 
-	return &scrubHandler{scrubber: h.scrubber, next: h.next, attrs: merged, groups: h.groups}
+	return &scrubHandler{scrubber: h.scrubber, next: h.next, entries: entries}
 }
 
 func (h *scrubHandler) WithGroup(name string) slog.Handler {
@@ -89,11 +132,11 @@ func (h *scrubHandler) WithGroup(name string) slog.Handler {
 		return h
 	}
 
-	groups := make([]string, 0, len(h.groups)+1)
-	groups = append(groups, h.groups...)
-	groups = append(groups, name)
+	entries := make([]scrubEntry, 0, len(h.entries)+1)
+	entries = append(entries, h.entries...)
+	entries = append(entries, scrubEntry{group: name})
 
-	return &scrubHandler{scrubber: h.scrubber, next: h.next, attrs: h.attrs, groups: groups}
+	return &scrubHandler{scrubber: h.scrubber, next: h.next, entries: entries}
 }
 
 // scrubAttr scrubs one attribute. String values are scrubbed literally;

@@ -211,3 +211,28 @@ func containsFixture(value any) bool {
 
 	return ok && strings.Contains(s, "LOGFIXTURE")
 }
+
+func TestScrubHandlerPreservesAttributeAttachmentGroup(t *testing.T) {
+	t.Parallel()
+
+	logger, buf := scrubTestLogger(t, scrubTestScrubber())
+
+	// slog group semantics are positional: attributes attached before
+	// WithGroup stay outside the group; only later ones land inside.
+	grouped := logger.With("request_id", "r-1").WithGroup("details")
+	grouped.Error("ordering", "secret", "LOGFIXTURE")
+
+	entry := decodeLastLine(t, buf)
+	if entry["request_id"] != "r-1" {
+		t.Fatalf("pre-group attribute was moved under the group: %v", entry)
+	}
+
+	details, ok := entry["details"].(map[string]any)
+	if !ok {
+		t.Fatalf("group attribute missing: %v", entry)
+	}
+
+	if details["secret"] != "[REDACTED:fixture]" {
+		t.Fatalf("in-group attribute not scrubbed: %v", details["secret"])
+	}
+}
