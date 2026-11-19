@@ -16,6 +16,7 @@ import (
 	"telegram-ollama-reply-bot/internal/content/fetch"
 	"telegram-ollama-reply-bot/internal/content/search"
 	"telegram-ollama-reply-bot/internal/execution"
+	"telegram-ollama-reply-bot/internal/interactivity"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/logging"
 	"telegram-ollama-reply-bot/internal/mcp"
@@ -85,8 +86,8 @@ type decisionPersonaSource struct {
 // persona must not advertise any.
 const decisionPersonaToolPolicy = "No tools are available in this context."
 
-func (s decisionPersonaSource) DecisionPersona(ctx context.Context, chatID int64, generationModel string) (string, error) {
-	return s.prompts.RenderChatSystemPrompt(ctx, llm.PromptScope{ChatID: chatID}, generationModel, "", decisionPersonaToolPolicy)
+func (s decisionPersonaSource) DecisionPersona(ctx context.Context, chatID int64, generationModel string, settings interactivity.PersonaSettings) (string, error) {
+	return s.prompts.RenderChatSystemPromptResolved(ctx, chatID, settings.Language, settings.Gender, settings.CharacterName, generationModel, "", decisionPersonaToolPolicy)
 }
 
 // verifyStartupModels checks that every required feature model is available

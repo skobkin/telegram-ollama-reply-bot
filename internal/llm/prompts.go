@@ -134,7 +134,17 @@ func (p *AdminPromptRenderer) RenderChatSystemPrompt(ctx context.Context, scope 
 		return "", err
 	}
 
-	body, err := p.promptBody(ctx, adminconfig.PromptFeatureChat, scope.ChatID, DefaultChatPromptTemplate)
+	return p.RenderChatSystemPromptResolved(ctx, scope.ChatID, resolved.Language, resolved.Gender, resolved.CharacterName, model, compactContext, toolPolicy)
+}
+
+// RenderChatSystemPromptResolved renders the chat persona from explicit
+// settings values instead of a fresh chat-config resolve: decision contexts
+// pass their operation snapshot's fields, so the persona cannot drift from
+// the character the resulting action will use. The prompt body still
+// resolves through the ordinary per-chat path — the same live-template
+// behavior ordinary multi-iteration turns have.
+func (p *AdminPromptRenderer) RenderChatSystemPromptResolved(ctx context.Context, chatID int64, language, gender, characterName, model, compactContext, toolPolicy string) (string, error) {
+	body, err := p.promptBody(ctx, adminconfig.PromptFeatureChat, chatID, DefaultChatPromptTemplate)
 	if err != nil {
 		return "", err
 	}
@@ -145,11 +155,11 @@ func (p *AdminPromptRenderer) RenderChatSystemPrompt(ctx context.Context, scope 
 	}
 
 	return executeTemplate("chat", tmpl, ChatPromptData{
-		Language:                resolved.Language,
+		Language:                language,
 		Model:                   model,
 		Context:                 compactContext,
-		Gender:                  resolved.Gender,
-		CharacterName:           resolved.CharacterName,
+		Gender:                  gender,
+		CharacterName:           characterName,
 		ImageRecognitionEnabled: p.imageRecognitionEnabled,
 		ToolPolicy:              toolPolicy,
 		BotUsername:             p.botUsername,

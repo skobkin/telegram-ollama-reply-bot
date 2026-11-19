@@ -110,7 +110,7 @@ type fakePersonaSource struct {
 	calls atomic.Int32
 }
 
-func (f *fakePersonaSource) DecisionPersona(_ context.Context, _ int64, _ string) (string, error) {
+func (f *fakePersonaSource) DecisionPersona(_ context.Context, _ int64, _ string, _ interactivity.PersonaSettings) (string, error) {
 	f.calls.Add(1)
 
 	return "You are the character under evaluation.", nil

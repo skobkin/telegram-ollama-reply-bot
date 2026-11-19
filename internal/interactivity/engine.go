@@ -84,6 +84,17 @@ type ActionDecision struct {
 	Reason DecisionReason
 }
 
+// PersonaSettings are the persona-defining fields of the operation
+// snapshot, carried into the decision so the persona is rendered from the
+// snapshot instead of a fresh settings read: the decision and its resulting
+// action must describe the same character even if settings change
+// mid-decision.
+type PersonaSettings struct {
+	Language      string
+	Gender        string
+	CharacterName string
+}
+
 // DecisionInput is the domain input of one decision. Profile and
 // Instructions come from the caller's settings snapshot, taken once when the
 // operation begins: the engine never re-reads settings mid-decision, so a
@@ -99,6 +110,8 @@ type DecisionInput struct {
 	Profile adminconfig.InteractionProfile
 	// Instructions is the effective decision-instructions text ("" = none).
 	Instructions string
+	// Persona carries the snapshot's persona fields for the context builder.
+	Persona PersonaSettings
 }
 
 // Typed engine errors. They are content-free: nothing about the message,
@@ -146,7 +159,7 @@ type HistorySource interface {
 // resolved generation model: any model-identity reference in the persona
 // must describe the generation character, never the decision model.
 type PersonaSource interface {
-	DecisionPersona(ctx context.Context, chatID int64, generationModel string) (string, error)
+	DecisionPersona(ctx context.Context, chatID int64, generationModel string, settings PersonaSettings) (string, error)
 }
 
 // ModelResolver resolves the effective models of one operation. Production
@@ -259,7 +272,7 @@ func (e *Engine) Decide(ctx context.Context, input DecisionInput) (ActionDecisio
 // truncated; if the mandatory input alone cannot fit, the request fails
 // closed.
 func (e *Engine) buildRequest(ctx context.Context, input DecisionInput, generationModel, decisionModel string) (systemone.Request, error) {
-	persona, err := e.deps.Persona.DecisionPersona(ctx, input.ChatID, generationModel)
+	persona, err := e.deps.Persona.DecisionPersona(ctx, input.ChatID, generationModel, input.Persona)
 	if err != nil {
 		return systemone.Request{}, fmt.Errorf("%w: %w", ErrModelResolution, err)
 	}

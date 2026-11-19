@@ -174,6 +174,14 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 		Target:       target,
 		Profile:      resolved.InteractionProfile,
 		Instructions: resolved.DecisionInstructions,
+		// The persona fields come from the same snapshot: the decision and
+		// the action must describe the same character even if settings
+		// change while the decision request is in flight.
+		Persona: interactivity.PersonaSettings{
+			Language:      resolved.Language,
+			Gender:        resolved.Gender,
+			CharacterName: resolved.CharacterName,
+		},
 	})
 	if err != nil {
 		// The engine returns typed, content-free errors only. Expected

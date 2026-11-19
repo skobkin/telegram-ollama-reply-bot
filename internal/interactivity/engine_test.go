@@ -49,15 +49,18 @@ func (r *fakeModelResolver) DecisionModel(context.Context, int64) (string, error
 	return r.decision, r.err
 }
 
-// fakePersonaSource serves a fixed persona, counting renders.
+// fakePersonaSource serves a fixed persona, counting renders and recording
+// the settings the engine passed.
 type fakePersonaSource struct {
-	persona string
-	err     error
-	calls   int
+	persona  string
+	err      error
+	calls    int
+	settings PersonaSettings
 }
 
-func (p *fakePersonaSource) DecisionPersona(_ context.Context, _ int64, _ string) (string, error) {
+func (p *fakePersonaSource) DecisionPersona(_ context.Context, _ int64, _ string, settings PersonaSettings) (string, error) {
 	p.calls++
+	p.settings = settings
 
 	return p.persona, p.err
 }
@@ -153,6 +156,11 @@ func testInput() DecisionInput {
 		Target:       testTarget(),
 		Profile:      adminconfig.ProfileTalkLow,
 		Instructions: "Engage with programming topics.",
+		Persona: PersonaSettings{
+			Language:      "Russian",
+			Gender:        "female",
+			CharacterName: "Ada",
+		},
 	}
 }
 
@@ -238,6 +246,10 @@ func TestEngineDecideHappyPath(t *testing.T) {
 	if resolver.decisionCalls != 1 || resolver.generationCalls != 1 || persona.calls != 1 || history.calls != 1 {
 		t.Fatalf("one decision must resolve each input once (resolver %d/%d, persona %d, history %d)",
 			resolver.decisionCalls, resolver.generationCalls, persona.calls, history.calls)
+	}
+	// The persona renders from the snapshot's settings, not a fresh read.
+	if persona.settings != (PersonaSettings{Language: "Russian", Gender: "female", CharacterName: "Ada"}) {
+		t.Fatalf("persona must receive the input's snapshot settings, got %+v", persona.settings)
 	}
 
 	req := client.request
