@@ -30,6 +30,10 @@ func (s *mutatingSummarizer) Summarize(context.Context, llm.PromptScope, string,
 	return "summary built from old reactions", &llm.TokenUsage{}, nil
 }
 
+func (s *mutatingSummarizer) SummarizeSilent(ctx context.Context, scope llm.PromptScope, text string, instructions string) (string, *llm.TokenUsage, error) {
+	return s.Summarize(ctx, scope, text, instructions)
+}
+
 // countingSummarizer records each summarize input so request chunking and
 // folding can be observed from the test.
 type countingSummarizer struct {
@@ -40,6 +44,10 @@ func (s *countingSummarizer) Summarize(_ context.Context, _ llm.PromptScope, pro
 	s.inputs = append(s.inputs, prompt)
 
 	return "chunk summary", &llm.TokenUsage{}, nil
+}
+
+func (s *countingSummarizer) SummarizeSilent(ctx context.Context, scope llm.PromptScope, text string, instructions string) (string, *llm.TokenUsage, error) {
+	return s.Summarize(ctx, scope, text, instructions)
 }
 
 // TestMaybeSummarizeHistoryDiscardsSummaryAfterReactionChange proves the
@@ -69,7 +77,7 @@ func TestMaybeSummarizeHistoryDiscardsSummaryAfterReactionChange(t *testing.T) {
 	}
 
 	message := tg.Message{MessageID: 24, Chat: tg.Chat{ID: 100500, Type: tg.ChatTypePrivate}}
-	testBot.maybeSummarizeHistory(context.Background(), message)
+	testBot.maybeSummarizeHistory(context.Background(), message, false)
 
 	snapshot := store.Snapshot(scope)
 	if snapshot.EarlierSummary != "" || snapshot.SummaryMessageCount != 0 {
@@ -103,7 +111,7 @@ func TestMaybeSummarizeHistoryCommitsWithoutInterveningChange(t *testing.T) {
 	}
 
 	message := tg.Message{MessageID: 24, Chat: tg.Chat{ID: 100500, Type: tg.ChatTypePrivate}}
-	testBot.maybeSummarizeHistory(context.Background(), message)
+	testBot.maybeSummarizeHistory(context.Background(), message, false)
 
 	snapshot := store.Snapshot(scope)
 	if snapshot.EarlierSummary != "summary built from old reactions" || snapshot.SummaryMessageCount == 0 {
@@ -148,7 +156,7 @@ func TestMaybeSummarizeHistoryRebuildsClearedSummaryInBoundedChunks(t *testing.T
 	}
 
 	message := tg.Message{MessageID: 26, Chat: tg.Chat{ID: 100500, Type: tg.ChatTypePrivate}}
-	testBot.maybeSummarizeHistory(context.Background(), message)
+	testBot.maybeSummarizeHistory(context.Background(), message, false)
 
 	if len(summarizer.inputs) < 2 {
 		t.Fatalf("rebuild must be chunked into multiple bounded requests, got %d calls", len(summarizer.inputs))
@@ -196,7 +204,7 @@ func TestMaybeSummarizeHistorySingleRequestForOrdinaryCrossing(t *testing.T) {
 	}
 
 	message := tg.Message{MessageID: 120, Chat: tg.Chat{ID: 100500, Type: tg.ChatTypePrivate}}
-	testBot.maybeSummarizeHistory(context.Background(), message)
+	testBot.maybeSummarizeHistory(context.Background(), message, false)
 
 	if len(summarizer.inputs) != 1 {
 		t.Fatalf("ordinary crossing must be one summarize request, got %d calls", len(summarizer.inputs))
@@ -213,7 +221,7 @@ func TestMaybeSummarizeHistorySingleRequestForOrdinaryCrossing(t *testing.T) {
 	for i := 21; i < 27; i++ {
 		store.AppendMessage(scope, state.Message{Text: fmt.Sprintf("filler message number %d", i), FromID: 1, MessageID: 100 + i})
 	}
-	testBot.maybeSummarizeHistory(context.Background(), message)
+	testBot.maybeSummarizeHistory(context.Background(), message, false)
 
 	if len(summarizer.inputs) != 2 {
 		t.Fatalf("next ordinary crossing must also be one request, got %d calls total", len(summarizer.inputs))

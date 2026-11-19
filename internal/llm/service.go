@@ -138,6 +138,19 @@ func (s *Service) BuildChatToolRequest(
 // runtime model override (global summarize model setting) resolves once per
 // call; a resolution failure is an error, never a silent route fallback.
 func (s *Service) Summarize(ctx context.Context, scope PromptScope, text string, instructions string) (string, *TokenUsage, error) {
+	return s.summarize(ctx, scope, text, instructions, false)
+}
+
+// SummarizeSilent is Summarize with content-free failure diagnostics: the
+// generation request carries SilentErrors, so backend errors are sanitized
+// before logging, capture, and return. Unsolicited proactive turns
+// summarize history through it — their provider bodies can echo chat
+// content.
+func (s *Service) SummarizeSilent(ctx context.Context, scope PromptScope, text string, instructions string) (string, *TokenUsage, error) {
+	return s.summarize(ctx, scope, text, instructions, true)
+}
+
+func (s *Service) summarize(ctx context.Context, scope PromptScope, text string, instructions string, silent bool) (string, *TokenUsage, error) {
 	logger := logging.FromContext(ctx, s.logger)
 
 	systemPrompt, err := s.prompts.RenderSummarizeSystemPrompt(ctx, scope)
@@ -164,8 +177,9 @@ func (s *Service) Summarize(ctx context.Context, scope PromptScope, text string,
 	}
 
 	resp, err := s.Generate(ctx, Request{
-		Feature: FeatureSummarize,
-		Model:   model,
+		Feature:      FeatureSummarize,
+		Model:        model,
+		SilentErrors: silent,
 		Messages: []Message{
 			TextMessage(RoleSystem, systemPrompt),
 			TextMessage(RoleUser, text),

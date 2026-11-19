@@ -268,6 +268,10 @@ func (s *stubSummarizer) Summarize(context.Context, llm.PromptScope, string, str
 	return reply, &llm.TokenUsage{}, nil
 }
 
+func (s *stubSummarizer) SummarizeSilent(ctx context.Context, scope llm.PromptScope, text string, instructions string) (string, *llm.TokenUsage, error) {
+	return s.Summarize(ctx, scope, text, instructions)
+}
+
 func (s *stubSummarizer) callCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

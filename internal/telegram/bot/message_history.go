@@ -173,7 +173,7 @@ func (b *Bot) ResetChatHistory(chatID int64) {
 // across later triggers instead of bursting a long LLM chain at once.
 const maxSummarizeChunksPerPass = 8
 
-func (b *Bot) maybeSummarizeHistory(ctx context.Context, message t.Message) {
+func (b *Bot) maybeSummarizeHistory(ctx context.Context, message t.Message, silent bool) {
 	scope := scopeFromMessage(message)
 	snapshot := b.history.Snapshot(scope)
 	if len(snapshot.Messages) == 0 {
@@ -211,7 +211,7 @@ func (b *Bot) maybeSummarizeHistory(ctx context.Context, message t.Message) {
 	// trigger time, committing each so concurrent invalidation only costs
 	// the current chunk; whatever remains continues on later triggers.
 	if end-start <= 2*max(threshold, 1) {
-		b.summarizeHistorySlice(workCtx, scope, start, end)
+		b.summarizeHistorySlice(workCtx, scope, start, end, silent)
 
 		return
 	}
@@ -219,7 +219,7 @@ func (b *Bot) maybeSummarizeHistory(ctx context.Context, message t.Message) {
 	chunkSize := max(threshold, 1)
 	for chunks := 0; start < end && chunks < maxSummarizeChunksPerPass; chunks++ {
 		chunkEnd := min(start+chunkSize, end)
-		if !b.summarizeHistorySlice(workCtx, scope, start, chunkEnd) {
+		if !b.summarizeHistorySlice(workCtx, scope, start, chunkEnd, silent) {
 			return
 		}
 		start = chunkEnd
@@ -232,7 +232,7 @@ func (b *Bot) maybeSummarizeHistory(ctx context.Context, message t.Message) {
 // false means the range no longer aligns with the stream (concurrent trim,
 // reset, or summarizer), the LLM call failed, or the commit was invalidated
 // by a concurrent history change.
-func (b *Bot) summarizeHistorySlice(ctx context.Context, scope state.ConversationScope, start, end int) bool {
+func (b *Bot) summarizeHistorySlice(ctx context.Context, scope state.ConversationScope, start, end int, silent bool) bool {
 	snapshot := b.history.Snapshot(scope)
 	if start >= end || end > len(snapshot.Messages) || snapshot.SummaryMessageCount != start {
 		return false
@@ -245,7 +245,14 @@ func (b *Bot) summarizeHistorySlice(ctx context.Context, scope state.Conversatio
 		text = "Earlier conversation summary:\n" + snapshot.EarlierSummary + "\n\nRecent messages:\n" + text
 	}
 
-	summary, usage, err := b.llm.Summarize(ctx, llm.PromptScope{ChatID: scope.ChatID}, text, "")
+	var summary string
+	var usage *llm.TokenUsage
+	var err error
+	if silent {
+		summary, usage, err = b.llm.SummarizeSilent(ctx, llm.PromptScope{ChatID: scope.ChatID}, text, "")
+	} else {
+		summary, usage, err = b.llm.Summarize(ctx, llm.PromptScope{ChatID: scope.ChatID}, text, "")
+	}
 	if err != nil {
 		b.loggerFromContext(ctx).Error("failed to summarize history", "error", err, "chat_id", scope.ChatID, "topic_id", scope.TopicID)
 		sentry.CaptureException(err)

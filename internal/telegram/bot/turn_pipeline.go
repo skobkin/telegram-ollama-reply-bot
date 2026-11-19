@@ -97,7 +97,7 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 		defer run.Close() // safety net: state cleanup on every exit path
 	}
 
-	b.maybeSummarizeHistory(ctx, message)
+	b.maybeSummarizeHistory(ctx, message, opts.errorPolicy == silentErrors)
 	logger := b.loggerFromContext(ctx)
 	logger.Debug("handling mention")
 

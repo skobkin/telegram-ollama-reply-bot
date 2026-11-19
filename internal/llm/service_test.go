@@ -536,3 +536,71 @@ func assertLLMErrorChainClean(t *testing.T, err error, sentinels ...string) {
 
 	visit(err)
 }
+
+// TestServiceSummarizeSilentSanitizesErrors covers the silent summarize
+// variant: proactive turns summarize history unsolicited, and a backend
+// error echoing the summarized content must not survive into the returned
+// error or the log. Plain Summarize keeps its raw diagnostics.
+func TestServiceSummarizeSilentSanitizesErrors(t *testing.T) {
+	t.Parallel()
+
+	newService := func(logger *slog.Logger) *Service {
+		return &Service{
+			cfg: config.LLMConfig{
+				Features: config.FeatureConfig{
+					Chat:             config.FeatureRouteConfig{Model: "m"},
+					Summarize:        config.FeatureRouteConfig{Model: "m"},
+					ImageRecognition: config.FeatureRouteConfig{Model: "m"},
+				},
+			},
+			logger:  logger,
+			prompts: newTestPromptRenderer(t),
+			backend: &stubBackend{
+				name:        config.LLMBackendOpenAICompat,
+				caps:        Capabilities{ToolCalls: true, ImageInput: true, ModelListing: true},
+				generateErr: errors.New("provider echoed: SECRET-SUMMARY-TEXT"),
+			},
+		}
+	}
+
+	t.Run("silent variant is content-free", func(t *testing.T) {
+		t.Parallel()
+
+		logger, logBuf := captureLogger()
+		_, _, err := newService(logger).SummarizeSilent(context.Background(), PromptScope{ChatID: 1}, "history text", "")
+
+		if !errors.Is(err, ErrLlmBackendRequestFailed) {
+			t.Fatalf("expected typed kind, got %v", err)
+		}
+		assertLLMErrorChainClean(t, err, "SECRET-SUMMARY-TEXT")
+		if strings.Contains(logBuf.String(), "SECRET-SUMMARY-TEXT") {
+			t.Fatalf("silent summarize logging leaks raw cause: %q", logBuf.String())
+		}
+	})
+
+	t.Run("plain variant keeps raw diagnostics", func(t *testing.T) {
+		t.Parallel()
+
+		logger, logBuf := captureLogger()
+		_, _, err := newService(logger).Summarize(context.Background(), PromptScope{ChatID: 1}, "history text", "")
+
+		if err == nil || !strings.Contains(err.Error(), "SECRET-SUMMARY-TEXT") {
+			t.Fatalf("plain summarize must keep today's raw surface, got %v", err)
+		}
+		if !strings.Contains(logBuf.String(), "SECRET-SUMMARY-TEXT") {
+			t.Fatalf("plain summarize logging must stay unchanged, got %q", logBuf.String())
+		}
+	})
+}
+
+// newTestPromptRenderer builds a static renderer from the default templates.
+func newTestPromptRenderer(t *testing.T) *StaticPromptRenderer {
+	t.Helper()
+
+	renderer, err := NewStaticPromptRenderer(true)
+	if err != nil {
+		t.Fatalf("prompt renderer: %v", err)
+	}
+
+	return renderer
+}
