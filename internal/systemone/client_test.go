@@ -214,6 +214,26 @@ func TestEvaluateRejectsMalformedResponses(t *testing.T) {
 	}
 }
 
+// TestEvaluateTypeMismatchErrorIsContentFree pins the privacy rule on the
+// type-mismatch path: the backend-controlled reported type never reaches the
+// error text, even when it carries echoed input.
+func TestEvaluateTypeMismatchErrorIsContentFree(t *testing.T) {
+	const leaked = "SECRET-ECHOED-INPUT"
+	response := `{"model":"laya","answers":{"angry":{"type":"` + leaked + `"},"relevance":{"type":"noul","noul":0.5},"route":{"type":"choice","choice":"billing","probabilities":{"billing":1.0,"shipping":0.0,"technical":0.0}}}}`
+
+	client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(response))
+	}), nil)
+
+	_, err := client.Evaluate(context.Background(), Request{Model: "laya", State: "s", Questions: referenceQuestions()})
+	if !errors.Is(err, ErrMalformed) {
+		t.Fatalf("expected ErrMalformed, got %v", err)
+	}
+	if strings.Contains(err.Error(), leaked) {
+		t.Fatalf("error must not carry the backend-reported type, got %q", err.Error())
+	}
+}
+
 func TestEvaluateAcceptsTiedMaximaAndRoundingTolerances(t *testing.T) {
 	// Two of the three options tie at 0.5; either reported choice is valid.
 	// The score drifts from Σ(i·p_i) by 0.004, inside the accumulated-rounding

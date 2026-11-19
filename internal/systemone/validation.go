@@ -106,9 +106,12 @@ func (w *wireAnswer) validate(name string, question Question) (Answer, error) {
 		return Answer{}, malformed("is missing its type")
 	}
 	if *w.Type != question.Type {
+		// The reported type is backend-controlled and must not reach the
+		// error text: bodies can echo input, and this error is logged and
+		// captured sanitized-or-not by callers.
 		return Answer{}, fmt.Errorf(
-			"%w: answer %q has type %q, requested %q",
-			ErrMalformed, name, *w.Type, question.Type,
+			"%w: answer %q has a type that does not match the requested %q",
+			ErrMalformed, name, question.Type,
 		)
 	}
 
