@@ -203,12 +203,17 @@ func (s *Service) summarize(ctx context.Context, scope PromptScope, text string,
 
 // HasModelsFor reports whether every given feature's effective model is
 // offered by the backend, along with a per-feature result map. The effective
-// model is the environment route plus, when a resolver is configured, its
-// global runtime override — both must be served, because either can become
-// the wire model at runtime (an override may be cleared back to the route).
-// Callers decide which features to gate on: the startup check passes chat
-// and summarize always, and image_recognition only for a model-routed
-// recognizer on its actual connection.
+// model is what the feature would actually request: the global runtime
+// override when one is set, otherwise the environment route. A used
+// override replaces the route as the validated model — an obsolete route
+// model the backend no longer serves must not block startup while the
+// persisted selection works, so its absence is reported as a warning. An
+// unset override validates the route: resetting to an unavailable fallback
+// fails the check loudly, and nothing silently selects another model.
+// Unset and resolution failure stay distinct — an unverifiable feature
+// fails the check. Callers decide which features to gate on: the startup
+// check passes chat and summarize always, and image_recognition only for a
+// model-routed recognizer on its actual connection.
 func (s *Service) HasModelsFor(ctx context.Context, features ...Feature) (bool, map[string]bool) {
 	logger := logging.FromContext(ctx, s.logger)
 	result := make(map[string]bool)
@@ -245,20 +250,34 @@ func (s *Service) HasModelsFor(ctx context.Context, features ...Feature) (bool, 
 			continue
 		}
 
-		result[string(feature)] = slices.Contains(models, route.Model)
-
 		// The chatID is 0 because the startup check covers global defaults
 		// only; per-chat overrides are runtime concerns verified when used.
-		if result[string(feature)] && s.resolver != nil {
-			override, err := s.resolver.ResolveModel(ctx, feature, 0)
+		override := ""
+		if s.resolver != nil {
+			override, err = s.resolver.ResolveModel(ctx, feature, 0)
 			if err != nil {
 				logger.Error("runtime model resolution failed", "feature", feature, "error", err)
 				sentry.CaptureException(err)
 				result[string(feature)] = false
-			} else if override != "" && !slices.Contains(models, override) {
-				logger.Error("runtime model override is not offered by the backend", "feature", feature)
-				result[string(feature)] = false
+
+				continue
 			}
+		}
+
+		if override == "" {
+			// The route is the model the feature would request: validate it.
+			result[string(feature)] = slices.Contains(models, route.Model)
+
+			continue
+		}
+
+		// A set override is the model the feature requests. The route stays
+		// only as the documented fallback: unused, its absence may not block
+		// startup, but it is worth a warning.
+		result[string(feature)] = slices.Contains(models, override)
+		if !slices.Contains(models, route.Model) {
+			logger.Warn("environment fallback model is not offered by the backend; the runtime override is unaffected",
+				"feature", feature, "model", route.Model)
 		}
 	}
 

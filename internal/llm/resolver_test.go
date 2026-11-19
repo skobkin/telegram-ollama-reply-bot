@@ -235,6 +235,35 @@ func TestHasModelsForChecksRuntimeOverrides(t *testing.T) {
 		}
 	})
 
+	t.Run("served override passes while the obsolete environment route is absent", func(t *testing.T) {
+		t.Parallel()
+
+		// The persisted runtime selection replaced the ENV model: the unused
+		// fallback's absence must not block startup.
+		backend := &stubBackend{name: config.LLMBackendOpenAICompat, models: []string{"route-summary", "chat-override"}}
+		service := newResolverTestService(t, backend, &stubResolver{models: map[Feature]string{FeatureChat: "chat-override"}})
+
+		hasAll, result := service.HasModelsFor(context.Background(), FeatureChat, FeatureSummarize)
+		if !hasAll || !result[string(FeatureChat)] {
+			t.Fatalf("a used override must validate alone, got %v", result)
+		}
+	})
+
+	t.Run("unset override fails on an absent route without picking another model", func(t *testing.T) {
+		t.Parallel()
+
+		// Resetting to an unavailable fallback stays loud: the route is the
+		// only model the feature would request, and nothing may silently
+		// substitute another one.
+		backend := &stubBackend{name: config.LLMBackendOpenAICompat, models: []string{"route-summary", "chat-override"}}
+		service := newResolverTestService(t, backend, &stubResolver{})
+
+		hasAll, result := service.HasModelsFor(context.Background(), FeatureChat, FeatureSummarize)
+		if hasAll || result[string(FeatureChat)] {
+			t.Fatalf("an absent route with no override must fail the check, got %v", result)
+		}
+	})
+
 	t.Run("unserved override fails", func(t *testing.T) {
 		t.Parallel()
 
