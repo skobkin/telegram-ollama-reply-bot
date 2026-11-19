@@ -180,21 +180,33 @@ func deriveActivity(messages []state.Message, botUserID int64, now time.Time) ac
 	// snapshot entry, so its position is the arrival boundary: everything
 	// appended after it arrived after it, regardless of timestamp
 	// granularity (Telegram user timestamps are whole seconds, bot events
-	// are subsecond). A reaction carries no position: its event time is
-	// authoritative, compared at whole-second granularity — a message in
-	// the same second as the reaction may have arrived either way and
-	// counts, while anything from an earlier second provably existed
-	// before the bot acted (a delayed reaction on an older message must
-	// not count the messages that arrived meanwhile).
+	// are subsecond). A reaction carries no position, so its event time is
+	// authoritative and the snapshot is classified against it: the
+	// reaction's target and everything before it demonstrably predate the
+	// reaction; a subsecond (bot-stamped) timestamp earlier than the
+	// reaction instant demonstrably predates it too; a whole-second
+	// (Telegram Date) timestamp in an earlier second demonstrably predates
+	// it as well, while one in the reaction's own second may have arrived
+	// either way and counts — Telegram's precision cannot distinguish.
 	messagesSince := 0
 	if participated == lastSpoke {
 		messagesSince = len(messages) - 1 - participated
 	} else {
 		reactionSecond := participatedAt.Truncate(time.Second)
-		for _, message := range messages {
-			if !message.CreatedAt.Before(reactionSecond) {
-				messagesSince++
+		for i, message := range messages {
+			if i <= participated {
+				continue
 			}
+			if message.CreatedAt.Truncate(time.Second) != message.CreatedAt {
+				// Subsecond stamp: the exact comparison is meaningful.
+				if message.CreatedAt.Before(participatedAt) {
+					continue
+				}
+			} else if message.CreatedAt.Before(reactionSecond) {
+				// Whole-second stamp from an earlier second.
+				continue
+			}
+			messagesSince++
 		}
 	}
 

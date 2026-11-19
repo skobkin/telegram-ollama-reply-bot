@@ -149,6 +149,39 @@ func TestDeriveActivity(t *testing.T) {
 		}
 	})
 
+	t.Run("reaction target and provably-earlier bot replies are not counted", func(t *testing.T) {
+		// The reaction lands within its target's creation second: the
+		// target itself demonstrably precedes the reaction, as does the bot
+		// reply B whose subsecond stamp is earlier than the reaction
+		// instant, even though both sit at or after the target's position.
+		// The whole-second entry C shares the reaction's second and counts
+		// as ambiguous.
+		activity := deriveActivity([]state.Message{
+			{MessageID: 1, Name: "A", CreatedAt: now.Add(-10 * time.Second), Reactions: []state.Reaction{
+				{UserID: 999, Name: "Ada", Emoji: "👍", UpdatedAt: now.Add(-500 * time.Millisecond)},
+			}},
+			{MessageID: 2, IsMe: true, Name: "Ada", CreatedAt: now.Add(-700 * time.Millisecond)},
+			{MessageID: 3, Name: "C", CreatedAt: now.Add(-time.Second)},
+		}, 999, now)
+		if activity.TimeSinceBotParticipation != "1s" {
+			t.Fatalf("the reaction event time must drive participation, got %q", activity.TimeSinceBotParticipation)
+		}
+		if activity.MessagesSinceBotParticipation != "1" {
+			t.Fatalf("target and provably-earlier replies must not count, ambiguous same-second arrivals must, got %q", activity.MessagesSinceBotParticipation)
+		}
+
+		// A one-message snapshot with a within-second reaction must count
+		// nothing: the target existed before the reaction attached to it.
+		single := deriveActivity([]state.Message{
+			{MessageID: 7, Name: "A", CreatedAt: now, Reactions: []state.Reaction{
+				{UserID: 999, Name: "Ada", Emoji: "👍", UpdatedAt: now.Add(500 * time.Millisecond)},
+			}},
+		}, 999, now)
+		if single.MessagesSinceBotParticipation != "0" {
+			t.Fatalf("the reaction's own target must never count, got %q", single.MessagesSinceBotParticipation)
+		}
+	})
+
 	t.Run("reactions from other participants are not bot participation", func(t *testing.T) {
 		activity := deriveActivity([]state.Message{
 			{MessageID: 1, Name: "A", CreatedAt: now.Add(-time.Minute), Reactions: []state.Reaction{
