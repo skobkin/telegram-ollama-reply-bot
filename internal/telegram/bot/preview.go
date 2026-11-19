@@ -1356,7 +1356,11 @@ func (r *previewRun) deleteGroupPreview() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.manager.baseCtx, previewDeleteTimeout)
+	// The delete is bounded independently of the bot lifecycle: the cleanup
+	// path also runs when shutdown cancelled the lifecycle context (a run
+	// failing mid-shutdown), and a cancelled parent would kill the delete
+	// before it starts, leaving the stale preview on the wire.
+	ctx, cancel := context.WithTimeout(context.Background(), previewDeleteTimeout)
 	defer cancel()
 	if err := r.manager.api.DeleteMessage(ctx, &t.DeleteMessageParams{
 		ChatID:    tu.ID(r.info.ChatID),
