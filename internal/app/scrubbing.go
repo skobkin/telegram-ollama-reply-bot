@@ -70,10 +70,17 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 
 // credentialFromHeader extracts the credential part of a scheme-prefixed
 // header value ("Bearer X", "Token X", …), which is what providers echo in
-// their own error messages.
+// their own error messages. Whitespace around the value is trimmed first:
+// HTTP header transmission trims it, so the trimmed form is what providers
+// echo back.
 func credentialFromHeader(value string) (string, bool) {
-	scheme, credential, found := strings.Cut(value, " ")
-	if !found || credential == "" {
+	scheme, credential, found := strings.Cut(strings.TrimSpace(value), " ")
+	if !found {
+		return "", false
+	}
+
+	credential = strings.TrimSpace(credential)
+	if credential == "" {
 		return "", false
 	}
 
