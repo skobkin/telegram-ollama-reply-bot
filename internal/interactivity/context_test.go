@@ -67,7 +67,7 @@ func TestDeriveActivity(t *testing.T) {
 			t.Fatalf("reaction timestamp must drive participation time, got %q", activity.TimeSinceBotParticipation)
 		}
 		if activity.MessagesSinceBotParticipation != "1" {
-			t.Fatalf("reaction position must drive the message count, got %q", activity.MessagesSinceBotParticipation)
+			t.Fatalf("messages after the reaction event must be counted, got %q", activity.MessagesSinceBotParticipation)
 		}
 		if activity.BotSpokeRecently != "unknown" {
 			t.Fatalf("no bot message must leave speaking unknown, got %q", activity.BotSpokeRecently)
@@ -95,6 +95,25 @@ func TestDeriveActivity(t *testing.T) {
 		}
 		if activity.BotReactedRecently != "yes" {
 			t.Fatalf("recent reaction must be reported, got %q", activity.BotReactedRecently)
+		}
+	})
+
+	t.Run("delayed reaction on an older message counts only later arrivals", func(t *testing.T) {
+		// The bot reacted to A only after B and C had already arrived: those
+		// existed before the bot acted and must not count as messages since
+		// participation, even though they sit after A's position.
+		activity := deriveActivity([]state.Message{
+			{MessageID: 1, Name: "A", CreatedAt: now.Add(-5 * time.Minute), Reactions: []state.Reaction{
+				{UserID: 999, Name: "Ada", Emoji: "👍", UpdatedAt: now.Add(-30 * time.Second)},
+			}},
+			{MessageID: 2, Name: "B", CreatedAt: now.Add(-time.Minute)},
+			{MessageID: 3, Name: "C", CreatedAt: now.Add(-45 * time.Second)},
+		}, 999, now)
+		if activity.TimeSinceBotParticipation != "30s" {
+			t.Fatalf("the reaction event time must drive participation, got %q", activity.TimeSinceBotParticipation)
+		}
+		if activity.MessagesSinceBotParticipation != "0" {
+			t.Fatalf("messages that existed before the reaction must not count, got %q", activity.MessagesSinceBotParticipation)
 		}
 	})
 

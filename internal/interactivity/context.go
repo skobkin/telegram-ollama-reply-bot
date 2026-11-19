@@ -175,9 +175,21 @@ func deriveActivity(messages []state.Message, botUserID int64, now time.Time) ac
 		since = 0
 	}
 
+	// Messages since participation counts arrivals after the participation
+	// event, not messages after the event's carrying position: a reaction
+	// can land on an older message after newer ones already arrived, and
+	// those existed before the bot acted. The event timestamp drives both
+	// dimensions, so a delayed reaction cannot supply inconsistent evidence.
+	messagesSince := 0
+	for _, message := range messages {
+		if message.CreatedAt.After(participatedAt) {
+			messagesSince++
+		}
+	}
+
 	return activity{
 		TimeSinceBotParticipation:     since.Round(time.Second).String(),
-		MessagesSinceBotParticipation: fmt.Sprintf("%d", len(messages)-1-participated),
+		MessagesSinceBotParticipation: fmt.Sprintf("%d", messagesSince),
 		BotSpokeRecently:              spokeRecency,
 		BotReactedRecently:            reactedRecency,
 	}
