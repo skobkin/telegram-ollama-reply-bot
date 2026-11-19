@@ -89,6 +89,15 @@ The bot can be configured using the following environment variables:
 | `MCP__SERVERS__<NAME>__RESTRICTED_TOOLS`           | Comma-separated deny-list of tool names to drop from this server. Misnamed entries fail at startup.               | No       | empty                    |
 | `MCP__SERVERS__<NAME>__OPTIONAL`                   | When `true`, a connection failure on startup is logged and skipped instead of aborting the bot                    | No       | `false`                  |
 
+### Network routing and the System One endpoint
+
+All outbound connections — the Telegram Bot API, the LLM backend, article fetches, and the
+System One decision endpoint — share the standard `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`
+environment policy; there is deliberately no System One–specific proxy configuration. To keep
+local System One traffic local, add its host to `NO_PROXY` (loopback targets are always
+direct). The startup `network routing snapshot` log line reports the effective proxy policy
+per endpoint, with the System One URL credential-redacted.
+
 ### Prompt and persona management
 
 Prompt templates, response language, character name, interactivity mode, whitelist rules, and per-chat
