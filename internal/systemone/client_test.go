@@ -49,6 +49,12 @@ func referenceQuestions() map[string]Question {
 	}
 }
 
+// referenceQuestionNames lists the ids of referenceQuestions for assertions
+// that must hold regardless of the concrete fixture.
+func referenceQuestionNames() []string {
+	return []string{"relevance", "angry", "route"}
+}
+
 // referenceResponse is a valid success body for referenceQuestions, with
 // distributions that sum to 1 and a score consistent with Σ(i·p_i).
 const referenceResponse = `{
@@ -231,6 +237,54 @@ func TestEvaluateTypeMismatchErrorIsContentFree(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), leaked) {
 		t.Fatalf("error must not carry the backend-reported type, got %q", err.Error())
+	}
+}
+
+// TestEvaluateValidationErrorsNeverNameQuestions pins the privacy rule on
+// the question-name path: decision-tool question ids are caller-supplied
+// arguments that may echo conversation content, and the client logs
+// validation errors verbatim — so no validation failure may carry the id.
+func TestEvaluateValidationErrorsNeverNameQuestions(t *testing.T) {
+	const private = "PRIVATE_CASE_123"
+
+	cases := []struct {
+		name     string
+		response string
+	}{
+		{
+			// Same answer count, different id set: isolates the
+			// missing-answer branch from the count check before it.
+			name:     "missing answer",
+			response: `{"model":"laya","answers":{"` + private + `":{"type":"noul","noul":0.5},"relevance":{"type":"noul","noul":0.5},"route":{"type":"choice","choice":"billing","probabilities":{"billing":1.0,"shipping":0.0,"technical":0.0}}}}`,
+		},
+		{
+			name:     "undecodable answer",
+			response: `{"model":"laya","answers":{"` + private + `":42,"relevance":{"type":"noul","noul":0.5},"route":{"type":"choice","choice":"billing","probabilities":{"billing":1.0,"shipping":0.0,"technical":0.0}}}}`,
+		},
+		{
+			name:     "invalid answer",
+			response: `{"model":"laya","answers":{"` + private + `":{"type":"noul","noul":9.9},"relevance":{"type":"noul","noul":0.5},"route":{"type":"choice","choice":"billing","probabilities":{"billing":1.0,"shipping":0.0,"technical":0.0}}}}`,
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tt.response))
+			}), nil)
+
+			_, err := client.Evaluate(context.Background(), Request{Model: "laya", State: "s", Questions: referenceQuestions()})
+			if !errors.Is(err, ErrMalformed) {
+				t.Fatalf("expected ErrMalformed, got %v", err)
+			}
+			// None of the caller-chosen ids may appear: the private one the
+			// fixtures exercise, nor any reference question's own name.
+			for _, named := range append([]string{private}, referenceQuestionNames()...) {
+				if strings.Contains(err.Error(), named) {
+					t.Fatalf("validation error must not name the question %q, got %q", named, err.Error())
+				}
+			}
+		})
 	}
 }
 

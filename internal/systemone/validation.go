@@ -59,7 +59,10 @@ type wireAnswer struct {
 // that produced it. The answer set must match the request exactly — every
 // requested question answered, no unexpected ids — and every answer must
 // match its requested type and criteria. Validation failures are malformed
-// responses: no partial trust, no best-effort salvage.
+// responses: no partial trust, no best-effort salvage. Question names never
+// appear in the error text: for the decision tools they are caller-supplied
+// arguments that may echo conversation content, and the client logs these
+// errors verbatim.
 func decodeAnswers(raw []byte, questions map[string]Question) (map[string]Answer, error) {
 	var body struct {
 		Answers map[string]json.RawMessage `json:"answers"`
@@ -76,7 +79,7 @@ func decodeAnswers(raw []byte, questions map[string]Question) (map[string]Answer
 	}
 	for name := range questions {
 		if _, ok := body.Answers[name]; !ok {
-			return nil, fmt.Errorf("%w: answer for question %q is missing", ErrMalformed, name)
+			return nil, fmt.Errorf("%w: an expected answer is missing", ErrMalformed)
 		}
 	}
 
@@ -84,10 +87,10 @@ func decodeAnswers(raw []byte, questions map[string]Question) (map[string]Answer
 	for name, rawAnswer := range body.Answers {
 		var wire wireAnswer
 		if err := json.Unmarshal(rawAnswer, &wire); err != nil {
-			return nil, fmt.Errorf("%w: cannot decode answer %q", ErrMalformed, name)
+			return nil, fmt.Errorf("%w: cannot decode an answer", ErrMalformed)
 		}
 
-		answer, err := wire.validate(name, questions[name])
+		answer, err := wire.validate(questions[name])
 		if err != nil {
 			return nil, err
 		}
@@ -97,21 +100,21 @@ func decodeAnswers(raw []byte, questions map[string]Question) (map[string]Answer
 	return answers, nil
 }
 
-func (w *wireAnswer) validate(name string, question Question) (Answer, error) {
+func (w *wireAnswer) validate(question Question) (Answer, error) {
 	malformed := func(what string) error {
-		return fmt.Errorf("%w: answer %q %s", ErrMalformed, name, what)
+		return fmt.Errorf("%w: an answer %s", ErrMalformed, what)
 	}
 
 	if w.Type == nil || *w.Type == "" {
 		return Answer{}, malformed("is missing its type")
 	}
 	if *w.Type != question.Type {
-		// The reported type is backend-controlled and must not reach the
-		// error text: bodies can echo input, and this error is logged and
-		// captured sanitized-or-not by callers.
+		// Neither the reported type (backend-controlled) nor the question
+		// name (caller-controlled tool argument) may reach the error text:
+		// bodies can echo input, and the client logs this error verbatim.
 		return Answer{}, fmt.Errorf(
-			"%w: answer %q has a type that does not match the requested %q",
-			ErrMalformed, name, question.Type,
+			"%w: an answer has a type that does not match the requested %q",
+			ErrMalformed, question.Type,
 		)
 	}
 
@@ -140,7 +143,7 @@ func (w *wireAnswer) validate(name string, question Question) (Answer, error) {
 		if w.Choice == nil || *w.Choice == "" {
 			return Answer{}, malformed("is missing its choice")
 		}
-		probs, err := w.validatedDistribution(name, question.ChoiceOptions(), "choice options")
+		probs, err := w.validatedDistribution(question.ChoiceOptions(), "choice options")
 		if err != nil {
 			return Answer{}, err
 		}
@@ -157,7 +160,7 @@ func (w *wireAnswer) validate(name string, question Question) (Answer, error) {
 			return Answer{}, malformed("is missing its score")
 		}
 		levels := question.ScoreLevels()
-		probs, err := w.validatedDistribution(name, levelKeys(len(levels)), "score levels")
+		probs, err := w.validatedDistribution(levelKeys(len(levels)), "score levels")
 		if err != nil {
 			return Answer{}, err
 		}
@@ -191,10 +194,10 @@ func (w *wireAnswer) validate(name string, question Question) (Answer, error) {
 // expected key set: exactly the requested options (choice) or exactly the
 // level numbers (score), no null entries, all finite and in [0,1], summing
 // to 1 within tolerance. Error text names only counts and shapes — never
-// option names or other request content.
-func (w *wireAnswer) validatedDistribution(name string, expectedKeys []string, what string) (map[string]float64, error) {
+// option names, question names, or other request content.
+func (w *wireAnswer) validatedDistribution(expectedKeys []string, what string) (map[string]float64, error) {
 	malformed := func(what string) error {
-		return fmt.Errorf("%w: answer %q %s", ErrMalformed, name, what)
+		return fmt.Errorf("%w: an answer %s", ErrMalformed, what)
 	}
 
 	if len(w.Probabilities) != len(expectedKeys) {
