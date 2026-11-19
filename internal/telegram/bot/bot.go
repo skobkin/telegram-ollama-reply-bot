@@ -3,10 +3,8 @@ package bot
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strconv"
-	"strings"
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/config"
@@ -22,7 +20,6 @@ import (
 	"github.com/getsentry/sentry-go"
 	t "github.com/mymmrac/telego"
 	th "github.com/mymmrac/telego/telegohandler"
-	tu "github.com/mymmrac/telego/telegoutil"
 )
 
 var (
@@ -370,154 +367,15 @@ func (b *Bot) textMessageHandler(ctx *th.Context, update t.Update) error {
 func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adminconfig.ResolvedChatConfig) {
 	b.stats.Mention()
 
-	chatID := tu.ID(message.Chat.ID)
-
-	baseCtx := b.handlerContext(reqCtx)
-
-	// The preview starts before preprocessing so the neutral indicator
-	// covers the entire run, history summarization included. It returns nil
-	// (and everything below no-ops) when previews are off.
-	run := b.previews.RunFor(RunInfo{
-		RunID:            execution.NewRunID(),
-		ChatID:           message.Chat.ID,
-		TopicID:          message.MessageThreadID,
-		TriggerMessageID: message.MessageID,
-		ChatType:         message.Chat.Type,
-		Mode:             resolved.PreviewMode,
-		KeepToolHistory:  resolved.KeepToolHistory,
+	// Explicit turns keep the historical behavior on every policy: previews
+	// on, user-facing error fallbacks, text delivered and recorded, the
+	// full tool registry.
+	b.runConversationTurn(reqCtx, message, resolved, turnOptions{
+		trigger:     b.replyTriggerKind(message),
+		errorPolicy: explicitErrors,
+		delivery:    deliverAndRecord,
+		withPreview: true,
 	})
-	defer run.Close() // safety net: state cleanup on every exit path
-
-	b.maybeSummarizeHistory(baseCtx, message)
-	logger := b.loggerFromContext(baseCtx)
-	logger.Debug("handling mention")
-
-	// Get MessageData from the request context if available, otherwise create it on the fly
-	userMessageData := b.getMessageDataFromRequestContextOrCreate(reqCtx, message, true)
-	triggerKind := b.replyTriggerKind(message)
-
-	var llmReply string
-	var usage *llm.TokenUsage
-	var toolCalls []tooluse.ToolCallRecord
-	var err error
-
-	err = b.runWithPreviewTimeout(baseCtx, chatID, run, func(ctx context.Context) error {
-		var userCtx llmcontext.UserContext
-		if message.From != nil {
-			userCtx = llmcontext.UserContext{
-				Username:  message.From.Username,
-				FirstName: message.From.FirstName,
-				LastName:  message.From.LastName,
-				IsPremium: message.From.IsPremium,
-			}
-		}
-
-		requestContext := b.replyCtx.BuildReplyContext(ctx, llmcontext.ReplyInput{
-			Chat: llmcontext.ChatContext{
-				Title: message.Chat.Title,
-				Type:  message.Chat.Type,
-			},
-			User:           userCtx,
-			Scope:          scopeFromMessage(message),
-			CurrentMessage: userMessageData,
-			Trigger:        triggerKind,
-		})
-
-		llmCtx, cancel := b.withProcessingDeadline(ctx)
-		defer cancel()
-
-		result, runErr := b.tools.ReplyWithTools(llmCtx, tooluse.ChatRequest{
-			Scope:          scopeFromMessage(message),
-			PromptScope:    llm.PromptScope{ChatID: message.Chat.ID},
-			ReplyContext:   requestContext,
-			RequestMessage: userMessageData,
-			RunID:          run.ID(),
-			// The model selection comes from the chat config resolved when
-			// this message was accepted; it stays fixed for the whole turn.
-			TurnConfig: llm.TurnConfig{
-				GenerationModel: resolved.ChatModel,
-				SystemOneModel:  resolved.SystemOneModel,
-			},
-			RequesterMediaGroupID: message.MediaGroupID,
-		})
-		llmReply, usage, err = result.Reply, result.Usage, runErr
-		toolCalls = result.ToolCalls
-
-		return runErr
-	})
-	if err != nil {
-		run.Abort()
-
-		if errors.Is(err, ErrRequestTimeout) {
-			logger.Error("llm request timed out", "chat_id", message.Chat.ID, "error", err)
-			timeout := b.cfg.ProcessingTimeout
-			_, _ = b.sendMessage(baseCtx, b.reply(message, tu.Message(
-				chatID,
-				fmt.Sprintf("LLM request timed out after %s. Try again later.", timeout),
-			)))
-
-			return
-		}
-
-		logger.Error("cannot get reply from llm connector", "error", err)
-		sentry.CaptureException(err)
-
-		_, _ = b.sendMessage(baseCtx, b.reply(message, tu.Message(
-			chatID,
-			"LLM request error. Try again later.",
-		)))
-
-		return
-	}
-
-	if usage != nil {
-		b.stats.AddUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.Cost)
-	}
-
-	logger.Debug("sending llm reply", "reply_length", len(llmReply))
-
-	if strings.TrimSpace(llmReply) == "" {
-		logger.Debug("llm interaction completed without final text reply")
-		run.CompleteNoText(toolCalls)
-
-		return
-	}
-
-	// Join all preview writes before delivery: a 429 landing on a
-	// still-in-flight preview call closes the chat's wire window only
-	// through the gate, so it must be harvested into the gate before
-	// delivery looks at it — otherwise the answer walks into a window that
-	// had already opened. Quiescing also keeps a slow private draft from
-	// landing after the answer and resurrecting the working preview below
-	// it; group previews freeze at their last state until FinalDelivered
-	// deletes them. With previews off this is a no-op.
-	run.Quiesce()
-
-	// The gate itself is consulted inside deliverFinalReply, under its
-	// bounded delivery budget: an outstanding backoff is waited out there,
-	// and a 429 the send draws is absorbed, waited, and redelivered by the
-	// same helper — a preliminary wait here would run unbounded against a
-	// backoff larger than the budget.
-	sent, err := b.deliverFinalReply(baseCtx, message, llmReply, toolCalls, resolved)
-	if err != nil {
-		run.Abort()
-
-		logger.Error("cannot send reply message", "error", err, "reply_length", len(llmReply))
-		sentry.CaptureException(err)
-
-		b.trySendReplyError(baseCtx, message)
-
-		return
-	}
-
-	run.FinalDelivered()
-
-	replyMessageID := 0
-	if sent != nil {
-		replyMessageID = sent.MessageID
-	}
-
-	b.saveBotReplyToHistory(baseCtx, message, llmReply, replyMessageID)
 }
 
 func (b *Bot) replyTriggerKind(message t.Message) llmcontext.TriggerKind {
