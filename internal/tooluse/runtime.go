@@ -104,6 +104,12 @@ type ChatRequest struct {
 	// empty-reply fallback. Only restricted runs (AllowedTools set) use it;
 	// ordinary turns never set it, so their loop semantics are unchanged.
 	CompleteAfterSideEffect bool
+	// SilentErrors switches the run's generation-failure diagnostics to
+	// content-free form at every layer (service logging and capture, this
+	// runtime's loop log, and the error the caller sees): unsolicited
+	// proactive turns set it, because provider error bodies can echo chat
+	// content. Ordinary turns never set it and keep raw diagnostics.
+	SilentErrors bool
 }
 
 // ToolCallRecord is the authoritative record of one tool invocation, in
@@ -369,6 +375,10 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 
 			return fail(err, execution.ReasonPrepare)
 		}
+		// Carried per request: the service sanitizes its own diagnostics
+		// for silent runs, so the loop log and the returned error are
+		// content-free too.
+		request.SilentErrors = req.SilentErrors
 
 		resp, err := r.llm.Generate(ctx, request)
 		if err != nil {

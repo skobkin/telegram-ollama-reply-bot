@@ -100,6 +100,13 @@ type Request struct {
 	Model    string
 	Messages []Message
 	Tools    []ToolDefinition
+	// SilentErrors switches this request's failure diagnostics to
+	// content-free form: backend errors are sanitized before logging,
+	// Sentry capture, and return (the same treatment image recognition
+	// always gets). Unsolicited proactive turns set it — their provider
+	// error text can echo chat content, and nothing user-initiated is
+	// waiting on the details. Ordinary requests keep the raw diagnostics.
+	SilentErrors bool
 }
 
 type Response struct {

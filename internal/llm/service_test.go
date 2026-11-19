@@ -339,6 +339,83 @@ func TestServiceGenerateSanitizesImageFeatureErrors(t *testing.T) {
 	})
 }
 
+// TestServiceGenerateSanitizesSilentErrors covers the silent-errors opt-in:
+// unsolicited proactive turns flag their chat requests, and those get the
+// image-recognition treatment — sanitized error, sanitized log, chain clean
+// for Sentry, cancellation still matchable. Unflagged requests are
+// unchanged.
+func TestServiceGenerateSanitizesSilentErrors(t *testing.T) {
+	t.Parallel()
+
+	newService := func(generateErr error, logger *slog.Logger) *Service {
+		return &Service{
+			cfg: config.LLMConfig{
+				Features: config.FeatureConfig{
+					Chat:             config.FeatureRouteConfig{Model: "m"},
+					Summarize:        config.FeatureRouteConfig{Model: "m"},
+					ImageRecognition: config.FeatureRouteConfig{Model: "m"},
+				},
+			},
+			logger: logger,
+			backend: &stubBackend{
+				name:        config.LLMBackendOpenAICompat,
+				caps:        Capabilities{ToolCalls: true, ImageInput: true, ModelListing: true},
+				generateErr: generateErr,
+			},
+		}
+	}
+
+	rawErr := &url.Error{Op: "Post", URL: "http://llm.internal/v1?key=sk-TESTSECRET", Err: errors.New("provider echoed: SECRET-CHAT-TEXT")}
+
+	t.Run("silent chat request is content-free", func(t *testing.T) {
+		t.Parallel()
+
+		logger, logBuf := captureLogger()
+		_, err := newService(rawErr, logger).Generate(context.Background(), Request{
+			Feature:      FeatureChat,
+			Messages:     []Message{TextMessage(RoleUser, "hi")},
+			SilentErrors: true,
+		})
+
+		if !errors.Is(err, ErrLlmBackendRequestFailed) {
+			t.Fatalf("expected typed kind, got %v", err)
+		}
+		assertLLMErrorChainClean(t, err, "TESTSECRET", "SECRET-CHAT-TEXT", "server blew up")
+		if strings.Contains(logBuf.String(), "TESTSECRET") || strings.Contains(logBuf.String(), "SECRET-CHAT-TEXT") {
+			t.Fatalf("silent run logging leaks raw cause: %q", logBuf.String())
+		}
+	})
+
+	t.Run("cancellation stays matchable on silent runs", func(t *testing.T) {
+		t.Parallel()
+
+		logger, _ := captureLogger()
+		_, err := newService(fmt.Errorf("post failed: %w", context.DeadlineExceeded), logger).Generate(context.Background(), Request{
+			Feature:      FeatureChat,
+			Messages:     []Message{TextMessage(RoleUser, "hi")},
+			SilentErrors: true,
+		})
+
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrLlmBackendRequestFailed) {
+			t.Fatalf("expected deadline matchable and typed, got %v", err)
+		}
+	})
+
+	t.Run("unflagged chat request keeps raw diagnostics", func(t *testing.T) {
+		t.Parallel()
+
+		logger, logBuf := captureLogger()
+		_, err := newService(errors.New("chat backend says sk-TESTSECRET"), logger).Generate(context.Background(), Request{
+			Feature:  FeatureChat,
+			Messages: []Message{TextMessage(RoleUser, "hi")},
+		})
+
+		if !strings.Contains(err.Error(), "sk-TESTSECRET") || !strings.Contains(logBuf.String(), "sk-TESTSECRET") {
+			t.Fatalf("unflagged chat diagnostics must stay unchanged, err=%v log=%q", err, logBuf.String())
+		}
+	})
+}
+
 // TestServiceHasModelsForFeatureSubset checks the variadic gate: an image
 // model missing from the backend only fails the boot when image_recognition
 // is actually requested.

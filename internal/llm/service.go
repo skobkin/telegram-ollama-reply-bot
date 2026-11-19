@@ -70,9 +70,12 @@ func (s *Service) Generate(ctx context.Context, req Request) (Response, error) {
 		// carry credentials) and provider bodies (which can echo prompts or
 		// keys). The sanitized error discards the cause — Sentry traverses
 		// error chains — while cancellation/deadline stay matchable via the
-		// stdlib context sentinels. Chat and summarize keep their existing
-		// raw diagnostics.
-		if req.Feature == FeatureImageRecognition {
+		// stdlib context sentinels. The same treatment applies to any
+		// request that opted into silent errors (unsolicited proactive
+		// turns): their provider bodies can echo chat content and nothing
+		// user-initiated is waiting on the details. All other features keep
+		// their existing raw diagnostics.
+		if req.Feature == FeatureImageRecognition || req.SilentErrors {
 			sanitized := safeerr.WrapTransport(ErrLlmBackendRequestFailed, err)
 			logger.Error(
 				"backend request failed",

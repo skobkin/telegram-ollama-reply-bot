@@ -149,6 +149,10 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 			RequesterMediaGroupID:   message.MediaGroupID,
 			AllowedTools:            opts.allowedTools,
 			CompleteAfterSideEffect: opts.completeAfterSideEffect,
+			// Silent turns sanitize generation diagnostics at every layer:
+			// provider error bodies can echo chat content, and nothing
+			// user-initiated is waiting on the details.
+			SilentErrors: opts.errorPolicy == silentErrors,
 		})
 		llmReply, usage, err = result.Reply, result.Usage, runErr
 		toolCalls = result.ToolCalls
