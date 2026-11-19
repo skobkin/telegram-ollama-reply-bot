@@ -2214,6 +2214,13 @@ func observedDecisionModels(snap statistics.InteractionSnapshot) []string {
 		if bucket.DecisionModelOverflow || bucket.DecisionModel == nil {
 			continue
 		}
+		if *bucket.DecisionModel == "" {
+			// Unset decision model — never a valid configured ID. The All
+			// cycle position already covers this traffic; adding "" as a
+			// choice would duplicate it and wedge cycleValue on All (the
+			// first empty entry always matches).
+			continue
+		}
 		seen[*bucket.DecisionModel] = struct{}{}
 	}
 	models := make([]string, 0, len(seen))

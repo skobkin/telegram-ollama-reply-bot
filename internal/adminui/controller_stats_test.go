@@ -193,6 +193,33 @@ func TestStatisticsModelFilterCycles(t *testing.T) {
 	}
 }
 
+func TestStatisticsModelFilterSkipsUnsetModel(t *testing.T) {
+	c, _ := newTestController(t)
+	// Traffic recorded before any decision model was configured (and
+	// Non-Interactive traffic) carries the unset "" decision model.
+	seedInteraction(t, c, testGroupID, "")
+	seedInteraction(t, c, 200, "m1")
+
+	session, _ := openStats(t, c)
+
+	// The first tap must reach the named model — an "" choice would keep
+	// the cycle wedged on All forever, since cycleValue matches the first
+	// empty entry every time.
+	outcome := tap(t, c, session, VerbStatsModel)
+	if !strings.Contains(outcome.Render.Built.Text, "model: m1") {
+		t.Fatalf("first model tap must select m1, skipping the unset model:\n%s", outcome.Render.Built.Text)
+	}
+
+	outcome = tap(t, c, session, VerbStatsModel)
+	if !strings.Contains(outcome.Render.Built.Text, "model: All") {
+		t.Fatalf("second model tap must wrap back to All:\n%s", outcome.Render.Built.Text)
+	}
+	// The unset-model traffic stays visible under All.
+	if !strings.Contains(outcome.Render.Built.Text, "Evaluated 2") {
+		t.Fatalf("All must cover both evaluations:\n%s", outcome.Render.Built.Text)
+	}
+}
+
 func TestStatisticsScopePickerAndChatScope(t *testing.T) {
 	c, store := newTestController(t)
 	store.mu.Lock()
