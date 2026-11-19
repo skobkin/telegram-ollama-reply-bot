@@ -637,6 +637,47 @@ func TestProactiveNoOpIsFree(t *testing.T) {
 	}
 }
 
+// TestProactiveNoOpSkipsImageHydration pins the NoOp contract on photo
+// messages: target hydration runs vision inference and Telegram file
+// downloads, which an opted-out (Non-Interactive) chat must never pay for
+// even with recognition enabled and the decision backend configured.
+func TestProactiveNoOpSkipsImageHydration(t *testing.T) {
+	p := newProactiveTestBot(t, func(s *adminStoreStub) {
+		s.DefaultInteractivityMode = adminconfig.InteractivityMentionsReplies
+		s.SystemOneModel = "decision-model"
+	})
+	// Recognition is enabled, so a wrongly-ordered hydration would fetch
+	// the file from the Bot API.
+	p.bot.imageRecognition.Enabled = true
+	persona := &fakePersonaSource{}
+	client := &fakeDecisionClient{answers: decisionAnswers(0.0, 1.0, 1.0)}
+	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024)
+	t.Cleanup(stop)
+
+	p.deliver(t, tg.Update{UpdateID: 45, Message: &tg.Message{
+		MessageID: 62,
+		Chat:      tg.Chat{ID: -100999, Type: tg.ChatTypeSupergroup, Title: "Test Group"},
+		From:      &tg.User{ID: 21},
+		Photo:     []tg.PhotoSize{{FileID: "photo-file-id", Width: 1280, Height: 720}},
+	}})
+
+	// Settle: the queued task resolves its snapshot and must stop before
+	// any hydration.
+	time.Sleep(300 * time.Millisecond)
+
+	if got := client.calls(); got != 0 {
+		t.Fatalf("NoOp must not call the backend, got %d calls", got)
+	}
+	for _, request := range p.apiRequests() {
+		if strings.Contains(request, "getFile") {
+			t.Fatalf("NoOp must not download the photo, got %s", request)
+		}
+	}
+	if got := p.llm.buildCount(); got != 0 {
+		t.Fatalf("NoOp must not run a turn, got %d builds", got)
+	}
+}
+
 // TestProactiveReactTurnIsReactionOnly drives a real React decision through
 // the restricted turn: the only Telegram call is setMessageReaction, the
 // produced text is discarded and never recorded, and no preview or typing

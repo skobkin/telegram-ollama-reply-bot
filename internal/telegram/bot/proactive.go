@@ -144,6 +144,15 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 		return
 	}
 
+	// Mirror of the engine's NoOp contract for the work that must happen
+	// before Decide: target hydration may download the photo and run vision
+	// inference, which a Non-Interactive chat must never pay for. Both
+	// checks read the same operation snapshot, and the engine re-checks
+	// inside Decide.
+	if profile, known := interactivity.ProfileByID(resolved.InteractionProfile); !known || !profile.Enabled {
+		return
+	}
+
 	// The target renders exactly once in the decision context: the engine
 	// excludes it from the history snapshot by chat and message ID.
 	target := b.tgUserMessageToMessageData(message, true)
