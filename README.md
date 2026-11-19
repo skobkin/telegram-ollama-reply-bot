@@ -19,6 +19,9 @@
   - Current-time lookup
   - Poll creation
   - Durable reminders
+- Runtime model selection: global defaults and per-chat overrides for the generation, summarize, image-recognition, and System One decision models, managed from the admin UI (a stored model overrides the `LLM__FEATURES__*` ENV route when set)
+- Opt-in interactive participation: when a chat's interaction profile enables it, a System One decision engine evaluates ordinary group messages that did not explicitly trigger the bot and reacts or replies when the profile finds them suitable (private chats are never evaluated proactively)
+- `decision_choose` / `decision_assess` tools delegating small semantic decisions to the configured System One decision model
 - Optional [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers that publish additional tools at startup (Streamable HTTP transport)
 
 ## Configuration
@@ -64,6 +67,11 @@ The bot can be configured using the following environment variables:
 | `CONTENT__EXTRACT__BACKENDS`                        | Comma-separated extraction backend order: `readability`, `trafilatura`, or `domdistiller`. The listed order is the base order and tiebreak — the bot may re-rank it per page (see UPGRADE.md). | No       | `readability,trafilatura,domdistiller` |
 | `PROVIDERS__TAVILY__API_KEY`                        | Tavily provider API key                                                                                           | No       | empty                    |
 | `PROVIDERS__KAGI__API_KEY`                          | Kagi provider API key                                                                                             | No       | empty                    |
+| `SYSTEMONE__BASE_URL`                               | System One decision backend root (Jev protocol, `POST /v1/systemone`; llama.cpp ≥ b11361 or llama-swap ≥ v262). Empty means the whole System One feature is off: no proactive participation, no decision tools. | No | empty |
+| `SYSTEMONE__API_KEY`                                | Optional bearer token for the decision backend (llama-swap deployments typically require it). Only valid together with `BASE_URL`. | No | empty |
+| `SYSTEMONE__TIMEOUT`                                | Per-request timeout for decision requests. Go duration string.                                                     | No       | `60s`                    |
+| `SYSTEMONE__MAX_RESPONSE_BYTES`                     | Maximum decision response body size the client is willing to read.                                                 | No       | `4194304`                |
+| `SYSTEMONE__INPUT_BUDGET_BYTES`                     | Composition limit for the entire serialized decision request (state + questions + overhead). Fitting the decision model's context window stays the operator's responsibility. | No | `98304` |
 | `LOG__LEVEL`                                        | Structured log verbosity: `debug`, `info`, `warn`, or `error`                                                     | No       | `info`                   |
 | `SENTRY__DSN`                                       | Sentry DSN for error tracking                                                                                     | No       | empty                    |
 | `PERSISTENT__STORE_PATH`                            | Path to the SQLite database used for durable bot data                                                             | No       | `/data/db.sqlite`        |
@@ -92,8 +100,8 @@ Stored prompt templates use Go's [`text/template`](https://pkg.go.dev/text/templ
 - `summarize` – `{{.Language}}`, `{{.MaxLength}}`
 - `image_recognition` – `{{.Language}}`
 
-Global fields: `character_name`, `language`, `gender`, `default_interactivity_mode`, `default_auto_summary_enabled`, `show_reply_previews`, `default_preview_mode`, `keep_tool_history`.
-Per-chat fields: `character_name`, `language`, `gender`, `interactivity_mode`, `auto_summary_enabled`, `preview_mode`, `keep_tool_history`.
+Global fields: `character_name`, `language`, `gender`, `default_interactivity_mode`, `default_auto_summary_enabled`, `show_reply_previews`, `default_preview_mode`, `keep_tool_history`, `chat_model`, `summarize_model`, `image_recognition_model`, `systemone_model`, `default_interaction_profile`, `decision_instructions`.
+Per-chat fields: `character_name`, `language`, `gender`, `interactivity_mode`, `auto_summary_enabled`, `preview_mode`, `keep_tool_history`, `chat_model`, `systemone_model`, `interaction_profile`, `decision_instructions`.
 
 ## Usage
 
@@ -289,6 +297,30 @@ and (in the widest mode) how long each call took.
 - LLM token streaming (partial answer text inside the preview) is planned as a follow-up; previews currently show
   only progress indicators and tool execution events.
 
+### Interactive participation and System One decisions
+
+Beyond explicit triggers (mention, reply, private chat), the bot can participate proactively. A System One decision
+backend (`POST /v1/systemone` — served by llama.cpp ≥ b11361 or llama-swap ≥ v262) answers small semantic questions
+in forward passes without token generation; the bot uses it in two ways:
+
+- **Interactive participation** (opt-in via the interaction profile): every eligible group message that did not
+  produce an explicit turn is evaluated against the profile's thresholds (relevance, contribution, intrusion,
+  reaction/reply suitability). The outcome is Ignore (silence), React (an emoji on the message, nothing else), or
+  Reply (an ordinary conversational turn). Private chats are never evaluated proactively — messages there are
+  inherently addressed to the bot and keep their explicit-trigger behavior. Decision-backend failures and proactive
+  turns are silent: no unsolicited error messages in the chat.
+- **Decision tools**: when an effective System One model is configured for the chat, the model additionally gains
+  `decision_choose` and `decision_assess` — bounded delegations of small semantic decisions (a single choice with
+  a validated probability distribution, or a batch of yes/no and ordered-score assessments). Model and endpoint are
+  never overridable from tool arguments.
+
+Both share the backend configured via the `SYSTEMONE__*` environment variables; the decision model is selected
+globally or per chat in the admin UI (Interactivity submenu). Profiles range from `non_interactive` (the default —
+nothing proactive ever happens) through reactions-only presets to talk-enabled ones with different thresholds.
+Proactive evaluation serializes per chat (at most one decision or action in flight per chat); explicit triggers
+never wait behind it. Decision requests contain the persona prompt, bounded recent history, and the evaluated
+message; nothing content-bearing is logged.
+
 ### Admin UI
 
 Administration is a Telegram-native interactive panel. Send `/admin` in a private chat with the bot (users listed in
@@ -303,6 +335,14 @@ dismisses a pending input and reopens the panel. Sessions are ephemeral and expi
 - **Preview settings** — global (`Show reply previews` master switch, `Default preview mode`, `Keep tool history`)
   and per-chat (`Preview mode` enum with explicit inherit while overridden, `Keep tool history` tri-state). While
   the master switch is off, chat screens hide the preview rows — stored overrides stay untouched.
+- **Models** — global defaults and per-chat overrides for generation, summarize, image-recognition, and System One
+  decision models. Each model field opens a picker fed by the backend that serves that feature (the list shows
+  availability, not capability — a listed model is not guaranteed to fit the role) plus an `✏️ Enter model ID…`
+  ForceReply input. Generation models also offer `Reset to ENV default` (returns to the `LLM__FEATURES__*` route);
+  the System One model instead offers `Clear global default model` — per-chat overrides survive the clear.
+- **Interactivity** — global (`Default interaction profile`, `Decision instructions`) and per-chat
+  (`Interaction profile`, `Decision instructions`) settings in one `🧠 Interactivity` submenu; leaving the global
+  default profile `non_interactive` asks for a scope confirmation that shows how many chats inherit it.
 - **Global settings / chat settings** — one editor per field: enum and boolean fields are buttons; text fields ask for
   a reply (three attempts on invalid input, then the input is cancelled).
 - **Prompts** — per feature (chat, summarize, image recognition): view, download the active or built-in template,

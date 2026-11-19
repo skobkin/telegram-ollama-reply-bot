@@ -18,6 +18,12 @@
 - Use `context.Context` on IO boundaries.
 - When a feature grows large enough to hurt readability or context usage, split it into focused files instead of growing a single large file.
 
+## Configuration Boundary
+
+- Runtime-tunable settings — model selections, interaction profiles, prompts, per-chat overrides — live in SQLite via `internal/adminconfig` (FieldSpec system) and are managed from the admin UI; they are operation snapshots, not deployment configuration.
+- Deployment configuration — endpoints, credentials, budgets, hard toggles — stays in ENV via `internal/config`. Endpoint URLs and credentials must never move into the database; when adding a backend connection, follow the ENV-section pattern (validation at boot, secrets excluded from logs).
+- Do not add new runtime settings as environment variables, and do not add new endpoints or credentials as database fields; pick the side that matches the kind of value (#139).
+
 ## Privacy And State
 
 - Treat chat history, summaries, image metadata, caches, and similar runtime state as ephemeral unless the task explicitly introduces durable storage.
