@@ -21,9 +21,9 @@ import (
 func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 	var secrets []secretscrub.Secret
 
-	// Scalar secrets also register their whitespace-trimmed form: header
-	// transmission strips surrounding whitespace, so that is the form remote
-	// services receive and echo back.
+	// Scalar secrets also register their derived renderings — trimmed and
+	// quoted — because those are the forms remote surfaces and error
+	// diagnostics actually carry.
 	for _, secret := range []secretscrub.Secret{
 		{Name: "telegram-token", Value: cfg.Bot.Telegram.Token},
 		{Name: "llm-api-token", Value: cfg.LLM.Backends.OpenAICompat.APIToken},
@@ -35,7 +35,7 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 		{Name: "sentry-dsn", Value: cfg.Sentry.DSN},
 	} {
 		secrets = append(secrets, secret)
-		secrets = withTrimmed(secrets, secret)
+		secrets = withDerivedForms(secrets, secret)
 	}
 
 	// Backend endpoint URLs may carry basic-auth userinfo; only the password
@@ -88,20 +88,33 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 	return secretscrub.New(secrets)
 }
 
-// withTrimmed registers the whitespace-trimmed form of a configured secret
-// alongside the configured value: HTTP header transmission strips surrounding
-// whitespace, so the trimmed form is what remote services actually receive
-// and echo back in their errors.
-func withTrimmed(secrets []secretscrub.Secret, secret secretscrub.Secret) []secretscrub.Secret {
-	trimmed := strings.TrimSpace(secret.Value)
-	if trimmed == "" || trimmed == secret.Value {
-		return secrets
+// withDerivedForms registers derived renderings of a configured secret
+// alongside the configured value — the forms remote surfaces actually carry:
+//
+//   - trimmed: HTTP header transmission strips surrounding whitespace, so
+//     the trimmed form is what services receive and echo back;
+//   - quoted: rendering a value through %q — what net/url's parse errors and
+//     every *url.Error message do — escapes special characters, and neither
+//     the raw nor a trimmed form matches that rendering (strconv.Quote's
+//     inner text is exactly that rendering).
+func withDerivedForms(secrets []secretscrub.Secret, secret secretscrub.Secret) []secretscrub.Secret {
+	if trimmed := strings.TrimSpace(secret.Value); trimmed != "" && trimmed != secret.Value {
+		secrets = append(secrets, secretscrub.Secret{
+			Name:  secret.Name + "-trimmed",
+			Value: trimmed,
+		})
 	}
 
-	return append(secrets, secretscrub.Secret{
-		Name:  secret.Name + "-trimmed",
-		Value: trimmed,
-	})
+	if quoted := strconv.Quote(secret.Value); len(quoted) >= 2 {
+		if inner := quoted[1 : len(quoted)-1]; inner != secret.Value {
+			secrets = append(secrets, secretscrub.Secret{
+				Name:  secret.Name + "-quoted",
+				Value: inner,
+			})
+		}
+	}
+
+	return secrets
 }
 
 // credentialFromHeader extracts the credential part of a scheme-prefixed

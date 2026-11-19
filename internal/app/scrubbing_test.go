@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -534,6 +535,23 @@ func TestNewSecretScrubberRegistersTrimmedTokenForm(t *testing.T) {
 		if got := scrubber.Scrub(text); got == text {
 			t.Fatalf("token form survived: %q", text)
 		}
+	}
+}
+
+func TestNewSecretScrubberRegistersQuotedDSNForm(t *testing.T) {
+	t.Parallel()
+
+	cfg := scrubTestConfig()
+	cfg.Sentry.DSN = "SENTRYDSNFIXTURE\n" //nolint:gosec // fake fixture, not a credential
+
+	scrubber := newSecretScrubber(cfg)
+
+	// Sentry's initialization error renders the DSN through %q, which
+	// escapes the trailing newline; that rendering must match too.
+	rendered := strconv.Quote(cfg.Sentry.DSN)
+
+	if got := scrubber.Scrub(rendered); strings.Contains(got, "SENTRYDSNFIXTURE") {
+		t.Fatalf("quoted DSN rendering survived: %q", got)
 	}
 }
 
