@@ -36,7 +36,7 @@ type stubLLM struct {
 	generateModels  []string
 }
 
-func (s *stubLLM) BuildChatToolRequest(_ context.Context, _ llm.PromptScope, _ llm.ChatReplyContext, generationModel string, tools []llm.ToolDefinition, toolPolicy string, extraMessages []llm.Message) (llm.Request, error) {
+func (s *stubLLM) BuildChatToolRequest(_ context.Context, _ llm.PromptScope, _ llm.ChatReplyContext, generationModel string, tools []llm.ToolDefinition, toolPolicy string, extraMessages []llm.Message, _ bool) (llm.Request, error) {
 	s.buildCount++
 	s.lastBuildModel = generationModel
 	s.buildModels = append(s.buildModels, generationModel)

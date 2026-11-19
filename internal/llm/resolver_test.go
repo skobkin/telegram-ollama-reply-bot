@@ -74,7 +74,7 @@ func TestBuildChatToolRequestUsesTurnModelForWireAndPrompt(t *testing.T) {
 
 	request, err := service.BuildChatToolRequest(context.Background(), PromptScope{}, ChatReplyContext{
 		UserMessage: TextMessage(RoleUser, "hello"),
-	}, "turn-model", nil, "policy", nil)
+	}, "turn-model", nil, "policy", nil, false)
 	if err != nil {
 		t.Fatalf("BuildChatToolRequest: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestBuildChatToolRequestEmptyModelKeepsRoutePromptAndUnsetWire(t *testing.T
 
 	request, err := service.BuildChatToolRequest(context.Background(), PromptScope{}, ChatReplyContext{
 		UserMessage: TextMessage(RoleUser, "hello"),
-	}, "", nil, "policy", nil)
+	}, "", nil, "policy", nil, false)
 	if err != nil {
 		t.Fatalf("BuildChatToolRequest: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestTurnKeepsModelAcrossIterationsAndSettingChanges(t *testing.T) {
 	// First iteration with the original route.
 	first, err := service.BuildChatToolRequest(context.Background(), PromptScope{}, ChatReplyContext{
 		UserMessage: TextMessage(RoleUser, "hello"),
-	}, "turn-model", nil, "policy", nil)
+	}, "turn-model", nil, "policy", nil, false)
 	if err != nil {
 		t.Fatalf("first iteration: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestTurnKeepsModelAcrossIterationsAndSettingChanges(t *testing.T) {
 
 	second, err := service.BuildChatToolRequest(context.Background(), PromptScope{}, ChatReplyContext{
 		UserMessage: TextMessage(RoleUser, "hello"),
-	}, "turn-model", nil, "policy", nil)
+	}, "turn-model", nil, "policy", nil, false)
 	if err != nil {
 		t.Fatalf("second iteration: %v", err)
 	}

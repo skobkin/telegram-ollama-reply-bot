@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -42,15 +43,21 @@ type turnStubLLM struct {
 	mu        sync.Mutex
 	responses []llm.Response
 	err       error
+	buildErr  error
 	builds    int
 	lastHint  string
 }
 
-func (s *turnStubLLM) BuildChatToolRequest(_ context.Context, _ llm.PromptScope, requestContext llm.ChatReplyContext, generationModel string, tools []llm.ToolDefinition, _ string, extraMessages []llm.Message) (llm.Request, error) {
+func (s *turnStubLLM) BuildChatToolRequest(_ context.Context, _ llm.PromptScope, requestContext llm.ChatReplyContext, generationModel string, tools []llm.ToolDefinition, _ string, extraMessages []llm.Message, _ bool) (llm.Request, error) {
 	s.mu.Lock()
 	s.builds++
 	s.lastHint = requestContext.SystemHint
+	buildErr := s.buildErr
 	s.mu.Unlock()
+
+	if buildErr != nil {
+		return llm.Request{}, buildErr
+	}
 
 	return llm.Request{Feature: llm.FeatureChat, Model: generationModel, Tools: tools, Messages: extraMessages}, nil
 }
@@ -1453,5 +1460,69 @@ func TestProactivePersonaSnapshotSurvivesMidDecisionChanges(t *testing.T) {
 	}
 	if strings.Contains(decision, "MUTATED-TEMPLATE") || strings.Contains(decision, "Nova") || strings.Contains(decision, "German") {
 		t.Fatalf("decision context picked up mutated persona settings: %s", decision)
+	}
+}
+
+// TestProactiveLogsStayIdentifierFree pins the privacy contract of the
+// proactive path: from submission through decision and a failed silent
+// turn, no proactive log line may link a decision to a conversation or
+// message. Pre-existing middleware logging (request context, history save)
+// keeps its identifiers — it is shared with explicit turns and was not
+// introduced by this feature.
+func TestProactiveLogsStayIdentifierFree(t *testing.T) {
+	p := newProactiveTestBot(t, func(s *adminStoreStub) {
+		s.GlobalSettings = adminconfig.GlobalSettings{
+			CharacterName:             "Ada",
+			Language:                  "English",
+			ChatModel:                 "runtime-gen-model",
+			SystemOneModel:            "decision-model",
+			DefaultInteractivityMode:  adminconfig.InteractivityMentionsReplies,
+			DefaultInteractionProfile: adminconfig.ProfileTalkLow,
+		}
+	})
+
+	// Debug level: a stray per-message trace would be caught too.
+	var logs bytes.Buffer
+	p.bot.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// Scenario 1: the decision itself fails (backend anomaly class).
+	client := &fakeDecisionClient{err: systemone.ErrMalformed}
+	persona := &fakePersonaSource{}
+	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024)
+	t.Cleanup(stop)
+
+	p.deliver(t, proactiveGroupUpdate("first probe message"))
+	waitFor(t, func() bool { return client.calls() >= 1 })
+	time.Sleep(150 * time.Millisecond)
+
+	// Scenario 2: the decision succeeds, the turn fails at request
+	// construction with the sanitized class the real service returns.
+	client.mu.Lock()
+	client.err = nil
+	client.answers = decisionAnswers(0.05, 0.0, 1.0)
+	client.mu.Unlock()
+	p.llm.mu.Lock()
+	p.llm.buildErr = llm.ErrTemplateProcessing
+	p.llm.mu.Unlock()
+
+	p.deliver(t, proactiveGroupUpdate("second probe message"))
+	waitFor(t, func() bool { return p.llm.buildCount() >= 1 })
+	time.Sleep(150 * time.Millisecond)
+
+	// Every log line carrying an identifier must be one of the two known
+	// pre-existing middleware lines; nothing else may leak identifiers or
+	// error content.
+	for _, line := range strings.Split(logs.String(), "\n") {
+		linked := strings.Contains(line, "chat_id") ||
+			strings.Contains(line, "message_id") ||
+			strings.Contains(line, "PRIVATE") ||
+			strings.Contains(line, "probe message")
+		if !linked {
+			continue
+		}
+		if strings.Contains(line, "request context initialized") || strings.Contains(line, "saving message to history") {
+			continue
+		}
+		t.Fatalf("proactive log line links a decision to a conversation or leaks content: %s", line)
 	}
 }

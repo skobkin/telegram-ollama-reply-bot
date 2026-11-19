@@ -109,7 +109,10 @@ func (s *Service) Generate(ctx context.Context, req Request) (Response, error) {
 // both the wire request and the {{.Model}} prompt placeholder, keeping them
 // consistent across every iteration of the turn; when empty the environment
 // route model renders in the prompt and the wire model stays unset for
-// Generate to fill from the route.
+// Generate to fill from the route. silent marks unsolicited proactive
+// turns: construction failures — template errors can quote operator
+// template text — are sanitized before the log and Sentry, matching the
+// SilentErrors treatment Generate applies to backend failures.
 func (s *Service) BuildChatToolRequest(
 	ctx context.Context,
 	scope PromptScope,
@@ -118,8 +121,9 @@ func (s *Service) BuildChatToolRequest(
 	tools []ToolDefinition,
 	toolPolicy string,
 	extraMessages []Message,
+	silent bool,
 ) (Request, error) {
-	messages, err := s.buildConversationMessages(ctx, scope, requestContext, generationModel, toolPolicy)
+	messages, err := s.buildConversationMessages(ctx, scope, requestContext, generationModel, toolPolicy, silent)
 	if err != nil {
 		return Request{}, err
 	}
@@ -127,10 +131,11 @@ func (s *Service) BuildChatToolRequest(
 	messages = append(messages, extraMessages...)
 
 	return Request{
-		Feature:  FeatureChat,
-		Model:    generationModel,
-		Messages: messages,
-		Tools:    tools,
+		Feature:      FeatureChat,
+		Model:        generationModel,
+		SilentErrors: silent,
+		Messages:     messages,
+		Tools:        tools,
 	}, nil
 }
 
@@ -155,8 +160,15 @@ func (s *Service) summarize(ctx context.Context, scope PromptScope, text string,
 
 	systemPrompt, err := s.prompts.RenderSummarizeSystemPrompt(ctx, scope)
 	if err != nil {
-		logger.Error("summarize template processing failed", "error", err)
-		sentry.CaptureException(err)
+		// Silent runs sanitize construction diagnostics: template errors can
+		// quote operator template text, so only the stable kind reaches the
+		// log and Sentry on unsolicited proactive turns.
+		diagnostic := err
+		if silent {
+			diagnostic = ErrTemplateProcessing
+		}
+		logger.Error("summarize template processing failed", "error", diagnostic)
+		sentry.CaptureException(diagnostic)
 
 		return "", nil, ErrTemplateProcessing
 	}
@@ -303,7 +315,7 @@ func (s *Service) ListModels(ctx context.Context) ([]string, error) {
 	return models, nil
 }
 
-func (s *Service) buildConversationMessages(ctx context.Context, scope PromptScope, requestContext ChatReplyContext, generationModel string, toolPolicy string) ([]Message, error) {
+func (s *Service) buildConversationMessages(ctx context.Context, scope PromptScope, requestContext ChatReplyContext, generationModel string, toolPolicy string, silent bool) ([]Message, error) {
 	logger := logging.FromContext(ctx, s.logger)
 	route, err := s.cfg.RouteForFeature(string(FeatureChat))
 	if err != nil {
@@ -324,8 +336,16 @@ func (s *Service) buildConversationMessages(ctx context.Context, scope PromptSco
 		systemPrompt, err = s.prompts.RenderChatSystemPrompt(ctx, scope, model, requestContext.SystemHint, toolPolicy)
 	}
 	if err != nil {
-		logger.Error("chat template processing failed", "error", err)
-		sentry.CaptureException(err)
+		// Silent runs sanitize construction diagnostics too: template
+		// errors can quote operator template text and renderer internals,
+		// so only the stable kind reaches the log and Sentry. Explicit
+		// turns keep the raw error for operators.
+		diagnostic := err
+		if silent {
+			diagnostic = ErrTemplateProcessing
+		}
+		logger.Error("chat template processing failed", "error", diagnostic)
+		sentry.CaptureException(diagnostic)
 
 		return nil, ErrTemplateProcessing
 	}

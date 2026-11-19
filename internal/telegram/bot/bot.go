@@ -377,7 +377,9 @@ func (b *Bot) textMessageHandler(ctx *th.Context, update t.Update) error {
 		return nil
 	}
 
-	logger.Debug("evaluating message for proactive participation", "chat_id", message.Chat.ID, "message_id", message.MessageID)
+	// No per-message trace here: proactive participation must not log
+	// identifiers that link a decision to a conversation or message. The
+	// queued task logs content-free failure classes only.
 	b.evaluateProactiveParticipation(ctx.Context(), message)
 
 	return nil

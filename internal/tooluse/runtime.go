@@ -24,7 +24,11 @@ import (
 var ErrToolLoopLimitReached = errors.New("tool loop iteration limit reached")
 
 type llmService interface {
-	BuildChatToolRequest(ctx context.Context, scope llm.PromptScope, requestContext llm.ChatReplyContext, generationModel string, tools []llm.ToolDefinition, toolPolicy string, extraMessages []llm.Message) (llm.Request, error)
+	// BuildChatToolRequest assembles one loop iteration's request. The
+	// silent flag marks unsolicited proactive turns: the implementation
+	// sanitizes its construction diagnostics (and the built request's
+	// backend failure handling) the same way it sanitizes Generate errors.
+	BuildChatToolRequest(ctx context.Context, scope llm.PromptScope, requestContext llm.ChatReplyContext, generationModel string, tools []llm.ToolDefinition, toolPolicy string, extraMessages []llm.Message, silent bool) (llm.Request, error)
 	Generate(ctx context.Context, req llm.Request) (llm.Response, error)
 }
 
@@ -367,7 +371,7 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 		genStart := time.Now()
 		emitter.publish(execution.GenerationStarted{RunContext: emitter.rc, At: genStart, Iteration: i})
 
-		request, err := r.llm.BuildChatToolRequest(ctx, req.PromptScope, req.ReplyContext, req.TurnConfig.GenerationModel, modelTools, toolPolicy, extraMessages)
+		request, err := r.llm.BuildChatToolRequest(ctx, req.PromptScope, req.ReplyContext, req.TurnConfig.GenerationModel, modelTools, toolPolicy, extraMessages, req.SilentErrors)
 		if err != nil {
 			if !started {
 				logger.Warn("chat request preparation failed", "error", err)
@@ -375,9 +379,9 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 
 			return fail(err, execution.ReasonPrepare)
 		}
-		// Carried per request: the service sanitizes its own diagnostics
-		// for silent runs, so the loop log and the returned error are
-		// content-free too.
+		// Carried per request: the service sanitizes its own diagnostics —
+		// construction included — for silent runs, so the loop log and the
+		// returned error are content-free too.
 		request.SilentErrors = req.SilentErrors
 
 		resp, err := r.llm.Generate(ctx, request)

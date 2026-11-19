@@ -140,7 +140,9 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 	// another.
 	resolved, ok := b.resolveChatConfig(ctx, message)
 	if !ok {
-		logger.Warn("proactive participation skipped", "chat_id", message.Chat.ID, "reason", "chat config resolution failed")
+		// Content-free class only: no chat identifier — proactive failure
+		// diagnostics must not link decisions to conversations.
+		logger.Warn("proactive participation skipped", "reason", "chat config resolution failed")
 
 		return
 	}
@@ -222,11 +224,12 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 		},
 	})
 	if err != nil {
-		// The engine returns typed, content-free errors only. Expected
-		// outage classes stay out of Sentry; response-validation anomalies
-		// are captured sanitized.
+		// The engine returns typed, content-free errors only, and the log
+		// carries no chat identifier: proactive failure diagnostics must
+		// not link decisions to conversations. Expected outage classes stay
+		// out of Sentry; response-validation anomalies are captured
+		// sanitized.
 		logger.Warn("proactive decision failed",
-			"chat_id", message.Chat.ID,
 			"duration", time.Since(started).Round(time.Millisecond).String(),
 			"error", err)
 		if errors.Is(err, interactivity.ErrInvalidResponse) {
