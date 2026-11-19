@@ -432,3 +432,55 @@ func containsAny(text string, needles ...string) bool {
 
 	return false
 }
+
+func TestNewSecretScrubberRegistersHeaderCredential(t *testing.T) {
+	t.Parallel()
+
+	cfg := scrubTestConfig()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"docs": {
+			URL:     "https://mcp.example.test/sse",
+			Headers: map[string]string{"Authorization": "Bearer BEARERCREDFIXTURE"}, //nolint:gosec // fake fixture, not a credential
+		},
+	}
+
+	scrubber := newSecretScrubber(cfg)
+
+	// The full header value and the bare credential both scrub.
+	for _, fixture := range []string{"Bearer BEARERCREDFIXTURE", "invalid api key BEARERCREDFIXTURE"} {
+		text := "provider said: " + fixture
+
+		if got := scrubber.Scrub(text); got == text {
+			t.Fatalf("credential literal survived: %q", text)
+		}
+	}
+
+}
+
+func TestCredentialFromHeader(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		value string
+		want  string
+		ok    bool
+	}{
+		{"bearer", "Bearer SECRET1", "SECRET1", true},
+		{"bearer lowercase", "bearer SECRET1", "SECRET1", true},
+		{"basic", "Basic dXNlcjpwYXNz", "dXNlcjpwYXNz", true},
+		{"bot", "Bot SECRET2", "SECRET2", true},
+		{"token", "token  SECRET3 ", " SECRET3 ", true},
+		{"unrecognized scheme", "Digest abc", "", false},
+		{"no credential", "Bearer ", "", false},
+		{"no space", "rawvalue", "", false},
+		{"empty", "", "", false},
+	}
+
+	for _, testCase := range cases {
+		got, ok := credentialFromHeader(testCase.value)
+		if ok != testCase.ok || got != testCase.want {
+			t.Fatalf("%s: got (%q, %v), want (%q, %v)", testCase.name, got, ok, testCase.want, testCase.ok)
+		}
+	}
+}

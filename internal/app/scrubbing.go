@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/url"
+	"strings"
 
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/support/secretscrub"
@@ -33,22 +34,58 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 				Name:  "mcp-" + name + "-header-" + header,
 				Value: value,
 			})
+
+			// Providers echo the bare credential in errors ("invalid api
+			// key X"), not the full header value, so the credential part of
+			// scheme-prefixed values is registered alongside the whole.
+			if credential, ok := credentialFromHeader(value); ok {
+				secrets = append(secrets, secretscrub.Secret{
+					Name:  "mcp-" + name + "-header-" + header + "-credential",
+					Value: credential,
+				})
+			}
 		}
 
 		// Only the password part of an MCP endpoint URL is registered: a
 		// generic username would mutilate unrelated text, and net/http
 		// already masks passwords inside its own url.Error rendering.
-		if parsed, err := url.Parse(server.URL); err == nil && parsed.User != nil {
-			if password, ok := parsed.User.Password(); ok && password != "" {
-				secrets = append(secrets, secretscrub.Secret{
-					Name:  "mcp-" + name + "-url-password",
-					Value: password,
-				})
-			}
-		}
+		secrets = appendURLPassword(secrets, "mcp-"+name+"-url-password", server.URL)
 	}
 
 	return secretscrub.New(secrets)
+}
+
+// credentialFromHeader extracts the credential part of a scheme-prefixed
+// header value ("Bearer X", "Token X", …), which is what providers echo in
+// their own error messages.
+func credentialFromHeader(value string) (string, bool) {
+	scheme, credential, found := strings.Cut(value, " ")
+	if !found || credential == "" {
+		return "", false
+	}
+
+	switch strings.ToLower(scheme) {
+	case "bearer", "basic", "bot", "token":
+		return credential, true
+	default:
+		return "", false
+	}
+}
+
+// appendURLPassword appends the password embedded in an endpoint URL's
+// userinfo, if any. The username is deliberately never registered: a
+// generic username would mutilate unrelated text.
+func appendURLPassword(secrets []secretscrub.Secret, name, rawURL string) []secretscrub.Secret {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.User == nil {
+		return secrets
+	}
+
+	if password, ok := parsed.User.Password(); ok && password != "" {
+		secrets = append(secrets, secretscrub.Secret{Name: name, Value: password})
+	}
+
+	return secrets
 }
 
 // newSentryBeforeSend returns a BeforeSend hook that scrubs every registered
