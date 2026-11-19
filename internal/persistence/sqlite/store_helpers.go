@@ -43,6 +43,18 @@ func globalFieldAssignment(field, value string) (string, any, error) {
 		parsed, err := parseBoolValue(value)
 
 		return "keep_tool_history", boolToSQLite(parsed), err
+	case "chat_model", "summarize_model", "image_recognition_model", "systemone_model", "decision_instructions":
+		// Plain string fields, including the explicit empty value written by
+		// ClearGlobalSetting: unset semantics live in the caller, the column
+		// stores '' verbatim.
+		return field, value, nil
+	case "default_interaction_profile":
+		profile := adminconfig.InteractionProfile(value)
+		if value != "" && !isValidInteractionProfile(profile) {
+			return "", nil, fmt.Errorf("unsupported interaction profile %q; supported values: %s", value, formatInteractionProfiles())
+		}
+
+		return "default_interaction_profile", string(profile), nil
 	default:
 		return "", nil, fmt.Errorf("unsupported global field %q", field)
 	}
@@ -78,6 +90,15 @@ func chatFieldAssignment(field, value string) (string, any, error) {
 		parsed, err := parseBoolValue(value)
 
 		return "keep_tool_history", boolToSQLite(parsed), err
+	case "chat_model", "systemone_model", "decision_instructions":
+		return field, value, nil
+	case "interaction_profile":
+		profile := adminconfig.InteractionProfile(value)
+		if value != "" && !isValidInteractionProfile(profile) {
+			return "", nil, fmt.Errorf("unsupported interaction profile %q; supported values: %s", value, formatInteractionProfiles())
+		}
+
+		return "interaction_profile", string(profile), nil
 	default:
 		return "", nil, fmt.Errorf("unsupported chat field %q", field)
 	}
@@ -99,6 +120,8 @@ func chatFieldClearValue(field string) (string, any, error) {
 		return "preview_mode", "", nil
 	case "keep_tool_history":
 		return "keep_tool_history", nil, nil
+	case "chat_model", "systemone_model", "interaction_profile", "decision_instructions":
+		return field, "", nil
 	default:
 		return "", nil, fmt.Errorf("unsupported chat field %q", field)
 	}
@@ -129,6 +152,19 @@ func isValidInteractivityMode(mode adminconfig.InteractivityMode) bool {
 	}
 
 	return false
+}
+
+func isValidInteractionProfile(profile adminconfig.InteractionProfile) bool {
+	return adminconfig.IsValidInteractionProfile(profile)
+}
+
+func formatInteractionProfiles() string {
+	profiles := make([]string, 0, len(adminconfig.InteractionProfiles()))
+	for _, profile := range adminconfig.InteractionProfiles() {
+		profiles = append(profiles, string(profile))
+	}
+
+	return strings.Join(profiles, ", ")
 }
 
 func formatInteractivityModes() string {
@@ -183,6 +219,18 @@ func globalFieldUpdateQuery(column string) (string, error) {
 		return `UPDATE global_settings SET default_preview_mode = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
 	case "keep_tool_history":
 		return `UPDATE global_settings SET keep_tool_history = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
+	case "chat_model":
+		return `UPDATE global_settings SET chat_model = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
+	case "summarize_model":
+		return `UPDATE global_settings SET summarize_model = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
+	case "image_recognition_model":
+		return `UPDATE global_settings SET image_recognition_model = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
+	case "systemone_model":
+		return `UPDATE global_settings SET systemone_model = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
+	case "default_interaction_profile":
+		return `UPDATE global_settings SET default_interaction_profile = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
+	case "decision_instructions":
+		return `UPDATE global_settings SET decision_instructions = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
 	default:
 		return "", fmt.Errorf("unsupported global column %q", column)
 	}
@@ -204,6 +252,14 @@ func chatFieldUpdateQuery(column string) (string, error) {
 		return `UPDATE chat_settings SET preview_mode = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
 	case "keep_tool_history":
 		return `UPDATE chat_settings SET keep_tool_history = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
+	case "chat_model":
+		return `UPDATE chat_settings SET chat_model = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
+	case "systemone_model":
+		return `UPDATE chat_settings SET systemone_model = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
+	case "interaction_profile":
+		return `UPDATE chat_settings SET interaction_profile = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
+	case "decision_instructions":
+		return `UPDATE chat_settings SET decision_instructions = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
 	default:
 		return "", fmt.Errorf("unsupported chat column %q", column)
 	}

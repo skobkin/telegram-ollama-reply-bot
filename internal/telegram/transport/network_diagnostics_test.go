@@ -1,9 +1,64 @@
 package transport
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
 	"net/url"
+	"strings"
 	"testing"
+
+	"telegram-ollama-reply-bot/internal/config"
 )
+
+// TestLogNetworkRoutingIncludesSystemOneEndpoint pins the System One entry
+// in the startup routing snapshot: the endpoint renders redacted (decision
+// endpoint URLs can carry credentials) and the resolved proxy policy is
+// reported alongside it.
+func TestLogNetworkRoutingIncludesSystemOneEndpoint(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.SystemOne.BaseURL = "http://operator:secret@so.internal:8090"
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+
+	LogNetworkRouting(logger, cfg)
+
+	var record map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &record); err != nil {
+		t.Fatalf("decode log record: %v", err)
+	}
+
+	baseURL, _ := record["systemone_base_url"].(string)
+	if baseURL == "" || strings.Contains(baseURL, "secret") {
+		t.Fatalf("systemone endpoint must be logged without credentials, got %q", baseURL)
+	}
+	if !strings.Contains(baseURL, "so.internal:8090") {
+		t.Fatalf("systemone endpoint host must stay visible, got %q", baseURL)
+	}
+	proxy, _ := record["systemone_proxy"].(string)
+	if proxy == "" {
+		t.Fatalf("systemone proxy resolution must be reported")
+	}
+}
+
+// TestLogNetworkRoutingUnsetSystemOneEndpoint pins the unset shape: an empty
+// endpoint reads as unset rather than an empty or n/a URL.
+func TestLogNetworkRoutingUnsetSystemOneEndpoint(t *testing.T) {
+	cfg := &config.Config{}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+
+	LogNetworkRouting(logger, cfg)
+
+	if !strings.Contains(buf.String(), `"systemone_base_url":"unset"`) {
+		t.Fatalf("empty endpoint must read as unset, got %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"systemone_proxy":"n/a"`) {
+		t.Fatalf("empty endpoint proxy must read as n/a, got %s", buf.String())
+	}
+}
 
 func TestResolveProxyForURLReturnsDirectWhenProxyIsNotUsed(t *testing.T) {
 	t.Parallel()

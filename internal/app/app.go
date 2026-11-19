@@ -16,6 +16,7 @@ import (
 	"telegram-ollama-reply-bot/internal/content/fetch"
 	"telegram-ollama-reply-bot/internal/content/search"
 	"telegram-ollama-reply-bot/internal/execution"
+	"telegram-ollama-reply-bot/internal/interactivity"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/logging"
 	"telegram-ollama-reply-bot/internal/mcp"
@@ -27,6 +28,7 @@ import (
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/support/safeerr"
 	"telegram-ollama-reply-bot/internal/support/secretscrub"
+	"telegram-ollama-reply-bot/internal/systemone"
 	adminui "telegram-ollama-reply-bot/internal/telegram/adminui"
 	"telegram-ollama-reply-bot/internal/telegram/bot"
 	"telegram-ollama-reply-bot/internal/telegram/transport"
@@ -42,6 +44,88 @@ import (
 // underlying transport error is never retained: telego's request errors embed
 // the full API URL, which carries the bot token in its path.
 var ErrTelegramConnect = errors.New("cannot connect to telegram api")
+
+// modelResolver adapts operator-managed settings to llm.ModelResolver: chat
+// resolves per chat, summarize and image recognition are global-only
+// features whose values are the same for every chat. Unknown features have
+// no runtime override and resolve as unset.
+type modelResolver struct {
+	admin *adminconfig.Service
+}
+
+func (r modelResolver) ResolveModel(ctx context.Context, feature llm.Feature, chatID int64) (string, error) {
+	resolved, err := r.admin.ResolveChatConfig(ctx, chatID)
+	if err != nil {
+		return "", err
+	}
+
+	switch feature {
+	case llm.FeatureChat:
+		return resolved.ChatModel, nil
+	case llm.FeatureSummarize:
+		return resolved.SummarizeModel, nil
+	case llm.FeatureImageRecognition:
+		return resolved.ImageRecognitionModel, nil
+	default:
+		return "", nil
+	}
+}
+
+// decisionPersonaSource renders the decision context's persona through the
+// ordinary admin prompt path: the full effective character prompt the
+// generation turns use, from the persona the operation captured at start.
+// The generation model passed in comes from the operation snapshot, so any
+// model-identity reference in the persona describes the generation
+// character; an empty snapshot model falls back to the environment chat
+// route — the same fallback ordinary prompt rendering applies — so an unset
+// override chain never renders an empty model identity. The compact context
+// stays empty — the decision state already carries the conversation as
+// bounded history — and the tool-policy section states that no tools exist
+// in a decision.
+type decisionPersonaSource struct {
+	prompts           *llm.AdminPromptRenderer
+	fallbackChatModel string
+}
+
+// decisionPersonaToolPolicy renders the chat template's tool-policy section
+// for decision contexts: the decision backend receives no tools, and the
+// persona must not advertise any.
+const decisionPersonaToolPolicy = "No tools are available in this context."
+
+func (s decisionPersonaSource) DecisionPersona(ctx context.Context, chatID int64, generationModel string, settings interactivity.PersonaSettings) (string, error) {
+	if generationModel == "" {
+		generationModel = s.fallbackChatModel
+	}
+
+	return s.prompts.RenderCapturedChatSystemPrompt(ctx, llm.CapturedPersona{
+		TemplateBody:  settings.TemplateBody,
+		Language:      settings.Language,
+		Gender:        settings.Gender,
+		CharacterName: settings.CharacterName,
+	}, chatID, generationModel, "", decisionPersonaToolPolicy)
+}
+
+// CapturePersonaTemplate resolves the chat prompt template body of the
+// operation snapshot: the body the decision persona renders from and the
+// action turn renders from, identical even if the template changes in
+// between.
+func (s decisionPersonaSource) CapturePersonaTemplate(ctx context.Context, chatID int64) (string, error) {
+	return s.prompts.ChatPromptBody(ctx, chatID)
+}
+
+// envChatRouteModel resolves the environment chat-route model once at
+// wiring time, mirroring the route fallback the generation path applies
+// when the runtime override chain is unset. A route error yields "" — the
+// boot-time model checks fail loudly on invalid routes, so this only
+// degrades the persona's model identity text.
+func envChatRouteModel(cfg config.LLMConfig) string {
+	route, err := cfg.RouteForFeature("chat")
+	if err != nil {
+		return ""
+	}
+
+	return route.Model
+}
 
 // verifyStartupModels checks that every required feature model is available
 // on the service that will actually serve it. The main service always covers
@@ -290,12 +374,32 @@ func Run(ctx context.Context) error {
 
 	prompts := llm.NewAdminPromptRenderer(adminService, cfg.LLM.ImageRecognitionEnabled, botUser.Username)
 
+	resolver := modelResolver{admin: adminService}
+
+	// System One decision backend: the client is shared by the admin UI model
+	// picker (and, later in the wiring, the interaction engine and decision
+	// tools). An empty endpoint yields an unconfigured client — picker
+	// discovery unavailable and decision features off, never a boot failure.
+	systemOneClient, err := systemone.New(systemone.Config{
+		BaseURL:          cfg.SystemOne.BaseURL,
+		APIKey:           cfg.SystemOne.APIKey,
+		Timeout:          cfg.SystemOne.Timeout,
+		MaxResponseBytes: cfg.SystemOne.MaxResponseBytes,
+		InputBudgetBytes: cfg.SystemOne.InputBudgetBytes,
+	}, logManager.Logger("systemone"))
+	if err != nil {
+		logger.Error("failed to initialize system one client", "error", err)
+		sentry.CaptureException(err)
+
+		return err
+	}
+
 	// One scrubbing doer shared by both LLM services: go-openai is the only
 	// consumer that accepts an injectable client interface, so its transport
 	// errors (which would otherwise embed URLs) are scrubbed at the source.
 	llmHTTP := secretscrub.WrapDoer(scrubber, httpclient.New())
 
-	llmc, err := llm.NewService(cfg.LLM, prompts, llmHTTP, logManager.Logger("llm"))
+	llmc, err := llm.NewService(cfg.LLM, prompts, resolver, llmHTTP, logManager.Logger("llm"))
 	if err != nil {
 		logger.Error("failed to initialize llm service", "error", err)
 		sentry.CaptureException(err)
@@ -335,7 +439,7 @@ func Run(ctx context.Context) error {
 			APIToken: cfg.LLM.ImageRecognition.OpenAICompat.APIToken,
 		}
 
-		imageLLM, err = llm.NewService(imageCfg, prompts, llmHTTP, logManager.Logger("llm/image"))
+		imageLLM, err = llm.NewService(imageCfg, prompts, resolver, llmHTTP, logManager.Logger("llm/image"))
 		if err != nil {
 			logger.Error("failed to initialize image llm service", "error", err)
 			sentry.CaptureException(err)
@@ -343,9 +447,9 @@ func Run(ctx context.Context) error {
 			return err
 		}
 
-		recognizer = vision.NewOpenAIRecognizer(imageLLM)
+		recognizer = vision.NewOpenAIRecognizer(imageLLM, resolver)
 	default:
-		recognizer = vision.NewOpenAIRecognizer(llmc)
+		recognizer = vision.NewOpenAIRecognizer(llmc, resolver)
 	}
 
 	visionService := vision.NewService(
@@ -484,6 +588,12 @@ func Run(ctx context.Context) error {
 		},
 	)
 	tools.AttachMCP("mcp", mcpManager)
+	// Decision tools are registered statically when the System One backend
+	// is configured; their per-turn availability additionally requires an
+	// effective System One model from the operation snapshot.
+	if systemOneClient.Configured() {
+		tools.AttachDecisionTools(systemOneClient)
+	}
 	defer tools.Close()
 	botService := bot.NewBot(
 		ctx,
@@ -507,11 +617,33 @@ func Run(ctx context.Context) error {
 
 	// Interactive admin UI: controller (sessions, screens) plus the Telegram
 	// adapter that renders it. Ephemeral by design — sessions and pendings
-	// live in memory only.
+	// live in memory only. Model pickers discover from the backend actually
+	// serving each feature: the main service for chat/summarize, the
+	// dedicated image service when one is configured (else the shared
+	// connection), the System One client when the decision backend is
+	// configured. The image model setting is hidden while the model-free
+	// MiniMax recognizer is active.
+	var controllerOpts []core.ControllerOption
+	imageDiscovery := imageLLM
+	if imageDiscovery == nil {
+		imageDiscovery = llmc
+	}
+	// Generation, summarize, and image pickers discover from their serving
+	// backends regardless of the decision backend: the optional System One
+	// client contributes only its own provider (an untyped nil when
+	// unconfigured — that field's picker falls back to manual entry).
+	var systemOneDiscovery core.ModelDiscovery
+	if systemOneClient.Configured() {
+		systemOneDiscovery = systemOneClient
+	}
+	controllerOpts = append(controllerOpts, core.WithModelDiscovery(llmc, imageDiscovery, systemOneDiscovery))
+	if cfg.LLM.ImageRecognitionEnabled && cfg.LLM.ImageRecognition.Recognizer == config.ImageRecognizerMiniMaxVLM {
+		controllerOpts = append(controllerOpts, core.WithHiddenImageModel())
+	}
 	adminUIManager := core.NewManager(nil)
 	adminUIController := core.NewController(adminUIManager, adminService, cfg.Bot.AdminIDs, func() string {
 		return stores.Stats().Snapshot().String()
-	})
+	}, controllerOpts...)
 	adminAdapter := adminui.NewAdapter(
 		adminUIController,
 		adminUIManager,
@@ -520,6 +652,19 @@ func Run(ctx context.Context) error {
 		telegramAPI,
 	)
 	botService.SetAdminUI(adminAdapter)
+
+	// Proactive participation: opt-in per chat through the interaction
+	// profile. The engine evaluates eligible non-explicit group messages
+	// only while the System One backend is configured; unconfigured keeps
+	// the feature entirely off.
+	var stopParticipation func()
+	if systemOneClient.Configured() {
+		stopParticipation = botService.SetProactiveDecisions(
+			systemOneClient,
+			decisionPersonaSource{prompts: prompts, fallbackChatModel: envChatRouteModel(cfg.LLM)},
+			cfg.SystemOne.InputBudgetBytes,
+		)
+	}
 
 	attachImageTools(tools, botService, cfg.LLM.ImageRecognitionEnabled)
 
@@ -537,6 +682,13 @@ func Run(ctx context.Context) error {
 	stopMenuRecreate := adminAdapter.StartWatching(ctx, dispatcher)
 
 	runErr := botService.Run()
+	// Proactive participation drains first: its tasks run full generation
+	// turns that register preview runs, publish events, and record history,
+	// so they must be joined while previews, the dispatcher, the tool
+	// runtime, and the stores are all still alive.
+	if stopParticipation != nil {
+		stopParticipation()
+	}
 	stopMenuRecreate()
 	if stopPreviews != nil {
 		stopPreviews()

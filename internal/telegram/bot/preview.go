@@ -879,6 +879,22 @@ func (r *previewRun) Abort() {
 	r.finalize()
 }
 
+// Fail terminates the preview after a silent proactive failure and deletes
+// the group preview message best-effort: an unsolicited turn must not
+// leave an unsolicited working indicator behind. Explicit turns keep
+// Abort's accepted degradation — their error notice follows the preview
+// anyway. Private chats never run proactive turns, so only the group
+// message path applies here.
+func (r *previewRun) Fail() {
+	if r == nil {
+		return
+	}
+	r.finalize()
+	if !r.isPrivate {
+		r.deleteGroupPreview()
+	}
+}
+
 // Close is the deferred safety net; idempotent with the lifecycle methods.
 func (r *previewRun) Close() {
 	r.Abort()
@@ -1340,7 +1356,11 @@ func (r *previewRun) deleteGroupPreview() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.manager.baseCtx, previewDeleteTimeout)
+	// The delete is bounded independently of the bot lifecycle: the cleanup
+	// path also runs when shutdown cancelled the lifecycle context (a run
+	// failing mid-shutdown), and a cancelled parent would kill the delete
+	// before it starts, leaving the stale preview on the wire.
+	ctx, cancel := context.WithTimeout(context.Background(), previewDeleteTimeout)
 	defer cancel()
 	if err := r.manager.api.DeleteMessage(ctx, &t.DeleteMessageParams{
 		ChatID:    tu.ID(r.info.ChatID),

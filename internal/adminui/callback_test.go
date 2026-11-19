@@ -24,6 +24,13 @@ func TestCallbackCodecRoundTrip(t *testing.T) {
 		{VerbAllowRem, []string{"-1001234567890"}, 4294967295},
 		{VerbAccessPol, []string{"allow_all"}, 1000},
 		{VerbConfirmYes, nil, 3},
+		{VerbInteractivity, nil, 12},
+		{VerbField, []string{"so"}, 12},
+		{VerbValue, []string{"ip", "talk_high"}, 12},
+		{VerbModelList, []string{"cm"}, 99},
+		{VerbModelPage, []string{"2"}, 99},
+		{VerbModelPick, []string{"so", "0"}, 99},
+		{VerbClearGlobal, []string{"so"}, 99},
 	}
 
 	for _, testCase := range cases {
@@ -54,6 +61,20 @@ func TestCallbackWorstCaseFitsLimit(t *testing.T) {
 	worstValue := EncodeAction(VerbValue, 4294967295, "im", "mentions_or_replies")
 	if len(worstValue) > MaxCallbackBytes {
 		t.Fatalf("worst case value callback too long: %q (%d bytes)", worstValue, len(worstValue))
+	}
+
+	// Model picker picks carry an index into the cached list, never the
+	// model ID itself — the ID overflows the limit. A five-digit index is
+	// already far beyond any realistic backend list (8 per page).
+	worstPick := EncodeAction(VerbModelPick, 4294967295, "so", "99999")
+	if len(worstPick) > MaxCallbackBytes {
+		t.Fatalf("worst case model pick too long: %q (%d bytes)", worstPick, len(worstPick))
+	}
+
+	// Enabling the longest profile name through the scope confirmation.
+	worstProfile := EncodeAction(VerbValue, 4294967295, "ip", "non_interactive")
+	if len(worstProfile) > MaxCallbackBytes {
+		t.Fatalf("worst case profile value too long: %q (%d bytes)", worstProfile, len(worstProfile))
 	}
 }
 
@@ -119,6 +140,30 @@ func TestFieldNameScopeDisambiguation(t *testing.T) {
 	name, ok := FieldName("cn", false)
 	if !ok || name != "character_name" {
 		t.Fatalf("cn should map to character_name, got %q", name)
+	}
+
+	// Model/interactivity codes resolve per scope; cm/so/di share one name.
+	for _, testCase := range []struct {
+		code          string
+		global, chat  string
+		sameNameScope bool // code maps to the same field in both scopes
+	}{
+		{"cm", "chat_model", "chat_model", true},
+		{"so", "systemone_model", "systemone_model", true},
+		{"ip", "default_interaction_profile", "interaction_profile", false},
+		{"di", "decision_instructions", "decision_instructions", true},
+	} {
+		gotGlobal, ok := FieldName(testCase.code, true)
+		if !ok || gotGlobal != testCase.global {
+			t.Fatalf("global %s should map to %s, got %q", testCase.code, testCase.global, gotGlobal)
+		}
+		gotChat, ok := FieldName(testCase.code, false)
+		if !ok || gotChat != testCase.chat {
+			t.Fatalf("chat %s should map to %s, got %q", testCase.code, testCase.chat, gotChat)
+		}
+		if (gotGlobal == gotChat) != testCase.sameNameScope {
+			t.Fatalf("%s scope mapping unexpected: global %q chat %q", testCase.code, gotGlobal, gotChat)
+		}
 	}
 
 	if _, ok := FieldName("zz", false); ok {

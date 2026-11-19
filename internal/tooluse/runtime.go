@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,7 +24,11 @@ import (
 var ErrToolLoopLimitReached = errors.New("tool loop iteration limit reached")
 
 type llmService interface {
-	BuildChatToolRequest(ctx context.Context, scope llm.PromptScope, requestContext llm.ChatReplyContext, tools []llm.ToolDefinition, toolPolicy string, extraMessages []llm.Message) (llm.Request, error)
+	// BuildChatToolRequest assembles one loop iteration's request. The
+	// silent flag marks unsolicited proactive turns: the implementation
+	// sanitizes its construction diagnostics (and the built request's
+	// backend failure handling) the same way it sanitizes Generate errors.
+	BuildChatToolRequest(ctx context.Context, scope llm.PromptScope, requestContext llm.ChatReplyContext, generationModel string, tools []llm.ToolDefinition, toolPolicy string, extraMessages []llm.Message, silent bool) (llm.Request, error)
 	Generate(ctx context.Context, req llm.Request) (llm.Response, error)
 }
 
@@ -86,6 +91,29 @@ type ChatRequest struct {
 	// identity Telegram may redirect (album reactions land on the first
 	// non-deleted member), never to address messages.
 	RequesterMediaGroupID string
+	// TurnConfig carries the model selection resolved once from one settings
+	// snapshot when the enclosing operation started; it stays fixed for the
+	// whole run, so settings changes mid-run affect only later operations.
+	// An empty GenerationModel falls back to the environment route.
+	TurnConfig llm.TurnConfig
+	// AllowedTools restricts this run to the named tools: they are the only
+	// ones advertised, listed in the tool-policy text, and executable —
+	// calls to anything else take the existing unknown-tool rejection path.
+	// nil (the default) advertises the full registry; ordinary turns never
+	// set it. Restricted reaction-only turns allow exactly set_reaction.
+	AllowedTools []string
+	// CompleteAfterSideEffect ends the run as soon as an allowed
+	// side-effecting tool applies successfully in a round: the runtime
+	// returns directly, with no further generation request and no
+	// empty-reply fallback. Only restricted runs (AllowedTools set) use it;
+	// ordinary turns never set it, so their loop semantics are unchanged.
+	CompleteAfterSideEffect bool
+	// SilentErrors switches the run's generation-failure diagnostics to
+	// content-free form at every layer (service logging and capture, this
+	// runtime's loop log, and the error the caller sees): unsolicited
+	// proactive turns set it, because provider error bodies can echo chat
+	// content. Ordinary turns never set it and keep raw diagnostics.
+	SilentErrors bool
 }
 
 // ToolCallRecord is the authoritative record of one tool invocation, in
@@ -141,17 +169,18 @@ func classifyRunFailure(err error, fallback string) string {
 }
 
 type Runtime struct {
-	llm           llmService
-	history       state.ConversationStore
-	extractor     extractor.Extractor
-	searcher      search.Searcher
-	actions       TelegramActionSender
-	imageAnalyzer ImageAnalyzer
-	reminders     *reminders.Service
-	logger        *slog.Logger
-	config        Config
-	registry      *Registry
-	closers       []registeredCloser
+	llm            llmService
+	history        state.ConversationStore
+	extractor      extractor.Extractor
+	searcher       search.Searcher
+	actions        TelegramActionSender
+	imageAnalyzer  ImageAnalyzer
+	decisionClient decisionExecutor
+	reminders      *reminders.Service
+	logger         *slog.Logger
+	config         Config
+	registry       *Registry
+	closers        []registeredCloser
 	// reactions coordinates outgoing set-reaction API calls across
 	// concurrent runs; see tool_set_reaction.go. Zero value ready to use.
 	reactions reactionLimiter
@@ -286,7 +315,7 @@ func (r *Runtime) Close() {
 // delivery is best-effort: the returned outcome never depends on it.
 func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, error) {
 	logger := logging.FromContext(ctx, r.logger)
-	definitions := r.registry.DefaultDefinitions()
+	definitions := allowedDefinitions(r.turnDefinitions(req.TurnConfig.SystemOneModel), req.AllowedTools)
 	modelTools := toLLMToolDefinitions(definitions)
 	toolPolicy := buildToolPolicy(definitions)
 
@@ -305,8 +334,9 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 	emitter.publish(execution.RunStarted{RunContext: emitter.rc, At: runStart})
 
 	// Per-run tool state is shared by every tool call of this run and never
-	// leaks across runs — even for concurrent runs in the same chat.
-	run := &runState{}
+	// leaks across runs — even for concurrent runs in the same chat. The
+	// decision model is pinned from the turn's operation snapshot.
+	run := &runState{systemOneModel: req.TurnConfig.SystemOneModel}
 
 	var (
 		extraMessages             []llm.Message
@@ -341,7 +371,7 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 		genStart := time.Now()
 		emitter.publish(execution.GenerationStarted{RunContext: emitter.rc, At: genStart, Iteration: i})
 
-		request, err := r.llm.BuildChatToolRequest(ctx, req.PromptScope, req.ReplyContext, modelTools, toolPolicy, extraMessages)
+		request, err := r.llm.BuildChatToolRequest(ctx, req.PromptScope, req.ReplyContext, req.TurnConfig.GenerationModel, modelTools, toolPolicy, extraMessages, req.SilentErrors)
 		if err != nil {
 			if !started {
 				logger.Warn("chat request preparation failed", "error", err)
@@ -349,6 +379,10 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 
 			return fail(err, execution.ReasonPrepare)
 		}
+		// Carried per request: the service sanitizes its own diagnostics —
+		// construction included — for silent runs, so the loop log and the
+		// returned error are content-free too.
+		request.SilentErrors = req.SilentErrors
 
 		resp, err := r.llm.Generate(ctx, request)
 		if err != nil {
@@ -400,6 +434,14 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 			extraMessages = append(extraMessages, toolMessage)
 			allowEmptyReplyCompletion = allowEmptyReplyCompletion || allowsEmptyReply
 		}
+
+		if req.AllowedTools != nil && req.CompleteAfterSideEffect && allowEmptyReplyCompletion {
+			// Restricted-run completion: a successfully applied allowed
+			// side effect ends the turn — no further generation request and
+			// no empty-reply fallback. Usage and the call records are
+			// preserved; the empty Reply is defined (nothing is published).
+			return succeeded("")
+		}
 	}
 
 	return fail(ErrToolLoopLimitReached, execution.ReasonBackend)
@@ -408,8 +450,23 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *runState, req ChatRequest, call llm.ToolCall) (llm.Message, bool, ToolCallRecord) {
 	logger := logging.FromContext(ctx, r.logger)
 	definition, ok := r.registry.Lookup(call.Name)
+	if ok && req.AllowedTools != nil && !slices.Contains(req.AllowedTools, call.Name) {
+		// A registered tool outside this run's allowlist is rejected exactly
+		// like an unknown one: the model sees the error, nothing executes.
+		logger.Warn("tool call rejected by the run allowlist", "tool_name", call.Name, "tool_call_id", call.ID)
+		ok = false
+	}
+	if ok && isDecisionTool(call.Name) && run.systemOneModel == "" {
+		// Decision tools are only advertised with an effective System One
+		// model; a hallucinated call gets the same rejection treatment and
+		// never reaches inference.
+		logger.Warn("tool call rejected: decision backend unconfigured for the scope", "tool_name", call.Name, "tool_call_id", call.ID)
+		ok = false
+	}
 	if !ok {
 		logger.Warn("tool call references unknown tool", "tool_name", call.Name, "tool_call_id", call.ID)
+	}
+	if !ok {
 		emitter.publish(execution.ToolStarted{RunContext: emitter.rc, At: time.Now(), CallID: call.ID, ToolName: call.Name})
 		emitter.publish(execution.ToolCompleted{
 			RunContext: emitter.rc,
@@ -495,6 +552,47 @@ func toolResponseMessage(toolCallID, text string) llm.Message {
 			{Type: llm.PartTypeText, Text: text},
 		},
 	}
+}
+
+// turnDefinitions filters the default registry set by the turn's effective
+// decision configuration: the decision tools are statically registered at
+// startup, but they are advertised only when the operation snapshot carries
+// an effective System One model. Changing model settings at runtime never
+// rebuilds the registry.
+func (r *Runtime) turnDefinitions(systemOneModel string) []Definition {
+	definitions := r.registry.DefaultDefinitions()
+	if systemOneModel != "" {
+		return definitions
+	}
+
+	filtered := make([]Definition, 0, len(definitions))
+	for _, definition := range definitions {
+		if isDecisionTool(definition.Name) {
+			continue
+		}
+		filtered = append(filtered, definition)
+	}
+
+	return filtered
+}
+
+// allowedDefinitions intersects the run's definitions with an explicit tool
+// allowlist, preserving registry order. A nil allowlist keeps every
+// definition; names missing from the registry are simply not advertised —
+// execution rejects them through the same path as unknown tools.
+func allowedDefinitions(definitions []Definition, allowed []string) []Definition {
+	if allowed == nil {
+		return definitions
+	}
+
+	restricted := make([]Definition, 0, len(definitions))
+	for _, definition := range definitions {
+		if slices.Contains(allowed, definition.Name) {
+			restricted = append(restricted, definition)
+		}
+	}
+
+	return restricted
 }
 
 func toLLMToolDefinitions(definitions []Definition) []llm.ToolDefinition {

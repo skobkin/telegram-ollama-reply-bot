@@ -168,3 +168,75 @@ func TestAdminPromptRendererRendersToolPolicyInChatPrompt(t *testing.T) {
 		t.Fatalf("unexpected rendered prompt: %q", rendered)
 	}
 }
+
+// TestAdminPromptRendererCapturedPersona pins the operation-snapshot
+// rendering contract: a captured template body is executed with the
+// captured settings and never re-resolved from the store, so a store
+// mutation cannot split the persona mid-operation; an empty body falls back
+// to the ordinary live resolution, and ChatPromptBody exposes the same body
+// the snapshot captures.
+func TestAdminPromptRendererCapturedPersona(t *testing.T) {
+	store := &promptStoreStub{
+		global: adminconfig.GlobalSettings{
+			CharacterName:            "bot",
+			Language:                 "Russian",
+			Gender:                   "neutral",
+			DefaultInteractivityMode: adminconfig.InteractivityDisabled,
+		},
+		prompts: map[string]string{
+			"chat:5": "LIVE name={{.CharacterName}} lang={{.Language}}",
+		},
+	}
+	renderer := NewAdminPromptRenderer(adminconfig.NewService(store, nil, nil), true, "")
+
+	captured, err := renderer.RenderCapturedChatSystemPrompt(context.Background(), CapturedPersona{
+		TemplateBody:  "CAPTURED name={{.CharacterName}} lang={{.Language}} model={{.Model}} policy={{.ToolPolicy}}",
+		Language:      "English",
+		Gender:        "female",
+		CharacterName: "Ada",
+	}, 5, "gemma", "hint", "no tools")
+	if err != nil {
+		t.Fatalf("render captured persona: %v", err)
+	}
+	if !strings.Contains(captured, "CAPTURED name=Ada lang=English model=gemma policy=no tools") {
+		t.Fatalf("captured body must render with the snapshot settings, got %q", captured)
+	}
+	if strings.Contains(captured, "LIVE") {
+		t.Fatalf("captured body must not re-resolve the live template, got %q", captured)
+	}
+
+	// A store change after the capture is invisible to the captured path.
+	store.prompts["chat:5"] = "MUTATED name={{.CharacterName}}"
+	again, err := renderer.RenderCapturedChatSystemPrompt(context.Background(), CapturedPersona{
+		TemplateBody:  "CAPTURED name={{.CharacterName}}",
+		Language:      "English",
+		CharacterName: "Ada",
+	}, 5, "gemma", "", "")
+	if err != nil {
+		t.Fatalf("render captured persona after store change: %v", err)
+	}
+	if !strings.Contains(again, "CAPTURED name=Ada") || strings.Contains(again, "MUTATED") {
+		t.Fatalf("store mutation must not affect a captured body, got %q", again)
+	}
+
+	// Without a captured body the ordinary live resolution applies.
+	live, err := renderer.RenderCapturedChatSystemPrompt(context.Background(), CapturedPersona{
+		Language:      "English",
+		CharacterName: "Ada",
+	}, 5, "gemma", "", "")
+	if err != nil {
+		t.Fatalf("render live persona: %v", err)
+	}
+	if !strings.Contains(live, "MUTATED name=Ada") {
+		t.Fatalf("empty captured body must fall back to the live template, got %q", live)
+	}
+
+	// ChatPromptBody resolves the same live body the fallback renders.
+	body, err := renderer.ChatPromptBody(context.Background(), 5)
+	if err != nil {
+		t.Fatalf("chat prompt body: %v", err)
+	}
+	if body != "MUTATED name={{.CharacterName}}" {
+		t.Fatalf("chat prompt body must be the live template body, got %q", body)
+	}
+}

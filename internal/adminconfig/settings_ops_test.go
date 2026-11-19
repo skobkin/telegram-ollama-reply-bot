@@ -178,3 +178,118 @@ func TestClearAllChatOverridesFailureLeavesNothingWritten(t *testing.T) {
 		t.Fatalf("a failed reset must not write anything, got %v", got)
 	}
 }
+
+func TestSetGlobalSettingAcceptsModelAndInteractivityFields(t *testing.T) {
+	svc, store := newSettingsTestService(t)
+
+	valid := map[string]string{
+		"chat_model":                  "gemma4:e4b",
+		"summarize_model":             "summarizer-8b",
+		"image_recognition_model":     "vision-mini",
+		"systemone_model":             "laya",
+		"default_interaction_profile": "talk_low",
+		"decision_instructions":       "Engage with code.\nSecond line.",
+	}
+	for field, value := range valid {
+		if err := svc.SetGlobalSetting(context.Background(), field, value, 42); err != nil {
+			t.Fatalf("set %s: %v", field, err)
+		}
+	}
+
+	calls := store.writeCalls()
+	if len(calls) != len(valid) {
+		t.Fatalf("expected %d writes, got %v", len(valid), calls)
+	}
+	if !containsCall(calls, "SetGlobalField:chat_model=gemma4:e4b") ||
+		!containsCall(calls, "SetGlobalField:default_interaction_profile=talk_low") ||
+		!containsCall(calls, "SetGlobalField:decision_instructions=Engage with code.\nSecond line.") {
+		t.Fatalf("missing expected writes: %v", calls)
+	}
+}
+
+func TestSetGlobalSettingRejectsInvalidModelAndProfileValues(t *testing.T) {
+	svc, store := newSettingsTestService(t)
+
+	invalid := map[string]string{
+		"default_interaction_profile": "chaotic",
+		"decision_instructions":       strings.Repeat("x", 4001),
+		"chat_model":                  "   ",
+	}
+	for field, value := range invalid {
+		if err := svc.SetGlobalSetting(context.Background(), field, value, 42); err == nil {
+			t.Fatalf("expected %q to be rejected for %s", value, field)
+		}
+	}
+
+	if calls := store.writeCalls(); len(calls) != 0 {
+		t.Fatalf("invalid values must never reach the store, got %v", calls)
+	}
+}
+
+func TestClearGlobalSettingClearsClearableFieldsOnly(t *testing.T) {
+	svc, store := newSettingsTestService(t)
+
+	for _, field := range []string{"chat_model", "summarize_model", "image_recognition_model", "systemone_model", "decision_instructions"} {
+		if err := svc.ClearGlobalSetting(context.Background(), field, 42); err != nil {
+			t.Fatalf("clear %s: %v", field, err)
+		}
+	}
+
+	calls := store.writeCalls()
+	if len(calls) != 5 {
+		t.Fatalf("expected 5 clear writes, got %v", calls)
+	}
+	for _, field := range []string{"chat_model", "summarize_model", "image_recognition_model", "systemone_model", "decision_instructions"} {
+		if !containsCall(calls, "SetGlobalField:"+field+"=") {
+			t.Fatalf("expected empty write for %s, got %v", field, calls)
+		}
+	}
+
+	// Booleans, enums, and plain identity strings have no unset state.
+	for _, field := range []string{"character_name", "language", "default_interaction_profile", "default_auto_summary_enabled"} {
+		if err := svc.ClearGlobalSetting(context.Background(), field, 42); err == nil {
+			t.Fatalf("expected %s to refuse clearing", field)
+		}
+	}
+	if calls := store.writeCalls(); len(calls) != 5 {
+		t.Fatalf("refused clears must not write, got %v", calls)
+	}
+}
+
+func TestSetChatSettingAcceptsModelAndInteractivityFields(t *testing.T) {
+	svc, store := newSettingsTestService(t)
+
+	valid := map[string]string{
+		"chat_model":            "chat-override-8b",
+		"systemone_model":       "julia-1",
+		"interaction_profile":   "reactions_high",
+		"decision_instructions": "Never discuss politics.",
+	}
+	for field, value := range valid {
+		if err := svc.SetChatSetting(context.Background(), 555, field, value, 42); err != nil {
+			t.Fatalf("set %s: %v", field, err)
+		}
+	}
+
+	calls := store.writeCalls()
+	if len(calls) != len(valid) {
+		t.Fatalf("expected %d writes, got %v", len(valid), calls)
+	}
+
+	// Clearing restores inherit semantics.
+	for _, field := range []string{"chat_model", "systemone_model", "interaction_profile", "decision_instructions"} {
+		if err := svc.ClearChatOverride(context.Background(), 555, field, 42); err != nil {
+			t.Fatalf("clear %s: %v", field, err)
+		}
+	}
+}
+
+func containsCall(calls []string, want string) bool {
+	for _, call := range calls {
+		if call == want {
+			return true
+		}
+	}
+
+	return false
+}

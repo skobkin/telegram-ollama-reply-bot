@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -147,7 +148,7 @@ func TestServiceBuildChatToolRequestBuildsFeatureChatFromCompactContext(t *testi
 			TextMessage(RoleAssistant, "history 2"),
 		},
 		UserMessage: TextMessage(RoleUser, "current"),
-	}, []ToolDefinition{{Name: "search_history"}}, "tool policy", []Message{TextMessage(RoleTool, "tool result")})
+	}, "", []ToolDefinition{{Name: "search_history"}}, "tool policy", []Message{TextMessage(RoleTool, "tool result")}, false)
 	if err != nil {
 		t.Fatalf("BuildChatToolRequest: %v", err)
 	}
@@ -218,7 +219,7 @@ func TestServiceBuildChatToolRequestUsesChatScopedPromptAndResolvedPersona(t *te
 	request, err := service.BuildChatToolRequest(context.Background(), PromptScope{ChatID: 5}, ChatReplyContext{
 		SystemHint:  "compact context",
 		UserMessage: TextMessage(RoleUser, "current"),
-	}, nil, "tool policy", nil)
+	}, "", nil, "tool policy", nil, false)
 	if err != nil {
 		t.Fatalf("BuildChatToolRequest: %v", err)
 	}
@@ -335,6 +336,83 @@ func TestServiceGenerateSanitizesImageFeatureErrors(t *testing.T) {
 		}
 		if !strings.Contains(logBuf.String(), "sk-TESTSECRET") {
 			t.Fatalf("chat logging must stay unchanged, got %q", logBuf.String())
+		}
+	})
+}
+
+// TestServiceGenerateSanitizesSilentErrors covers the silent-errors opt-in:
+// unsolicited proactive turns flag their chat requests, and those get the
+// image-recognition treatment — sanitized error, sanitized log, chain clean
+// for Sentry, cancellation still matchable. Unflagged requests are
+// unchanged.
+func TestServiceGenerateSanitizesSilentErrors(t *testing.T) {
+	t.Parallel()
+
+	newService := func(generateErr error, logger *slog.Logger) *Service {
+		return &Service{
+			cfg: config.LLMConfig{
+				Features: config.FeatureConfig{
+					Chat:             config.FeatureRouteConfig{Model: "m"},
+					Summarize:        config.FeatureRouteConfig{Model: "m"},
+					ImageRecognition: config.FeatureRouteConfig{Model: "m"},
+				},
+			},
+			logger: logger,
+			backend: &stubBackend{
+				name:        config.LLMBackendOpenAICompat,
+				caps:        Capabilities{ToolCalls: true, ImageInput: true, ModelListing: true},
+				generateErr: generateErr,
+			},
+		}
+	}
+
+	rawErr := &url.Error{Op: "Post", URL: "http://llm.internal/v1?key=sk-TESTSECRET", Err: errors.New("provider echoed: SECRET-CHAT-TEXT")}
+
+	t.Run("silent chat request is content-free", func(t *testing.T) {
+		t.Parallel()
+
+		logger, logBuf := captureLogger()
+		_, err := newService(rawErr, logger).Generate(context.Background(), Request{
+			Feature:      FeatureChat,
+			Messages:     []Message{TextMessage(RoleUser, "hi")},
+			SilentErrors: true,
+		})
+
+		if !errors.Is(err, ErrLlmBackendRequestFailed) {
+			t.Fatalf("expected typed kind, got %v", err)
+		}
+		assertLLMErrorChainClean(t, err, "TESTSECRET", "SECRET-CHAT-TEXT", "server blew up")
+		if strings.Contains(logBuf.String(), "TESTSECRET") || strings.Contains(logBuf.String(), "SECRET-CHAT-TEXT") {
+			t.Fatalf("silent run logging leaks raw cause: %q", logBuf.String())
+		}
+	})
+
+	t.Run("cancellation stays matchable on silent runs", func(t *testing.T) {
+		t.Parallel()
+
+		logger, _ := captureLogger()
+		_, err := newService(fmt.Errorf("post failed: %w", context.DeadlineExceeded), logger).Generate(context.Background(), Request{
+			Feature:      FeatureChat,
+			Messages:     []Message{TextMessage(RoleUser, "hi")},
+			SilentErrors: true,
+		})
+
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrLlmBackendRequestFailed) {
+			t.Fatalf("expected deadline matchable and typed, got %v", err)
+		}
+	})
+
+	t.Run("unflagged chat request keeps raw diagnostics", func(t *testing.T) {
+		t.Parallel()
+
+		logger, logBuf := captureLogger()
+		_, err := newService(errors.New("chat backend says sk-TESTSECRET"), logger).Generate(context.Background(), Request{
+			Feature:  FeatureChat,
+			Messages: []Message{TextMessage(RoleUser, "hi")},
+		})
+
+		if !strings.Contains(err.Error(), "sk-TESTSECRET") || !strings.Contains(logBuf.String(), "sk-TESTSECRET") {
+			t.Fatalf("unflagged chat diagnostics must stay unchanged, err=%v log=%q", err, logBuf.String())
 		}
 	})
 }
@@ -458,4 +536,174 @@ func assertLLMErrorChainClean(t *testing.T, err error, sentinels ...string) {
 	}
 
 	visit(err)
+}
+
+// TestServiceSummarizeSilentSanitizesErrors covers the silent summarize
+// variant: proactive turns summarize history unsolicited, and a backend
+// error echoing the summarized content must not survive into the returned
+// error or the log. Plain Summarize keeps its raw diagnostics.
+func TestServiceSummarizeSilentSanitizesErrors(t *testing.T) {
+	t.Parallel()
+
+	newService := func(logger *slog.Logger) *Service {
+		return &Service{
+			cfg: config.LLMConfig{
+				Features: config.FeatureConfig{
+					Chat:             config.FeatureRouteConfig{Model: "m"},
+					Summarize:        config.FeatureRouteConfig{Model: "m"},
+					ImageRecognition: config.FeatureRouteConfig{Model: "m"},
+				},
+			},
+			logger:  logger,
+			prompts: newTestPromptRenderer(t),
+			backend: &stubBackend{
+				name:        config.LLMBackendOpenAICompat,
+				caps:        Capabilities{ToolCalls: true, ImageInput: true, ModelListing: true},
+				generateErr: errors.New("provider echoed: SECRET-SUMMARY-TEXT"),
+			},
+		}
+	}
+
+	t.Run("silent variant is content-free", func(t *testing.T) {
+		t.Parallel()
+
+		logger, logBuf := captureLogger()
+		_, _, err := newService(logger).SummarizeSilent(context.Background(), PromptScope{ChatID: 1}, "history text", "")
+
+		if !errors.Is(err, ErrLlmBackendRequestFailed) {
+			t.Fatalf("expected typed kind, got %v", err)
+		}
+		assertLLMErrorChainClean(t, err, "SECRET-SUMMARY-TEXT")
+		if strings.Contains(logBuf.String(), "SECRET-SUMMARY-TEXT") {
+			t.Fatalf("silent summarize logging leaks raw cause: %q", logBuf.String())
+		}
+	})
+
+	t.Run("plain variant keeps raw diagnostics", func(t *testing.T) {
+		t.Parallel()
+
+		logger, logBuf := captureLogger()
+		_, _, err := newService(logger).Summarize(context.Background(), PromptScope{ChatID: 1}, "history text", "")
+
+		if err == nil || !strings.Contains(err.Error(), "SECRET-SUMMARY-TEXT") {
+			t.Fatalf("plain summarize must keep today's raw surface, got %v", err)
+		}
+		if !strings.Contains(logBuf.String(), "SECRET-SUMMARY-TEXT") {
+			t.Fatalf("plain summarize logging must stay unchanged, got %q", logBuf.String())
+		}
+	})
+}
+
+// newTestPromptRenderer builds a static renderer from the default templates.
+func newTestPromptRenderer(t *testing.T) *StaticPromptRenderer {
+	t.Helper()
+
+	renderer, err := NewStaticPromptRenderer(true)
+	if err != nil {
+		t.Fatalf("prompt renderer: %v", err)
+	}
+
+	return renderer
+}
+
+// failingRendererStub fails chat and summarize rendering with a
+// content-bearing error, so silent construction diagnostics can be proven
+// sanitized.
+type failingRendererStub struct{ err error }
+
+func (r *failingRendererStub) RenderChatSystemPrompt(context.Context, PromptScope, string, string, string) (string, error) {
+	return "", r.err
+}
+
+func (r *failingRendererStub) RenderCapturedChatSystemPrompt(context.Context, CapturedPersona, int64, string, string, string) (string, error) {
+	return "", r.err
+}
+
+func (r *failingRendererStub) RenderSummarizeSystemPrompt(context.Context, PromptScope) (string, error) {
+	return "", r.err
+}
+
+func (r *failingRendererStub) RenderImageRecognitionSystemPrompt(context.Context, PromptScope) (string, error) {
+	return "", nil
+}
+
+// TestBuildChatToolRequestSilentSanitizesConstructionDiagnostics pins the
+// silent-construction contract: an unsolicited proactive turn whose prompt
+// construction fails logs and captures only the stable template-error kind,
+// never the raw renderer error (which can quote operator template text);
+// explicit turns keep the raw diagnostics, and a successful silent build
+// stamps SilentErrors on the built request.
+func TestBuildChatToolRequestSilentSanitizesConstructionDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	const sentinel = "PRIVATE_TEMPLATE_SENTINEL"
+	rawErr := fmt.Errorf("template parse exploded: %s", sentinel)
+
+	newService := func(logger *slog.Logger) *Service {
+		return &Service{
+			cfg: config.LLMConfig{
+				Features: config.FeatureConfig{Chat: config.FeatureRouteConfig{Model: "gpt"}},
+			},
+			prompts: &failingRendererStub{err: rawErr},
+			logger:  logger,
+		}
+	}
+
+	var logs bytes.Buffer
+	silent := newService(slog.New(slog.NewTextHandler(&logs, nil)))
+	_, err := silent.BuildChatToolRequest(context.Background(), PromptScope{}, ChatReplyContext{
+		UserMessage: TextMessage(RoleUser, "hello"),
+	}, "", nil, "policy", nil, true)
+	if !errors.Is(err, ErrTemplateProcessing) {
+		t.Fatalf("expected ErrTemplateProcessing, got %v", err)
+	}
+	if logText := logs.String(); strings.Contains(logText, sentinel) {
+		t.Fatalf("silent construction failure leaked renderer error text: %q", logText)
+	} else if !strings.Contains(logText, "template processing failed") {
+		t.Fatalf("expected the sanitized class logged, got %q", logText)
+	}
+
+	logs.Reset()
+	explicit := newService(slog.New(slog.NewTextHandler(&logs, nil)))
+	_, err = explicit.BuildChatToolRequest(context.Background(), PromptScope{}, ChatReplyContext{
+		UserMessage: TextMessage(RoleUser, "hello"),
+	}, "", nil, "policy", nil, false)
+	if !errors.Is(err, ErrTemplateProcessing) {
+		t.Fatalf("expected ErrTemplateProcessing, got %v", err)
+	}
+	if !strings.Contains(logs.String(), sentinel) {
+		t.Fatalf("explicit construction must keep raw diagnostics for operators, got %q", logs.String())
+	}
+
+	// The same sanitization covers silent summarize construction.
+	logs.Reset()
+	silentSummarizer := newService(slog.New(slog.NewTextHandler(&logs, nil)))
+	_, _, err = silentSummarizer.SummarizeSilent(context.Background(), PromptScope{}, "text", "")
+	if !errors.Is(err, ErrTemplateProcessing) {
+		t.Fatalf("expected ErrTemplateProcessing, got %v", err)
+	}
+	if logText := logs.String(); strings.Contains(logText, sentinel) {
+		t.Fatalf("silent summarize construction leaked renderer error text: %q", logText)
+	}
+
+	// A successful silent build stamps SilentErrors on the request: the
+	// wire request carries the silent flag from construction on.
+	processor, err := NewStaticPromptRenderer(true)
+	if err != nil {
+		t.Fatalf("NewStaticPromptRenderer: %v", err)
+	}
+	quiet := &Service{
+		cfg:     config.LLMConfig{Features: config.FeatureConfig{Chat: config.FeatureRouteConfig{Model: "gpt"}}},
+		prompts: processor,
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	request, err := quiet.BuildChatToolRequest(context.Background(), PromptScope{}, ChatReplyContext{
+		UserMessage: TextMessage(RoleUser, "hello"),
+	}, "", nil, "policy", nil, true)
+	if err != nil {
+		t.Fatalf("silent build: %v", err)
+	}
+	if !request.SilentErrors {
+		t.Fatalf("silent build must stamp SilentErrors on the built request")
+	}
 }

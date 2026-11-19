@@ -244,6 +244,7 @@ func (b screenBuilder) chatCard(data ChatCardData) *Screen {
 	rows = append(rows, ButtonRow{
 		b.btn(allowlistLabel, allowlistVerb, strconv.FormatInt(data.Info.ChatID, 10)),
 		b.btn("Edit settings", VerbChatSet),
+		b.btn("🧠 Interactivity", VerbInteractivity),
 	})
 
 	rows = append(rows,
@@ -265,6 +266,18 @@ type SettingsData struct {
 	// global screen always keeps every field (the master switch itself must
 	// stay operable), and stored chat overrides persist untouched.
 	HidePreviewFields bool
+	// HideImageModel hides the image_recognition_model setting while the
+	// active image recognizer takes no model selection (MiniMax). Hiding is
+	// render-time only: a stored global value stays untouched.
+	HideImageModel bool
+}
+
+// interactivitySubmenuFields names the fields grouped into the interactivity
+// submenu instead of the settings screen button grid.
+var interactivitySubmenuFields = map[string]bool{
+	"interaction_profile":         true,
+	"decision_instructions":       true,
+	"default_interaction_profile": true,
 }
 
 func (b screenBuilder) settings(data SettingsData) *Screen {
@@ -282,8 +295,15 @@ func (b screenBuilder) settings(data SettingsData) *Screen {
 			specs = filterPreviewFields(specs)
 		}
 	}
-
+	visible := make([]adminconfig.FieldSpec, 0, len(specs))
 	for _, spec := range specs {
+		if data.HideImageModel && spec.Name == "image_recognition_model" {
+			continue
+		}
+		visible = append(visible, spec)
+	}
+
+	for _, spec := range visible {
 		value, overridden := data.valueOf(spec)
 		line := fmt.Sprintf("• %s: %s", spec.Label, truncateRunes(value, 60))
 		if overridden {
@@ -292,14 +312,24 @@ func (b screenBuilder) settings(data SettingsData) *Screen {
 		text.WriteString(line + "\n")
 	}
 
+	grid := make([]adminconfig.FieldSpec, 0, len(visible))
+	for _, spec := range visible {
+		if interactivitySubmenuFields[spec.Name] {
+			continue // edited in the interactivity submenu
+		}
+		grid = append(grid, spec)
+	}
+
 	rows := make([]ButtonRow, 0, 5)
-	for i := 0; i < len(specs); i += 2 {
-		row := ButtonRow{b.settingsFieldButton(specs[i])}
-		if i+1 < len(specs) {
-			row = append(row, b.settingsFieldButton(specs[i+1]))
+	for i := 0; i < len(grid); i += 2 {
+		row := ButtonRow{b.settingsFieldButton(grid[i])}
+		if i+1 < len(grid) {
+			row = append(row, b.settingsFieldButton(grid[i+1]))
 		}
 		rows = append(rows, row)
 	}
+
+	rows = append(rows, ButtonRow{b.btn("🧠 Interactivity", VerbInteractivity)})
 
 	if !data.Global {
 		rows = append(rows, ButtonRow{b.danger("Reset overrides", VerbResetChat)})
@@ -345,6 +375,53 @@ func globalSettingsValue(settings adminconfig.GlobalSettings, spec adminconfig.F
 		return string(settings.DefaultPreviewMode)
 	case "keep_tool_history":
 		return strconv.FormatBool(settings.KeepToolHistory)
+	case "chat_model", "summarize_model", "image_recognition_model":
+		if settings.ChatModel == "" && spec.Name == "chat_model" {
+			return envRoutePlaceholder
+		}
+		if value := globalModelValue(settings, spec.Name); value != "" {
+			return value
+		}
+
+		return envRoutePlaceholder
+	case "systemone_model":
+		if settings.SystemOneModel == "" {
+			return unsetPlaceholder
+		}
+
+		return settings.SystemOneModel
+	case "default_interaction_profile":
+		if settings.DefaultInteractionProfile == "" {
+			return string(adminconfig.ProfileNonInteractive)
+		}
+
+		return string(settings.DefaultInteractionProfile)
+	case "decision_instructions":
+		if settings.DecisionInstructions == "" {
+			return unsetPlaceholder
+		}
+
+		return settings.DecisionInstructions
+	default:
+		return ""
+	}
+}
+
+const (
+	// envRoutePlaceholder and unsetPlaceholder render empty global values in
+	// the settings screens: a blank line would read as a broken screen.
+	envRoutePlaceholder = "(environment route)"
+	unsetPlaceholder    = "(unset)"
+)
+
+func globalModelValue(settings adminconfig.GlobalSettings, name string) string {
+	switch name {
+	case "chat_model":
+		return settings.ChatModel
+	case "summarize_model":
+		return settings.SummarizeModel
+	case "image_recognition_model":
+		return settings.ImageRecognitionModel
 	default:
 		return ""
 	}
@@ -366,6 +443,25 @@ type FieldEditorData struct {
 	Spec       adminconfig.FieldSpec
 	Value      string
 	Overridden bool
+	// HasDiscovery reports that the backend serving this field's feature can
+	// list its models, enabling the picker. Discovery establishes
+	// availability only, never capability: a listed model is not guaranteed
+	// to serve the feature well, so manual entry stays available and the
+	// picker text says so.
+	HasDiscovery bool
+	// Models is the cached backend list (empty until fetched); ModelPage is
+	// the shown 1-based page of that list.
+	Models    []string
+	ModelPage int
+}
+
+// modelPickerPages is the page count of a cached model list.
+func modelPickerPages(models []string) int {
+	if len(models) == 0 {
+		return 0
+	}
+
+	return (len(models) + ModelPickerPageSize - 1) / ModelPickerPageSize
 }
 
 func (b screenBuilder) fieldEditor(data FieldEditorData) *Screen {
@@ -408,7 +504,24 @@ func (b screenBuilder) fieldEditor(data FieldEditorData) *Screen {
 			b.btn(boolMark(data.Value == "false")+" Off", VerbValue, code, "off"),
 		})
 	case adminconfig.KindString:
-		rows = append(rows, ButtonRow{b.btn("✏️ Enter value…", VerbString, code)})
+		if data.HasDiscovery {
+			if len(data.Models) == 0 {
+				rows = append(rows, ButtonRow{b.btn("📋 Backend models", VerbModelList, code)})
+			} else {
+				text.WriteString("\nBackend-served models (availability, not capability — manual entry always works):\n")
+				rows = append(rows, b.modelPickerRows(code, data.Models, data.ModelPage)...)
+			}
+		}
+		rows = append(rows, ButtonRow{b.btn("✏️ Enter model ID…", VerbString, code)})
+		// Chat-scope string overrides inherit by clearing the override row —
+		// empty input is a rejected value, so the button is the only way
+		// back to the global value.
+		if !data.Global && data.Overridden {
+			rows = append(rows, ButtonRow{b.btn("Inherit global", VerbClear, code)})
+		}
+		if data.Global && data.Spec.Clearable && isClearableModelField(data.Spec.Name) && hasConcreteValue(data.Value) {
+			rows = append(rows, ButtonRow{b.danger(clearGlobalModelLabel(data.Spec.Name), VerbClearGlobal, code)})
+		}
 	}
 
 	rows = append(rows, b.footerRow())
@@ -416,7 +529,174 @@ func (b screenBuilder) fieldEditor(data FieldEditorData) *Screen {
 	return &Screen{Text: text.String(), Rows: rows}
 }
 
-// PromptsMenuData feeds the prompts menu screen.
+// modelPickerRows renders one page of the cached backend list as two model
+// buttons per row plus pagination; selection carries the list INDEX because
+// model IDs overflow the 64-byte callback data limit.
+func (b screenBuilder) modelPickerRows(code string, models []string, page int) []ButtonRow {
+	pages := modelPickerPages(models)
+	if page < 1 {
+		page = 1
+	}
+	if page > pages {
+		page = pages
+	}
+
+	start := (page - 1) * ModelPickerPageSize
+	end := start + ModelPickerPageSize
+	if end > len(models) {
+		end = len(models)
+	}
+
+	rows := make([]ButtonRow, 0, 5)
+	for i := start; i < end; i += 2 {
+		row := ButtonRow{b.btn(truncateRunes(models[i], 24), VerbModelPick, code, strconv.Itoa(i))}
+		if i+1 < end {
+			row = append(row, b.btn(truncateRunes(models[i+1], 24), VerbModelPick, code, strconv.Itoa(i+1)))
+		}
+		rows = append(rows, row)
+	}
+
+	if pages > 1 {
+		nav := ButtonRow{}
+		if page > 1 {
+			nav = append(nav, b.btn("< Prev", VerbModelPage, strconv.Itoa(page-1)))
+		}
+		nav = append(nav, b.btn(fmt.Sprintf("%d/%d", page, pages), VerbModelPage, strconv.Itoa(page)))
+		if page < pages {
+			nav = append(nav, b.btn("Next >", VerbModelPage, strconv.Itoa(page+1)))
+		}
+		rows = append(rows, nav)
+	}
+
+	return rows
+}
+
+func isClearableModelField(name string) bool {
+	switch name {
+	case "chat_model", "summarize_model", "image_recognition_model", "systemone_model":
+		return true
+	default:
+		return false
+	}
+}
+
+// profileButton renders one profile option with the selection marker.
+func (b screenBuilder) profileButton(code string, option adminconfig.EnumOption, current string) Button {
+	label := "○ " + option.Label
+	if option.Value == current {
+		label = "● " + option.Label
+	}
+
+	return b.btn(label, VerbValue, code, option.Value)
+}
+
+// hasConcreteValue reports whether the shown editor value is a stored
+// override rather than a placeholder (environment route / unset).
+func hasConcreteValue(value string) bool {
+	return value != "" && value != envRoutePlaceholder && value != unsetPlaceholder
+}
+
+// clearGlobalModelLabel distinguishes the two clear semantics: generation
+// models fall back to their environment route, the System One model has no
+// environment fallback and per-chat overrides survive the clear.
+func clearGlobalModelLabel(name string) string {
+	if name == "systemone_model" {
+		return "Clear global default model"
+	}
+
+	return "Reset to ENV default"
+}
+
+// InteractivityData feeds the interactivity submenu screen, which groups the
+// interaction profile, the effective System One decision model, and the
+// decision instructions for one scope (global or chat).
+type InteractivityData struct {
+	Global   bool
+	ChatName string
+	// Profile is the effective profile in this scope: the raw global value
+	// (empty renders as the effective non_interactive default) or the chat's
+	// effective value, with Overridden marking a chat override.
+	Profile           string
+	ProfileOverridden bool
+	// Model is the effective System One decision model in this scope; empty
+	// means the decision backend is unconfigured for the scope. HasDiscovery
+	// reports whether the decision backend answers model discovery at all.
+	Model           string
+	ModelOverridden bool
+	HasDiscovery    bool
+	// Instructions is the effective decision-engine guidance in this scope.
+	Instructions           string
+	InstructionsOverridden bool
+}
+
+func (b screenBuilder) interactivity(data InteractivityData) *Screen {
+	var text strings.Builder
+	if data.Global {
+		text.WriteString("🧠 Interactivity — global\n\n")
+	} else {
+		fmt.Fprintf(&text, "🧠 Interactivity — %s\n\n", truncateRunes(data.ChatName, 48))
+	}
+
+	profile := data.Profile
+	if profile == "" {
+		// An empty effective profile means the non_interactive default in
+		// every scope (matching the engine's consumption semantics).
+		profile = string(adminconfig.ProfileNonInteractive)
+	}
+	fmt.Fprintf(&text, "Interaction profile: %s%s\n", adminconfig.InteractionProfileLabel(adminconfig.InteractionProfile(profile)), sourceMark(data.ProfileOverridden))
+	if data.Model == "" {
+		text.WriteString("Decision model: (unconfigured — decision features stay off in this scope)\n")
+	} else {
+		fmt.Fprintf(&text, "Decision model: %s%s\n", data.Model, sourceMark(data.ModelOverridden))
+	}
+	if data.Instructions == "" {
+		text.WriteString("Decision instructions: (unset)\n")
+	} else {
+		fmt.Fprintf(&text, "Decision instructions: %s\n", truncateRunes(data.Instructions, 120))
+	}
+
+	rows := make([]ButtonRow, 0, 8)
+
+	// Profile buttons, two per row. Enabling any profile as the global
+	// default routes through a scope confirmation (controller); returning to
+	// non_interactive applies directly.
+	profileCode, _ := FieldCode("interaction_profile")
+	profileOptions := adminconfig.InteractionProfileEnumOptions()
+	for i := 0; i < len(profileOptions); i += 2 {
+		row := ButtonRow{b.profileButton(profileCode, profileOptions[i], profile)}
+		if i+1 < len(profileOptions) {
+			row = append(row, b.profileButton(profileCode, profileOptions[i+1], profile))
+		}
+		rows = append(rows, row)
+	}
+	if !data.Global && data.ProfileOverridden {
+		rows = append(rows, ButtonRow{b.btn("Inherit global", VerbClear, profileCode)})
+	}
+
+	modelCode, _ := FieldCode("systemone_model")
+	modelRow := ButtonRow{b.btn("Select model…", VerbField, modelCode)}
+	if data.Global && hasConcreteValue(data.Model) {
+		modelRow = append(modelRow, b.danger("Clear global default model", VerbClearGlobal, modelCode))
+	}
+	rows = append(rows, modelRow)
+
+	instructionsCode, _ := FieldCode("decision_instructions")
+	rows = append(rows, ButtonRow{b.btn("✏️ Edit instructions…", VerbString, instructionsCode)})
+	// Instructions edit through a dedicated input, never the field editor,
+	// so the chat-scope inherit row lives here: blank input is a rejected
+	// value, and this button is the only way back to the global text.
+	if !data.Global && data.InstructionsOverridden {
+		rows = append(rows, ButtonRow{b.btn("Inherit global", VerbClear, instructionsCode)})
+	}
+	if data.Global && data.Instructions != "" {
+		rows = append(rows, ButtonRow{b.danger("Clear instructions", VerbClearGlobal, instructionsCode)})
+	}
+
+	rows = append(rows, b.footerRow())
+
+	return &Screen{Text: text.String(), Rows: rows}
+}
+
 type PromptsMenuData struct {
 	ChatScope int64 // 0 = global scope
 	ChatName  string

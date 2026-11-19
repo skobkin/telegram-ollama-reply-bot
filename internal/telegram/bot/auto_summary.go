@@ -23,6 +23,9 @@ import (
 // fake summarization (mirrors imageDescriber). *llm.Service satisfies it.
 type llmSummarizer interface {
 	Summarize(ctx context.Context, scope llm.PromptScope, text string, instructions string) (string, *llm.TokenUsage, error)
+	// SummarizeSilent is the content-free-diagnostics variant used by
+	// unsolicited proactive turns (see llm.Service.SummarizeSilent).
+	SummarizeSilent(ctx context.Context, scope llm.PromptScope, text string, instructions string) (string, *llm.TokenUsage, error)
 }
 
 // autoSummaryMaxTrackedURLsPerChat bounds the per-chat cooldown map: once the

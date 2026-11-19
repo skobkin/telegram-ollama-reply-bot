@@ -175,7 +175,7 @@ type scriptLLM struct {
 	toolMessage []string
 }
 
-func (s *scriptLLM) BuildChatToolRequest(_ context.Context, _ llm.PromptScope, _ llm.ChatReplyContext, _ []llm.ToolDefinition, _ string, extras []llm.Message) (llm.Request, error) {
+func (s *scriptLLM) BuildChatToolRequest(_ context.Context, _ llm.PromptScope, _ llm.ChatReplyContext, _ string, _ []llm.ToolDefinition, _ string, extras []llm.Message, _ bool) (llm.Request, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, msg := range extras {

@@ -1465,3 +1465,154 @@ func TestContentConfigValidateRejectsEmptyBackends(t *testing.T) {
 		t.Fatal("expected empty backend list to fail validation")
 	}
 }
+
+func TestLoadSystemOneDefaults(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.SystemOne.BaseURL != "" {
+		t.Fatalf("expected System One to be unconfigured by default, got base url %q", cfg.SystemOne.BaseURL)
+	}
+	if cfg.SystemOne.Timeout != 60*time.Second {
+		t.Fatalf("unexpected System One timeout default: %s", cfg.SystemOne.Timeout)
+	}
+	if cfg.SystemOne.MaxResponseBytes != 4<<20 {
+		t.Fatalf("unexpected System One max response bytes default: %d", cfg.SystemOne.MaxResponseBytes)
+	}
+	if cfg.SystemOne.InputBudgetBytes != 96<<10 {
+		t.Fatalf("unexpected System One input budget default: %d", cfg.SystemOne.InputBudgetBytes)
+	}
+}
+
+func TestLoadUsesExplicitSystemOneConfig(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("SYSTEMONE__BASE_URL", "http://llama-swap.internal:8080")
+	t.Setenv("SYSTEMONE__API_KEY", "decision-token")
+	t.Setenv("SYSTEMONE__TIMEOUT", "45s")
+	t.Setenv("SYSTEMONE__MAX_RESPONSE_BYTES", "1048576")
+	t.Setenv("SYSTEMONE__INPUT_BUDGET_BYTES", "49152")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.SystemOne.BaseURL != "http://llama-swap.internal:8080" {
+		t.Fatalf("unexpected System One base url: %q", cfg.SystemOne.BaseURL)
+	}
+	if cfg.SystemOne.APIKey != "decision-token" {
+		t.Fatalf("unexpected System One api key: %q", cfg.SystemOne.APIKey)
+	}
+	if cfg.SystemOne.Timeout != 45*time.Second {
+		t.Fatalf("unexpected System One timeout: %s", cfg.SystemOne.Timeout)
+	}
+	if cfg.SystemOne.MaxResponseBytes != 1<<20 {
+		t.Fatalf("unexpected System One max response bytes: %d", cfg.SystemOne.MaxResponseBytes)
+	}
+	if cfg.SystemOne.InputBudgetBytes != 48<<10 {
+		t.Fatalf("unexpected System One input budget: %d", cfg.SystemOne.InputBudgetBytes)
+	}
+}
+
+func TestLoadTrimsSystemOneBaseURL(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("SYSTEMONE__BASE_URL", "  http://llama-swap.internal:8080  ")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.SystemOne.BaseURL != "http://llama-swap.internal:8080" {
+		t.Fatalf("expected trimmed System One base url, got %q", cfg.SystemOne.BaseURL)
+	}
+}
+
+func TestLoadRejectsInvalidSystemOneConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{
+			name: "zero timeout",
+			env:  map[string]string{"SYSTEMONE__TIMEOUT": "0s"},
+		},
+		{
+			name: "negative timeout",
+			env:  map[string]string{"SYSTEMONE__TIMEOUT": "-5s"},
+		},
+		{
+			name: "zero max response bytes",
+			env:  map[string]string{"SYSTEMONE__MAX_RESPONSE_BYTES": "0"},
+		},
+		{
+			name: "zero input budget",
+			env:  map[string]string{"SYSTEMONE__INPUT_BUDGET_BYTES": "0"},
+		},
+		{
+			name: "invalid base url",
+			env: map[string]string{
+				"SYSTEMONE__BASE_URL": "ftp://nope.example",
+			},
+		},
+		{
+			name: "api key without base url",
+			env: map[string]string{
+				"SYSTEMONE__API_KEY": "orphan-token",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected load to fail for %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), "SYSTEMONE__") &&
+				!strings.Contains(err.Error(), "systemone.") {
+				t.Fatalf("error should point at the systemone section, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidSystemOneBaseURLScheme(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("SYSTEMONE__BASE_URL", "http://ok.example")
+
+	// Sanity: the plain http endpoint is accepted (llama.cpp deployments are
+	// commonly plain-http on localhost), unlike unknown schemes.
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.SystemOne.BaseURL != "http://ok.example" {
+		t.Fatalf("unexpected base url: %q", cfg.SystemOne.BaseURL)
+	}
+}
+
+func TestSystemOneConfigValidateRejectsKeyWithoutBaseURL(t *testing.T) {
+	// The zero-value struct (tests, direct construction) has no defaults, so
+	// the numeric checks fire first; construct with the defaults applied to
+	// isolate the key-without-url rule.
+	cfg := SystemOneConfig{
+		APIKey:           "orphan-token",
+		Timeout:          60 * time.Second,
+		MaxResponseBytes: 4 << 20,
+		InputBudgetBytes: 96 << 10,
+	}
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected api key without base url to fail validation")
+	}
+}

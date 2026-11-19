@@ -23,13 +23,18 @@ type Generator interface {
 // image/jpeg.
 type OpenAIRecognizer struct {
 	generator Generator
+	// resolver resolves the runtime image-recognition model override. Nil
+	// keeps the environment route; an override of "" degrades the same way.
+	resolver llm.ModelResolver
 }
 
-// NewOpenAIRecognizer wraps a Generator: the shared main *llm.Service by
+// NewOpenAIRecognizer wraps a Generator — the shared main *llm.Service by
 // default, or a separately configured one when the operator set a dedicated
-// image endpoint.
-func NewOpenAIRecognizer(generator Generator) *OpenAIRecognizer {
-	return &OpenAIRecognizer{generator: generator}
+// image endpoint — and the runtime model resolver. Each Recognize call is
+// one recognition operation: the model resolves once at its start, and a
+// resolution failure fails that operation instead of silently falling back.
+func NewOpenAIRecognizer(generator Generator, resolver llm.ModelResolver) *OpenAIRecognizer {
+	return &OpenAIRecognizer{generator: generator, resolver: resolver}
 }
 
 func (r *OpenAIRecognizer) Name() string { return config.LLMBackendOpenAICompat }
@@ -47,8 +52,20 @@ func (r *OpenAIRecognizer) Recognize(ctx context.Context, image Image, prompt st
 		return Recognition{}, ErrPromptEmpty
 	}
 
-	resp, err := r.generator.Generate(ctx, llm.Request{
+	model := ""
+	if r.resolver != nil {
+		// The image model is a global-only setting, so the chat scoping
+		// value is irrelevant here.
+		resolved, err := r.resolver.ResolveModel(ctx, llm.FeatureImageRecognition, 0)
+		if err != nil {
+			return Recognition{}, err
+		}
+		model = resolved
+	}
+
+	req := llm.Request{
 		Feature: llm.FeatureImageRecognition,
+		Model:   model,
 		Messages: []llm.Message{
 			llm.TextMessage(llm.RoleSystem, prompt),
 			{
@@ -62,7 +79,9 @@ func (r *OpenAIRecognizer) Recognize(ctx context.Context, image Image, prompt st
 				},
 			},
 		},
-	})
+	}
+
+	resp, err := r.generator.Generate(ctx, req)
 	if err != nil {
 		return Recognition{}, err
 	}

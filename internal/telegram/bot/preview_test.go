@@ -438,6 +438,79 @@ func TestGroupPreviewCreateReplyEditDelete(t *testing.T) {
 	}
 }
 
+// TestPreviewFailDeletesGroupPreview pins the silent-proactive-failure
+// cleanup: Fail deletes the group preview message, unlike Abort's accepted
+// degradation which leaves it visible.
+func TestPreviewFailDeletesGroupPreview(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	if run == nil {
+		t.Fatal("expected an active preview run")
+	}
+
+	waitForCondition(t, 2*time.Second, "preview creation", func() bool {
+		return state.callCount("sendMessage") == 1
+	})
+
+	run.Fail()
+
+	waitForCondition(t, 2*time.Second, "preview delete", func() bool {
+		return state.callCount("deleteMessage") == 1
+	})
+	del := state.calls("deleteMessage")[0]
+	if del["message_id"] != float64(1) {
+		t.Fatalf("delete must target the preview message: %v", del)
+	}
+
+	// Fail is idempotent: a second call must not delete again.
+	run.Fail()
+	time.Sleep(50 * time.Millisecond)
+	if n := state.callCount("deleteMessage"); n != 1 {
+		t.Fatalf("second Fail must not delete again, got %d deletes", n)
+	}
+}
+
+// TestPreviewDeleteIgnoresCancelledLifecycle pins the independence of the
+// preview cleanup from the bot lifecycle context: shutdown cancels the
+// manager's base context while runs are failing, and the delete must still
+// reach the wire instead of dying on an already-cancelled parent.
+func TestPreviewDeleteIgnoresCancelledLifecycle(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+
+	lifecycle, cancelLifecycle := context.WithCancel(context.Background())
+	m := newPreviewManager(lifecycle, b.api, b.logger, b.sendTypingUntil)
+	m.timings = previewTimings{
+		debounce:     30 * time.Millisecond,
+		minInterval:  40 * time.Millisecond,
+		flushFloor:   15 * time.Millisecond,
+		draftRefresh: 120 * time.Millisecond,
+		ratePad:      10 * time.Millisecond,
+	}
+	t.Cleanup(func() {
+		m.Stop()
+		cancelLifecycle()
+	})
+
+	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	if run == nil {
+		t.Fatal("expected an active preview run")
+	}
+	waitForCondition(t, 2*time.Second, "preview creation", func() bool {
+		return state.callCount("sendMessage") == 1
+	})
+
+	// Shutdown cancels the lifecycle while the run is failing.
+	cancelLifecycle()
+	run.Fail()
+
+	waitForCondition(t, 2*time.Second, "preview delete despite cancelled lifecycle", func() bool {
+		return state.callCount("deleteMessage") == 1
+	})
+}
+
 func TestGroupPreviewModeFiltering(t *testing.T) {
 	state := newPreviewServerState()
 	b := newPreviewTestBot(t, state)

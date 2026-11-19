@@ -19,6 +19,53 @@ into the `chat` prompt template (admin panel → Prompts → chat).
   upgrade the placeholders render nothing, template execution fails, and the bot stops replying in chats served
   by that template.
 
+### Runtime model selection, interactive participation, and System One decision tools (additive, #128 #157 #158)
+
+Model selection moves from ENV-only routes into SQLite settings (global defaults + per-chat overrides), a System One
+decision backend gains opt-in proactive participation and two decision tools, and everything ships behind defaults
+that preserve current behavior. Schema version 12 (applied automatically at startup) adds the new columns with
+behavior-preserving defaults; no operator action is required for an upgrade that changes nothing.
+
+- **What is new**:
+  - `chat_model`, `summarize_model`, `image_recognition_model` (global, with per-chat override for `chat_model`) —
+    when set, the stored model overrides the `LLM__FEATURES__*` ENV route for that feature; ENV remains the fallback
+    for unset fields, and a global clear action ("Reset to ENV default" in the admin UI) returns a field to the route.
+  - **Startup model validation checks the effective selection** (the global override when set, otherwise the ENV
+    route) against the backend's served model list. An obsolete ENV route model no longer blocks boot while a
+    working runtime override is set — the unused route is reported as a warning instead. An unset override still
+    validates the route, so resetting a model to an unavailable ENV fallback fails the check loudly, and a feature
+    whose effective model cannot be verified fails the check as before.
+  - `default_interaction_profile` / `interaction_profile` — interactive participation presets
+    (`non_interactive` by default, so nothing proactive happens until an operator opts in). Enabling any interactive
+    profile as the *global* default asks for a scope confirmation in the admin UI (every inheriting chat starts
+    participating); per-chat overrides apply directly.
+  - `systemone_model` (global default + per-chat override) — the decision model used by proactive participation
+    and the `decision_choose` / `decision_assess` tools. Clearing the *global* default ("Clear global default
+    model") does **not** disable the backend: chats with explicit per-chat overrides keep their effective model.
+    With no override anywhere effective, proactive participation ignores messages and the decision tools are not
+    advertised — the backend endpoint itself stays configured.
+  - `decision_instructions` (global + per-chat, multi-line, up to 4000 chars) — operator guidance mixed into every
+    decision request. A per-chat value of exactly `''` is not representable as "explicitly empty" (empty means
+    inherit), the same limitation as every other inheritable string field.
+  - New `SYSTEMONE__*` environment section (`BASE_URL`, `API_KEY`, `TIMEOUT` default `60s`,
+    `MAX_RESPONSE_BYTES` default 4 MiB, `INPUT_BUDGET_BYTES` default 96 KiB) — see README. The endpoint and its
+    credentials deliberately stay deployment configuration; model selection lives in the database.
+- **Deployment guidance**: the decision backend must speak the Jev protocol (`POST /v1/systemone`) — llama.cpp
+  ≥ b11361 (`llama-server` with a decision GGUF) or llama-swap ≥ v262 (routes by the body `model` field;
+  deployments typically require a Bearer token via `SYSTEMONE__API_KEY`). Decision-model suggestions: Laya,
+  Julia-1, and Clef are Apache-2.0; OpenJev-27B is CC BY-NC — check the license before deploying commercially.
+- **Operator responsibilities**: `SYSTEMONE__INPUT_BUDGET_BYTES` is a composition limit on the serialized request,
+  not a fit guarantee — keeping requests inside the decision model's context window and the server's batch limits
+  (llama.cpp rejects oversized batches with HTTP 500) is the operator's job. Backends with known cross-request
+  concurrency issues (llama.cpp router mode, llama-swap model swapping under parallel decision traffic) may need
+  conservative interaction-profile rollouts: proactive evaluation serializes per chat but several chats, explicit
+  turns, and decision-tool calls can still overlap on one backend. Consider enabling request-payload logging on
+  the backend during initial calibration to see exactly what the bot sends.
+- **Calibration caveat**: decision temperatures live in the GGUF metadata, so reported probabilities are not
+  guaranteed calibrated; the built-in profile thresholds are heuristic starting points and may need real-world
+  tuning for a specific model (profiles are thresholds over relevance/contribution/intrusion/suitability scores —
+  start from `Interactive-Reactions-Low` and watch the logs).
+
 ## 0.29.1 (2026-11-15) — changes since 0.29.0
 
 ### Admin menu is not re-created while a conversation run is active (#148)

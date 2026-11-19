@@ -17,24 +17,30 @@ import (
 type Service struct {
 	cfg     config.LLMConfig
 	prompts PromptRenderer
-	logger  *slog.Logger
-	backend backend
+	// resolver resolves runtime model overrides. Nil keeps the pure
+	// environment-route behavior; a resolver may still return "" (unset),
+	// which degrades to the same route fallback.
+	resolver ModelResolver
+	logger   *slog.Logger
+	backend  backend
 }
 
-// NewService builds the LLM service on the OpenAI-compatible backend.
-// httpClient, when non-nil, is injected as the backend's HTTP client
-// (contract: nil keeps the SDK default); the app passes a secret-scrubbing
-// doer so transport errors stay secret-free.
-func NewService(cfg config.LLMConfig, prompts PromptRenderer, httpClient openai.HTTPDoer, logger *slog.Logger) (*Service, error) {
+// NewService builds a service. The resolver may be nil when the deployment
+// runs without runtime model settings. httpClient, when non-nil, is
+// injected as the backend's HTTP client (contract: nil keeps the SDK
+// default); the app passes a secret-scrubbing doer so transport errors
+// stay secret-free.
+func NewService(cfg config.LLMConfig, prompts PromptRenderer, resolver ModelResolver, httpClient openai.HTTPDoer, logger *slog.Logger) (*Service, error) {
 	if cfg.Backends.OpenAICompat.BaseURL == "" {
 		return nil, errors.Join(ErrBackendNotConfigured, fmt.Errorf("%s base url is empty", config.LLMBackendOpenAICompat))
 	}
 
 	return &Service{
-		cfg:     cfg,
-		prompts: prompts,
-		logger:  logger,
-		backend: newOpenAICompatBackend(cfg.Backends.OpenAICompat, httpClient, logger.With("backend", config.LLMBackendOpenAICompat)),
+		cfg:      cfg,
+		prompts:  prompts,
+		resolver: resolver,
+		logger:   logger,
+		backend:  newOpenAICompatBackend(cfg.Backends.OpenAICompat, httpClient, logger.With("backend", config.LLMBackendOpenAICompat)),
 	}, nil
 }
 
@@ -68,9 +74,12 @@ func (s *Service) Generate(ctx context.Context, req Request) (Response, error) {
 		// carry credentials) and provider bodies (which can echo prompts or
 		// keys). The sanitized error discards the cause — Sentry traverses
 		// error chains — while cancellation/deadline stay matchable via the
-		// stdlib context sentinels. Chat and summarize keep their existing
-		// raw diagnostics.
-		if req.Feature == FeatureImageRecognition {
+		// stdlib context sentinels. The same treatment applies to any
+		// request that opted into silent errors (unsolicited proactive
+		// turns): their provider bodies can echo chat content and nothing
+		// user-initiated is waiting on the details. All other features keep
+		// their existing raw diagnostics.
+		if req.Feature == FeatureImageRecognition || req.SilentErrors {
 			sanitized := safeerr.WrapTransport(ErrLlmBackendRequestFailed, err)
 			logger.Error(
 				"backend request failed",
@@ -99,15 +108,26 @@ func (s *Service) Generate(ctx context.Context, req Request) (Response, error) {
 	return resp, nil
 }
 
+// BuildChatToolRequest assembles one generation request for the chat tool
+// loop. generationModel is the turn's resolved model: when set it drives
+// both the wire request and the {{.Model}} prompt placeholder, keeping them
+// consistent across every iteration of the turn; when empty the environment
+// route model renders in the prompt and the wire model stays unset for
+// Generate to fill from the route. silent marks unsolicited proactive
+// turns: construction failures — template errors can quote operator
+// template text — are sanitized before the log and Sentry, matching the
+// SilentErrors treatment Generate applies to backend failures.
 func (s *Service) BuildChatToolRequest(
 	ctx context.Context,
 	scope PromptScope,
 	requestContext ChatReplyContext,
+	generationModel string,
 	tools []ToolDefinition,
 	toolPolicy string,
 	extraMessages []Message,
+	silent bool,
 ) (Request, error) {
-	messages, err := s.buildConversationMessages(ctx, scope, requestContext, toolPolicy)
+	messages, err := s.buildConversationMessages(ctx, scope, requestContext, generationModel, toolPolicy, silent)
 	if err != nil {
 		return Request{}, err
 	}
@@ -115,19 +135,44 @@ func (s *Service) BuildChatToolRequest(
 	messages = append(messages, extraMessages...)
 
 	return Request{
-		Feature:  FeatureChat,
-		Messages: messages,
-		Tools:    tools,
+		Feature:      FeatureChat,
+		Model:        generationModel,
+		SilentErrors: silent,
+		Messages:     messages,
+		Tools:        tools,
 	}, nil
 }
 
+// Summarize renders the summarize prompt and generates one summary. The
+// runtime model override (global summarize model setting) resolves once per
+// call; a resolution failure is an error, never a silent route fallback.
 func (s *Service) Summarize(ctx context.Context, scope PromptScope, text string, instructions string) (string, *TokenUsage, error) {
+	return s.summarize(ctx, scope, text, instructions, false)
+}
+
+// SummarizeSilent is Summarize with content-free failure diagnostics: the
+// generation request carries SilentErrors, so backend errors are sanitized
+// before logging, capture, and return. Unsolicited proactive turns
+// summarize history through it — their provider bodies can echo chat
+// content.
+func (s *Service) SummarizeSilent(ctx context.Context, scope PromptScope, text string, instructions string) (string, *TokenUsage, error) {
+	return s.summarize(ctx, scope, text, instructions, true)
+}
+
+func (s *Service) summarize(ctx context.Context, scope PromptScope, text string, instructions string, silent bool) (string, *TokenUsage, error) {
 	logger := logging.FromContext(ctx, s.logger)
 
 	systemPrompt, err := s.prompts.RenderSummarizeSystemPrompt(ctx, scope)
 	if err != nil {
-		logger.Error("summarize template processing failed", "error", err)
-		sentry.CaptureException(err)
+		// Silent runs sanitize construction diagnostics: template errors can
+		// quote operator template text, so only the stable kind reaches the
+		// log and Sentry on unsolicited proactive turns.
+		diagnostic := err
+		if silent {
+			diagnostic = ErrTemplateProcessing
+		}
+		logger.Error("summarize template processing failed", "error", diagnostic)
+		sentry.CaptureException(diagnostic)
 
 		return "", nil, ErrTemplateProcessing
 	}
@@ -136,8 +181,21 @@ func (s *Service) Summarize(ctx context.Context, scope PromptScope, text string,
 		systemPrompt = systemPrompt + "\n\nAdditional instruction from user:\n\n>" + instructions
 	}
 
+	model := ""
+	if s.resolver != nil {
+		model, err = s.resolver.ResolveModel(ctx, FeatureSummarize, scope.ChatID)
+		if err != nil {
+			logger.Error("summarize model resolution failed", "error", err)
+			sentry.CaptureException(err)
+
+			return "", nil, err
+		}
+	}
+
 	resp, err := s.Generate(ctx, Request{
-		Feature: FeatureSummarize,
+		Feature:      FeatureSummarize,
+		Model:        model,
+		SilentErrors: silent,
 		Messages: []Message{
 			TextMessage(RoleSystem, systemPrompt),
 			TextMessage(RoleUser, text),
@@ -159,11 +217,19 @@ func (s *Service) Summarize(ctx context.Context, scope PromptScope, text string,
 	return resp.Message.Text(), &usage, nil
 }
 
-// HasModelsFor reports whether every given feature's configured model is
-// offered by the backend, along with a per-feature result map. Callers decide
-// which features to gate on: the startup check passes chat and summarize
-// always, and image_recognition only for a model-routed recognizer on its
-// actual connection.
+// HasModelsFor reports whether every given feature's effective model is
+// offered by the backend, along with a per-feature result map. The effective
+// model is what the feature would actually request: the global runtime
+// override when one is set, otherwise the environment route. A used
+// override replaces the route as the validated model — an obsolete route
+// model the backend no longer serves must not block startup while the
+// persisted selection works, so its absence is reported as a warning. An
+// unset override validates the route: resetting to an unavailable fallback
+// fails the check loudly, and nothing silently selects another model.
+// Unset and resolution failure stay distinct — an unverifiable feature
+// fails the check. Callers decide which features to gate on: the startup
+// check passes chat and summarize always, and image_recognition only for a
+// model-routed recognizer on its actual connection.
 func (s *Service) HasModelsFor(ctx context.Context, features ...Feature) (bool, map[string]bool) {
 	logger := logging.FromContext(ctx, s.logger)
 	result := make(map[string]bool)
@@ -200,7 +266,35 @@ func (s *Service) HasModelsFor(ctx context.Context, features ...Feature) (bool, 
 			continue
 		}
 
-		result[string(feature)] = slices.Contains(models, route.Model)
+		// The chatID is 0 because the startup check covers global defaults
+		// only; per-chat overrides are runtime concerns verified when used.
+		override := ""
+		if s.resolver != nil {
+			override, err = s.resolver.ResolveModel(ctx, feature, 0)
+			if err != nil {
+				logger.Error("runtime model resolution failed", "feature", feature, "error", err)
+				sentry.CaptureException(err)
+				result[string(feature)] = false
+
+				continue
+			}
+		}
+
+		if override == "" {
+			// The route is the model the feature would request: validate it.
+			result[string(feature)] = slices.Contains(models, route.Model)
+
+			continue
+		}
+
+		// A set override is the model the feature requests. The route stays
+		// only as the documented fallback: unused, its absence may not block
+		// startup, but it is worth a warning.
+		result[string(feature)] = slices.Contains(models, override)
+		if !slices.Contains(models, route.Model) {
+			logger.Warn("environment fallback model is not offered by the backend; the runtime override is unaffected",
+				"feature", feature, "model", route.Model)
+		}
 	}
 
 	for _, available := range result {
@@ -212,17 +306,50 @@ func (s *Service) HasModelsFor(ctx context.Context, features ...Feature) (bool, 
 	return true, result
 }
 
-func (s *Service) buildConversationMessages(ctx context.Context, scope PromptScope, requestContext ChatReplyContext, toolPolicy string) ([]Message, error) {
+// ListModels returns the backend's served model list, used by the admin UI
+// model pickers. Transport errors are sanitized before returning: the raw
+// SDK error can embed the endpoint URL, which may carry credentials, and
+// the list feeds UI flows that must never surface it.
+func (s *Service) ListModels(ctx context.Context) ([]string, error) {
+	models, err := s.backend.ListModels(ctx)
+	if err != nil {
+		return nil, safeerr.WrapTransport(ErrLlmBackendRequestFailed, err)
+	}
+
+	return models, nil
+}
+
+func (s *Service) buildConversationMessages(ctx context.Context, scope PromptScope, requestContext ChatReplyContext, generationModel string, toolPolicy string, silent bool) ([]Message, error) {
 	logger := logging.FromContext(ctx, s.logger)
 	route, err := s.cfg.RouteForFeature(string(FeatureChat))
 	if err != nil {
 		return nil, errors.Join(ErrFeatureRouteInvalid, err)
 	}
 
-	systemPrompt, err := s.prompts.RenderChatSystemPrompt(ctx, scope, route.Model, requestContext.SystemHint, toolPolicy)
+	model := generationModel
+	if model == "" {
+		model = route.Model
+	}
+
+	// A captured persona freezes the character for the whole turn; without
+	// one the ordinary live rendering applies (explicit turns).
+	var systemPrompt string
+	if requestContext.Persona != nil {
+		systemPrompt, err = s.prompts.RenderCapturedChatSystemPrompt(ctx, *requestContext.Persona, scope.ChatID, model, requestContext.SystemHint, toolPolicy)
+	} else {
+		systemPrompt, err = s.prompts.RenderChatSystemPrompt(ctx, scope, model, requestContext.SystemHint, toolPolicy)
+	}
 	if err != nil {
-		logger.Error("chat template processing failed", "error", err)
-		sentry.CaptureException(err)
+		// Silent runs sanitize construction diagnostics too: template
+		// errors can quote operator template text and renderer internals,
+		// so only the stable kind reaches the log and Sentry. Explicit
+		// turns keep the raw error for operators.
+		diagnostic := err
+		if silent {
+			diagnostic = ErrTemplateProcessing
+		}
+		logger.Error("chat template processing failed", "error", diagnostic)
+		sentry.CaptureException(diagnostic)
 
 		return nil, ErrTemplateProcessing
 	}

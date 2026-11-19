@@ -5,6 +5,7 @@ import (
 	"net/url"
 
 	"telegram-ollama-reply-bot/internal/config"
+	"telegram-ollama-reply-bot/internal/support/urlredact"
 
 	"golang.org/x/net/http/httpproxy"
 )
@@ -26,7 +27,23 @@ func LogNetworkRouting(logger *slog.Logger, cfg *config.Config) {
 		"llm_backend", config.LLMBackendOpenAICompat,
 		"llm_chat_base_url", activeLLMBaseURL(cfg),
 		"llm_chat_proxy", resolveProxyForURL(activeLLMBaseURL(cfg), proxyFunc),
+		// The System One endpoint rides the same environment-resolved proxy
+		// policy as every other outbound connection (no System One-specific
+		// routing exists); it is logged redacted because endpoint URLs can
+		// carry credentials. An empty endpoint reads as unset.
+		"systemone_base_url", redactEndpointURL(cfg.SystemOne.BaseURL),
+		"systemone_proxy", resolveProxyForURL(cfg.SystemOne.BaseURL, proxyFunc),
 	)
+}
+
+// redactEndpointURL renders an endpoint URL with embedded credentials
+// redacted; an empty value reads as unset.
+func redactEndpointURL(raw string) string {
+	if raw == "" {
+		return "unset"
+	}
+
+	return urlredact.RedactOne(raw)
 }
 
 func activeLLMBaseURL(cfg *config.Config) string {

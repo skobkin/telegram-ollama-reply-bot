@@ -44,7 +44,7 @@ func TestOpenAIRecognizerSendsSniffedMIME(t *testing.T) {
 			Message: llm.TextMessage(llm.RoleAssistant, "a test chart"),
 		},
 	}
-	recognizer := NewOpenAIRecognizer(gen)
+	recognizer := NewOpenAIRecognizer(gen, nil)
 
 	recognition, err := recognizer.Recognize(context.Background(), pngImage(), "describe the image")
 	if err != nil {
@@ -90,7 +90,7 @@ func TestOpenAIRecognizerRejectsEmptyPrompt(t *testing.T) {
 	t.Parallel()
 
 	gen := &fakeGenerator{}
-	recognizer := NewOpenAIRecognizer(gen)
+	recognizer := NewOpenAIRecognizer(gen, nil)
 
 	_, err := recognizer.Recognize(context.Background(), pngImage(), "  ")
 
@@ -105,7 +105,7 @@ func TestOpenAIRecognizerRejectsEmptyPrompt(t *testing.T) {
 func TestOpenAIRecognizerNoChoices(t *testing.T) {
 	t.Parallel()
 
-	recognizer := NewOpenAIRecognizer(&fakeGenerator{})
+	recognizer := NewOpenAIRecognizer(&fakeGenerator{}, nil)
 
 	_, err := recognizer.Recognize(context.Background(), pngImage(), "describe")
 
@@ -117,7 +117,7 @@ func TestOpenAIRecognizerNoChoices(t *testing.T) {
 func TestOpenAIRecognizerRequiresModel(t *testing.T) {
 	t.Parallel()
 
-	recognizer := NewOpenAIRecognizer(&fakeGenerator{})
+	recognizer := NewOpenAIRecognizer(&fakeGenerator{}, nil)
 
 	if recognizer.Name() != config.LLMBackendOpenAICompat {
 		t.Fatalf("unexpected name: %s", recognizer.Name())
@@ -127,5 +127,88 @@ func TestOpenAIRecognizerRequiresModel(t *testing.T) {
 	}
 	if !recognizer.Supports("image/webp") || recognizer.Supports("image/gif") {
 		t.Fatalf("unexpected Supports results")
+	}
+}
+
+// stubVisionResolver resolves the image-recognition model from a fixed
+// value; err simulates a settings-store failure. unset yields "".
+type stubVisionResolver struct {
+	t     *testing.T
+	model string
+	err   error
+	calls int
+}
+
+func (r *stubVisionResolver) ResolveModel(_ context.Context, feature llm.Feature, _ int64) (string, error) {
+	r.calls++
+	if feature != llm.FeatureImageRecognition {
+		r.t.Errorf("recognizer must resolve image_recognition, got %s", feature)
+	}
+	if r.err != nil {
+		return "", r.err
+	}
+
+	return r.model, nil
+}
+
+// TestOpenAIRecognizerStampsRuntimeModel covers the dedicated-image-service
+// and shared-service wirings alike: whatever Generator is injected, the
+// runtime override resolves once per recognition call and lands on the wire.
+func TestOpenAIRecognizerStampsRuntimeModel(t *testing.T) {
+	t.Parallel()
+
+	resolver := &stubVisionResolver{t: t, model: "vision-override"}
+	gen := &fakeGenerator{
+		response: llm.Response{Message: llm.TextMessage(llm.RoleAssistant, "a chart")},
+	}
+	recognizer := NewOpenAIRecognizer(gen, resolver)
+
+	if _, err := recognizer.Recognize(context.Background(), pngImage(), "describe"); err != nil {
+		t.Fatalf("recognize: %v", err)
+	}
+
+	if resolver.calls != 1 {
+		t.Fatalf("expected exactly one resolution per recognition call, got %d", resolver.calls)
+	}
+	if gen.request.Model != "vision-override" {
+		t.Fatalf("expected runtime override on the wire, got %q", gen.request.Model)
+	}
+}
+
+// TestOpenAIRecognizerUnsetModelOmitsWireModel pins the unset semantics: ""
+// leaves the wire model empty so Generate fills the environment route.
+func TestOpenAIRecognizerUnsetModelOmitsWireModel(t *testing.T) {
+	t.Parallel()
+
+	gen := &fakeGenerator{
+		response: llm.Response{Message: llm.TextMessage(llm.RoleAssistant, "a chart")},
+	}
+	recognizer := NewOpenAIRecognizer(gen, &stubVisionResolver{t: t})
+
+	if _, err := recognizer.Recognize(context.Background(), pngImage(), "describe"); err != nil {
+		t.Fatalf("recognize: %v", err)
+	}
+
+	if gen.request.Model != "" {
+		t.Fatalf("expected unset wire model, got %q", gen.request.Model)
+	}
+}
+
+// TestOpenAIRecognizerResolutionFailureFailsRecognition is the
+// unset-vs-failure split: a store error aborts the recognition and must not
+// silently degrade to the route model.
+func TestOpenAIRecognizerResolutionFailureFailsRecognition(t *testing.T) {
+	t.Parallel()
+
+	resolutionErr := errors.New("settings store unavailable")
+	gen := &fakeGenerator{}
+	recognizer := NewOpenAIRecognizer(gen, &stubVisionResolver{t: t, err: resolutionErr})
+
+	_, err := recognizer.Recognize(context.Background(), pngImage(), "describe")
+	if !errors.Is(err, resolutionErr) {
+		t.Fatalf("expected the resolution error, got %v", err)
+	}
+	if gen.request.Feature != "" {
+		t.Fatalf("no generation request may be issued on a resolution failure, got feature %s", gen.request.Feature)
 	}
 }

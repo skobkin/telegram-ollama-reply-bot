@@ -118,6 +118,26 @@ func effectiveChatField(spec FieldSpec, global GlobalSettings, chat ChatSettings
 		if found && chat.KeepToolHistory != nil {
 			field.Effective, field.Source, field.Overridden = strconv.FormatBool(*chat.KeepToolHistory), SourceChatOverride, true
 		}
+	case "chat_model":
+		field.GlobalValue = global.ChatModel
+		if found && chat.ChatModel != "" {
+			field.Effective, field.Source, field.Overridden = chat.ChatModel, SourceChatOverride, true
+		}
+	case "systemone_model":
+		field.GlobalValue = global.SystemOneModel
+		if found && chat.SystemOneModel != "" {
+			field.Effective, field.Source, field.Overridden = chat.SystemOneModel, SourceChatOverride, true
+		}
+	case "interaction_profile":
+		field.GlobalValue = string(global.DefaultInteractionProfile)
+		if found && chat.InteractionProfile != "" {
+			field.Effective, field.Source, field.Overridden = string(chat.InteractionProfile), SourceChatOverride, true
+		}
+	case "decision_instructions":
+		field.GlobalValue = global.DecisionInstructions
+		if found && chat.DecisionInstructions != "" {
+			field.Effective, field.Source, field.Overridden = chat.DecisionInstructions, SourceChatOverride, true
+		}
 	}
 
 	if field.Effective == "" {
