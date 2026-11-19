@@ -555,6 +555,24 @@ func TestNewSecretScrubberRegistersQuotedDSNForm(t *testing.T) {
 	}
 }
 
+func TestNewSecretScrubberRegistersQuotedTrimmedForm(t *testing.T) {
+	t.Parallel()
+
+	cfg := scrubTestConfig()
+	cfg.LLM.Backends.OpenAICompat.APIToken = " PADDED\"TOKENFIXTURE "
+
+	scrubber := newSecretScrubber(cfg)
+
+	// A provider that trims the key and then renders it through %q escapes
+	// the quote; that rendering matches neither the padded raw registration
+	// nor its own quoted form — only the quoted trimmed form.
+	rendered := strconv.Quote(`PADDED"TOKENFIXTURE`)
+
+	if got := scrubber.Scrub(rendered); strings.Contains(got, "PADDEDTOKENFIXTURE") {
+		t.Fatalf("quoted trimmed token rendering survived: %q", got)
+	}
+}
+
 func TestNewSecretScrubberRegistersEndpointURLPasswords(t *testing.T) {
 	t.Parallel()
 

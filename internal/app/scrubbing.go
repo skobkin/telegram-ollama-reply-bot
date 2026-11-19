@@ -95,23 +95,39 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 //     the trimmed form is what services receive and echo back;
 //   - quoted: rendering a value through %q — what net/url's parse errors and
 //     every *url.Error message do — escapes special characters, and neither
-//     the raw nor a trimmed form matches that rendering (strconv.Quote's
-//     inner text is exactly that rendering).
+//     the raw nor a trimmed form matches that rendering. Quoted forms are
+//     registered for the raw and the trimmed value alike, since diagnostics
+//     quote whichever normalized form they carry.
 func withDerivedForms(secrets []secretscrub.Secret, secret secretscrub.Secret) []secretscrub.Secret {
-	if trimmed := strings.TrimSpace(secret.Value); trimmed != "" && trimmed != secret.Value {
+	trimmed := strings.TrimSpace(secret.Value)
+
+	if trimmed != "" && trimmed != secret.Value {
 		secrets = append(secrets, secretscrub.Secret{
 			Name:  secret.Name + "-trimmed",
 			Value: trimmed,
 		})
+
+		secrets = withQuoted(secrets, secret.Name+"-trimmed", trimmed)
 	}
 
-	if quoted := strconv.Quote(secret.Value); len(quoted) >= 2 {
-		if inner := quoted[1 : len(quoted)-1]; inner != secret.Value {
-			secrets = append(secrets, secretscrub.Secret{
-				Name:  secret.Name + "-quoted",
-				Value: inner,
-			})
-		}
+	return withQuoted(secrets, secret.Name, secret.Value)
+}
+
+// withQuoted registers the %q rendering of a value alongside the value
+// itself: rendering escapes special characters, and neither the raw nor a
+// trimmed form matches that rendering (strconv.Quote's inner text is
+// exactly it).
+func withQuoted(secrets []secretscrub.Secret, name, value string) []secretscrub.Secret {
+	quoted := strconv.Quote(value)
+	if len(quoted) < 2 {
+		return secrets
+	}
+
+	if inner := quoted[1 : len(quoted)-1]; inner != value {
+		secrets = append(secrets, secretscrub.Secret{
+			Name:  name + "-quoted",
+			Value: inner,
+		})
 	}
 
 	return secrets
