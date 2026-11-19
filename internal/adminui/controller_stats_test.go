@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
+	"telegram-ollama-reply-bot/internal/interactivity"
 	"telegram-ollama-reply-bot/internal/statistics"
+	"telegram-ollama-reply-bot/internal/statistics/pngreport"
 )
 
 // seedInteraction records one full observation set (submission, inference,
@@ -381,5 +383,142 @@ func TestStatisticsWarnsOnFoldedSelection(t *testing.T) {
 	outcome := tap(t, c, session, VerbStatsProfile)
 	if !strings.Contains(outcome.Render.Built.Text, "⚠️") {
 		t.Fatalf("a folded empty selection must warn:\n%s", outcome.Render.Built.Text)
+	}
+}
+
+// captureStatsRenderer is a StatsReportRenderer test double: it records the
+// report inputs and returns a stub payload (the controller never parses the
+// PNG bytes) or a forced error.
+func captureStatsRenderer(captured *[]pngreport.Report, failWith error) StatsReportRenderer {
+	return func(input pngreport.Report) ([]byte, error) {
+		*captured = append(*captured, input)
+		if failWith != nil {
+			return nil, failWith
+		}
+
+		return []byte("png-bytes"), nil
+	}
+}
+
+func TestStatsExportAttachesPNGAndJSONFromOneSnapshot(t *testing.T) {
+	var captured []pngreport.Report
+	c, _ := newTestController(t, WithStatsReport(captureStatsRenderer(&captured, nil)))
+	seedInteraction(t, c, testGroupID, "m1")
+	seedInteraction(t, c, 200, "m2")
+
+	session, _ := openStats(t, c)
+	outcome := tap(t, c, session, VerbStatsExport)
+
+	if len(captured) != 1 {
+		t.Fatalf("the renderer must see exactly one report input, got %d", len(captured))
+	}
+	if outcome.Photo == nil || string(outcome.Photo.Content) != "png-bytes" {
+		t.Fatalf("export must deliver the rendered photo: %+v", outcome.Photo)
+	}
+	if !strings.HasPrefix(outcome.Photo.Filename, "interaction-stats-") ||
+		!strings.HasSuffix(outcome.Photo.Filename, ".png") {
+		t.Fatalf("photo filename wrong: %q", outcome.Photo.Filename)
+	}
+	if outcome.Document == nil {
+		t.Fatalf("export must deliver the JSON document")
+	}
+
+	// Single-snapshot reuse: the PNG input and the canonical JSON must
+	// carry the same numbers.
+	var decoded struct {
+		Submission struct {
+			Submitted uint64 `json:"submitted"`
+		} `json:"submission"`
+		Decision struct {
+			Totals struct {
+				EvaluatedAttempts uint64 `json:"evaluated_attempts"`
+			} `json:"totals"`
+		} `json:"decision"`
+	}
+	if err := json.Unmarshal(outcome.Document.Content, &decoded); err != nil {
+		t.Fatalf("export must decode: %v", err)
+	}
+	snap := captured[0].Snapshot
+	if snap.Submission == nil || snap.Submission.Submitted != decoded.Submission.Submitted {
+		t.Fatalf("PNG input snapshot must match the JSON totals: %+v vs %d",
+			snap.Submission, decoded.Submission.Submitted)
+	}
+	if snap.Decision.Totals.EvaluatedAttempts != decoded.Decision.Totals.EvaluatedAttempts {
+		t.Fatalf("PNG input decision totals must match the JSON: %d vs %d",
+			snap.Decision.Totals.EvaluatedAttempts, decoded.Decision.Totals.EvaluatedAttempts)
+	}
+
+	// No profile filter: no threshold annotations.
+	if captured[0].Annotations != nil {
+		t.Fatalf("an unfiltered export must not carry annotations: %+v", captured[0].Annotations)
+	}
+	if outcome.Message != nil {
+		t.Fatalf("a successful render must not notify: %+v", outcome.Message)
+	}
+}
+
+func TestStatsExportAnnotationsFollowProfileFilter(t *testing.T) {
+	var captured []pngreport.Report
+	c, _ := newTestController(t, WithStatsReport(captureStatsRenderer(&captured, nil)))
+	seedInteraction(t, c, testGroupID, "m1")
+
+	session, _ := openStats(t, c)
+
+	// Cycle to talk_low (first tap lands on non_interactive).
+	for i := 0; i < 4; i++ {
+		tap(t, c, session, VerbStatsProfile)
+	}
+	tap(t, c, session, VerbStatsExport)
+
+	if len(captured) != 1 {
+		t.Fatalf("the renderer must see exactly one report input, got %d", len(captured))
+	}
+	annotations := captured[0].Annotations
+	if annotations == nil {
+		t.Fatalf("a single-profile export must carry threshold annotations")
+	}
+	if annotations.ProfileID != "talk_low" {
+		t.Fatalf("annotations profile = %q, want talk_low", annotations.ProfileID)
+	}
+	// Values reflect the CURRENT preset, compared against the real profile.
+	profile, ok := interactivity.ProfileByID(adminconfig.InteractionProfile("talk_low"))
+	if !ok {
+		t.Fatalf("talk_low must resolve")
+	}
+	if annotations.ReactionThreshold != profile.ReactionThreshold ||
+		annotations.ReplyThreshold != profile.ReplyThreshold ||
+		annotations.MaxIntrusion != profile.MaxIntrusion {
+		t.Fatalf("annotation thresholds must match the preset: %+v vs %+v",
+			*annotations, profile)
+	}
+}
+
+func TestStatsExportRenderFailureKeepsJSON(t *testing.T) {
+	var captured []pngreport.Report
+	c, _ := newTestController(t, WithStatsReport(captureStatsRenderer(&captured, context.DeadlineExceeded)))
+	seedInteraction(t, c, testGroupID, "m1")
+
+	session, _ := openStats(t, c)
+	outcome := tap(t, c, session, VerbStatsExport)
+
+	// The photo is skipped, the canonical JSON still delivered, and the
+	// admin told why — the failure must not break the export action.
+	if outcome.Photo != nil {
+		t.Fatalf("a failed render must not attach a photo: %+v", outcome.Photo)
+	}
+	if outcome.Document == nil {
+		t.Fatalf("a failed render must still deliver the JSON document")
+	}
+	var decoded struct {
+		Schema string `json:"schema"`
+	}
+	if err := json.Unmarshal(outcome.Document.Content, &decoded); err != nil {
+		t.Fatalf("the JSON export must decode: %v", err)
+	}
+	if decoded.Schema != statistics.InteractionSchemaName {
+		t.Fatalf("schema = %q", decoded.Schema)
+	}
+	if outcome.Message == nil || !strings.Contains(outcome.Message.Text, "PNG report rendering failed") {
+		t.Fatalf("a failed render must notify the admin: %+v", outcome.Message)
 	}
 }

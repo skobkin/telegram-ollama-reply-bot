@@ -25,6 +25,7 @@ import (
 	"telegram-ollama-reply-bot/internal/reminders"
 	"telegram-ollama-reply-bot/internal/state/memory"
 	"telegram-ollama-reply-bot/internal/statistics"
+	"telegram-ollama-reply-bot/internal/statistics/pngreport"
 	"telegram-ollama-reply-bot/internal/support/httpclient"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/support/safeerr"
@@ -627,6 +628,7 @@ func Run(ctx context.Context) error {
 		systemOneDiscovery = systemOneClient
 	}
 	controllerOpts = append(controllerOpts, core.WithModelDiscovery(llmc, imageDiscovery, systemOneDiscovery))
+	controllerOpts = append(controllerOpts, core.WithStatsReport(pngreport.Render))
 	if cfg.LLM.ImageRecognitionEnabled && cfg.LLM.ImageRecognition.Recognizer == config.ImageRecognizerMiniMaxVLM {
 		controllerOpts = append(controllerOpts, core.WithHiddenImageModel())
 	}

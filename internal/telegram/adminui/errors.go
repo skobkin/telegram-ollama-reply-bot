@@ -15,6 +15,7 @@ var (
 	errAdminPromptSend     = errors.New("admin ui input prompt send failed")
 	errAdminMessageSend    = errors.New("admin ui message send failed")
 	errAdminDocumentSend   = errors.New("admin ui document send failed")
+	errAdminPhotoSend      = errors.New("admin ui photo send failed")
 	errAdminMessageCleanup = errors.New("admin ui message cleanup failed")
 	errAdminCallbackAck    = errors.New("admin ui callback acknowledgement failed")
 	errAdminMenuSync       = errors.New("admin ui command menu sync failed")

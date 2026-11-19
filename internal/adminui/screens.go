@@ -31,6 +31,15 @@ type DocumentPayload struct {
 	Content  []byte
 }
 
+// PhotoPayload carries a payload delivered as an inline photo (statistics
+// PNG reports). Telegram re-encodes bot-sent photos, so the filename is
+// only the upload's multipart name, not a preserved attachment name.
+type PhotoPayload struct {
+	Filename string
+	Caption  string
+	Content  []byte
+}
+
 // Screen is a renderable snapshot: plain text (no parse mode — titles,
 // usernames, and values are third-party controlled) plus a button grid.
 type Screen struct {

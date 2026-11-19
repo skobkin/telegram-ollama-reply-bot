@@ -13,7 +13,9 @@ import (
 	"unicode/utf8"
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
+	"telegram-ollama-reply-bot/internal/interactivity"
 	"telegram-ollama-reply-bot/internal/statistics"
+	"telegram-ollama-reply-bot/internal/statistics/pngreport"
 )
 
 // AdminInputMarker prefixes every admin input request message the adapter
@@ -102,6 +104,7 @@ type Outcome struct {
 	Input        *InputRequest
 	Picker       *PickerRequest
 	Document     *DocumentPayload
+	Photo        *PhotoPayload
 	Message      *TextMessage
 	Verify       *VerifyChat
 	DeleteMsgIDs []int
@@ -124,6 +127,7 @@ type fx struct {
 	input      *InputRequest
 	picker     *PickerRequest
 	document   *DocumentPayload
+	photo      *PhotoPayload
 	message    *TextMessage
 	verify     *VerifyChat
 	deletes    []int
@@ -135,6 +139,7 @@ func (f fx) outcome() Outcome {
 		Input:        f.input,
 		Picker:       f.picker,
 		Document:     f.document,
+		Photo:        f.photo,
 		Message:      f.message,
 		Verify:       f.verify,
 		DeleteMsgIDs: f.deletes,
@@ -223,15 +228,31 @@ type ControllerOptions struct {
 	// active image recognizer takes no model selection (MiniMax). Hiding is
 	// render-time only: a stored global value stays untouched.
 	HideImageModel bool
+	// StatsReport renders the PNG report attached to the statistics export.
+	// Nil keeps the export JSON-only.
+	StatsReport StatsReportRenderer
 }
 
 // ControllerOption mutates ControllerOptions at wiring time.
 type ControllerOption func(*ControllerOptions)
 
+// StatsReportRenderer renders the PNG report presenter for one snapshot
+// (internal/statistics/pngreport). The seam keeps the chart dependency
+// injectable: tests exercise the JSON-only path and failing renderers
+// without a chart library in play.
+type StatsReportRenderer func(pngreport.Report) ([]byte, error)
+
 // WithModelDiscovery wires the per-feature backend discovery providers.
 func WithModelDiscovery(chat, image, systemOne ModelDiscovery) ControllerOption {
 	return func(o *ControllerOptions) {
 		o.ChatModels, o.ImageModels, o.SystemOneModels = chat, image, systemOne
+	}
+}
+
+// WithStatsReport wires the PNG report renderer for the statistics export.
+func WithStatsReport(render StatsReportRenderer) ControllerOption {
+	return func(o *ControllerOptions) {
+		o.StatsReport = render
 	}
 }
 
@@ -2204,21 +2225,54 @@ func observedDecisionModels(snap statistics.InteractionSnapshot) []string {
 	return models
 }
 
-// handleStatsExport renders the versioned JSON export for ONE snapshot
-// taken under the session's scope and filters, delivered as a document to
-// the admin DM.
+// handleStatsExport renders the versioned JSON export — plus the PNG
+// report when a renderer is wired — from ONE snapshot taken under the
+// session's scope and filters, delivered to the admin DM.
 func (c *Controller) handleStatsExport(s *Session, fx *fx) error {
 	if s.Screen.Kind != ScreenStatistics || c.stats == nil {
 		return errInvalidArg
 	}
 	scope, filters := statsScopeOf(s.Screen), statsFiltersOf(s.Screen)
 	snapshot := c.stats.InteractionSnapshot(scope, filters)
+	stamp := c.manager.Now().Format("20060102-150405")
+
+	// ONE snapshot feeds both artifacts: the PNG charts and the canonical
+	// JSON must never disagree.
+	input := pngreport.Report{Snapshot: snapshot, Scope: scope, Filters: filters}
+	if filters.Profile != "" {
+		// Markers reflect the CURRENT preset values; historical presets are
+		// not reconstructible and are not pretended to be.
+		if profile, ok := interactivity.ProfileByID(adminconfig.InteractionProfile(filters.Profile)); ok {
+			input.Annotations = &pngreport.ThresholdAnnotations{
+				ProfileID:         string(profile.ID),
+				ReactionThreshold: profile.ReactionThreshold,
+				ReplyThreshold:    profile.ReplyThreshold,
+				MaxIntrusion:      profile.MaxIntrusion,
+			}
+		}
+	}
+	if c.opts.StatsReport != nil {
+		png, err := c.opts.StatsReport(input)
+		if err != nil {
+			// A rendering failure must not block the canonical export: the
+			// photo is skipped, the JSON still delivered, and the admin
+			// told why (sanitized — renderer errors carry no secrets, but
+			// the notice stays generic regardless).
+			fx.message = &TextMessage{Text: "⚠️ PNG report rendering failed — only the JSON export is attached."}
+		} else {
+			fx.photo = &PhotoPayload{
+				Filename: "interaction-stats-" + stamp + ".png",
+				Content:  png,
+			}
+		}
+	}
+
 	payload, err := statistics.InteractionJSON(snapshot, scope, filters)
 	if err != nil {
 		return err
 	}
 	fx.document = &DocumentPayload{
-		Filename: "interaction-stats-" + c.manager.Now().Format("20060102-150405") + ".json",
+		Filename: "interaction-stats-" + stamp + ".json",
 		Content:  payload,
 	}
 
