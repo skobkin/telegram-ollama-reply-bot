@@ -91,6 +91,13 @@ type Bot struct {
 	// reply's send response was still in flight; replayed on history
 	// insertion. The zero value is usable.
 	pendingReactions pendingReactionBuffer
+	// decisions holds the shared proactive-participation boundaries; nil
+	// when the feature is not wired (no System One backend), making every
+	// message engine-ineligible.
+	decisions *proactiveDecisions
+	// participation serializes proactive decision tasks per chat and tracks
+	// their lifecycle; set together with decisions.
+	participation *participationRunner
 }
 
 func NewBot(
@@ -342,13 +349,16 @@ func (b *Bot) textMessageHandler(ctx *th.Context, update t.Update) error {
 		b.maybeAutoSummarize(ctx, message, resolved)
 	}
 
-	if !b.shouldProcessChatMessage(resolved, message) {
-		logger.Debug("skipping message", "reason", "interactivity mode")
+	// An explicit turn is a conversational message the interactivity gate
+	// accepts. The explicit path and the proactive decision engine are
+	// mutually exclusive: an accepted trigger never also reaches the engine,
+	// and every non-explicit message goes through the proactive eligibility
+	// gate instead — including conversational messages the mode rejected
+	// (for example a reply to the bot under mentions_only, which the engine
+	// path now evaluates proactively instead of dropping silently).
+	explicitTurn := conversational && b.shouldProcessChatMessage(resolved, message)
 
-		return nil
-	}
-
-	if conversational {
+	if explicitTurn {
 		messageType := "private"
 		if b.isMentionOfMe(message) {
 			messageType = "mention"
@@ -357,9 +367,18 @@ func (b *Bot) textMessageHandler(ctx *th.Context, update t.Update) error {
 		}
 		logger.Info("processing message", "message_type", messageType)
 		b.processMention(ctx, message, resolved)
-	} else {
-		logger.Debug("skipping message", "reason", "not a mention, reply, or private chat")
+
+		return nil
 	}
+
+	if !b.shouldEvaluateParticipation(resolved, message) {
+		logger.Debug("skipping message", "reason", "not eligible for proactive participation")
+
+		return nil
+	}
+
+	logger.Debug("evaluating message for proactive participation", "chat_id", message.Chat.ID, "message_id", message.MessageID)
+	b.evaluateProactiveParticipation(ctx.Context(), message)
 
 	return nil
 }
@@ -370,12 +389,18 @@ func (b *Bot) processMention(reqCtx *th.Context, message t.Message, resolved adm
 	// Explicit turns keep the historical behavior on every policy: previews
 	// on, user-facing error fallbacks, text delivered and recorded, the
 	// full tool registry.
-	b.runConversationTurn(reqCtx, message, resolved, turnOptions{
-		trigger:     b.replyTriggerKind(message),
-		errorPolicy: explicitErrors,
-		delivery:    deliverAndRecord,
-		withPreview: true,
-	})
+	b.runConversationTurn(
+		b.handlerContext(reqCtx),
+		message,
+		b.getMessageDataFromRequestContextOrCreate(reqCtx, message, true),
+		resolved,
+		turnOptions{
+			trigger:        b.replyTriggerKind(message),
+			errorPolicy:    explicitErrors,
+			delivery:       deliverAndRecord,
+			withPreview:    true,
+			typingFallback: true,
+		})
 }
 
 func (b *Bot) replyTriggerKind(message t.Message) llmcontext.TriggerKind {

@@ -69,6 +69,26 @@ func (r modelResolver) ResolveModel(ctx context.Context, feature llm.Feature, ch
 	}
 }
 
+// decisionPersonaSource renders the decision context's persona through the
+// ordinary admin prompt path: the full effective character prompt the
+// generation turns use. The generation model passed in comes from the
+// operation snapshot, so any model-identity reference in the persona
+// describes the generation character. The compact context stays empty —
+// the decision state already carries the conversation as bounded history —
+// and the tool-policy section states that no tools exist in a decision.
+type decisionPersonaSource struct {
+	prompts *llm.AdminPromptRenderer
+}
+
+// decisionPersonaToolPolicy renders the chat template's tool-policy section
+// for decision contexts: the decision backend receives no tools, and the
+// persona must not advertise any.
+const decisionPersonaToolPolicy = "No tools are available in this context."
+
+func (s decisionPersonaSource) DecisionPersona(ctx context.Context, chatID int64, generationModel string) (string, error) {
+	return s.prompts.RenderChatSystemPrompt(ctx, llm.PromptScope{ChatID: chatID}, generationModel, "", decisionPersonaToolPolicy)
+}
+
 // verifyStartupModels checks that every required feature model is available
 // on the service that will actually serve it. The main service always covers
 // chat and summarize. The image-recognition model is appended to the main
@@ -570,6 +590,19 @@ func Run(ctx context.Context) error {
 	)
 	botService.SetAdminUI(adminAdapter)
 
+	// Proactive participation: opt-in per chat through the interaction
+	// profile. The engine evaluates eligible non-explicit group messages
+	// only while the System One backend is configured; unconfigured keeps
+	// the feature entirely off.
+	var stopParticipation func()
+	if systemOneClient.Configured() {
+		stopParticipation = botService.SetProactiveDecisions(
+			systemOneClient,
+			decisionPersonaSource{prompts: prompts},
+			cfg.SystemOne.InputBudgetBytes,
+		)
+	}
+
 	attachImageTools(tools, botService, cfg.LLM.ImageRecognitionEnabled)
 
 	// Live previews subscribe to the execution events. At shutdown the
@@ -586,6 +619,13 @@ func Run(ctx context.Context) error {
 	stopMenuRecreate := adminAdapter.StartWatching(ctx, dispatcher)
 
 	runErr := botService.Run()
+	// Proactive participation drains first: its tasks run full generation
+	// turns that register preview runs, publish events, and record history,
+	// so they must be joined while previews, the dispatcher, the tool
+	// runtime, and the stores are all still alive.
+	if stopParticipation != nil {
+		stopParticipation()
+	}
 	stopMenuRecreate()
 	if stopPreviews != nil {
 		stopPreviews()

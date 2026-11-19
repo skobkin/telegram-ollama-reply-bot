@@ -15,6 +15,9 @@ const (
 	TriggerMention TriggerKind = "mention"
 	TriggerReply   TriggerKind = "reply"
 	TriggerPrivate TriggerKind = "private"
+	// TriggerProactive marks a turn the bot started on its own: the engine
+	// evaluated a non-explicit message and decided to participate.
+	TriggerProactive TriggerKind = "proactive"
 )
 
 type HydrateFunc func(context.Context, []state.Message) []state.Message
@@ -75,7 +78,35 @@ func NewReplyBuilder(history state.ConversationStore, hydrate HydrateFunc, recen
 }
 
 func (b *ReplyBuilder) BuildReplyContext(ctx context.Context, input ReplyInput) llm.ChatReplyContext {
-	snapshot := b.history.Snapshot(input.Scope)
+	history, earlierSummary := b.DecisionHistory(ctx, input.Scope)
+	current := hydrateOne(ctx, input.CurrentMessage, b.hydrate)
+
+	result := llm.ChatReplyContext{
+		SystemHint:     renderSystemHint(input),
+		EarlierSummary: earlierSummary,
+		History:        messagesToLLM(history),
+		UserMessage:    messageToLLM(current),
+	}
+
+	return result
+}
+
+// DecisionHistory returns the bounded, hydrated history snapshot of one
+// conversation: the same bounding and hydration as the ordinary reply
+// context, without a system hint or a current-message slot — a proactive
+// decision carries its target separately and excludes it by message ID.
+// The second value is the committed summary of the trimmed prefix ("" when
+// the full history is present).
+func (b *ReplyBuilder) DecisionHistory(ctx context.Context, scope state.ConversationScope) ([]state.Message, string) {
+	snapshot := b.history.Snapshot(scope)
+
+	return b.hydrate(ctx, b.boundedMessages(snapshot)), snapshot.EarlierSummary
+}
+
+// boundedMessages applies the builder's windowing to one store snapshot:
+// from the summary boundary, or the recent window when no summary exists,
+// with the partial-summary tail clamp mid-rebuild.
+func (b *ReplyBuilder) boundedMessages(snapshot state.ConversationSnapshot) []state.Message {
 	start := snapshot.SummaryMessageCount
 	if start < 0 {
 		start = 0
@@ -101,17 +132,7 @@ func (b *ReplyBuilder) BuildReplyContext(ctx context.Context, input ReplyInput) 
 		start = len(snapshot.Messages) - b.summaryTailLimit
 	}
 
-	history := b.hydrate(ctx, snapshot.Messages[start:])
-	current := hydrateOne(ctx, input.CurrentMessage, b.hydrate)
-
-	result := llm.ChatReplyContext{
-		SystemHint:     renderSystemHint(input),
-		EarlierSummary: snapshot.EarlierSummary,
-		History:        messagesToLLM(history),
-		UserMessage:    messageToLLM(current),
-	}
-
-	return result
+	return snapshot.Messages[start:]
 }
 
 func RenderMessagesPlainText(messages []state.Message) string {

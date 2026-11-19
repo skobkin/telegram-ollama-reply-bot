@@ -10,11 +10,11 @@ import (
 	"telegram-ollama-reply-bot/internal/execution"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/llmcontext"
+	"telegram-ollama-reply-bot/internal/state"
 	"telegram-ollama-reply-bot/internal/tooluse"
 
 	"github.com/getsentry/sentry-go"
 	t "github.com/mymmrac/telego"
-	th "github.com/mymmrac/telego/telegohandler"
 	tu "github.com/mymmrac/telego/telegoutil"
 )
 
@@ -63,16 +63,21 @@ type turnOptions struct {
 	// completeAfterSideEffect ends a restricted run on the first
 	// successfully applied side effect (reaction-only turns).
 	completeAfterSideEffect bool
+	// typingFallback lets the no-preview typing indicator run. Only the
+	// explicit turn sets it: unsolicited proactive participation must not
+	// announce itself with a typing indicator, with or without previews.
+	typingFallback bool
 }
 
 // runConversationTurn is the shared generation-turn pipeline: preview
 // registration, history summarization, reply-context construction, the
 // tool loop, error presentation, delivery, and history recording. Explicit
 // and proactive turns share it; the options carry the per-kind policies.
-func (b *Bot) runConversationTurn(reqCtx *th.Context, message t.Message, resolved adminconfig.ResolvedChatConfig, opts turnOptions) {
+// The caller supplies the base context (the handler context for explicit
+// turns, the task deadline context for proactive ones) and the message data
+// built once for the operation.
+func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMessageData state.Message, resolved adminconfig.ResolvedChatConfig, opts turnOptions) {
 	chatID := tu.ID(message.Chat.ID)
-
-	baseCtx := b.handlerContext(reqCtx)
 
 	// The preview starts before preprocessing so the neutral indicator
 	// covers the entire run, history summarization included. It returns nil
@@ -92,19 +97,16 @@ func (b *Bot) runConversationTurn(reqCtx *th.Context, message t.Message, resolve
 		defer run.Close() // safety net: state cleanup on every exit path
 	}
 
-	b.maybeSummarizeHistory(baseCtx, message)
-	logger := b.loggerFromContext(baseCtx)
+	b.maybeSummarizeHistory(ctx, message)
+	logger := b.loggerFromContext(ctx)
 	logger.Debug("handling mention")
-
-	// Get MessageData from the request context if available, otherwise create it on the fly
-	userMessageData := b.getMessageDataFromRequestContextOrCreate(reqCtx, message, true)
 
 	var llmReply string
 	var usage *llm.TokenUsage
 	var toolCalls []tooluse.ToolCallRecord
 	var err error
 
-	err = b.runWithPreviewTimeout(baseCtx, chatID, run, func(ctx context.Context) error {
+	turnWork := func(ctx context.Context) error {
 		var userCtx llmcontext.UserContext
 		if message.From != nil {
 			userCtx = llmcontext.UserContext{
@@ -149,7 +151,19 @@ func (b *Bot) runConversationTurn(reqCtx *th.Context, message t.Message, resolve
 		toolCalls = result.ToolCalls
 
 		return runErr
-	})
+	}
+
+	// The typing fallback covers turns without an active preview run
+	// (explicit turns, and replies when previews are off). Proactive turns
+	// suppress it entirely: a silent reaction must not announce itself as
+	// an incoming reply.
+	if opts.typingFallback {
+		err = b.runWithPreviewTimeout(ctx, chatID, run, turnWork)
+	} else {
+		deadlineCtx, cancel := b.withProcessingDeadline(ctx)
+		defer cancel()
+		err = b.withinProcessingDeadline(deadlineCtx, turnWork)
+	}
 	if err != nil {
 		run.Abort()
 
@@ -166,7 +180,7 @@ func (b *Bot) runConversationTurn(reqCtx *th.Context, message t.Message, resolve
 		if errors.Is(err, ErrRequestTimeout) {
 			logger.Error("llm request timed out", "chat_id", message.Chat.ID, "error", err)
 			timeout := b.cfg.ProcessingTimeout
-			_, _ = b.sendMessage(baseCtx, b.reply(message, tu.Message(
+			_, _ = b.sendMessage(ctx, b.reply(message, tu.Message(
 				chatID,
 				fmt.Sprintf("LLM request timed out after %s. Try again later.", timeout),
 			)))
@@ -177,7 +191,7 @@ func (b *Bot) runConversationTurn(reqCtx *th.Context, message t.Message, resolve
 		logger.Error("cannot get reply from llm connector", "error", err)
 		sentry.CaptureException(err)
 
-		_, _ = b.sendMessage(baseCtx, b.reply(message, tu.Message(
+		_, _ = b.sendMessage(ctx, b.reply(message, tu.Message(
 			chatID,
 			"LLM request error. Try again later.",
 		)))
@@ -220,7 +234,7 @@ func (b *Bot) runConversationTurn(reqCtx *th.Context, message t.Message, resolve
 	// and a 429 the send draws is absorbed, waited, and redelivered by the
 	// same helper — a preliminary wait here would run unbounded against a
 	// backoff larger than the budget.
-	sent, err := b.deliverFinalReply(baseCtx, message, llmReply, toolCalls, resolved)
+	sent, err := b.deliverFinalReply(ctx, message, llmReply, toolCalls, resolved)
 	if err != nil {
 		run.Abort()
 
@@ -228,7 +242,7 @@ func (b *Bot) runConversationTurn(reqCtx *th.Context, message t.Message, resolve
 		sentry.CaptureException(err)
 
 		if opts.errorPolicy == explicitErrors {
-			b.trySendReplyError(baseCtx, message)
+			b.trySendReplyError(ctx, message)
 		}
 
 		return
@@ -241,5 +255,5 @@ func (b *Bot) runConversationTurn(reqCtx *th.Context, message t.Message, resolve
 		replyMessageID = sent.MessageID
 	}
 
-	b.saveBotReplyToHistory(baseCtx, message, llmReply, replyMessageID)
+	b.saveBotReplyToHistory(ctx, message, llmReply, replyMessageID)
 }
