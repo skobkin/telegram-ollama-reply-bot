@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -500,5 +501,32 @@ func TestNewSecretScrubberRegistersEndpointURLPasswords(t *testing.T) {
 		if got := scrubber.Scrub(text); got == text {
 			t.Fatalf("endpoint URL password survived: %q", fixture)
 		}
+	}
+}
+
+func TestScrubFatalError(t *testing.T) {
+	t.Parallel()
+
+	scrubber := newSecretScrubber(scrubTestConfig())
+
+	// A fatal error carrying a registered secret is scrubbed; the message is
+	// what main prints, so the marker must be present.
+	err := scrubFatalError(scrubber, errors.New("connect https://host/botTELEGRAMFIXTURE/getMe failed"))
+	if containsAny(err.Error(), "TELEGRAMFIXTURE") {
+		t.Fatalf("fatal error kept the secret: %v", err)
+	}
+
+	if !containsAny(err.Error(), "[REDACTED:telegram-token]") {
+		t.Fatalf("fatal error lost the marker: %v", err)
+	}
+
+	// Nil error and nil scrubber pass through.
+	if scrubFatalError(scrubber, nil) != nil {
+		t.Fatal("nil fatal error was replaced")
+	}
+
+	clean := errors.New("plain failure")
+	if scrubFatalError(nil, clean) != clean {
+		t.Fatal("nil scrubber rebuilt the error")
 	}
 }

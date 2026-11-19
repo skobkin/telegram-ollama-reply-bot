@@ -286,7 +286,7 @@ func attachImageTools(tools *tooluse.Runtime, analyzer tooluse.ImageAnalyzer, en
 	tools.AttachImageAnalyzer(analyzer)
 }
 
-func Run(ctx context.Context) error {
+func Run(ctx context.Context) (runErr error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -296,6 +296,15 @@ func Run(ctx context.Context) error {
 	// sink — log records, Sentry events, HTTP client errors — is covered
 	// from the first line of output onward.
 	scrubber := newSecretScrubber(cfg)
+
+	// The process-exit diagnostic is printed by main outside every scrubbed
+	// sink (plain stderr), so the error escaping Run is scrubbed here.
+	// Errors from before the scrubber exists — config loading — cannot name
+	// its secrets. Chain identity is irrelevant at the process boundary:
+	// main only prints the message and exits.
+	defer func() {
+		runErr = scrubFatalError(scrubber, runErr)
+	}()
 
 	logManager, err := logging.NewManager(logging.Options{
 		Level:      cfg.Logging.Level,
@@ -681,7 +690,7 @@ func Run(ctx context.Context) error {
 	// the whole re-creation send timeout.
 	stopMenuRecreate := adminAdapter.StartWatching(ctx, dispatcher)
 
-	runErr := botService.Run()
+	runErr = botService.Run()
 	// Proactive participation drains first: its tasks run full generation
 	// turns that register preview runs, publish events, and record history,
 	// so they must be joined while previews, the dispatcher, the tool

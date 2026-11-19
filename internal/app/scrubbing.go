@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"net/url"
 	"strings"
 
@@ -240,4 +241,15 @@ func scrubAny(scrubber *secretscrub.Scrubber, value any, depth int) any {
 	default:
 		return value
 	}
+}
+
+// scrubFatalError scrubs the error returned by Run, which main prints to
+// plain stderr — the one diagnostic surface no other scrubbing layer covers.
+// A nil scrubber or nil error passes through unchanged.
+func scrubFatalError(scrubber *secretscrub.Scrubber, err error) error {
+	if scrubber == nil || err == nil {
+		return err
+	}
+
+	return errors.New(scrubber.Scrub(err.Error()))
 }
