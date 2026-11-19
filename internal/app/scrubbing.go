@@ -138,8 +138,17 @@ func scrubEvent(scrubber *secretscrub.Scrubber, event *sentry.Event) {
 	event.Message = scrubber.Scrub(event.Message)
 	event.Transaction = scrubber.Scrub(event.Transaction)
 
-	for i, part := range event.Fingerprint {
-		event.Fingerprint[i] = scrubber.Scrub(part)
+	// Scope-sourced payloads (breadcrumbs, fingerprint, extra, contexts) are
+	// shared by reference between concurrent events, so every scrubbed copy
+	// is event-owned instead of mutating shared memory in place.
+	if len(event.Fingerprint) > 0 {
+		fingerprint := make([]string, len(event.Fingerprint))
+
+		for i, part := range event.Fingerprint {
+			fingerprint[i] = scrubber.Scrub(part)
+		}
+
+		event.Fingerprint = fingerprint
 	}
 
 	for i := range event.Exception {
@@ -148,17 +157,19 @@ func scrubEvent(scrubber *secretscrub.Scrubber, event *sentry.Event) {
 
 		if mechanism := event.Exception[i].Mechanism; mechanism != nil {
 			mechanism.Description = scrubber.Scrub(mechanism.Description)
-			scrubAnyMap(scrubber, mechanism.Data, maxScrubDepth)
+			mechanism.Data = copyScrubAnyMap(scrubber, mechanism.Data, maxScrubDepth)
 		}
 	}
 
-	for _, crumb := range event.Breadcrumbs {
+	for i, crumb := range event.Breadcrumbs {
 		if crumb == nil {
 			continue
 		}
 
-		crumb.Message = scrubber.Scrub(crumb.Message)
-		scrubAnyMap(scrubber, crumb.Data, maxScrubDepth)
+		owned := *crumb
+		owned.Message = scrubber.Scrub(crumb.Message)
+		owned.Data = copyScrubAnyMap(scrubber, crumb.Data, maxScrubDepth)
+		event.Breadcrumbs[i] = &owned
 	}
 
 	if event.Request != nil {
@@ -182,35 +193,48 @@ func scrubEvent(scrubber *secretscrub.Scrubber, event *sentry.Event) {
 	}
 
 	scrubStringMap(scrubber, event.Tags)
-	scrubAnyMap(scrubber, event.Extra, maxScrubDepth)
+	event.Extra = copyScrubAnyMap(scrubber, event.Extra, maxScrubDepth)
 
-	for _, contextData := range event.Contexts {
-		scrubAnyMap(scrubber, contextData, maxScrubDepth)
+	for name, contextData := range event.Contexts {
+		event.Contexts[name] = copyScrubAnyMap(scrubber, contextData, maxScrubDepth)
 	}
 }
 
 // scrubStringMap scrubs values in place; keys are tag/header names, not
-// secret-bearing content.
+// secret-bearing content. String maps hold immutable values and are only
+// ever event-owned (built fresh by the scope merge), so in-place mutation
+// is safe here.
 func scrubStringMap(scrubber *secretscrub.Scrubber, values map[string]string) {
 	for key, value := range values {
 		values[key] = scrubber.Scrub(value)
 	}
 }
 
-func scrubAnyMap(scrubber *secretscrub.Scrubber, values map[string]any, depth int) {
-	if depth <= 0 {
-		return
+// copyScrubAnyMap returns an event-owned copy of an arbitrary payload map
+// with every text value scrubbed, replacing the shared original.
+func copyScrubAnyMap(scrubber *secretscrub.Scrubber, values map[string]any, depth int) map[string]any {
+	if values == nil {
+		return nil
 	}
+
+	if depth <= 0 {
+		return values
+	}
+
+	out := make(map[string]any, len(values))
 
 	for key, value := range values {
-		values[key] = scrubAny(scrubber, value, depth)
+		out[key] = copyScrubAny(scrubber, value, depth-1)
 	}
+
+	return out
 }
 
-// scrubAny scrubs one arbitrary payload value: strings directly, maps and
-// slices by recursive in-place walk. Everything else (numbers, bools, SDK
-// objects) cannot carry secret text and is passed through.
-func scrubAny(scrubber *secretscrub.Scrubber, value any, depth int) any {
+// copyScrubAny scrubs one arbitrary payload value into owned storage:
+// strings are immutable and scrub directly; maps and slices are copied and
+// walked. Everything else (numbers, bools, SDK objects) cannot carry secret
+// text and is passed through.
+func copyScrubAny(scrubber *secretscrub.Scrubber, value any, depth int) any {
 	if depth <= 0 {
 		return value
 	}
@@ -219,25 +243,31 @@ func scrubAny(scrubber *secretscrub.Scrubber, value any, depth int) any {
 	case string:
 		return scrubber.Scrub(typed)
 	case map[string]any:
-		scrubAnyMap(scrubber, typed, depth-1)
-
-		return typed
+		return copyScrubAnyMap(scrubber, typed, depth)
 	case map[string]string:
-		scrubStringMap(scrubber, typed)
+		out := make(map[string]string, len(typed))
 
-		return typed
+		for key, elem := range typed {
+			out[key] = scrubber.Scrub(elem)
+		}
+
+		return out
 	case []any:
+		out := make([]any, len(typed))
+
 		for i, elem := range typed {
-			typed[i] = scrubAny(scrubber, elem, depth-1)
+			out[i] = copyScrubAny(scrubber, elem, depth-1)
 		}
 
-		return typed
+		return out
 	case []string:
+		out := make([]string, len(typed))
+
 		for i, elem := range typed {
-			typed[i] = scrubber.Scrub(elem)
+			out[i] = scrubber.Scrub(elem)
 		}
 
-		return typed
+		return out
 	default:
 		return value
 	}

@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"telegram-ollama-reply-bot/internal/config"
@@ -528,5 +529,57 @@ func TestScrubFatalError(t *testing.T) {
 	clean := errors.New("plain failure")
 	if scrubFatalError(nil, clean) != clean {
 		t.Fatal("nil scrubber rebuilt the error")
+	}
+}
+
+func TestSentryBeforeSendDoesNotMutateSharedBreadcrumb(t *testing.T) {
+	t.Parallel()
+
+	scrubber := newSecretScrubber(scrubTestConfig())
+	hook := newSentryBeforeSend(scrubber)
+
+	// Scope breadcrumbs are shared by pointer between concurrent events;
+	// scrubbing two events at once must leave the original untouched.
+	crumb := &sentry.Breadcrumb{
+		Message: "fetch https://host/botLLMFIXTURE/getMe",
+		Data:    map[string]any{"url": "https://host/botLLMFIXTURE/getMe"},
+	}
+
+	events := []*sentry.Event{
+		{Breadcrumbs: []*sentry.Breadcrumb{crumb}},
+		{Breadcrumbs: []*sentry.Breadcrumb{crumb}},
+		{Breadcrumbs: []*sentry.Breadcrumb{crumb}},
+		{Breadcrumbs: []*sentry.Breadcrumb{crumb}},
+	}
+
+	var group sync.WaitGroup
+
+	for _, event := range events {
+		group.Add(1)
+
+		go func(ev *sentry.Event) {
+			defer group.Done()
+			hook(ev, nil)
+		}(event)
+	}
+
+	group.Wait()
+
+	if crumb.Message != "fetch https://host/botLLMFIXTURE/getMe" {
+		t.Fatalf("shared breadcrumb was mutated: %q", crumb.Message)
+	}
+
+	if crumb.Data["url"] != "https://host/botLLMFIXTURE/getMe" {
+		t.Fatalf("shared breadcrumb data was mutated: %v", crumb.Data["url"])
+	}
+
+	for _, event := range events {
+		if !containsAny(event.Breadcrumbs[0].Message, "[REDACTED:llm-api-token]") {
+			t.Fatalf("event-owned breadcrumb was not scrubbed: %q", event.Breadcrumbs[0].Message)
+		}
+
+		if !containsAny(event.Breadcrumbs[0].Data["url"].(string), "[REDACTED:llm-api-token]") {
+			t.Fatalf("event-owned breadcrumb data was not scrubbed: %v", event.Breadcrumbs[0].Data["url"])
+		}
 	}
 }
