@@ -102,10 +102,18 @@ type PersonaSettings struct {
 type DecisionInput struct {
 	ChatID  int64
 	TopicID int
-	// Target is the triggering message. The middleware has already saved it
-	// into history, so the context builder excludes it from the history
-	// section by message ID and renders it exactly once as the target.
-	Target state.Message
+	// TargetID is the triggering message's ID. Together with ChatID it
+	// identifies the message for history exclusion — the middleware has
+	// already saved it into history — without preparing it first.
+	TargetID int
+	// HydrateTarget lazily prepares the triggering message for the context:
+	// sender and reply attribution, and image recognition for photos. The
+	// engine invokes it only after the profile and decision-model gates
+	// pass, so an opted-out or unconfigured scope never pays for vision
+	// inference or downloads; implementations memoize, so the resulting
+	// action reuses the work. A nil provider fails the decision once the
+	// gates pass — the input contract requires it.
+	HydrateTarget func(context.Context) (state.Message, error)
 	// Profile is the effective interaction profile of the operation snapshot.
 	Profile adminconfig.InteractionProfile
 	// Instructions is the effective decision-instructions text ("" = none).
@@ -132,6 +140,9 @@ var (
 	ErrBackendUnavailable = errors.New("decision backend is unavailable")
 	// ErrHistoryUnavailable wraps conversation-history read failures.
 	ErrHistoryUnavailable = errors.New("conversation history is unavailable")
+	// ErrTargetUnavailable wraps target-preparation failures (hydration,
+	// image recognition, downloads).
+	ErrTargetUnavailable = errors.New("decision target preparation failed")
 	// ErrInvalidResponse marks protocol or semantic validation anomalies of
 	// a response that passed transport but is not usable evidence.
 	ErrInvalidResponse = errors.New("decision backend returned an invalid response")
@@ -221,8 +232,10 @@ func NewEngine(deps EngineDeps, logger *slog.Logger) (*Engine, error) {
 
 // Decide evaluates one eligible message. A Non-Interactive profile is a NoOp
 // decided before any model resolution, persona rendering, history retrieval,
-// or HTTP. Every failure path returns Ignore plus a typed content-free
-// error; callers must not interpret errors as actions.
+// target preparation, or HTTP, and an unset decision model skips everything
+// expensive too — target preparation may run vision inference, so both
+// gates pass before it starts. Every failure path returns Ignore plus a
+// typed content-free error; callers must not interpret errors as actions.
 func (e *Engine) Decide(ctx context.Context, input DecisionInput) (ActionDecision, error) {
 	profile, known := ProfileByID(input.Profile)
 	if !known || !profile.Enabled {
@@ -246,7 +259,14 @@ func (e *Engine) Decide(ctx context.Context, input DecisionInput) (ActionDecisio
 		return ignoreDecision(ReasonUnconfigured, DecisionScores{}), fmt.Errorf("%w: %w", ErrModelResolution, err)
 	}
 
-	request, err := e.buildRequest(ctx, input, generationModel, decisionModel)
+	// Both gates passed: the scope can act, so target preparation is
+	// justified. Everything before this point cost settings reads only.
+	target, err := e.hydrateTarget(ctx, input)
+	if err != nil {
+		return ignoreDecision(ReasonEvidenceInvalid, DecisionScores{}), err
+	}
+
+	request, err := e.buildRequest(ctx, input, target, generationModel, decisionModel)
 	if err != nil {
 		return ignoreDecision(ReasonEvidenceInvalid, DecisionScores{}), err
 	}
@@ -270,12 +290,29 @@ func (e *Engine) Decide(ctx context.Context, input DecisionInput) (ActionDecisio
 	return EvaluatePolicy(profile, scores), nil
 }
 
+// hydrateTarget invokes the input's lazy provider. A nil provider is an
+// input-contract violation that fails the decision once the gates passed.
+func (e *Engine) hydrateTarget(ctx context.Context, input DecisionInput) (state.Message, error) {
+	if input.HydrateTarget == nil {
+		return state.Message{}, fmt.Errorf("%w: no target provider", ErrTargetUnavailable)
+	}
+
+	target, err := input.HydrateTarget(ctx)
+	if err != nil {
+		// Content-free class only: the provider's error can quote provider
+		// bodies and file identifiers, none of which may reach diagnostics.
+		return state.Message{}, fmt.Errorf("%w: target preparation failed", ErrTargetUnavailable)
+	}
+
+	return target, nil
+}
+
 // buildRequest composes the System One request within the input budget:
 // mandatory sections first, then the summary, then history dropped oldest
 // first at message boundaries. Instructions and the target are never
 // truncated; if the mandatory input alone cannot fit, the request fails
 // closed.
-func (e *Engine) buildRequest(ctx context.Context, input DecisionInput, generationModel, decisionModel string) (systemone.Request, error) {
+func (e *Engine) buildRequest(ctx context.Context, input DecisionInput, target state.Message, generationModel, decisionModel string) (systemone.Request, error) {
 	persona, err := e.deps.Persona.DecisionPersona(ctx, input.ChatID, generationModel, input.Persona)
 	if err != nil {
 		// Content-free class only: the renderer's error can quote template
@@ -292,7 +329,7 @@ func (e *Engine) buildRequest(ctx context.Context, input DecisionInput, generati
 	composer := requestComposer{
 		budget:    e.deps.InputBudgetBytes,
 		persona:   persona,
-		state:     buildDecisionState(input, persona, history),
+		state:     buildDecisionState(input, target, persona, history),
 		questions: rubricQuestions(),
 	}
 

@@ -151,11 +151,12 @@ func allValidAnswers() map[string]systemone.Answer {
 
 func testInput() DecisionInput {
 	return DecisionInput{
-		ChatID:       testChatID,
-		TopicID:      testTopicID,
-		Target:       testTarget(),
-		Profile:      adminconfig.ProfileTalkLow,
-		Instructions: "Engage with programming topics.",
+		ChatID:        testChatID,
+		TopicID:       testTopicID,
+		TargetID:      testTarget().MessageID,
+		HydrateTarget: func(context.Context) (state.Message, error) { return testTarget(), nil },
+		Profile:       adminconfig.ProfileTalkLow,
+		Instructions:  "Engage with programming topics.",
 		Persona: PersonaSettings{
 			Language:      "Russian",
 			Gender:        "female",
@@ -243,6 +244,86 @@ func TestEngineUnconfiguredScope(t *testing.T) {
 		}
 		if history.calls != 0 || client.calls != 0 {
 			t.Fatalf("persona failure must stop before history and backend (history %d, client %d)", history.calls, client.calls)
+		}
+	})
+}
+
+// hydrateSpy counts target preparations and scripts failures.
+type hydrateSpy struct {
+	calls int
+	err   error
+}
+
+func (h *hydrateSpy) prepare(context.Context) (state.Message, error) {
+	h.calls++
+
+	return testTarget(), h.err
+}
+
+// TestEngineTargetPreparationOrdering pins the lazy-target boundary: target
+// preparation — the only step that may download files and run vision
+// inference — runs strictly after the profile and decision-model gates, and
+// its failures are typed, content-free, and ignored.
+func TestEngineTargetPreparationOrdering(t *testing.T) {
+	t.Run("profile-disabled never prepares the target", func(t *testing.T) {
+		engine, _, _, _, _ := newTestEngine(t)
+		spy := &hydrateSpy{}
+
+		input := DecisionInput{Profile: adminconfig.ProfileNonInteractive, HydrateTarget: spy.prepare}
+		if _, err := engine.Decide(context.Background(), input); err != nil {
+			t.Fatalf("NoOp must not error, got %v", err)
+		}
+		if spy.calls != 0 {
+			t.Fatalf("NoOp must not prepare the target, got %d preparations", spy.calls)
+		}
+	})
+
+	t.Run("unconfigured scope never prepares the target", func(t *testing.T) {
+		engine, _, resolver, _, _ := newTestEngine(t)
+		resolver.decision = ""
+		spy := &hydrateSpy{}
+
+		input := testInput()
+		input.HydrateTarget = spy.prepare
+		decision, err := engine.Decide(context.Background(), input)
+		if decision.Reason != ReasonUnconfigured || !errors.Is(err, ErrUnconfigured) {
+			t.Fatalf("expected unconfigured ignore, got %s/%v", decision.Reason, err)
+		}
+		if spy.calls != 0 {
+			t.Fatalf("unconfigured scope must not pay for preparation, got %d", spy.calls)
+		}
+	})
+
+	t.Run("hydration failure is typed and content-free", func(t *testing.T) {
+		engine, _, _, persona, history := newTestEngine(t)
+		spy := &hydrateSpy{err: errors.New(`Get "http://vision:9/v1/chat/completions?key=PRIVATE": PRIVATE_PHOTO_BYTES`)}
+
+		input := testInput()
+		input.HydrateTarget = spy.prepare
+		decision, err := engine.Decide(context.Background(), input)
+		if decision.Action != ActionIgnore {
+			t.Fatalf("preparation failure must ignore, got %s", decision.Action)
+		}
+		if !errors.Is(err, ErrTargetUnavailable) {
+			t.Fatalf("expected ErrTargetUnavailable, got %v", err)
+		}
+		if strings.Contains(err.Error(), "PRIVATE") || strings.Contains(err.Error(), "vision:9") {
+			t.Fatalf("preparation error must stay content-free, got %q", err.Error())
+		}
+		if persona.calls != 0 || history.calls != 0 {
+			t.Fatalf("preparation failure must stop before persona and history (persona %d, history %d)",
+				persona.calls, history.calls)
+		}
+	})
+
+	t.Run("nil provider fails the decision", func(t *testing.T) {
+		engine, _, _, _, _ := newTestEngine(t)
+
+		input := testInput()
+		input.HydrateTarget = nil
+		decision, err := engine.Decide(context.Background(), input)
+		if decision.Action != ActionIgnore || !errors.Is(err, ErrTargetUnavailable) {
+			t.Fatalf("nil provider must fail as ErrTargetUnavailable, got %s/%v", decision.Action, err)
 		}
 	})
 }

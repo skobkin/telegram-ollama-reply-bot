@@ -584,10 +584,25 @@ func TestProactiveEligibilityMatrix(t *testing.T) {
 	}
 }
 
+// countedDecider wraps a decider and counts Decide invocations: the profile
+// gate lives inside the engine, so an opted-out chat must still reach Decide,
+// which returns the NoOp itself.
+type countedDecider struct {
+	inner interactionDecider
+	calls *atomic.Int32
+}
+
+func (c *countedDecider) Decide(ctx context.Context, input interactivity.DecisionInput) (interactivity.ActionDecision, error) {
+	c.calls.Add(1)
+
+	return c.inner.Decide(ctx, input)
+}
+
 // TestProactiveNoOpIsFree pins the Non-Interactive economics end-to-end:
-// the engine is a NoOp inside the task — exactly one settings read per
-// resolve point, no persona rendering, no System One HTTP, no history
-// snapshot, and zero Telegram calls.
+// the engine is invoked for every eligible message — the NoOp decision
+// happens inside it — with exactly one settings read per resolve point, no
+// persona rendering, no System One HTTP, no history snapshot, no target
+// preparation, and zero Telegram calls.
 func TestProactiveNoOpIsFree(t *testing.T) {
 	p := newProactiveTestBot(t, func(s *adminStoreStub) {
 		s.DefaultInteractivityMode = adminconfig.InteractivityMentionsReplies
@@ -600,6 +615,14 @@ func TestProactiveNoOpIsFree(t *testing.T) {
 	client := &fakeDecisionClient{answers: decisionAnswers(0.0, 1.0, 1.0)}
 	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024)
 	t.Cleanup(stop)
+
+	// Wrap the engine the wiring builds, so the test can prove the engine
+	// itself is invoked and answers the NoOp.
+	var decideCalls atomic.Int32
+	original := p.bot.decisions.engineFor
+	p.bot.decisions.engineFor = func(resolved adminconfig.ResolvedChatConfig) interactionDecider {
+		return &countedDecider{inner: original(resolved), calls: &decideCalls}
+	}
 
 	p.deliver(t, proactiveGroupUpdate("idle chatter"))
 
@@ -614,6 +637,9 @@ func TestProactiveNoOpIsFree(t *testing.T) {
 	}
 	time.Sleep(150 * time.Millisecond) // settle: nothing further may happen
 
+	if got := decideCalls.Load(); got != 1 {
+		t.Fatalf("the engine must be invoked for an opted-out chat too, got %d Decide calls", got)
+	}
 	if got := p.store.globalReads.Load(); got != 2 {
 		t.Fatalf("global settings reads = %d, want exactly 2 (handler gate + task snapshot)", got)
 	}
@@ -675,6 +701,52 @@ func TestProactiveNoOpSkipsImageHydration(t *testing.T) {
 	}
 	if got := p.llm.buildCount(); got != 0 {
 		t.Fatalf("NoOp must not run a turn, got %d builds", got)
+	}
+}
+
+// TestProactiveUnconfiguredModelSkipsImageHydration pins the decision-model
+// gate against expensive preparation: an enabled profile with a wired
+// backend but no effective decision model cannot reach a decision at all, so
+// it must never hydrate the target — no photo download, no vision
+// recognition, no inference, no turn.
+func TestProactiveUnconfiguredModelSkipsImageHydration(t *testing.T) {
+	p := newProactiveTestBot(t, func(s *adminStoreStub) {
+		s.DefaultInteractivityMode = adminconfig.InteractivityMentionsReplies
+		s.DefaultInteractionProfile = adminconfig.ProfileTalkLow
+		// SystemOneModel left unset: the scope is unconfigured even though
+		// the decision client is wired.
+	})
+	// Recognition is enabled, so wrongly-ordered preparation would fetch the
+	// file from the Bot API and run vision inference.
+	p.bot.imageRecognition.Enabled = true
+	client := &fakeDecisionClient{answers: decisionAnswers(0.0, 1.0, 1.0)}
+	stop := p.bot.SetProactiveDecisions(client, &fakePersonaSource{}, 96*1024)
+	t.Cleanup(stop)
+
+	p.deliver(t, tg.Update{UpdateID: 46, Message: &tg.Message{
+		MessageID: 63,
+		Chat:      tg.Chat{ID: -100999, Type: tg.ChatTypeSupergroup, Title: "Test Group"},
+		From:      &tg.User{ID: 21},
+		Photo:     []tg.PhotoSize{{FileID: "photo-file-id", Width: 1280, Height: 720}},
+	}})
+
+	// Settle: the queued task resolves its snapshot and must stop before any
+	// preparation.
+	time.Sleep(300 * time.Millisecond)
+
+	if got := client.calls(); got != 0 {
+		t.Fatalf("unconfigured scope must not call the backend, got %d calls", got)
+	}
+	for _, request := range p.apiRequests() {
+		if strings.Contains(request, "getFile") {
+			t.Fatalf("unconfigured scope must not download the photo, got %s", request)
+		}
+	}
+	if got := p.llm.buildCount(); got != 0 {
+		t.Fatalf("unconfigured scope must not run a turn, got %d builds", got)
+	}
+	if got := p.deliveredCount(); got != 0 {
+		t.Fatalf("unconfigured scope must deliver nothing, got %d messages", got)
 	}
 }
 

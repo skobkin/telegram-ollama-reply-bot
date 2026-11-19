@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
@@ -153,28 +154,37 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 		return
 	}
 
-	// Mirror of the engine's NoOp contract for the work that must happen
-	// before Decide: target hydration may download the photo and run vision
-	// inference, which a Non-Interactive chat must never pay for. Both
-	// checks read the same operation snapshot, and the engine re-checks
-	// inside Decide.
-	if profile, known := interactivity.ProfileByID(resolved.InteractionProfile); !known || !profile.Enabled {
-		return
-	}
+	// Target preparation is the engine's boundary, not the bot's: it may
+	// download the photo and run vision inference, so the engine invokes it
+	// only after its NoOp and decision-model gates pass. Memoized once per
+	// operation, the resulting action reuses the work without repeating it.
+	var (
+		hydrateOnce sync.Once
+		target      state.Message
+		hydrateErr  error
+	)
+	hydrate := func(taskCtx context.Context) (state.Message, error) {
+		hydrateOnce.Do(func() {
+			// The target renders exactly once in the decision context: the
+			// engine excludes it from the history snapshot by chat and
+			// message ID.
+			prepared := b.tgUserMessageToMessageData(message, true)
+			b.ensureMessageImageDescription(taskCtx, &prepared)
+			target = prepared
+		})
 
-	// The target renders exactly once in the decision context: the engine
-	// excludes it from the history snapshot by chat and message ID.
-	target := b.tgUserMessageToMessageData(message, true)
-	b.ensureMessageImageDescription(ctx, &target)
+		return target, hydrateErr
+	}
 
 	started := time.Now()
 	decision, err := engine.Decide(ctx, interactivity.DecisionInput{
-		ChatID:       message.Chat.ID,
-		TopicID:      message.MessageThreadID,
-		Target:       target,
-		Profile:      resolved.InteractionProfile,
-		Instructions: resolved.DecisionInstructions,
-		BotUserID:    b.me.ID,
+		ChatID:        message.Chat.ID,
+		TopicID:       message.MessageThreadID,
+		TargetID:      message.MessageID,
+		HydrateTarget: hydrate,
+		Profile:       resolved.InteractionProfile,
+		Instructions:  resolved.DecisionInstructions,
+		BotUserID:     b.me.ID,
 		// The persona fields come from the same snapshot: the decision and
 		// the action must describe the same character even if settings
 		// change while the decision request is in flight.
@@ -203,11 +213,14 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 		return
 	}
 
-	logger.Info("proactive participation decided",
-		"chat_id", message.Chat.ID,
-		"action", decision.Action.String(),
-		"reason", decision.Reason.String(),
-		"duration", time.Since(started).Round(time.Millisecond).String())
+	// A positive decision implies the engine prepared the target already:
+	// the memoized provider returns it without repeating the work.
+	target, hydrateErr = hydrate(ctx)
+	if hydrateErr != nil {
+		logger.Warn("proactive participation dropped", "reason", "target preparation failed")
+
+		return
+	}
 
 	// The action receives the same resolved config the engine consumed.
 	switch decision.Action {

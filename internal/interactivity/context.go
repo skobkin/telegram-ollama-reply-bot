@@ -78,10 +78,10 @@ type activity struct {
 // excluded from the history section by message ID and rendered exactly once
 // as the target. BotUserID drives reaction attribution: reactions authored
 // by the bot are its record of previous participation.
-func buildDecisionState(input DecisionInput, persona string, history HistorySnapshot) decisionState {
+func buildDecisionState(input DecisionInput, target state.Message, persona string, history HistorySnapshot) decisionState {
 	entries := make([]historyEntry, 0, len(history.Messages))
 	for _, message := range history.Messages {
-		if sameMessage(message, input.Target) {
+		if sameMessage(message, target) {
 			continue // the target renders exactly once, as the target
 		}
 		entries = append(entries, historyEntryFor(message, input.BotUserID))
@@ -94,7 +94,7 @@ func buildDecisionState(input DecisionInput, persona string, history HistorySnap
 		Activity:       deriveActivity(history.Messages, input.BotUserID, time.Now()),
 		EarlierSummary: history.EarlierSummary,
 		History:        entries,
-		Target:         historyEntryFor(input.Target, input.BotUserID),
+		Target:         historyEntryFor(target, input.BotUserID),
 	}
 }
 

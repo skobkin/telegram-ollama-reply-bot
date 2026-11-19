@@ -196,7 +196,7 @@ func TestHistoryEntryRendersReactions(t *testing.T) {
 // once even though the history snapshot already contains it.
 func TestBuildDecisionStateTargetExclusion(t *testing.T) {
 	input := testInput()
-	stateBody, err := json.Marshal(buildDecisionState(input, "persona", testHistory()))
+	stateBody, err := json.Marshal(buildDecisionState(input, testTarget(), "persona", testHistory()))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestRequestComposerBudget(t *testing.T) {
 func TestRequestComposerFailClosed(t *testing.T) {
 	persona := strings.Repeat("X", 22*1024) // synthetic large persona
 	input := DecisionInput{Instructions: "stay terse"}
-	stateIn := buildDecisionState(input, persona, HistorySnapshot{})
+	stateIn := buildDecisionState(input, state.Message{}, persona, HistorySnapshot{})
 
 	composer := requestComposer{
 		budget:    4 * 1024,
