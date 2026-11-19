@@ -51,6 +51,13 @@ const (
 	VerbConfirmYes = "ok"   // confirm the pending confirmation
 	VerbConfirmNo  = "no"   // cancel the pending confirmation
 	VerbStats      = "st"   // → statistics screen
+
+	// Model selection and interactivity (#128 / System One).
+	VerbInteractivity = "in" // → interactivity submenu (scope from screen)
+	VerbModelList     = "ml" // args: <code> → fetch and cache the backend model list
+	VerbModelPage     = "mg" // args: <page> → paginate the cached model list
+	VerbModelPick     = "mo" // args: <code>,<index> → apply cached model at index
+	VerbClearGlobal   = "cg" // args: <code> → clear a clearable global field
 )
 
 // knownVerbs is the closed verb set accepted by Decode.
@@ -62,6 +69,8 @@ var knownVerbs = map[string]bool{
 	VerbPromptRstC: true, VerbPromptRstG: true, VerbAccess: true, VerbAllowAdd: true,
 	VerbAllowRem: true, VerbAccessPol: true, VerbResetChat: true, VerbBack: true,
 	VerbConfirmYes: true, VerbConfirmNo: true, VerbStats: true,
+	VerbInteractivity: true, VerbModelList: true, VerbModelPage: true,
+	VerbModelPick: true, VerbClearGlobal: true,
 }
 
 // MaxCallbackBytes is the Telegram callback data limit.

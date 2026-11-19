@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -192,6 +193,55 @@ type ChatSharedInput struct {
 	Username  string
 }
 
+// ModelDiscovery lists the model IDs a backend serves, for the settings
+// pickers. Discovery establishes availability only, never capability: a
+// listed model is not guaranteed to serve the feature well, so manual entry
+// always stays available. Implemented by *llm.Service and the System One
+// client; errors are reported to the admin as picker unavailability and
+// never echo transport details.
+type ModelDiscovery interface {
+	ListModels(ctx context.Context) ([]string, error)
+}
+
+// ControllerOptions carries the optional wiring of the controller. Zero
+// values keep every new feature inert: no discovery providers means
+// manual-entry-only pickers, HideImageModel unset keeps the image model
+// editable.
+type ControllerOptions struct {
+	// ChatModels serves the generation and summarize model pickers (the
+	// backend that serves both features).
+	ChatModels ModelDiscovery
+	// ImageModels serves the image-recognition model picker: the dedicated
+	// image service when one is configured, else the shared connection.
+	ImageModels ModelDiscovery
+	// SystemOneModels serves the decision model picker. Nil (or a nil
+	// client) means the decision backend is unconfigured and pickers show
+	// discovery as unavailable.
+	SystemOneModels ModelDiscovery
+	// HideImageModel hides the image_recognition_model setting while the
+	// active image recognizer takes no model selection (MiniMax). Hiding is
+	// render-time only: a stored global value stays untouched.
+	HideImageModel bool
+}
+
+// ControllerOption mutates ControllerOptions at wiring time.
+type ControllerOption func(*ControllerOptions)
+
+// WithModelDiscovery wires the per-feature backend discovery providers.
+func WithModelDiscovery(chat, image, systemOne ModelDiscovery) ControllerOption {
+	return func(o *ControllerOptions) {
+		o.ChatModels, o.ImageModels, o.SystemOneModels = chat, image, systemOne
+	}
+}
+
+// WithHiddenImageModel hides the image-recognition model setting (a
+// model-free recognizer is active).
+func WithHiddenImageModel() ControllerOption {
+	return func(o *ControllerOptions) {
+		o.HideImageModel = true
+	}
+}
+
 // Controller orchestrates adminconfig operations into screens, session
 // transitions, and adapter effects. It performs no IO itself: store access
 // happens inside Manager.Apply commits, Telegram IO is expressed as Outcome
@@ -201,18 +251,40 @@ type Controller struct {
 	service  *adminconfig.Service
 	adminIDs []int64
 	stats    func() string
+	opts     ControllerOptions
 	started  time.Time
 }
 
 // NewController wires the controller. stats may be nil (the statistics screen
-// then reports unavailability).
-func NewController(manager *Manager, service *adminconfig.Service, adminIDs []int64, stats func() string) *Controller {
+// then reports unavailability); opts may be empty.
+func NewController(manager *Manager, service *adminconfig.Service, adminIDs []int64, stats func() string, opts ...ControllerOption) *Controller {
+	options := ControllerOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
 	return &Controller{
 		manager:  manager,
 		service:  service,
 		adminIDs: adminIDs,
 		stats:    stats,
+		opts:     options,
 		started:  manager.Now(),
+	}
+}
+
+// discoveryFor returns the discovery provider serving a model field's
+// picker, or nil when the feature has no wired backend list.
+func (c *Controller) discoveryFor(field string) ModelDiscovery {
+	switch field {
+	case "chat_model", "summarize_model":
+		return c.opts.ChatModels
+	case "image_recognition_model":
+		return c.opts.ImageModels
+	case "systemone_model":
+		return c.opts.SystemOneModels
+	default:
+		return nil
 	}
 }
 
@@ -892,7 +964,15 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 		previous := s.Screen
 		s.PopScreen()
 		s.Screen.Notice = ""
-		if s.Screen == previous && previous.Notice == "" {
+		// Field-by-field comparison: the screen state carries the model-picker
+		// cache, which is volatile render input rather than screen identity
+		// (and makes the struct incomparable). The pop-to-self case below is
+		// the root screen; every other back press navigates.
+		if s.Screen.Kind == previous.Kind && s.Screen.ChatID == previous.ChatID &&
+			s.Screen.Page == previous.Page && s.Screen.Filter == previous.Filter &&
+			s.Screen.Search == previous.Search && s.Screen.Field == previous.Field &&
+			s.Screen.Feature == previous.Feature && s.Screen.Detail == previous.Detail &&
+			s.Screen.Danger == previous.Danger && previous.Notice == "" {
 			return nil // byte-identical re-render: no API call, no seq bump
 		}
 		s.MarkRerender()
@@ -922,9 +1002,128 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 
 		return nil
 
+	case VerbInteractivity:
+		s.PushScreen(ScreenState{Kind: ScreenInteractivity, ChatID: scopeFromScreen(s)})
+		s.MarkRerender()
+
+		return nil
+
+	case VerbModelList:
+		return c.handleModelList(ctx, s)
+
+	case VerbModelPage:
+		if s.Screen.Kind != ScreenFieldEditor || len(s.Screen.Models) == 0 || len(action.Args) != 1 {
+			return errInvalidArg
+		}
+		page, err := strconv.Atoi(action.Args[0])
+		if err != nil || page < 1 || page > modelPickerPages(s.Screen.Models) {
+			return errInvalidArg
+		}
+		s.Screen.Page = page
+		s.MarkRerender()
+
+		return nil
+
+	case VerbModelPick:
+		return c.handleModelPick(ctx, adminID, s, action)
+
+	case VerbClearGlobal:
+		name, spec, err := fieldFromArgs(s, action)
+		if err != nil {
+			return err
+		}
+		if scopeFromScreen(s) != 0 || !spec.Clearable {
+			return errInvalidArg
+		}
+		if err := c.service.ClearGlobalSetting(ctx, name, adminID); err != nil {
+			return err
+		}
+		switch name {
+		case "systemone_model":
+			s.Screen.Notice = "Global default model cleared — chats with explicit overrides keep theirs."
+		case "decision_instructions":
+			s.Screen.Notice = "Decision instructions cleared."
+		default:
+			s.Screen.Notice = "Reset to the environment route default."
+		}
+		s.MarkRerender()
+
+		return nil
+
 	default:
 		return errInvalidArg
 	}
+}
+
+// handleModelList fetches and caches the backend model list of the field
+// editor's picker. Discovery failures are a handled notice — manual entry
+// remains available — never an error screen.
+func (c *Controller) handleModelList(ctx context.Context, s *Session) error {
+	if s.Screen.Kind != ScreenFieldEditor || s.Screen.ChatID != scopeFromScreen(s) {
+		return errInvalidArg
+	}
+	discovery := c.discoveryFor(s.Screen.Field)
+	if discovery == nil {
+		s.Screen.Notice = "No backend list available for this field — enter the model ID manually."
+		s.MarkRerender()
+
+		return nil
+	}
+
+	models, err := discovery.ListModels(ctx)
+	if err != nil {
+		s.Screen.Notice = "Backend model list is unavailable — enter the model ID manually."
+		s.MarkRerender()
+
+		return nil //nolint:nilerr // the notice on the re-rendered editor is the handled outcome
+	}
+	if len(models) == 0 {
+		s.Screen.Notice = "The backend serves no models — enter the model ID manually."
+		s.MarkRerender()
+
+		return nil
+	}
+
+	sort.Strings(models)
+	s.Screen.Models = models
+	s.Screen.Page = 1
+	s.Screen.Notice = ""
+	s.MarkRerender()
+
+	return nil
+}
+
+// handleModelPick applies the cached list entry at the pressed index. The
+// cache stays: admins often compare models by picking one after another.
+func (c *Controller) handleModelPick(ctx context.Context, adminID int64, s *Session, action Action) error {
+	if s.Screen.Kind != ScreenFieldEditor || len(action.Args) != 2 || len(s.Screen.Models) == 0 {
+		return errInvalidArg
+	}
+
+	scope := scopeFromScreen(s)
+	name, ok := FieldName(action.Args[0], scope == 0)
+	if !ok || name != s.Screen.Field {
+		return errInvalidArg
+	}
+	index, err := strconv.Atoi(action.Args[1])
+	if err != nil || index < 0 || index >= len(s.Screen.Models) {
+		return errInvalidArg
+	}
+
+	model := s.Screen.Models[index]
+	if scope == 0 {
+		err = c.service.SetGlobalSetting(ctx, name, model, adminID)
+	} else {
+		err = c.service.SetChatSetting(ctx, scope, name, model, adminID)
+	}
+	if err != nil {
+		return err
+	}
+
+	s.Screen.Notice = "Saved."
+	s.MarkRerender()
+
+	return nil
 }
 
 func (c *Controller) handleCatalogVerb(_ context.Context, s *Session, action Action, fx *fx, now time.Time) error {
@@ -1029,6 +1228,14 @@ func (c *Controller) handleValueVerb(ctx context.Context, adminID int64, s *Sess
 		return errInvalidArg
 	}
 
+	// Enabling any interactive profile as the GLOBAL default routes through
+	// a scope confirmation: every chat inheriting the default starts
+	// participating proactively. Returning to non_interactive and per-chat
+	// overrides apply directly.
+	if scope == 0 && name == "default_interaction_profile" && value != string(adminconfig.ProfileNonInteractive) {
+		return c.beginGlobalProfileConfirmation(ctx, s, adminconfig.InteractionProfile(value))
+	}
+
 	switch {
 	case scope == 0:
 		err = c.service.SetGlobalSetting(ctx, name, value, adminID)
@@ -1042,6 +1249,26 @@ func (c *Controller) handleValueVerb(ctx context.Context, adminID int64, s *Sess
 	}
 
 	s.Screen.Notice = "Saved."
+	s.MarkRerender()
+
+	return nil
+}
+
+// beginGlobalProfileConfirmation builds the scope confirmation for enabling
+// an interactive profile as the global default. The description names the
+// inheriting-chat count so the operator sees the blast radius before
+// confirming.
+func (c *Controller) beginGlobalProfileConfirmation(ctx context.Context, s *Session, profile adminconfig.InteractionProfile) error {
+	count, err := c.service.CountChatsInheritingProfile(ctx)
+	if err != nil {
+		return err
+	}
+
+	description := fmt.Sprintf(
+		"Set %s as the global default interaction profile?\n\n%d chat(s) currently inherit the global profile and will participate proactively in ordinary conversations. Chats with their own profile override are unaffected.",
+		adminconfig.InteractionProfileLabel(profile), count)
+	s.PushScreen(confirmState(description, false, 0, ""))
+	s.Confirm = &PendingConfirm{Kind: ConfirmGlobalProfile, Profile: profile}
 	s.MarkRerender()
 
 	return nil
@@ -1083,6 +1310,14 @@ func (c *Controller) executeConfirm(ctx context.Context, adminID int64, s *Sessi
 			return err
 		}
 		notice = "Builtin template restored."
+	case ConfirmGlobalProfile:
+		if !adminconfig.IsValidInteractionProfile(confirm.Profile) || confirm.Profile == adminconfig.ProfileNonInteractive {
+			return errInvalidArg
+		}
+		if err := c.service.SetGlobalSetting(ctx, "default_interaction_profile", string(confirm.Profile), adminID); err != nil {
+			return err
+		}
+		notice = "Default interaction profile set to " + adminconfig.InteractionProfileLabel(confirm.Profile) + "."
 	default:
 		return errInvalidArg
 	}
@@ -1405,7 +1640,7 @@ func (c *Controller) buildScreen(ctx context.Context, seq uint32, state ScreenSt
 		if err != nil {
 			return nil, err
 		}
-		screen = b.settings(SettingsData{Global: true, View: view})
+		screen = b.settings(SettingsData{Global: true, View: view, HideImageModel: c.opts.HideImageModel})
 
 	case ScreenChatSet:
 		view, err := c.service.EffectiveChatConfig(ctx, state.ChatID)
@@ -1428,6 +1663,13 @@ func (c *Controller) buildScreen(ctx context.Context, seq uint32, state ScreenSt
 			return nil, err
 		}
 		screen = b.fieldEditor(data)
+
+	case ScreenInteractivity:
+		data, err := c.interactivityData(ctx, state)
+		if err != nil {
+			return nil, err
+		}
+		screen = b.interactivity(data)
 
 	case ScreenPrompts:
 		overview, err := c.service.PromptOverview(ctx, state.ChatID)
@@ -1526,7 +1768,14 @@ func (c *Controller) fieldEditorData(ctx context.Context, state ScreenState) (Fi
 		return FieldEditorData{}, err
 	}
 
-	data := FieldEditorData{Global: state.ChatID == 0, ScopeChat: state.ChatID, Spec: spec}
+	data := FieldEditorData{
+		Global:       state.ChatID == 0,
+		ScopeChat:    state.ChatID,
+		Spec:         spec,
+		Models:       state.Models,
+		ModelPage:    state.Page,
+		HasDiscovery: c.discoveryFor(state.Field) != nil,
+	}
 	if state.ChatID == 0 {
 		settings, err := c.service.Store().GetGlobalSettings(ctx)
 		if err != nil {
@@ -1543,6 +1792,51 @@ func (c *Controller) fieldEditorData(ctx context.Context, state ScreenState) (Fi
 				data.Value = field.Effective
 				data.Overridden = field.Overridden
 			}
+		}
+	}
+
+	return data, nil
+}
+
+// interactivityData assembles the interactivity submenu data for one scope.
+// Chat values come from the effective config (override marks included); the
+// global scope shows stored values with the effective defaults substituted.
+func (c *Controller) interactivityData(ctx context.Context, state ScreenState) (InteractivityData, error) {
+	data := InteractivityData{
+		Global:       state.ChatID == 0,
+		HasDiscovery: c.opts.SystemOneModels != nil,
+	}
+	if !data.Global {
+		data.ChatName = c.chatDisplayName(ctx, state.ChatID)
+	}
+
+	if state.ChatID == 0 {
+		settings, err := c.service.Store().GetGlobalSettings(ctx)
+		if err != nil {
+			return InteractivityData{}, err
+		}
+		data.Profile = string(settings.DefaultInteractionProfile)
+		data.Model = settings.SystemOneModel
+		data.Instructions = settings.DecisionInstructions
+
+		return data, nil
+	}
+
+	view, err := c.service.EffectiveChatConfig(ctx, state.ChatID)
+	if err != nil {
+		return InteractivityData{}, err
+	}
+	for _, field := range view.Fields {
+		switch field.Spec.Name {
+		case "interaction_profile":
+			data.Profile = field.Effective
+			data.ProfileOverridden = field.Overridden
+		case "systemone_model":
+			data.Model = field.Effective
+			data.ModelOverridden = field.Overridden
+		case "decision_instructions":
+			data.Instructions = field.Effective
+			data.InstructionsOverridden = field.Overridden
 		}
 	}
 
@@ -1642,7 +1936,7 @@ func rerenderInPlace(s *Session) error {
 // belongs to, derived from the screen it was rendered on.
 func scopeFromScreen(s *Session) int64 {
 	switch s.Screen.Kind {
-	case ScreenChatCard, ScreenChatSet, ScreenFieldEditor, ScreenPrompts, ScreenPromptDetail:
+	case ScreenChatCard, ScreenChatSet, ScreenFieldEditor, ScreenPrompts, ScreenPromptDetail, ScreenInteractivity:
 		return s.Screen.ChatID
 	default:
 		return 0
@@ -1747,6 +2041,9 @@ func unmatchedFeedback(in ReplyInput) *TextMessage {
 
 func stringInputPrompt(spec adminconfig.FieldSpec, current string) string {
 	text := AdminInputMarker + " — " + spec.Label + "\n\nSend the new value as a reply to this message."
+	if spec.Multiline {
+		text += " Line breaks are preserved."
+	}
 	if current != "" {
 		text += "\nCurrent: " + current
 	}

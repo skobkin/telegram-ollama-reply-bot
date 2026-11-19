@@ -61,6 +61,30 @@ func IsPromptFeature(feature PromptFeature) bool {
 	}
 }
 
+// CountChatsInheritingProfile counts catalog chats without their own
+// interaction profile override; those chats follow the global default, so
+// enabling or changing it reaches them. Used by the admin UI scope
+// confirmation before a global default profile change.
+func (s *Service) CountChatsInheritingProfile(ctx context.Context) (int, error) {
+	chats, err := s.ChatList(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for _, chat := range chats {
+		settings, found, err := s.store.GetChatSettings(ctx, chat.ChatID)
+		if err != nil {
+			return 0, err
+		}
+		if !found || settings.InteractionProfile == "" {
+			count++
+		}
+	}
+
+	return count, nil
+}
+
 func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (ResolvedChatConfig, error) {
 	global, err := s.store.GetGlobalSettings(ctx)
 	if err != nil {

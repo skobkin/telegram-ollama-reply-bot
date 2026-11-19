@@ -52,6 +52,10 @@ type FieldSpec struct {
 	// Service.ClearGlobalSetting instead of a normal set; non-clearable
 	// fields have no global unset.
 	Clearable bool
+	// Multiline marks string fields whose values may span multiple lines.
+	// It only shapes the input prompt wording; parsing and storage accept
+	// multi-line values regardless.
+	Multiline bool
 }
 
 // GlobalFieldSpecs describes the editable global settings fields.
@@ -70,7 +74,7 @@ func GlobalFieldSpecs() []FieldSpec {
 		{Name: "image_recognition_model", Label: "Image recognition model", Kind: KindString, MaxLen: 128, Clearable: true},
 		{Name: "systemone_model", Label: "System One decision model", Kind: KindString, MaxLen: 128, Clearable: true},
 		{Name: "default_interaction_profile", Label: "Default interaction profile", Kind: KindEnum, Enum: InteractionProfileEnumOptions()},
-		{Name: "decision_instructions", Label: "Decision instructions", Kind: KindString, MaxLen: 4000, Clearable: true},
+		{Name: "decision_instructions", Label: "Decision instructions", Kind: KindString, MaxLen: 4000, Clearable: true, Multiline: true},
 	}
 }
 
@@ -87,7 +91,7 @@ func ChatFieldSpecs() []FieldSpec {
 		{Name: "chat_model", Label: "Generation model", Kind: KindString, MaxLen: 128},
 		{Name: "systemone_model", Label: "System One decision model", Kind: KindString, MaxLen: 128},
 		{Name: "interaction_profile", Label: "Interaction profile", Kind: KindEnum, Enum: InteractionProfileEnumOptions()},
-		{Name: "decision_instructions", Label: "Decision instructions", Kind: KindString, MaxLen: 4000},
+		{Name: "decision_instructions", Label: "Decision instructions", Kind: KindString, MaxLen: 4000, Multiline: true},
 	}
 }
 

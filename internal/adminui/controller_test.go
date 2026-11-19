@@ -121,6 +121,18 @@ func (s *recordingStore) SetGlobalField(_ context.Context, field, value string, 
 		s.global.DefaultPreviewMode = adminconfig.PreviewMode(value)
 	case "keep_tool_history":
 		s.global.KeepToolHistory = value == "true"
+	case "chat_model":
+		s.global.ChatModel = value
+	case "summarize_model":
+		s.global.SummarizeModel = value
+	case "image_recognition_model":
+		s.global.ImageRecognitionModel = value
+	case "systemone_model":
+		s.global.SystemOneModel = value
+	case "default_interaction_profile":
+		s.global.DefaultInteractionProfile = adminconfig.InteractionProfile(value)
+	case "decision_instructions":
+		s.global.DecisionInstructions = value
 	}
 
 	return nil
@@ -139,6 +151,10 @@ func (s *recordingStore) GetChatSettings(_ context.Context, chatID int64) (admin
 	settings.CharacterName = fields["character_name"]
 	settings.Language = fields["language"]
 	settings.Gender = fields["gender"]
+	settings.ChatModel = fields["chat_model"]
+	settings.SystemOneModel = fields["systemone_model"]
+	settings.InteractionProfile = adminconfig.InteractionProfile(fields["interaction_profile"])
+	settings.DecisionInstructions = fields["decision_instructions"]
 	if value, ok := fields["interactivity_mode"]; ok && value != "" {
 		settings.HasInteractivity = true
 		settings.InteractivityMode = adminconfig.InteractivityMode(value)
@@ -323,7 +339,7 @@ func (s *recordingStore) IsChatWhitelisted(_ context.Context, chatID int64) (boo
 	return ok, nil
 }
 
-func newTestController(t *testing.T) (*Controller, *recordingStore) {
+func newTestController(t *testing.T, opts ...ControllerOption) (*Controller, *recordingStore) {
 	t.Helper()
 
 	store := newRecordingStore()
@@ -346,7 +362,7 @@ func newTestController(t *testing.T) (*Controller, *recordingStore) {
 
 	return NewController(NewManager(nil), service, []int64{testAdminID}, func() string {
 		return "stats-snapshot"
-	}), store
+	}, opts...), store
 }
 
 // mustOpen opens the dashboard and adopts a message ID the way the adapter

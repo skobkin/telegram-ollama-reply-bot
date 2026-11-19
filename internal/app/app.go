@@ -26,6 +26,7 @@ import (
 	"telegram-ollama-reply-bot/internal/support/httpclient"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/support/safeerr"
+	"telegram-ollama-reply-bot/internal/systemone"
 	adminui "telegram-ollama-reply-bot/internal/telegram/adminui"
 	"telegram-ollama-reply-bot/internal/telegram/bot"
 	"telegram-ollama-reply-bot/internal/telegram/transport"
@@ -309,6 +310,24 @@ func Run(ctx context.Context) error {
 
 	resolver := modelResolver{admin: adminService}
 
+	// System One decision backend: the client is shared by the admin UI model
+	// picker (and, later in the wiring, the interaction engine and decision
+	// tools). An empty endpoint yields an unconfigured client — picker
+	// discovery unavailable and decision features off, never a boot failure.
+	systemOneClient, err := systemone.New(systemone.Config{
+		BaseURL:          cfg.SystemOne.BaseURL,
+		APIKey:           cfg.SystemOne.APIKey,
+		Timeout:          cfg.SystemOne.Timeout,
+		MaxResponseBytes: cfg.SystemOne.MaxResponseBytes,
+		InputBudgetBytes: cfg.SystemOne.InputBudgetBytes,
+	}, logManager.Logger("systemone"))
+	if err != nil {
+		logger.Error("failed to initialize system one client", "error", err)
+		sentry.CaptureException(err)
+
+		return err
+	}
+
 	llmc, err := llm.NewService(cfg.LLM, prompts, resolver, logManager.Logger("llm"))
 	if err != nil {
 		logger.Error("failed to initialize llm service", "error", err)
@@ -521,11 +540,27 @@ func Run(ctx context.Context) error {
 
 	// Interactive admin UI: controller (sessions, screens) plus the Telegram
 	// adapter that renders it. Ephemeral by design — sessions and pendings
-	// live in memory only.
+	// live in memory only. Model pickers discover from the backend actually
+	// serving each feature: the main service for chat/summarize, the
+	// dedicated image service when one is configured (else the shared
+	// connection), the System One client when the decision backend is
+	// configured. The image model setting is hidden while the model-free
+	// MiniMax recognizer is active.
+	var controllerOpts []core.ControllerOption
+	imageDiscovery := imageLLM
+	if imageDiscovery == nil {
+		imageDiscovery = llmc
+	}
+	if systemOneClient.Configured() {
+		controllerOpts = append(controllerOpts, core.WithModelDiscovery(llmc, imageDiscovery, systemOneClient))
+	}
+	if cfg.LLM.ImageRecognitionEnabled && cfg.LLM.ImageRecognition.Recognizer == config.ImageRecognizerMiniMaxVLM {
+		controllerOpts = append(controllerOpts, core.WithHiddenImageModel())
+	}
 	adminUIManager := core.NewManager(nil)
 	adminUIController := core.NewController(adminUIManager, adminService, cfg.Bot.AdminIDs, func() string {
 		return stores.Stats().Snapshot().String()
-	})
+	}, controllerOpts...)
 	adminAdapter := adminui.NewAdapter(
 		adminUIController,
 		adminUIManager,

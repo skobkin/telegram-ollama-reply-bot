@@ -52,18 +52,23 @@ var (
 type ScreenKind string
 
 const (
-	ScreenDashboard    ScreenKind = "dashboard"
-	ScreenCatalog      ScreenKind = "catalog"
-	ScreenChatCard     ScreenKind = "chat_card"
-	ScreenGlobalSet    ScreenKind = "global_settings"
-	ScreenChatSet      ScreenKind = "chat_settings"
-	ScreenFieldEditor  ScreenKind = "field_editor"
-	ScreenPrompts      ScreenKind = "prompts"
-	ScreenPromptDetail ScreenKind = "prompt_detail"
-	ScreenAccess       ScreenKind = "access"
-	ScreenStatistics   ScreenKind = "statistics"
-	ScreenConfirm      ScreenKind = "confirm"
+	ScreenDashboard     ScreenKind = "dashboard"
+	ScreenCatalog       ScreenKind = "catalog"
+	ScreenChatCard      ScreenKind = "chat_card"
+	ScreenGlobalSet     ScreenKind = "global_settings"
+	ScreenChatSet       ScreenKind = "chat_settings"
+	ScreenFieldEditor   ScreenKind = "field_editor"
+	ScreenPrompts       ScreenKind = "prompts"
+	ScreenPromptDetail  ScreenKind = "prompt_detail"
+	ScreenAccess        ScreenKind = "access"
+	ScreenStatistics    ScreenKind = "statistics"
+	ScreenInteractivity ScreenKind = "interactivity"
+	ScreenConfirm       ScreenKind = "confirm"
 )
+
+// ModelPickerPageSize bounds one page of the backend model picker; model IDs
+// overflow button rows quickly and Telegram caps keyboards hard.
+const ModelPickerPageSize = 8
 
 // ScreenState is the data needed to render one screen. It is a value type:
 // copies of it are safe to render after the session lock is released.
@@ -80,6 +85,10 @@ type ScreenState struct {
 	Detail string
 	// Danger marks a confirmation as destructive (button styling hint).
 	Danger bool
+	// Models caches the backend model list of a field-editor picker, fetched
+	// once per "list models" press and selected by index (model IDs overflow
+	// the callback-data limit). Only read after being set under the lock.
+	Models []string
 	Notice string
 }
 
@@ -131,15 +140,18 @@ const (
 	ConfirmChatOverrides ConfirmKind = "chat_overrides_reset"
 	ConfirmChatPrompt    ConfirmKind = "chat_prompt_reset"
 	ConfirmGlobalPrompt  ConfirmKind = "global_prompt_restore"
+	ConfirmGlobalProfile ConfirmKind = "global_profile_change"
 )
 
 // PendingConfirm is a stored server-side confirmation. Re-validated at
 // execution time and cleared on navigation.
 type PendingConfirm struct {
-	Kind        ConfirmKind
-	ChatID      int64
-	Policy      adminconfig.AccessPolicy
-	Feature     adminconfig.PromptFeature
+	Kind    ConfirmKind
+	ChatID  int64
+	Policy  adminconfig.AccessPolicy
+	Feature adminconfig.PromptFeature
+	// Profile carries the target interaction profile of ConfirmGlobalProfile.
+	Profile     adminconfig.InteractionProfile
 	Description string
 	Danger      bool
 }
