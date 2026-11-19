@@ -159,17 +159,18 @@ func classifyRunFailure(err error, fallback string) string {
 }
 
 type Runtime struct {
-	llm           llmService
-	history       state.ConversationStore
-	extractor     extractor.Extractor
-	searcher      search.Searcher
-	actions       TelegramActionSender
-	imageAnalyzer ImageAnalyzer
-	reminders     *reminders.Service
-	logger        *slog.Logger
-	config        Config
-	registry      *Registry
-	closers       []registeredCloser
+	llm            llmService
+	history        state.ConversationStore
+	extractor      extractor.Extractor
+	searcher       search.Searcher
+	actions        TelegramActionSender
+	imageAnalyzer  ImageAnalyzer
+	decisionClient decisionExecutor
+	reminders      *reminders.Service
+	logger         *slog.Logger
+	config         Config
+	registry       *Registry
+	closers        []registeredCloser
 	// reactions coordinates outgoing set-reaction API calls across
 	// concurrent runs; see tool_set_reaction.go. Zero value ready to use.
 	reactions reactionLimiter
@@ -304,7 +305,7 @@ func (r *Runtime) Close() {
 // delivery is best-effort: the returned outcome never depends on it.
 func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, error) {
 	logger := logging.FromContext(ctx, r.logger)
-	definitions := allowedDefinitions(r.registry.DefaultDefinitions(), req.AllowedTools)
+	definitions := allowedDefinitions(r.turnDefinitions(req.TurnConfig.SystemOneModel), req.AllowedTools)
 	modelTools := toLLMToolDefinitions(definitions)
 	toolPolicy := buildToolPolicy(definitions)
 
@@ -323,8 +324,9 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 	emitter.publish(execution.RunStarted{RunContext: emitter.rc, At: runStart})
 
 	// Per-run tool state is shared by every tool call of this run and never
-	// leaks across runs — even for concurrent runs in the same chat.
-	run := &runState{}
+	// leaks across runs — even for concurrent runs in the same chat. The
+	// decision model is pinned from the turn's operation snapshot.
+	run := &runState{systemOneModel: req.TurnConfig.SystemOneModel}
 
 	var (
 		extraMessages             []llm.Message
@@ -439,7 +441,15 @@ func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *
 		// like an unknown one: the model sees the error, nothing executes.
 		logger.Warn("tool call rejected by the run allowlist", "tool_name", call.Name, "tool_call_id", call.ID)
 		ok = false
-	} else if !ok {
+	}
+	if ok && isDecisionTool(call.Name) && run.systemOneModel == "" {
+		// Decision tools are only advertised with an effective System One
+		// model; a hallucinated call gets the same rejection treatment and
+		// never reaches inference.
+		logger.Warn("tool call rejected: decision backend unconfigured for the scope", "tool_name", call.Name, "tool_call_id", call.ID)
+		ok = false
+	}
+	if !ok {
 		logger.Warn("tool call references unknown tool", "tool_name", call.Name, "tool_call_id", call.ID)
 	}
 	if !ok {
@@ -528,6 +538,28 @@ func toolResponseMessage(toolCallID, text string) llm.Message {
 			{Type: llm.PartTypeText, Text: text},
 		},
 	}
+}
+
+// turnDefinitions filters the default registry set by the turn's effective
+// decision configuration: the decision tools are statically registered at
+// startup, but they are advertised only when the operation snapshot carries
+// an effective System One model. Changing model settings at runtime never
+// rebuilds the registry.
+func (r *Runtime) turnDefinitions(systemOneModel string) []Definition {
+	definitions := r.registry.DefaultDefinitions()
+	if systemOneModel != "" {
+		return definitions
+	}
+
+	filtered := make([]Definition, 0, len(definitions))
+	for _, definition := range definitions {
+		if isDecisionTool(definition.Name) {
+			continue
+		}
+		filtered = append(filtered, definition)
+	}
+
+	return filtered
 }
 
 // allowedDefinitions intersects the run's definitions with an explicit tool

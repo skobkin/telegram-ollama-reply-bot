@@ -537,6 +537,12 @@ func Run(ctx context.Context) error {
 		},
 	)
 	tools.AttachMCP("mcp", mcpManager)
+	// Decision tools are registered statically when the System One backend
+	// is configured; their per-turn availability additionally requires an
+	// effective System One model from the operation snapshot.
+	if systemOneClient.Configured() {
+		tools.AttachDecisionTools(systemOneClient)
+	}
 	defer tools.Close()
 	botService := bot.NewBot(
 		ctx,

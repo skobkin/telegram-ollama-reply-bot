@@ -91,6 +91,10 @@ type runState struct {
 	// reactionAttempted claims the run's single outgoing set-reaction API
 	// attempt (invalid local arguments do not consume it).
 	reactionAttempted atomic.Bool
+	// systemOneModel is the run's effective System One decision model from
+	// the operation snapshot ("" = decision tools unavailable). Decision
+	// tool handlers read it instead of resolving settings themselves.
+	systemOneModel string
 }
 
 type CallContext struct {
