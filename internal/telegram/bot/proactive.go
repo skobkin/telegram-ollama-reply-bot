@@ -134,6 +134,23 @@ func (b *Bot) evaluateProactiveParticipation(_ context.Context, message t.Messag
 func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 	logger := b.loggerFromContext(ctx)
 
+	// Re-run the ingress access decision before any work: a task can sit
+	// queued behind the chat slot while the operator removes the chat from
+	// the allowed set, and hard access restrictions stay effective at
+	// execution time. Same decision point, same arguments as the middleware
+	// gate.
+	allowed, err := b.admin.ShouldAllowChat(ctx, message.Chat.ID, b.isAdminDM(&message))
+	if err != nil {
+		logger.Warn("proactive participation skipped", "reason", "chat access check failed")
+
+		return
+	}
+	if !allowed {
+		logger.Debug("proactive participation skipped", "reason", "chat not authorized")
+
+		return
+	}
+
 	// The operation snapshot: one settings read, taken after slot
 	// acquisition. The decision and its resulting action share it — the
 	// engine cannot evaluate one model pair while the action executes with

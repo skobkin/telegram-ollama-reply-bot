@@ -173,17 +173,25 @@ func (f *fakeDecisionClient) calls() int {
 }
 
 // countingSettingsStore counts settings reads, so the NoOp test can prove
-// the proactive task reads the settings exactly once.
+// the proactive task reads the settings exactly once. policy defaults to
+// allow-all (the access layer is isolated so the eligibility matrix is what
+// is observed); tests can set it to simulate a revoked chat.
 type countingSettingsStore struct {
 	adminStoreStub
 	globalReads atomic.Int32
 	chatReads   atomic.Int32
+	policy      adminconfig.AccessPolicy
 }
 
-// GetAccessPolicy isolates the proactive tests from the access layer: the
-// gate must pass every chat so the eligibility matrix is what is observed.
+// GetAccessPolicy isolates the proactive tests from the access layer by
+// default: the gate must pass every chat so the eligibility matrix is what
+// is observed.
 func (s *countingSettingsStore) GetAccessPolicy(context.Context) (adminconfig.AccessPolicy, error) {
-	return adminconfig.AccessPolicyAllowAll, nil
+	if s.policy == "" {
+		return adminconfig.AccessPolicyAllowAll, nil
+	}
+
+	return s.policy, nil
 }
 
 func (s *countingSettingsStore) GetGlobalSettings(ctx context.Context) (adminconfig.GlobalSettings, error) {
@@ -1524,5 +1532,41 @@ func TestProactiveLogsStayIdentifierFree(t *testing.T) {
 			continue
 		}
 		t.Fatalf("proactive log line links a decision to a conversation or leaks content: %s", line)
+	}
+}
+
+// TestProactiveQueuedTaskHonorsAccessRevocation pins the execution-time
+// authorization recheck: a chat that passed the ingress gate can be removed
+// from the allowed set while its proactive task sits queued behind the chat
+// slot, and the task must then skip through the same decision point the
+// ingress middleware uses — no decision, no persona capture, no Telegram
+// calls.
+func TestProactiveQueuedTaskHonorsAccessRevocation(t *testing.T) {
+	p := newProactiveTestBot(t, func(s *adminStoreStub) {
+		s.DefaultInteractivityMode = adminconfig.InteractivityMentionsReplies
+		s.DefaultInteractionProfile = adminconfig.ProfileTalkLow
+		s.SystemOneModel = "decision-model"
+	})
+	persona := &fakePersonaSource{}
+	client := &fakeDecisionClient{answers: decisionAnswers(0.0, 1.0, 1.0)}
+	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024)
+	t.Cleanup(stop)
+
+	// The flip: eligibility at Submit time (mentions_or_replies, talk-low,
+	// human sender) would have accepted this message, but by the time the
+	// task acquires the slot the chat is no longer whitelisted under the
+	// allowlist policy.
+	p.store.policy = adminconfig.AccessPolicyAllowlist
+
+	p.bot.evaluateParticipation(context.Background(), *proactiveGroupUpdate("chatter from a revoked chat").Message)
+
+	if got := client.calls(); got != 0 {
+		t.Fatalf("revoked chat must block the queued task, got %d backend calls", got)
+	}
+	if got := persona.captureCalls.Load(); got != 0 {
+		t.Fatalf("revoked chat must not capture the persona, got %d captures", got)
+	}
+	if requests := p.apiRequests(); len(requests) != 0 {
+		t.Fatalf("revoked chat must make no Telegram calls, got %v", requests)
 	}
 }
