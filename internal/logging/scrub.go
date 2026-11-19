@@ -2,7 +2,9 @@ package logging
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"reflect"
 
 	"telegram-ollama-reply-bot/internal/support/secretscrub"
 )
@@ -172,9 +174,30 @@ func (h *scrubHandler) scrubAttr(attr slog.Attr) slog.Attr {
 		attr.Value = slog.GroupValue(attrs...)
 	case slog.KindAny:
 		if err, ok := attr.Value.Any().(error); ok {
-			attr.Value = slog.StringValue(h.scrubber.Scrub(err.Error()))
+			attr.Value = slog.StringValue(h.scrubbedErrorText(err))
 		}
 	}
 
 	return attr
+}
+
+// scrubbedErrorText renders an error attribute the way the delegate handler
+// would and scrubs the rendering. slog's appendValue recovers from panics in
+// Error(), emitting "<nil>" for a nil pointer and "!PANIC: <panic>" otherwise;
+// without the same guard, a typed-nil error attribute would crash the process
+// where plain slog handling logs it harmlessly.
+func (h *scrubHandler) scrubbedErrorText(err error) (text string) {
+	defer func() {
+		if r := recover(); r != nil {
+			if v := reflect.ValueOf(err); v.Kind() == reflect.Pointer && v.IsNil() {
+				text = "<nil>"
+
+				return
+			}
+
+			text = fmt.Sprintf("!PANIC: %v", r)
+		}
+	}()
+
+	return h.scrubber.Scrub(err.Error())
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -212,6 +213,29 @@ func containsFixture(value any) bool {
 	s, ok := value.(string)
 
 	return ok && strings.Contains(s, "LOGFIXTURE")
+}
+
+func TestScrubHandlerTypedNilErrorAttr(t *testing.T) {
+	t.Parallel()
+
+	logger, buf := scrubTestLogger(t, scrubTestScrubber())
+
+	// A typed-nil error must render the way plain slog does — "<nil>" —
+	// instead of panicking where the delegate handler would not.
+	logger.Error("typed nil", "err", (*url.Error)(nil))
+
+	entry := decodeLastLine(t, buf)
+	if entry["err"] != "<nil>" {
+		t.Fatalf("typed-nil error not handled like slog: %v", entry["err"])
+	}
+
+	// A real error still scrubs through the same path.
+	logger.Error("real error", "err", errors.New("failed for LOGFIXTURE"))
+
+	entry = decodeLastLine(t, buf)
+	if !strings.Contains(entry["err"].(string), "[REDACTED:fixture]") {
+		t.Fatalf("real error attribute not scrubbed: %v", entry["err"])
+	}
 }
 
 func TestScrubHandlerPreservesAttributeAttachmentGroup(t *testing.T) {
