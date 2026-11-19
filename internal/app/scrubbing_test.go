@@ -484,3 +484,21 @@ func TestCredentialFromHeader(t *testing.T) {
 		}
 	}
 }
+
+func TestNewSecretScrubberRegistersEndpointURLPasswords(t *testing.T) {
+	t.Parallel()
+
+	cfg := scrubTestConfig()
+	cfg.LLM.Backends.OpenAICompat.BaseURL = "https://ops:LLMURLPASSFIXTURE@llm.internal/v1"
+	cfg.SystemOne.BaseURL = "https://ops:S1URLPASSFIXTURE@decision.internal/v1"
+
+	scrubber := newSecretScrubber(cfg)
+
+	for _, fixture := range []string{"LLMURLPASSFIXTURE", "S1URLPASSFIXTURE"} {
+		text := "dial https://ops:" + fixture + "@host failed"
+
+		if got := scrubber.Scrub(text); got == text {
+			t.Fatalf("endpoint URL password survived: %q", fixture)
+		}
+	}
+}

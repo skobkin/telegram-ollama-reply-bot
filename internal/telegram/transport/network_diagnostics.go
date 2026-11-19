@@ -25,7 +25,9 @@ func LogNetworkRouting(logger *slog.Logger, cfg *config.Config) {
 		"telegram_api_url", telegramAPIURL,
 		"telegram_proxy", resolveProxyForURL(telegramAPIURL, proxyFunc),
 		"llm_backend", config.LLMBackendOpenAICompat,
-		"llm_chat_base_url", activeLLMBaseURL(cfg),
+		// Logged redacted for the same reason as the System One endpoint
+		// below: backend endpoint URLs can carry credentials in userinfo.
+		"llm_chat_base_url", redactEndpointURL(activeLLMBaseURL(cfg)),
 		"llm_chat_proxy", resolveProxyForURL(activeLLMBaseURL(cfg), proxyFunc),
 		// The System One endpoint rides the same environment-resolved proxy
 		// policy as every other outbound connection (no System One-specific

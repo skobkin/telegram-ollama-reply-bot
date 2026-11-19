@@ -28,6 +28,18 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 		{Name: "sentry-dsn", Value: cfg.Sentry.DSN},
 	}
 
+	// Backend endpoint URLs may carry basic-auth userinfo; only the password
+	// part is registered (see appendURLPassword). Startup diagnostics and
+	// validation errors quote these URLs verbatim.
+	for name, endpoint := range map[string]string{
+		"llm-backend-url-password":        cfg.LLM.Backends.OpenAICompat.BaseURL,
+		"llm-image-backend-url-password":  cfg.LLM.ImageRecognition.OpenAICompat.BaseURL,
+		"llm-image-minimax-url-password":  cfg.LLM.ImageRecognition.MiniMaxVLM.BaseURL,
+		"systemone-endpoint-url-password": cfg.SystemOne.BaseURL,
+	} {
+		secrets = appendURLPassword(secrets, name, endpoint)
+	}
+
 	for name, server := range cfg.MCP.Servers {
 		for header, value := range server.Headers {
 			secrets = append(secrets, secretscrub.Secret{
