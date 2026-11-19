@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -91,6 +92,18 @@ type ChatRequest struct {
 	// whole run, so settings changes mid-run affect only later operations.
 	// An empty GenerationModel falls back to the environment route.
 	TurnConfig llm.TurnConfig
+	// AllowedTools restricts this run to the named tools: they are the only
+	// ones advertised, listed in the tool-policy text, and executable —
+	// calls to anything else take the existing unknown-tool rejection path.
+	// nil (the default) advertises the full registry; ordinary turns never
+	// set it. Restricted reaction-only turns allow exactly set_reaction.
+	AllowedTools []string
+	// CompleteAfterSideEffect ends the run as soon as an allowed
+	// side-effecting tool applies successfully in a round: the runtime
+	// returns directly, with no further generation request and no
+	// empty-reply fallback. Only restricted runs (AllowedTools set) use it;
+	// ordinary turns never set it, so their loop semantics are unchanged.
+	CompleteAfterSideEffect bool
 }
 
 // ToolCallRecord is the authoritative record of one tool invocation, in
@@ -291,7 +304,7 @@ func (r *Runtime) Close() {
 // delivery is best-effort: the returned outcome never depends on it.
 func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, error) {
 	logger := logging.FromContext(ctx, r.logger)
-	definitions := r.registry.DefaultDefinitions()
+	definitions := allowedDefinitions(r.registry.DefaultDefinitions(), req.AllowedTools)
 	modelTools := toLLMToolDefinitions(definitions)
 	toolPolicy := buildToolPolicy(definitions)
 
@@ -405,6 +418,14 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 			extraMessages = append(extraMessages, toolMessage)
 			allowEmptyReplyCompletion = allowEmptyReplyCompletion || allowsEmptyReply
 		}
+
+		if req.AllowedTools != nil && req.CompleteAfterSideEffect && allowEmptyReplyCompletion {
+			// Restricted-run completion: a successfully applied allowed
+			// side effect ends the turn — no further generation request and
+			// no empty-reply fallback. Usage and the call records are
+			// preserved; the empty Reply is defined (nothing is published).
+			return succeeded("")
+		}
 	}
 
 	return fail(ErrToolLoopLimitReached, execution.ReasonBackend)
@@ -413,8 +434,15 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *runState, req ChatRequest, call llm.ToolCall) (llm.Message, bool, ToolCallRecord) {
 	logger := logging.FromContext(ctx, r.logger)
 	definition, ok := r.registry.Lookup(call.Name)
-	if !ok {
+	if ok && req.AllowedTools != nil && !slices.Contains(req.AllowedTools, call.Name) {
+		// A registered tool outside this run's allowlist is rejected exactly
+		// like an unknown one: the model sees the error, nothing executes.
+		logger.Warn("tool call rejected by the run allowlist", "tool_name", call.Name, "tool_call_id", call.ID)
+		ok = false
+	} else if !ok {
 		logger.Warn("tool call references unknown tool", "tool_name", call.Name, "tool_call_id", call.ID)
+	}
+	if !ok {
 		emitter.publish(execution.ToolStarted{RunContext: emitter.rc, At: time.Now(), CallID: call.ID, ToolName: call.Name})
 		emitter.publish(execution.ToolCompleted{
 			RunContext: emitter.rc,
@@ -500,6 +528,25 @@ func toolResponseMessage(toolCallID, text string) llm.Message {
 			{Type: llm.PartTypeText, Text: text},
 		},
 	}
+}
+
+// allowedDefinitions intersects the run's definitions with an explicit tool
+// allowlist, preserving registry order. A nil allowlist keeps every
+// definition; names missing from the registry are simply not advertised —
+// execution rejects them through the same path as unknown tools.
+func allowedDefinitions(definitions []Definition, allowed []string) []Definition {
+	if allowed == nil {
+		return definitions
+	}
+
+	restricted := make([]Definition, 0, len(definitions))
+	for _, definition := range definitions {
+		if slices.Contains(allowed, definition.Name) {
+			restricted = append(restricted, definition)
+		}
+	}
+
+	return restricted
 }
 
 func toLLMToolDefinitions(definitions []Definition) []llm.ToolDefinition {
