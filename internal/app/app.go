@@ -74,11 +74,15 @@ func (r modelResolver) ResolveModel(ctx context.Context, feature llm.Feature, ch
 // ordinary admin prompt path: the full effective character prompt the
 // generation turns use. The generation model passed in comes from the
 // operation snapshot, so any model-identity reference in the persona
-// describes the generation character. The compact context stays empty —
-// the decision state already carries the conversation as bounded history —
-// and the tool-policy section states that no tools exist in a decision.
+// describes the generation character; an empty snapshot model falls back to
+// the environment chat route — the same fallback ordinary prompt rendering
+// applies — so an unset override chain never renders an empty model
+// identity. The compact context stays empty — the decision state already
+// carries the conversation as bounded history — and the tool-policy section
+// states that no tools exist in a decision.
 type decisionPersonaSource struct {
-	prompts *llm.AdminPromptRenderer
+	prompts           *llm.AdminPromptRenderer
+	fallbackChatModel string
 }
 
 // decisionPersonaToolPolicy renders the chat template's tool-policy section
@@ -87,7 +91,25 @@ type decisionPersonaSource struct {
 const decisionPersonaToolPolicy = "No tools are available in this context."
 
 func (s decisionPersonaSource) DecisionPersona(ctx context.Context, chatID int64, generationModel string, settings interactivity.PersonaSettings) (string, error) {
+	if generationModel == "" {
+		generationModel = s.fallbackChatModel
+	}
+
 	return s.prompts.RenderChatSystemPromptResolved(ctx, chatID, settings.Language, settings.Gender, settings.CharacterName, generationModel, "", decisionPersonaToolPolicy)
+}
+
+// envChatRouteModel resolves the environment chat-route model once at
+// wiring time, mirroring the route fallback the generation path applies
+// when the runtime override chain is unset. A route error yields "" — the
+// boot-time model checks fail loudly on invalid routes, so this only
+// degrades the persona's model identity text.
+func envChatRouteModel(cfg config.LLMConfig) string {
+	route, err := cfg.RouteForFeature("chat")
+	if err != nil {
+		return ""
+	}
+
+	return route.Model
 }
 
 // verifyStartupModels checks that every required feature model is available
@@ -605,7 +627,7 @@ func Run(ctx context.Context) error {
 	if systemOneClient.Configured() {
 		stopParticipation = botService.SetProactiveDecisions(
 			systemOneClient,
-			decisionPersonaSource{prompts: prompts},
+			decisionPersonaSource{prompts: prompts, fallbackChatModel: envChatRouteModel(cfg.LLM)},
 			cfg.SystemOne.InputBudgetBytes,
 		)
 	}
