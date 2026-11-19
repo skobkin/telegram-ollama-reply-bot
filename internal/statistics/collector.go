@@ -17,6 +17,9 @@ type Config struct {
 	// Now overrides the wall clock (tests inject a controllable one).
 	// Nil means time.Now.
 	Now func() time.Time
+	// RubricVersion stamps interaction snapshots with the decision rubric
+	// version the app was built against (injected by the app wiring).
+	RubricVersion int
 }
 
 // Collector is the aggregate statistics store. All Record methods are
@@ -29,10 +32,16 @@ type Collector struct {
 	mu  sync.Mutex
 	now func() time.Time
 
+	rubricVersion int
+
 	processStartedAt time.Time
 
 	general                generalCounters
 	generalPeriodStartedAt time.Time
+
+	interaction           interactionState
+	interactionGeneration uint64
+	interactionResets     uint64
 }
 
 // NewCollector constructs the collector. Both observation periods start at
@@ -46,7 +55,9 @@ func NewCollector(cfg Config) *Collector {
 
 	return &Collector{
 		now:                    now,
+		rubricVersion:          cfg.RubricVersion,
 		processStartedAt:       started,
 		generalPeriodStartedAt: started,
+		interaction:            initInteraction(started),
 	}
 }
