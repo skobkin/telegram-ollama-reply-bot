@@ -52,6 +52,16 @@ const (
 	VerbConfirmNo  = "no"   // cancel the pending confirmation
 	VerbStats      = "st"   // → statistics screen
 
+	// Statistics screen actions (#161): export, filter cycling, scope
+	// picking, and confirmation-gated resets.
+	VerbStatsExport   = "sx"  // export the current scope+filters as a JSON document
+	VerbStatsProfile  = "sp"  // cycle the profile filter (All → profiles → All)
+	VerbStatsModel    = "sm"  // cycle the decision-model filter (All → observed → All)
+	VerbStatsScope    = "sk"  // → scope picker (catalog chats + global)
+	VerbStatsScopeSet = "sc"  // args: g | <chat_id> → set the statistics scope
+	VerbStatsResetI   = "sri" // reset interaction statistics (confirm, global)
+	VerbStatsResetG   = "srg" // reset general statistics (confirm, global)
+
 	// Model selection and interactivity (#128 / System One).
 	VerbInteractivity = "in" // → interactivity submenu (scope from screen)
 	VerbModelList     = "ml" // args: <code> → fetch and cache the backend model list
@@ -71,6 +81,9 @@ var knownVerbs = map[string]bool{
 	VerbConfirmYes: true, VerbConfirmNo: true, VerbStats: true,
 	VerbInteractivity: true, VerbModelList: true, VerbModelPage: true,
 	VerbModelPick: true, VerbClearGlobal: true,
+	VerbStatsExport: true, VerbStatsProfile: true, VerbStatsModel: true,
+	VerbStatsScope: true, VerbStatsScopeSet: true,
+	VerbStatsResetI: true, VerbStatsResetG: true,
 }
 
 // MaxCallbackBytes is the Telegram callback data limit.

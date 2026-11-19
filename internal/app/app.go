@@ -631,9 +631,7 @@ func Run(ctx context.Context) error {
 		controllerOpts = append(controllerOpts, core.WithHiddenImageModel())
 	}
 	adminUIManager := core.NewManager(nil)
-	adminUIController := core.NewController(adminUIManager, adminService, cfg.Bot.AdminIDs, func() string {
-		return statistics.GeneralJSON(statsCollector.GeneralSnapshot())
-	}, controllerOpts...)
+	adminUIController := core.NewController(adminUIManager, adminService, cfg.Bot.AdminIDs, statsCollector, controllerOpts...)
 	adminAdapter := adminui.NewAdapter(
 		adminUIController,
 		adminUIManager,

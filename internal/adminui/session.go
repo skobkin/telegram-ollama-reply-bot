@@ -62,6 +62,7 @@ const (
 	ScreenPromptDetail  ScreenKind = "prompt_detail"
 	ScreenAccess        ScreenKind = "access"
 	ScreenStatistics    ScreenKind = "statistics"
+	ScreenStatsScope    ScreenKind = "stats_scope"
 	ScreenInteractivity ScreenKind = "interactivity"
 	ScreenConfirm       ScreenKind = "confirm"
 )
@@ -89,7 +90,12 @@ type ScreenState struct {
 	// once per "list models" press and selected by index (model IDs overflow
 	// the callback-data limit). Only read after being set under the lock.
 	Models []string
-	Notice string
+	// StatsProfile and StatsModel carry the interaction-statistics filters
+	// of the statistics screen (empty = unfiltered). ChatID doubles as the
+	// statistics scope there: 0 = global, otherwise the chat's ID.
+	StatsProfile string
+	StatsModel   string
+	Notice       string
 }
 
 // PendingKind enumerates awaited admin inputs.
@@ -141,6 +147,11 @@ const (
 	ConfirmChatPrompt    ConfirmKind = "chat_prompt_reset"
 	ConfirmGlobalPrompt  ConfirmKind = "global_prompt_restore"
 	ConfirmGlobalProfile ConfirmKind = "global_profile_change"
+	// ConfirmStatsInteraction and ConfirmStatsGeneral gate the statistics
+	// resets. Both are GLOBAL: a filtered view still resets the whole
+	// dataset, and the confirm descriptions say so explicitly.
+	ConfirmStatsInteraction ConfirmKind = "stats_interaction_reset"
+	ConfirmStatsGeneral     ConfirmKind = "stats_general_reset"
 )
 
 // PendingConfirm is a stored server-side confirmation. Re-validated at

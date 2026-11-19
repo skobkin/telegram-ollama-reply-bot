@@ -25,6 +25,7 @@ import (
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	core "telegram-ollama-reply-bot/internal/adminui"
 	"telegram-ollama-reply-bot/internal/execution"
+	"telegram-ollama-reply-bot/internal/statistics"
 	"telegram-ollama-reply-bot/internal/support/httpclient"
 )
 
@@ -642,7 +643,7 @@ func newHarnessWithAdmins(t *testing.T, adminIDs ...int64) *harness {
 
 	clock := &testClock{now: time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)}
 	manager := core.NewManager(clock.Now)
-	controller := core.NewController(manager, service, adminIDs, func() string { return "stats-snapshot" })
+	controller := core.NewController(manager, service, adminIDs, statistics.NewCollector(statistics.Config{}))
 
 	api := newFakeAdminAPI(t)
 	// The HTTP caller matches production (app.Run wires WithHTTPClient):

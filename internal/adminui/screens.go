@@ -855,20 +855,133 @@ func (b screenBuilder) access(data AccessData) *Screen {
 	return &Screen{Text: text.String(), Rows: rows}
 }
 
-// StatisticsData feeds the statistics screen.
+// StatisticsData feeds the statistics screen: the general JSON blob plus,
+// when the collector is wired, the interaction view.
 type StatisticsData struct {
-	Snapshot string
+	General     string
+	Interaction *InteractionStatsView
+}
+
+// InteractionStatsView is the rendered interaction-statistics section. The
+// summary lines are pre-formatted; the screen shows scope-level totals only
+// (per-bucket detail lives in the JSON export).
+type InteractionStatsView struct {
+	Mode            string
+	RubricVersion   int
+	PeriodStartedAt time.Time
+	PeriodResets    uint64
+	ScopeLabel      string
+	ProfileLabel    string
+	ModelLabel      string
+	Summary         []string
+	Warning         string
+	HasData         bool
+	// Narrowed marks a scope/filter-narrowed view: its empty state says
+	// "no observations match" instead of claiming an empty dataset.
+	Narrowed bool
 }
 
 func (b screenBuilder) statistics(data StatisticsData) *Screen {
-	text := "📊 Statistics\n\n" + data.Snapshot
+	text := "📊 Statistics\n\n" + data.General
 
 	rows := []ButtonRow{
 		{b.btn("Refresh", VerbStats), b.btn("‹ Back", VerbBack)},
-		{b.btn("⌂ Home", VerbHome)},
 	}
 
+	if data.Interaction != nil {
+		v := data.Interaction
+		interaction := "\n\n🔗 Interaction (" + v.Mode + ", rubric v" + strconv.Itoa(v.RubricVersion) + ")\n"
+		interaction += "Period since " + v.PeriodStartedAt.Format("2006-01-02 15:04") +
+			" · resets: " + strconv.FormatUint(v.PeriodResets, 10) + "\n"
+		interaction += "Scope: " + v.ScopeLabel + " · profile: " + v.ProfileLabel + " · model: " + v.ModelLabel + "\n\n"
+		switch {
+		case v.HasData:
+			for _, line := range v.Summary {
+				interaction += line + "\n"
+			}
+		case v.Narrowed:
+			interaction += "No observations match this selection.\n"
+		default:
+			interaction += "No interaction observations yet.\n"
+		}
+		if v.Warning != "" {
+			interaction += "\n⚠️ " + v.Warning + "\n"
+		}
+		text += interaction
+
+		rows = append(rows,
+			ButtonRow{
+				b.btn("Scope ▸ "+truncateRunes(v.ScopeLabel, 16), VerbStatsScope),
+				b.btn("Profile ▸ "+truncateRunes(v.ProfileLabel, 16), VerbStatsProfile),
+			},
+			ButtonRow{
+				b.btn("Model ▸ "+truncateRunes(v.ModelLabel, 16), VerbStatsModel),
+				b.btn("⬇ Export JSON", VerbStatsExport),
+			},
+			ButtonRow{
+				b.danger("Reset interaction", VerbStatsResetI),
+				b.danger("Reset general", VerbStatsResetG),
+			},
+		)
+	}
+
+	rows = append(rows, ButtonRow{b.btn("⌂ Home", VerbHome)})
+
 	return &Screen{Text: truncateRunes(text, 3800), Rows: rows}
+}
+
+// StatsScopeData feeds the statistics scope picker.
+type StatsScopeData struct {
+	Chats   []adminconfig.ChatCatalogEntry
+	Current int64
+	Total   int
+	Page    int
+	Pages   int
+}
+
+func (b screenBuilder) statsScope(data StatsScopeData) *Screen {
+	var text strings.Builder
+	text.WriteString("🎯 Statistics scope\n\nPick the chat whose interaction statistics to view, or stay global.\n")
+	if data.Total > len(data.Chats) {
+		fmt.Fprintf(&text, "Showing %d of %d chats (page %d/%d)\n\n", len(data.Chats), data.Total, data.Page, data.Pages)
+	}
+
+	globalLabel := "⌂ Global"
+	if data.Current == 0 {
+		globalLabel = "✓ Global"
+	}
+	rows := []ButtonRow{{b.btn(globalLabel, VerbStatsScopeSet, "g")}}
+	for i := 0; i < len(data.Chats); i += 2 {
+		row := ButtonRow{b.statsScopeChatButton(data.Chats[i], data.Current)}
+		if i+1 < len(data.Chats) {
+			row = append(row, b.statsScopeChatButton(data.Chats[i+1], data.Current))
+		}
+		rows = append(rows, row)
+	}
+
+	if data.Pages > 1 {
+		nav := ButtonRow{}
+		if data.Page > 1 {
+			nav = append(nav, b.btn("< Prev", VerbStatsScope, strconv.Itoa(data.Page-1)))
+		}
+		if data.Page < data.Pages {
+			nav = append(nav, b.btn("Next >", VerbStatsScope, strconv.Itoa(data.Page+1)))
+		}
+		rows = append(rows, nav)
+	}
+
+	rows = append(rows, b.footerRow())
+
+	return &Screen{Text: truncateRunes(text.String(), 3800), Rows: rows}
+}
+
+func (b screenBuilder) statsScopeChatButton(chat adminconfig.ChatCatalogEntry, current int64) Button {
+	label := truncateRunes(ChatEntryName(chat), 22)
+	if chat.ChatID == current {
+		label = "✓ " + label
+	}
+
+	return b.btn(label, VerbStatsScopeSet, strconv.FormatInt(chat.ChatID, 10))
 }
 
 // ConfirmData feeds the confirmation screen.
