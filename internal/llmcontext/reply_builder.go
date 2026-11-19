@@ -28,6 +28,11 @@ type ReplyInput struct {
 	Scope          state.ConversationScope
 	CurrentMessage state.Message
 	Trigger        TriggerKind
+	// ReactionOnly marks the restricted proactive reaction turn: the only
+	// permitted outcome is a set_reaction call on the trigger message or
+	// doing nothing, and the system hint says so. Any text the run produces
+	// is discarded by the pipeline.
+	ReactionOnly bool
 }
 
 type ChatContext struct {
@@ -171,6 +176,10 @@ func renderSystemHint(input ReplyInput) string {
 
 	if input.Trigger != "" {
 		lines = append(lines, "- Trigger: "+string(input.Trigger)+".")
+	}
+
+	if input.ReactionOnly {
+		lines = append(lines, "- Reaction-only run: the only permitted outcomes are a set_reaction call on the current message or no action at all. Do not write a text reply — any text is discarded and never delivered.")
 	}
 
 	if input.Scope.TopicID != 0 {

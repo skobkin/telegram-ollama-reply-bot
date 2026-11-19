@@ -751,6 +751,15 @@ func TestProactiveReactTurnIsReactionOnly(t *testing.T) {
 	if got := p.llm.buildCount(); got != 1 {
 		t.Fatalf("completion must skip the next generation, got %d builds", got)
 	}
+	// The model must know the run is reaction-only before it writes text:
+	// the system hint carries the restriction, unlike Reply and explicit
+	// turns.
+	p.llm.mu.Lock()
+	hint := p.llm.lastHint
+	p.llm.mu.Unlock()
+	if !strings.Contains(hint, "Reaction-only run") {
+		t.Fatalf("react turn hint must state the reaction-only restriction, got %q", hint)
+	}
 	// The suppressed text is never recorded: only the middleware-saved user
 	// message is in the conversation.
 	snapshot := p.history.Snapshot(state.ConversationScope{ChatID: -100999})
@@ -790,6 +799,9 @@ func TestProactiveReplyRunsOrdinaryPath(t *testing.T) {
 	p.llm.mu.Unlock()
 	if !strings.Contains(hint, string(llmcontext.TriggerProactive)) {
 		t.Fatalf("reply context must carry the proactive trigger, got hint %q", hint)
+	}
+	if strings.Contains(hint, "Reaction-only run") {
+		t.Fatalf("reply turns must not carry the reaction-only restriction, got hint %q", hint)
 	}
 	snapshot := p.history.Snapshot(state.ConversationScope{ChatID: -100999})
 	if len(snapshot.Messages) != 2 {

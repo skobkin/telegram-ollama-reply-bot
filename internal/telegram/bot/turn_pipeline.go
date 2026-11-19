@@ -126,6 +126,9 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 			Scope:          scopeFromMessage(message),
 			CurrentMessage: userMessageData,
 			Trigger:        opts.trigger,
+			// Only the restricted reaction turn completes on a side effect;
+			// its model must know text is pointless before it writes any.
+			ReactionOnly: opts.completeAfterSideEffect,
 		})
 
 		llmCtx, cancel := b.withProcessingDeadline(ctx)
