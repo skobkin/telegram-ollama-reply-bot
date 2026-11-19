@@ -13,6 +13,7 @@ import (
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	core "telegram-ollama-reply-bot/internal/adminui"
 	"telegram-ollama-reply-bot/internal/config"
+	"telegram-ollama-reply-bot/internal/statistics"
 	adminui "telegram-ollama-reply-bot/internal/telegram/adminui"
 )
 
@@ -31,7 +32,7 @@ type adminChainBot struct {
 	bh      *th.BotHandler
 	api     *fakeAPIServer
 	history *dmHistorySpy
-	stats   *pipelineStatsSpy
+	stats   *statistics.Collector
 	manager *core.Manager
 }
 
@@ -50,7 +51,7 @@ func newAdminChainBot(t *testing.T, cfg config.BotConfig, store adminconfig.Stor
 	}
 
 	history := &dmHistorySpy{}
-	stats := &pipelineStatsSpy{}
+	stats := statistics.NewCollector(statistics.Config{})
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	manager := core.NewManager(nil)
 	controller := core.NewController(manager, adminconfig.NewService(store, nil, nil), cfg.AdminIDs, nil)
@@ -214,7 +215,7 @@ func TestUnmarkedReplyToLivePendingNeverReachesPipeline(t *testing.T) {
 		if got := c.history.appended.Load(); got != 1 {
 			t.Fatalf("ordinary replies must keep reaching the pipeline, got %d appends", got)
 		}
-		if got := c.stats.privateRequests.Load(); got != 1 {
+		if got := c.stats.GeneralSnapshot().PrivateRequests; got != 1 {
 			t.Fatalf("ordinary replies must keep being counted, got %d", got)
 		}
 	})
@@ -286,7 +287,7 @@ func (c *adminChainBot) assertIsolated(t *testing.T, what string) {
 	if got := c.history.appended.Load(); got != 0 {
 		t.Fatalf("%s must not reach conversation history, got %d appends", what, got)
 	}
-	if got := c.stats.privateRequests.Load(); got != 0 {
+	if got := c.stats.GeneralSnapshot().PrivateRequests; got != 0 {
 		t.Fatalf("%s must not count as an ordinary request, got %d", what, got)
 	}
 }
@@ -302,7 +303,7 @@ func TestAdminDMOrdinaryTextStillReachesPipeline(t *testing.T) {
 	if got := c.history.appended.Load(); got != 1 {
 		t.Fatalf("ordinary admin DM text must reach history, got %d", got)
 	}
-	if got := c.stats.privateRequests.Load(); got != 1 {
+	if got := c.stats.GeneralSnapshot().PrivateRequests; got != 1 {
 		t.Fatalf("ordinary admin DM text must be counted, got %d", got)
 	}
 }
@@ -318,7 +319,7 @@ func TestReplyToOrdinaryBotMessageResumesChain(t *testing.T) {
 	if got := c.history.appended.Load(); got != 1 {
 		t.Fatalf("ordinary reply must resume the chain, got %d appends", got)
 	}
-	if got := c.stats.privateRequests.Load(); got != 1 {
+	if got := c.stats.GeneralSnapshot().PrivateRequests; got != 1 {
 		t.Fatalf("ordinary reply must be counted, got %d", got)
 	}
 }

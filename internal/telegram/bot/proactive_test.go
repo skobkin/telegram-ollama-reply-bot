@@ -21,6 +21,7 @@ import (
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/llmcontext"
 	"telegram-ollama-reply-bot/internal/state"
+	"telegram-ollama-reply-bot/internal/statistics"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/systemone"
 	"telegram-ollama-reply-bot/internal/tooluse"
@@ -277,7 +278,7 @@ func newProactiveTestBot(t *testing.T, configure func(*adminStoreStub)) *proacti
 		logger:    proactiveDebugLogger(),
 		cfg:       config.BotConfig{AdminIDs: []int64{7}, ProcessingTimeout: 5 * time.Second},
 		history:   history,
-		stats:     &pipelineStatsSpy{},
+		stats:     statistics.NewCollector(statistics.Config{}),
 		admin:     adminconfig.NewService(store, nil, nil),
 		api:       botAPI,
 		me:        testBotID,

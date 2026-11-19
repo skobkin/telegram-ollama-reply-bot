@@ -12,6 +12,7 @@ import (
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/state"
 	"telegram-ollama-reply-bot/internal/state/memory"
+	"telegram-ollama-reply-bot/internal/statistics"
 
 	tg "github.com/mymmrac/telego"
 )
@@ -64,7 +65,7 @@ func TestMaybeSummarizeHistoryDiscardsSummaryAfterReactionChange(t *testing.T) {
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:     cfg,
 		history: store,
-		stats:   &dmStatsSpy{},
+		stats:   statistics.NewCollector(statistics.Config{}),
 		llm: &mutatingSummarizer{history: store, mutate: func() {
 			store.SetMessageReactions(100500, 11, 42, 100, []state.Reaction{{UserID: 42, Emoji: "👍"}})
 		}},
@@ -100,7 +101,7 @@ func TestMaybeSummarizeHistoryCommitsWithoutInterveningChange(t *testing.T) {
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:     cfg,
 		history: store,
-		stats:   &dmStatsSpy{},
+		stats:   statistics.NewCollector(statistics.Config{}),
 		llm:     &mutatingSummarizer{history: store, mutate: func() {}},
 	}
 
@@ -134,7 +135,7 @@ func TestMaybeSummarizeHistoryRebuildsClearedSummaryInBoundedChunks(t *testing.T
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:     cfg,
 		history: store,
-		stats:   &dmStatsSpy{},
+		stats:   statistics.NewCollector(statistics.Config{}),
 		llm:     summarizer,
 	}
 
@@ -192,7 +193,7 @@ func TestMaybeSummarizeHistorySingleRequestForOrdinaryCrossing(t *testing.T) {
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		cfg:     cfg,
 		history: store,
-		stats:   &dmStatsSpy{},
+		stats:   statistics.NewCollector(statistics.Config{}),
 		llm:     summarizer,
 	}
 

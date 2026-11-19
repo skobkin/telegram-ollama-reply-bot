@@ -13,6 +13,7 @@ import (
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/llmcontext"
 	"telegram-ollama-reply-bot/internal/state"
+	"telegram-ollama-reply-bot/internal/statistics"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/tooluse"
 	"telegram-ollama-reply-bot/internal/vision"
@@ -67,7 +68,7 @@ type Bot struct {
 	vision           imageDescriber
 	extractor        extractor.Extractor
 	sanitizer        markdown.Sanitizer
-	stats            state.StatsStore
+	stats            *statistics.Collector
 	history          state.ConversationStore
 	me               botInfo
 	cfg              config.BotConfig
@@ -109,7 +110,7 @@ func NewBot(
 	sanitizer markdown.Sanitizer,
 	history state.ConversationStore,
 	imageCache state.ImageStore,
-	stats state.StatsStore,
+	stats *statistics.Collector,
 	cfg config.BotConfig,
 	admin *adminconfig.Service,
 	tools *tooluse.Runtime,

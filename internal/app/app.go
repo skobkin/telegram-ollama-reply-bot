@@ -24,6 +24,7 @@ import (
 	"telegram-ollama-reply-bot/internal/provider"
 	"telegram-ollama-reply-bot/internal/reminders"
 	"telegram-ollama-reply-bot/internal/state/memory"
+	"telegram-ollama-reply-bot/internal/statistics"
 	"telegram-ollama-reply-bot/internal/support/httpclient"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/support/safeerr"
@@ -581,6 +582,7 @@ func Run(ctx context.Context) error {
 		tools.AttachDecisionTools(systemOneClient)
 	}
 	defer tools.Close()
+	statsCollector := statistics.NewCollector(statistics.Config{})
 	botService := bot.NewBot(
 		ctx,
 		telegramAPI,
@@ -590,7 +592,7 @@ func Run(ctx context.Context) error {
 		sanitizer,
 		stores.Conversations(),
 		stores.Images(),
-		stores.Stats(),
+		statsCollector,
 		cfg.Bot,
 		adminService,
 		tools,
@@ -628,7 +630,7 @@ func Run(ctx context.Context) error {
 	}
 	adminUIManager := core.NewManager(nil)
 	adminUIController := core.NewController(adminUIManager, adminService, cfg.Bot.AdminIDs, func() string {
-		return stores.Stats().Snapshot().String()
+		return statistics.GeneralJSON(statsCollector.GeneralSnapshot())
 	}, controllerOpts...)
 	adminAdapter := adminui.NewAdapter(
 		adminUIController,

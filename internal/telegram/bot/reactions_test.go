@@ -11,6 +11,7 @@ import (
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/state"
 	"telegram-ollama-reply-bot/internal/state/memory"
+	"telegram-ollama-reply-bot/internal/statistics"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/telegram/reactionemoji"
 
@@ -46,7 +47,7 @@ func newReactionTestBot(t *testing.T, store adminconfig.Store, history state.Con
 		logger:    reactionTestLogger(),
 		cfg:       config.BotConfig{AdminIDs: []int64{7}},
 		history:   history,
-		stats:     &pipelineStatsSpy{},
+		stats:     statistics.NewCollector(statistics.Config{}),
 		admin:     adminconfig.NewService(store, nil, nil),
 		api:       botAPI,
 		sanitizer: markdown.NewTgMarkdownV2Sanitizer(),
