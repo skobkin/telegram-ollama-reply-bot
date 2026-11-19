@@ -100,9 +100,16 @@ func (h *scrubHandler) WithGroup(name string) slog.Handler {
 // group values recursively; error values are replaced by their scrubbed
 // rendering — identical to what slog would print, but without retaining the
 // original error object whose text could leak through later rendering.
-// Values of other kinds (numbers, times, arbitrary structs) cannot carry
-// secret text in their slog rendering and pass through unchanged.
+//
+// Deferred LogValuer attributes are resolved here: the downstream handler
+// would resolve them itself, past this scrub. Values of other kinds
+// (numbers, times, arbitrary structs and composites) cannot be inspected
+// without reflection and pass through unchanged — attributes that embed
+// secrets inside composites must not be logged at levels where that
+// matters (see AGENTS.md).
 func (h *scrubHandler) scrubAttr(attr slog.Attr) slog.Attr {
+	attr.Value = attr.Value.Resolve()
+
 	switch attr.Value.Kind() {
 	case slog.KindString:
 		attr.Value = slog.StringValue(h.scrubber.Scrub(attr.Value.String()))

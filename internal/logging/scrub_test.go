@@ -188,3 +188,26 @@ func TestScrubHandlerPreservesLevelAndCallerPC(t *testing.T) {
 
 // Compile-time interface conformance.
 var _ slog.Handler = (*scrubHandler)(nil)
+
+type deferredSecret struct{}
+
+func (deferredSecret) LogValue() slog.Value { return slog.StringValue("carry LOGFIXTURE through") }
+
+func TestScrubHandlerResolvesLogValuer(t *testing.T) {
+	t.Parallel()
+
+	logger, buf := scrubTestLogger(t, scrubTestScrubber())
+
+	logger.Error("deferred attribute", "lazy", deferredSecret{})
+
+	entry := decodeLastLine(t, buf)
+	if containsFixture(entry["lazy"]) {
+		t.Fatalf("deferred LogValuer attribute was not scrubbed: %v", entry["lazy"])
+	}
+}
+
+func containsFixture(value any) bool {
+	s, ok := value.(string)
+
+	return ok && strings.Contains(s, "LOGFIXTURE")
+}
