@@ -124,23 +124,29 @@ func withDerivedForms(secrets []secretscrub.Secret, secret secretscrub.Secret) [
 }
 
 // withURLCredentials registers the credential components embedded in a DSN's
-// userinfo — the public key, and the legacy secret key when present. Both
-// are authentication material rather than a generic username, so unlike
-// endpoint URLs, the whole userinfo registers.
+// userinfo — the public key, and the legacy secret key when present — each
+// with its %q rendering alongside. Both are authentication material rather
+// than a generic username, so unlike endpoint URLs, the whole userinfo
+// registers; the quoted renderings match diagnostics that escape the
+// components while re-rendering the URL.
 func withURLCredentials(secrets []secretscrub.Secret, name, rawURL string) []secretscrub.Secret {
 	userinfo, ok := urlUserinfoPrefix(rawURL)
 	if !ok {
 		return secrets
 	}
 
-	publicKey, secretKey, hasSecret := strings.Cut(userinfo, ":")
+	publicKey, secretKey, _ := strings.Cut(userinfo, ":")
 
-	if publicKey != "" {
-		secrets = append(secrets, secretscrub.Secret{Name: name + "-public-key", Value: publicKey})
-	}
+	for _, component := range []struct{ name, value string }{
+		{name: name + "-public-key", value: publicKey},
+		{name: name + "-secret-key", value: secretKey},
+	} {
+		if component.value == "" {
+			continue
+		}
 
-	if hasSecret && secretKey != "" {
-		secrets = append(secrets, secretscrub.Secret{Name: name + "-secret-key", Value: secretKey})
+		secrets = append(secrets, secretscrub.Secret{Name: component.name, Value: component.value})
+		secrets = withQuoted(secrets, component.name, component.value)
 	}
 
 	return secrets

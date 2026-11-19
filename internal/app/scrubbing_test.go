@@ -624,6 +624,16 @@ func TestNewSecretScrubberRegistersDSNComponents(t *testing.T) {
 	if got := scrubber.Scrub(rendered); strings.Contains(got, "DSNKEYFIXTURE") {
 		t.Fatalf("DSN public key survived in a partial rendering: %q", got)
 	}
+
+	// A quote-bearing key registers its quoted rendering too: the parse
+	// error escapes the quote while re-rendering the URL.
+	cfg.Sentry.DSN = `https://PUBLIC"KEY_FIXTURE@host/%zz#fragment` //nolint:gosec // fake fixture, not a credential
+	scrubber = newSecretScrubber(cfg)
+
+	rendered = `parse "https://PUBLIC\"KEY_FIXTURE@host/%zz": invalid URL escape "%zz"`
+	if got := scrubber.Scrub(rendered); strings.Contains(got, "KEY_FIXTURE") {
+		t.Fatalf("quoted DSN key rendering survived: %q", got)
+	}
 }
 
 func TestNewSecretScrubberRegistersQuotedDecodedURLPassword(t *testing.T) {
