@@ -21,6 +21,7 @@ func scrubTestConfig() *config.Config {
 	cfg.LLM.ImageRecognition.MiniMaxVLM.APIKey = "MINIMAXFIXTURE"
 	cfg.Providers.Tavily.APIKey = "TAVILYFIXTURE"
 	cfg.Providers.Kagi.APIKey = "KAGIFIXTURE"
+	cfg.SystemOne.APIKey = "SYSTEMONEFIXTURE"
 	cfg.Sentry.DSN = "SENTRYDSNFIXTURE"
 
 	cfg.MCP.Servers = map[string]config.MCPServerConfig{
@@ -48,6 +49,7 @@ func TestNewSecretScrubberRegistersAllSecrets(t *testing.T) {
 		"MINIMAXFIXTURE",
 		"TAVILYFIXTURE",
 		"KAGIFIXTURE",
+		"SYSTEMONEFIXTURE",
 		"SENTRYDSNFIXTURE",
 		"DOCSURLPASSWORD",
 		"DOCSHEADERFIXTURE",

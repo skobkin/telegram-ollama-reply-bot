@@ -23,6 +23,7 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 		{Name: "llm-image-minimax-api-key", Value: cfg.LLM.ImageRecognition.MiniMaxVLM.APIKey},
 		{Name: "search-tavily-api-key", Value: cfg.Providers.Tavily.APIKey},
 		{Name: "search-kagi-api-key", Value: cfg.Providers.Kagi.APIKey},
+		{Name: "systemone-api-key", Value: cfg.SystemOne.APIKey},
 		{Name: "sentry-dsn", Value: cfg.Sentry.DSN},
 	}
 
