@@ -4,6 +4,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
+
+	"telegram-ollama-reply-bot/internal/support/secretscrub"
 )
 
 // Options configures logger construction and global default replacement.
@@ -11,10 +13,15 @@ type Options struct {
 	Level      string
 	Writer     io.Writer
 	SetDefault bool
+	// Scrubber, when non-nil, wraps every handler so registered secret
+	// values are replaced in messages and attributes before they reach any
+	// writer. The manager keeps the scrubber across Configure calls, so
+	// runtime logger reconfiguration never drops scrubbing.
+	Scrubber *secretscrub.Scrubber
 }
 
-func buildLogger(opts Options) (*slog.Logger, error) {
-	handler, err := buildHandler(opts)
+func buildLogger(opts Options, scrubber *secretscrub.Scrubber) (*slog.Logger, error) {
+	handler, err := buildHandler(opts, scrubber)
 	if err != nil {
 		return nil, err
 	}
@@ -22,7 +29,7 @@ func buildLogger(opts Options) (*slog.Logger, error) {
 	return slog.New(handler), nil
 }
 
-func buildHandler(opts Options) (slog.Handler, error) {
+func buildHandler(opts Options, scrubber *secretscrub.Scrubber) (slog.Handler, error) {
 	level, err := parseLevel(opts.Level)
 	if err != nil {
 		return nil, err
@@ -33,7 +40,13 @@ func buildHandler(opts Options) (slog.Handler, error) {
 		writer = os.Stdout
 	}
 
-	return slog.NewJSONHandler(writer, &slog.HandlerOptions{
+	var handler slog.Handler = slog.NewJSONHandler(writer, &slog.HandlerOptions{
 		Level: level,
-	}), nil
+	})
+
+	if scrubber != nil {
+		handler = newScrubHandler(scrubber, handler)
+	}
+
+	return handler, nil
 }

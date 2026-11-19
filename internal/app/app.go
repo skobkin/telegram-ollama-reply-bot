@@ -26,6 +26,7 @@ import (
 	"telegram-ollama-reply-bot/internal/support/httpclient"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/support/safeerr"
+	"telegram-ollama-reply-bot/internal/support/secretscrub"
 	adminui "telegram-ollama-reply-bot/internal/telegram/adminui"
 	"telegram-ollama-reply-bot/internal/telegram/bot"
 	"telegram-ollama-reply-bot/internal/telegram/transport"
@@ -206,9 +207,16 @@ func Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+
+	// The scrubber is built before any logging or telemetry exists, so every
+	// sink — log records, Sentry events, HTTP client errors — is covered
+	// from the first line of output onward.
+	scrubber := newSecretScrubber(cfg)
+
 	logManager, err := logging.NewManager(logging.Options{
 		Level:      cfg.Logging.Level,
 		SetDefault: true,
+		Scrubber:   scrubber,
 	})
 	if err != nil {
 		return fmt.Errorf("configure logging: %w", err)
@@ -222,6 +230,7 @@ func Run(ctx context.Context) error {
 		err = sentry.Init(sentry.ClientOptions{
 			Dsn:              cfg.Sentry.DSN,
 			AttachStacktrace: true,
+			BeforeSend:       newSentryBeforeSend(scrubber),
 		})
 		if err != nil {
 			logger.Error("sentry initialization failed", "error", err)
@@ -281,7 +290,12 @@ func Run(ctx context.Context) error {
 
 	prompts := llm.NewAdminPromptRenderer(adminService, cfg.LLM.ImageRecognitionEnabled, botUser.Username)
 
-	llmc, err := llm.NewService(cfg.LLM, prompts, logManager.Logger("llm"))
+	// One scrubbing doer shared by both LLM services: go-openai is the only
+	// consumer that accepts an injectable client interface, so its transport
+	// errors (which would otherwise embed URLs) are scrubbed at the source.
+	llmHTTP := secretscrub.WrapDoer(scrubber, httpclient.New())
+
+	llmc, err := llm.NewService(cfg.LLM, prompts, llmHTTP, logManager.Logger("llm"))
 	if err != nil {
 		logger.Error("failed to initialize llm service", "error", err)
 		sentry.CaptureException(err)
@@ -321,7 +335,7 @@ func Run(ctx context.Context) error {
 			APIToken: cfg.LLM.ImageRecognition.OpenAICompat.APIToken,
 		}
 
-		imageLLM, err = llm.NewService(imageCfg, prompts, logManager.Logger("llm/image"))
+		imageLLM, err = llm.NewService(imageCfg, prompts, llmHTTP, logManager.Logger("llm/image"))
 		if err != nil {
 			logger.Error("failed to initialize image llm service", "error", err)
 			sentry.CaptureException(err)

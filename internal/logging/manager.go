@@ -3,17 +3,20 @@ package logging
 import (
 	"log/slog"
 	"sync"
+
+	"telegram-ollama-reply-bot/internal/support/secretscrub"
 )
 
 // Manager owns process logger configuration and scoped child logger creation.
 type Manager struct {
-	mu     sync.RWMutex
-	logger *slog.Logger
+	mu       sync.RWMutex
+	logger   *slog.Logger
+	scrubber *secretscrub.Scrubber
 }
 
 // NewManager creates a manager with sane defaults.
 func NewManager(opts Options) (*Manager, error) {
-	m := &Manager{}
+	m := &Manager{scrubber: opts.Scrubber}
 	if err := m.Configure(opts); err != nil {
 		return nil, err
 	}
@@ -23,7 +26,7 @@ func NewManager(opts Options) (*Manager, error) {
 
 // Configure applies runtime logger settings.
 func (m *Manager) Configure(opts Options) error {
-	logger, err := buildLogger(opts)
+	logger, err := buildLogger(opts, m.scrubber)
 	if err != nil {
 		return err
 	}
