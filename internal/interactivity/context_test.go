@@ -117,6 +117,38 @@ func TestDeriveActivity(t *testing.T) {
 		}
 	})
 
+	t.Run("same-second message after a bot reply is counted by position", func(t *testing.T) {
+		// The bot reply carries a subsecond timestamp; the user message
+		// sent during the same second carries Telegram's whole-second Date,
+		// which compares earlier. Arrival order is the only truth: the
+		// message appended after the reply counts.
+		activity := deriveActivity([]state.Message{
+			{MessageID: 1, Name: "A", CreatedAt: now.Add(-3 * time.Minute)},
+			{MessageID: 2, IsMe: true, Name: "Ada", CreatedAt: now.Add(-time.Second).Add(500 * time.Millisecond)},
+			{MessageID: 3, Name: "B", CreatedAt: now.Add(-time.Second)},
+		}, 999, now)
+		if activity.MessagesSinceBotParticipation != "1" {
+			t.Fatalf("a same-second message appended after the bot reply must count, got %q", activity.MessagesSinceBotParticipation)
+		}
+	})
+
+	t.Run("reaction second decides ambiguous same-second arrivals", func(t *testing.T) {
+		// X sits after the carrying message but its whole-second timestamp
+		// places it in an earlier second than the reaction: it provably
+		// existed before the bot acted. Y shares the reaction's second and
+		// may have arrived either way, so it counts.
+		activity := deriveActivity([]state.Message{
+			{MessageID: 1, Name: "A", CreatedAt: now.Add(-5 * time.Second), Reactions: []state.Reaction{
+				{UserID: 999, Name: "Ada", Emoji: "👍", UpdatedAt: now.Add(-500 * time.Millisecond)},
+			}},
+			{MessageID: 2, Name: "X", CreatedAt: now.Add(-2 * time.Second)},
+			{MessageID: 3, Name: "Y", CreatedAt: now.Add(-time.Second)},
+		}, 999, now)
+		if activity.MessagesSinceBotParticipation != "1" {
+			t.Fatalf("same-second arrivals must count and earlier-second ones must not, got %q", activity.MessagesSinceBotParticipation)
+		}
+	})
+
 	t.Run("reactions from other participants are not bot participation", func(t *testing.T) {
 		activity := deriveActivity([]state.Message{
 			{MessageID: 1, Name: "A", CreatedAt: now.Add(-time.Minute), Reactions: []state.Reaction{

@@ -175,15 +175,26 @@ func deriveActivity(messages []state.Message, botUserID int64, now time.Time) ac
 		since = 0
 	}
 
-	// Messages since participation counts arrivals after the participation
-	// event, not messages after the event's carrying position: a reaction
-	// can land on an older message after newer ones already arrived, and
-	// those existed before the bot acted. The event timestamp drives both
-	// dimensions, so a delayed reaction cannot supply inconsistent evidence.
+	// The count must respect actual event ordering, which the two
+	// participation kinds carry differently. A bot message is itself a
+	// snapshot entry, so its position is the arrival boundary: everything
+	// appended after it arrived after it, regardless of timestamp
+	// granularity (Telegram user timestamps are whole seconds, bot events
+	// are subsecond). A reaction carries no position: its event time is
+	// authoritative, compared at whole-second granularity — a message in
+	// the same second as the reaction may have arrived either way and
+	// counts, while anything from an earlier second provably existed
+	// before the bot acted (a delayed reaction on an older message must
+	// not count the messages that arrived meanwhile).
 	messagesSince := 0
-	for _, message := range messages {
-		if message.CreatedAt.After(participatedAt) {
-			messagesSince++
+	if participated == lastSpoke {
+		messagesSince = len(messages) - 1 - participated
+	} else {
+		reactionSecond := participatedAt.Truncate(time.Second)
+		for _, message := range messages {
+			if !message.CreatedAt.Before(reactionSecond) {
+				messagesSince++
+			}
 		}
 	}
 
