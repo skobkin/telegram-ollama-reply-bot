@@ -76,8 +76,15 @@ func (r *participationRunner) Submit(chatID int64, task func(ctx context.Context
 		}
 
 		// The deadline is created only now: slot waiting time never
-		// consumes the inference budget.
-		taskCtx, cancel := context.WithTimeout(r.ctx, r.timeout)
+		// consumes the inference budget. A non-positive timeout means no
+		// deadline, mirroring withProcessingDeadline for explicit turns.
+		var taskCtx context.Context
+		var cancel context.CancelFunc
+		if r.timeout > 0 {
+			taskCtx, cancel = context.WithTimeout(r.ctx, r.timeout)
+		} else {
+			taskCtx, cancel = context.WithCancel(r.ctx)
+		}
 		defer cancel()
 
 		task(taskCtx)

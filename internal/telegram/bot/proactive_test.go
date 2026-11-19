@@ -1010,6 +1010,33 @@ func TestParticipationRunnerShutdownDrains(t *testing.T) {
 	}
 }
 
+// TestParticipationRunnerZeroTimeoutHasNoDeadline pins the timeout-0
+// semantics: a non-positive processing timeout must give tasks a live,
+// deadline-free context (mirroring withProcessingDeadline for explicit
+// turns), not an instantly-expired one that would abort every decision.
+func TestParticipationRunnerZeroTimeoutHasNoDeadline(t *testing.T) {
+	runner := newParticipationRunner(context.Background(), 0, reactionTestLogger())
+
+	started := make(chan struct{}, 1)
+	observed := make(chan context.Context, 1)
+	runner.Submit(1, func(ctx context.Context) {
+		started <- struct{}{}
+		observed <- ctx
+		<-ctx.Done() // ends when Close cancels the lifecycle
+	})
+
+	<-started
+	ctx := <-observed
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("task context must be live with timeout 0, got %v", err)
+	}
+	if _, hasDeadline := ctx.Deadline(); hasDeadline {
+		t.Fatalf("task context must carry no deadline with timeout 0")
+	}
+
+	runner.Close()
+}
+
 // TestSnapshotModelsSharesOperationSnapshot pins the resolver adapter: the
 // engine's model resolution reads the operation snapshot, not the settings
 // store — unset stays unset and is never turned into an error.
