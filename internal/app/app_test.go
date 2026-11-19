@@ -74,7 +74,7 @@ func newModelService(t *testing.T, server *modelServer) *llm.Service {
 			Summarize:        config.FeatureRouteConfig{Model: "summary-model"},
 			ImageRecognition: config.FeatureRouteConfig{Model: "image-model"},
 		},
-	}, renderer, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}, renderer, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}

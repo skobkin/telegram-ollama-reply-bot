@@ -11,6 +11,7 @@ import (
 	"telegram-ollama-reply-bot/internal/support/safeerr"
 
 	"github.com/getsentry/sentry-go"
+	"github.com/sashabaranov/go-openai"
 )
 
 type Service struct {
@@ -20,7 +21,11 @@ type Service struct {
 	backend backend
 }
 
-func NewService(cfg config.LLMConfig, prompts PromptRenderer, logger *slog.Logger) (*Service, error) {
+// NewService builds the LLM service on the OpenAI-compatible backend.
+// httpClient, when non-nil, is injected as the backend's HTTP client
+// (contract: nil keeps the SDK default); the app passes a secret-scrubbing
+// doer so transport errors stay secret-free.
+func NewService(cfg config.LLMConfig, prompts PromptRenderer, httpClient openai.HTTPDoer, logger *slog.Logger) (*Service, error) {
 	if cfg.Backends.OpenAICompat.BaseURL == "" {
 		return nil, errors.Join(ErrBackendNotConfigured, fmt.Errorf("%s base url is empty", config.LLMBackendOpenAICompat))
 	}
@@ -29,7 +34,7 @@ func NewService(cfg config.LLMConfig, prompts PromptRenderer, logger *slog.Logge
 		cfg:     cfg,
 		prompts: prompts,
 		logger:  logger,
-		backend: newOpenAICompatBackend(cfg.Backends.OpenAICompat, logger.With("backend", config.LLMBackendOpenAICompat)),
+		backend: newOpenAICompatBackend(cfg.Backends.OpenAICompat, httpClient, logger.With("backend", config.LLMBackendOpenAICompat)),
 	}, nil
 }
 

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"telegram-ollama-reply-bot/internal/config"
+
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -123,5 +125,60 @@ func TestOpenAICompatBackendGenerateWithToolsAndImage(t *testing.T) {
 
 	if resp.Message.ToolCalls[0].Name != "search_history" {
 		t.Fatalf("unexpected tool call name: %s", resp.Message.ToolCalls[0].Name)
+	}
+}
+
+func TestNewOpenAICompatBackendUsesInjectedHTTPClient(t *testing.T) {
+	t.Parallel()
+
+	var (
+		sawRequest         bool
+		sawAuthorization   string
+		injectedDoerCalled bool
+	)
+
+	doer := roundTripDoer(func(r *http.Request) (*http.Response, error) {
+		sawRequest = true
+		sawAuthorization = r.Header.Get("Authorization")
+		injectedDoerCalled = true
+
+		return jsonHTTPResponse(`{
+			"id":"chatcmpl-2",
+			"object":"chat.completion",
+			"created":1,
+			"model":"chat-model",
+			"choices":[
+				{
+					"index":0,
+					"finish_reason":"stop",
+					"message":{"role":"assistant","content":"ok"}
+				}
+			]
+		}`)
+	})
+
+	backend := newOpenAICompatBackend(config.OpenAICompatBackendConfig{
+		BaseURL:  "http://openai-compat.test",
+		APIToken: "TESTTOKEN",
+	}, doer, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	resp, err := backend.Generate(context.Background(), Request{
+		Model:    "chat-model",
+		Messages: []Message{TextMessage(RoleUser, "hi")},
+	})
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	if !sawRequest || !injectedDoerCalled {
+		t.Fatal("injected HTTP doer was not used")
+	}
+
+	if sawAuthorization != "Bearer TESTTOKEN" {
+		t.Fatalf("unexpected authorization header: %q", sawAuthorization)
+	}
+
+	if resp.Message.Text() != "ok" {
+		t.Fatalf("unexpected reply content: %q", resp.Message.Text())
 	}
 }

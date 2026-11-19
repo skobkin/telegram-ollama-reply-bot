@@ -16,9 +16,18 @@ type openAICompatBackend struct {
 	logger *slog.Logger
 }
 
-func newOpenAICompatBackend(cfg config.OpenAICompatBackendConfig, logger *slog.Logger) backend {
+// newOpenAICompatBackend builds the OpenAI-compatible backend. httpClient,
+// when non-nil, is injected as the SDK's HTTP client (contract: nil keeps
+// the SDK default, a bare http.Client on http.DefaultTransport). The app
+// passes a secret-scrubbing doer so transport errors can never carry the
+// API token into logs or Sentry events.
+func newOpenAICompatBackend(cfg config.OpenAICompatBackendConfig, httpClient openai.HTTPDoer, logger *slog.Logger) backend {
 	clientCfg := openai.DefaultConfig(cfg.APIToken)
 	clientCfg.BaseURL = cfg.BaseURL
+
+	if httpClient != nil {
+		clientCfg.HTTPClient = httpClient
+	}
 
 	return &openAICompatBackend{
 		client: openai.NewClientWithConfig(clientCfg),
