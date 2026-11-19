@@ -600,9 +600,15 @@ func Run(ctx context.Context) error {
 	if imageDiscovery == nil {
 		imageDiscovery = llmc
 	}
+	// Generation, summarize, and image pickers discover from their serving
+	// backends regardless of the decision backend: the optional System One
+	// client contributes only its own provider (an untyped nil when
+	// unconfigured — that field's picker falls back to manual entry).
+	var systemOneDiscovery core.ModelDiscovery
 	if systemOneClient.Configured() {
-		controllerOpts = append(controllerOpts, core.WithModelDiscovery(llmc, imageDiscovery, systemOneClient))
+		systemOneDiscovery = systemOneClient
 	}
+	controllerOpts = append(controllerOpts, core.WithModelDiscovery(llmc, imageDiscovery, systemOneDiscovery))
 	if cfg.LLM.ImageRecognitionEnabled && cfg.LLM.ImageRecognition.Recognizer == config.ImageRecognizerMiniMaxVLM {
 		controllerOpts = append(controllerOpts, core.WithHiddenImageModel())
 	}
