@@ -88,17 +88,56 @@ func credentialFromHeader(value string) (string, bool) {
 // appendURLPassword appends the password embedded in an endpoint URL's
 // userinfo, if any. The username is deliberately never registered: a
 // generic username would mutilate unrelated text.
+//
+// Extraction is manual rather than url.Parse-based: a URL with userinfo but
+// a malformed remainder (an invalid escape in the path, say) must still
+// yield its credential — startup diagnostics quote such URLs verbatim. Both
+// the raw (percent-encoded) and the decoded password forms are registered
+// when they differ.
 func appendURLPassword(secrets []secretscrub.Secret, name, rawURL string) []secretscrub.Secret {
-	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.User == nil {
+	userinfo, ok := urlUserinfoPrefix(rawURL)
+	if !ok {
 		return secrets
 	}
 
-	if password, ok := parsed.User.Password(); ok && password != "" {
-		secrets = append(secrets, secretscrub.Secret{Name: name, Value: password})
+	_, password, hasPassword := strings.Cut(userinfo, ":")
+	if !hasPassword || password == "" {
+		return secrets
+	}
+
+	secrets = append(secrets, secretscrub.Secret{Name: name, Value: password})
+
+	if decoded, err := url.PathUnescape(password); err == nil && decoded != password {
+		secrets = append(secrets, secretscrub.Secret{Name: name + "-decoded", Value: decoded})
 	}
 
 	return secrets
+}
+
+// urlUserinfoPrefix extracts the userinfo part ("user:password") of a URL
+// string, tolerating a malformed remainder after the authority.
+func urlUserinfoPrefix(rawURL string) (string, bool) {
+	separator := strings.Index(rawURL, "://")
+	if separator < 0 {
+		return "", false
+	}
+
+	authority := rawURL[separator+3:]
+	if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+		authority = authority[:end]
+	}
+
+	at := strings.LastIndex(authority, "@")
+	if at < 0 {
+		return "", false
+	}
+
+	userinfo := authority[:at]
+	if userinfo == "" {
+		return "", false
+	}
+
+	return userinfo, true
 }
 
 // newSentryBeforeSend returns a BeforeSend hook that scrubs every registered

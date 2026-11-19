@@ -505,6 +505,72 @@ func TestNewSecretScrubberRegistersEndpointURLPasswords(t *testing.T) {
 	}
 }
 
+func TestNewSecretScrubberRegistersMalformedEndpointURLPassword(t *testing.T) {
+	t.Parallel()
+
+	cfg := scrubTestConfig()
+
+	// The invalid escape in the path makes url.Parse fail, but the credential
+	// in the userinfo must still be registered: startup diagnostics quote the
+	// raw URL verbatim.
+	cfg.LLM.Backends.OpenAICompat.BaseURL = "https://ops:MALFORMEDURLPWFIXTURE@llm.internal/%zz"
+
+	scrubber := newSecretScrubber(cfg)
+
+	text := `parse "https://ops:MALFORMEDURLPWFIXTURE@llm.internal/%zz": invalid URL escape "%zz"`
+	if got := scrubber.Scrub(text); got == text {
+		t.Fatalf("malformed-endpoint URL password survived: %q", got)
+	}
+}
+
+func TestNewSecretScrubberRegistersEncodedURLPassword(t *testing.T) {
+	t.Parallel()
+
+	cfg := scrubTestConfig()
+	cfg.SystemOne.BaseURL = "https://ops:ENCODEDURLPW%40SSFIXTURE@decision.internal/v1"
+
+	scrubber := newSecretScrubber(cfg)
+
+	// The percent-encoded form appears inside URLs; the decoded form is what
+	// a server echoes back after unescaping its credentials. Both register.
+	for _, fixture := range []string{"ENCODEDURLPW%40SSFIXTURE", "ENCODEDURLPW@SSFIXTURE"} {
+		text := "dial failed with " + fixture
+
+		if got := scrubber.Scrub(text); got == text {
+			t.Fatalf("encoded URL password form survived: %q", fixture)
+		}
+	}
+}
+
+func TestURLUserinfoPrefix(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		rawURL string
+		want   string
+		ok     bool
+	}{
+		{"user and password", "https://ops:pw@host/path", "ops:pw", true},
+		{"user only", "https://ops@host", "ops", true},
+		{"stops at path", "https://ops:pw@host/deep/path?q=1#f", "ops:pw", true},
+		{"stops at query", "https://ops:pw@host?q=1", "ops:pw", true},
+		{"stops at fragment", "https://ops:pw@host#frag", "ops:pw", true},
+		{"malformed remainder", "https://ops:pw@host/%zz", "ops:pw", true},
+		{"no userinfo", "https://host/path", "", false},
+		{"port only", "https://host:8080/x", "", false},
+		{"no scheme", "host/path", "", false},
+		{"empty userinfo", "https://@host", "", false},
+	}
+
+	for _, testCase := range cases {
+		got, ok := urlUserinfoPrefix(testCase.rawURL)
+		if ok != testCase.ok || got != testCase.want {
+			t.Fatalf("%s: got (%q, %v), want (%q, %v)", testCase.name, got, ok, testCase.want, testCase.ok)
+		}
+	}
+}
+
 func TestScrubFatalError(t *testing.T) {
 	t.Parallel()
 
