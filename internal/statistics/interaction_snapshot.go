@@ -267,10 +267,14 @@ func (a *decisionAccumulator) add(state *decisionBucketState) {
 	for i := range state.outcomes {
 		a.totalsState.outcomes[i] += state.outcomes[i]
 	}
+	// Every recorded class is one Client.Evaluate invocation — the same
+	// definition the maintained global total uses — so the filtered
+	// evaluated denominator stays comparable with the global one (a
+	// success-only sum would shrink it under failing backends).
 	for i := range state.inferenceClasses {
 		a.totalsState.inferenceClasses[i] += state.inferenceClasses[i]
+		a.totalsState.evaluatedAttempts += state.inferenceClasses[i]
 	}
-	a.totalsState.evaluatedAttempts += state.inferenceClasses[InferenceSuccess]
 	a.totalsState.pretransportRejected += state.inferenceClasses[InferencePretransportRejected]
 	for dim := ScoreDim(0); dim < scoreDimCount; dim++ {
 		a.totalsState.scores[dim].add(state.scores[dim])

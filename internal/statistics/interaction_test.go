@@ -522,6 +522,34 @@ func TestInteractionFilteredTotalsSumSelectedBuckets(t *testing.T) {
 	}
 }
 
+func TestInteractionFilteredEvaluatedCountsAllClasses(t *testing.T) {
+	c := NewCollector(Config{})
+
+	epoch := c.BeginSubmission(1)
+	keys := ik(1, "talk_low", "m1")
+	c.RecordInference(InferenceAttempt{Epoch: epoch, Keys: keys, Model: "m1", Latency: time.Second, ErrClass: InferenceSuccess})
+	c.RecordInference(InferenceAttempt{Epoch: epoch, Keys: keys, Model: "m1", Latency: 3 * time.Second, ErrClass: InferenceTimeout})
+	c.RecordDecision(DecisionObservation{Epoch: epoch, Keys: keys, Outcome: OutcomeSelectedReply})
+
+	global := c.InteractionSnapshot(GlobalScope(), InteractionFilters{})
+	if got := global.Decision.Totals.EvaluatedAttempts; got != 2 {
+		t.Fatalf("global evaluated_attempts = %d, want 2", got)
+	}
+
+	scoped := c.InteractionSnapshot(ChatScope(1), InteractionFilters{})
+	if got := scoped.Decision.Totals.EvaluatedAttempts; got != 2 {
+		t.Fatalf("chat-scoped evaluated_attempts = %d, want 2 (every class is an attempt)", got)
+	}
+
+	filtered := c.InteractionSnapshot(GlobalScope(), InteractionFilters{Profile: "talk_low"})
+	if got := filtered.Decision.Totals.EvaluatedAttempts; got != 2 {
+		t.Fatalf("profile-filtered evaluated_attempts = %d, want 2 (every class is an attempt)", got)
+	}
+	if filtered.Decision.Totals.InferenceErrors.Timeout != 1 {
+		t.Fatalf("filtered error classes wrong: %+v", filtered.Decision.Totals.InferenceErrors)
+	}
+}
+
 func TestInteractionExecutionAccounting(t *testing.T) {
 	c := NewCollector(Config{})
 
