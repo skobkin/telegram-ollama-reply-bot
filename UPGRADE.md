@@ -30,6 +30,11 @@ behavior-preserving defaults; no operator action is required for an upgrade that
   - `chat_model`, `summarize_model`, `image_recognition_model` (global, with per-chat override for `chat_model`) —
     when set, the stored model overrides the `LLM__FEATURES__*` ENV route for that feature; ENV remains the fallback
     for unset fields, and a global clear action ("Reset to ENV default" in the admin UI) returns a field to the route.
+  - **Startup model validation checks the effective selection** (the global override when set, otherwise the ENV
+    route) against the backend's served model list. An obsolete ENV route model no longer blocks boot while a
+    working runtime override is set — the unused route is reported as a warning instead. An unset override still
+    validates the route, so resetting a model to an unavailable ENV fallback fails the check loudly, and a feature
+    whose effective model cannot be verified fails the check as before.
   - `default_interaction_profile` / `interaction_profile` — interactive participation presets
     (`non_interactive` by default, so nothing proactive happens until an operator opts in). Enabling any interactive
     profile as the *global* default asks for a scope confirmation in the admin UI (every inheriting chat starts
