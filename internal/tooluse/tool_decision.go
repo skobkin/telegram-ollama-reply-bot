@@ -194,12 +194,15 @@ type decisionAssessQuestionArgs struct {
 }
 
 // decisionAnswerReport is one typed answer in the decision_assess result,
-// ordered by the input question order for determinism.
+// ordered by the input question order for determinism. Value and Score are
+// pointers so a legitimate zero answer serializes: omitempty on a float
+// would withhold a 0 answer entirely, and the generation model must always
+// see the actual number.
 type decisionAnswerReport struct {
 	ID            string             `json:"id"`
 	Type          string             `json:"type"`
-	Value         float64            `json:"value,omitempty"`
-	Score         float64            `json:"score,omitempty"`
+	Value         *float64           `json:"value,omitempty"`
+	Score         *float64           `json:"score,omitempty"`
 	Probabilities map[string]float64 `json:"probabilities,omitempty"`
 }
 
@@ -268,9 +271,11 @@ func (r *Runtime) decisionAssess(ctx context.Context, callCtx CallContext, args 
 		}
 		switch question.Type {
 		case systemone.TypeNoul:
-			reports[i].Value = round4(answer.Noul)
+			value := round4(answer.Noul)
+			reports[i].Value = &value
 		case systemone.TypeScore:
-			reports[i].Score = round4(answer.Score)
+			score := round4(answer.Score)
+			reports[i].Score = &score
 			reports[i].Probabilities = roundedProbabilities(answer.Probabilities)
 		}
 	}

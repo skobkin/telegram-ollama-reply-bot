@@ -213,11 +213,44 @@ func TestDecisionAssessHappyPath(t *testing.T) {
 	if len(reports) != 2 {
 		t.Fatalf("expected two reports, got %d", len(reports))
 	}
-	if reports[0].ID != "relevant" || reports[0].Type != systemone.TypeNoul || reports[0].Value != 0.9877 {
+	if reports[0].ID != "relevant" || reports[0].Type != systemone.TypeNoul || reports[0].Value == nil || *reports[0].Value != 0.9877 {
 		t.Fatalf("noul report mismatch: %+v", reports[0])
 	}
-	if reports[1].ID != "quality" || reports[1].Score != 2.3457 || reports[1].Probabilities["3"] != 0.7 {
+	if reports[1].ID != "quality" || reports[1].Score == nil || *reports[1].Score != 2.3457 || reports[1].Probabilities["3"] != 0.7 {
 		t.Fatalf("score report mismatch: %+v", reports[1])
+	}
+}
+
+// TestDecisionAssessPreservesZeroAnswers pins that legitimate zero answers
+// serialize: omitempty on plain floats would withhold a 0 answer from the
+// generation model entirely.
+func TestDecisionAssessPreservesZeroAnswers(t *testing.T) {
+	client := &stubDecisionClient{answers: map[string]systemone.Answer{
+		"relevant": {Type: systemone.TypeNoul, Noul: 0},
+		"quality":  {Type: systemone.TypeScore, Score: 0, Probabilities: map[string]float64{"1": 1}},
+	}}
+	runtime := decisionTestRuntime(t, client)
+
+	result, err := runtime.decisionAssess(context.Background(), decisionCallContext("decision-model"), json.RawMessage(`{
+		"state": "s",
+		"questions": [
+			{"id": "relevant", "type": "noul", "instructions": "yes?"},
+			{"id": "quality", "type": "score", "instructions": "rate.", "levels": ["low", "high"]}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("decision_assess: %v", err)
+	}
+
+	data, err := json.Marshal(result.Data)
+	if err != nil {
+		t.Fatalf("result data: %v", err)
+	}
+	if !strings.Contains(string(data), `"value":0`) {
+		t.Fatalf("zero noul value must serialize, got %s", data)
+	}
+	if !strings.Contains(string(data), `"score":0`) {
+		t.Fatalf("zero score must serialize, got %s", data)
 	}
 }
 
