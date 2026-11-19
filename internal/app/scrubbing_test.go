@@ -626,6 +626,24 @@ func TestNewSecretScrubberRegistersDSNComponents(t *testing.T) {
 	}
 }
 
+func TestNewSecretScrubberRegistersQuotedDecodedURLPassword(t *testing.T) {
+	t.Parallel()
+
+	cfg := scrubTestConfig()
+	cfg.LLM.Backends.OpenAICompat.BaseURL = "https://ops:PASSWORD%22TAIL@llm.internal/v1"
+
+	scrubber := newSecretScrubber(cfg)
+
+	// The decoded password carries a real quote; a diagnostic quoting the
+	// decoded form through %q must match the quoted decoded registration,
+	// not just the raw one (which here contains no escapable characters).
+	rendered := strconv.Quote(`PASSWORD"TAIL`)
+
+	if got := scrubber.Scrub(rendered); strings.Contains(got, `PASSWORD\"TAIL`) {
+		t.Fatalf("quoted decoded password rendering survived: %q", got)
+	}
+}
+
 func TestNewSecretScrubberRegistersEndpointURLPasswords(t *testing.T) {
 	t.Parallel()
 

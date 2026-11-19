@@ -210,20 +210,23 @@ func appendURLPassword(secrets []secretscrub.Secret, name, rawURL string) []secr
 		return secrets
 	}
 
-	secrets = append(secrets, secretscrub.Secret{Name: name, Value: password})
-
-	if decoded, err := url.PathUnescape(password); err == nil && decoded != password {
-		secrets = append(secrets, secretscrub.Secret{Name: name + "-decoded", Value: decoded})
+	// Every form the password can take on a diagnostic surface is
+	// registered, each with its %q rendering alongside: net/url renders URLs
+	// through %q in parse errors and in every *url.Error message, escaping
+	// whatever form it carries.
+	forms := []secretscrub.Secret{
+		{Name: name, Value: password},
 	}
 
-	// Rendering a URL through %q — what net/url's own parse errors and every
-	// *url.Error message do — escapes the password's special characters. The
-	// escaped form must match too, or those diagnostics still carry the
-	// credential; strconv.Quote's inner text is that rendering.
-	if quoted := strconv.Quote(password); len(quoted) >= 2 {
-		if inner := quoted[1 : len(quoted)-1]; inner != password {
-			secrets = append(secrets, secretscrub.Secret{Name: name + "-quoted", Value: inner})
-		}
+	// The decoded form is what a server echoes back after unescaping its
+	// credentials.
+	if decoded, err := url.PathUnescape(password); err == nil && decoded != password {
+		forms = append(forms, secretscrub.Secret{Name: name + "-decoded", Value: decoded})
+	}
+
+	for _, form := range forms {
+		secrets = append(secrets, form)
+		secrets = withQuoted(secrets, form.Name, form.Value)
 	}
 
 	return secrets
