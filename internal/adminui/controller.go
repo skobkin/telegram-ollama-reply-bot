@@ -2044,8 +2044,15 @@ func stringInputPrompt(spec adminconfig.FieldSpec, current string) string {
 	if spec.Multiline {
 		text += " Line breaks are preserved."
 	}
+	// The current value is previewed, never embedded whole: a field at its
+	// maximum length (decision_instructions allows 4000) would push the
+	// ForceReply prompt over Telegram's message limit and break the edit
+	// flow before it starts.
 	if current != "" {
-		text += "\nCurrent: " + current
+		text += "\nCurrent: " + truncateRunes(current, stringInputPromptPreviewRunes)
+		if utf8.RuneCountInString(current) > stringInputPromptPreviewRunes {
+			text += fmt.Sprintf(" (%d characters total)", utf8.RuneCountInString(current))
+		}
 	}
 	if spec.MaxLen > 0 {
 		text += fmt.Sprintf("\nUp to %d bytes.", spec.MaxLen)
@@ -2053,6 +2060,11 @@ func stringInputPrompt(spec adminconfig.FieldSpec, current string) string {
 
 	return text
 }
+
+// stringInputPromptPreviewRunes bounds the current-value preview in input
+// prompts, keeping every prompt far below Telegram's 4096-character
+// message limit at any stored value length.
+const stringInputPromptPreviewRunes = 200
 
 func searchInputPrompt() string {
 	return AdminInputMarker + " — Chat search\n\n" +

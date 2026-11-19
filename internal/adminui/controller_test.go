@@ -9,6 +9,7 @@ import (
 	"testing"
 	"text/template"
 	"time"
+	"unicode/utf8"
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
 )
@@ -2028,5 +2029,30 @@ func TestChatStringOverrideInheritsViaClear(t *testing.T) {
 	outcome = tap(t, c, session, VerbField, "cm")
 	if strings.Contains(screenButtons(outcome.Render.Built), "Inherit global") {
 		t.Fatalf("inherit must be hidden without an override: %q", screenButtons(outcome.Render.Built))
+	}
+}
+
+// TestStringInputPromptBoundsCurrentValue pins the ForceReply prompt budget:
+// a stored value at the field maximum must not push the prompt over
+// Telegram's message limit — the value is previewed truncated with its
+// total length noted.
+func TestStringInputPromptBoundsCurrentValue(t *testing.T) {
+	spec := adminconfig.FieldSpec{Name: "decision_instructions", Label: "Decision instructions", Kind: adminconfig.KindString, MaxLen: 4000, Multiline: true}
+	long := strings.Repeat("ж", 4000)
+
+	prompt := stringInputPrompt(spec, long)
+	if utf8.RuneCountInString(prompt) > 4096 {
+		t.Fatalf("input prompt must stay under the Telegram message limit, got %d runes", utf8.RuneCountInString(prompt))
+	}
+	if !strings.Contains(prompt, "(4000 characters total)") {
+		t.Fatalf("truncated preview must note the total length: %q", prompt)
+	}
+	if strings.Contains(prompt, long) {
+		t.Fatalf("prompt must not embed the whole stored value")
+	}
+
+	short := stringInputPrompt(spec, "brief instructions")
+	if strings.Contains(short, "characters total") || !strings.Contains(short, "Current: brief instructions") {
+		t.Fatalf("short values must render whole and unannotated: %q", short)
 	}
 }
