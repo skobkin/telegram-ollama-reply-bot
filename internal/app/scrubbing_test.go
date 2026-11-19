@@ -518,7 +518,7 @@ func TestNewSecretScrubberRegistersMalformedEndpointURLPassword(t *testing.T) {
 
 	scrubber := newSecretScrubber(cfg)
 
-	text := `parse "https://ops:MALFORMEDURLPWFIXTURE@llm.internal/%zz": invalid URL escape "%zz"`
+	text := `parse "https://ops:MALFORMEDURLPWFIXTURE@llm.internal/%zz": invalid URL escape "%zz"` //nolint:gosec // fake fixture, not a credential
 	if got := scrubber.Scrub(text); got == text {
 		t.Fatalf("malformed-endpoint URL password survived: %q", got)
 	}
