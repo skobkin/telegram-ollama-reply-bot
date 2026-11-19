@@ -8,6 +8,7 @@ import (
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/interactivity"
+	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/llmcontext"
 	"telegram-ollama-reply-bot/internal/state"
 
@@ -30,6 +31,9 @@ type interactionDecider interface {
 type proactiveDecisions struct {
 	engineFor func(resolved adminconfig.ResolvedChatConfig) interactionDecider
 	history   interactivity.HistorySource
+	// persona renders decision personas and captures the operation's
+	// template body at snapshot time.
+	persona interactivity.PersonaSource
 	// budget caps the whole serialized decision request (composition limit).
 	budget int64
 }
@@ -52,6 +56,7 @@ func (b *Bot) SetProactiveDecisions(client interactivity.DecisionClient, persona
 	runner := newParticipationRunner(b.ctx, b.cfg.ProcessingTimeout, b.logger)
 	decisions := &proactiveDecisions{
 		history: botDecisionHistory{builder: b.replyCtx},
+		persona: persona,
 		budget:  inputBudgetBytes,
 	}
 	decisions.engineFor = func(resolved adminconfig.ResolvedChatConfig) interactionDecider {
@@ -154,6 +159,26 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 		return
 	}
 
+	// The operation's persona template body, captured once at snapshot time:
+	// the decision context renders from it, and the resulting action turn
+	// renders from the same body across every tool-loop iteration — a
+	// template or settings change mid-operation cannot split the persona
+	// between the decision and the action. A capture failure fails the
+	// operation silently: proceeding with a live-resolved body would risk
+	// exactly the drift the capture exists to prevent.
+	templateBody, err := b.decisions.persona.CapturePersonaTemplate(ctx, message.Chat.ID)
+	if err != nil {
+		logger.Warn("proactive participation skipped", "reason", "persona template capture failed")
+
+		return
+	}
+	capturedPersona := llm.CapturedPersona{
+		TemplateBody:  templateBody,
+		Language:      resolved.Language,
+		Gender:        resolved.Gender,
+		CharacterName: resolved.CharacterName,
+	}
+
 	// Target preparation is the engine's boundary, not the bot's: it may
 	// download the photo and run vision inference, so the engine invokes it
 	// only after its NoOp and decision-model gates pass. Memoized once per
@@ -185,13 +210,15 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 		Profile:       resolved.InteractionProfile,
 		Instructions:  resolved.DecisionInstructions,
 		BotUserID:     b.me.ID,
-		// The persona fields come from the same snapshot: the decision and
-		// the action must describe the same character even if settings
-		// change while the decision request is in flight.
+		// The persona comes from the same snapshot — settings plus the
+		// captured template body: the decision and the action must describe
+		// the same character even if settings change while the decision
+		// request is in flight.
 		Persona: interactivity.PersonaSettings{
 			Language:      resolved.Language,
 			Gender:        resolved.Gender,
 			CharacterName: resolved.CharacterName,
+			TemplateBody:  templateBody,
 		},
 	})
 	if err != nil {
@@ -222,12 +249,13 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 		return
 	}
 
-	// The action receives the same resolved config the engine consumed.
+	// The action receives the same resolved config and captured persona the
+	// engine consumed.
 	switch decision.Action {
 	case interactivity.ActionReact:
-		b.runProactiveReaction(ctx, message, target, resolved)
+		b.runProactiveReaction(ctx, message, target, resolved, &capturedPersona)
 	case interactivity.ActionReply:
-		b.runProactiveReply(ctx, message, target, resolved)
+		b.runProactiveReply(ctx, message, target, resolved, &capturedPersona)
 	case interactivity.ActionIgnore:
 	}
 }
@@ -250,8 +278,9 @@ func (b *Bot) decisionEngineFor(resolved adminconfig.ResolvedChatConfig) interac
 // set_reaction, and the run completes on the first successfully applied
 // reaction. Any produced text is discarded — never published, never
 // recorded. Album targets are refused by the tool itself via the media
-// group ID the pipeline forwards.
-func (b *Bot) runProactiveReaction(ctx context.Context, message t.Message, userMessageData state.Message, resolved adminconfig.ResolvedChatConfig) {
+// group ID the pipeline forwards. persona is the operation's captured
+// persona: every generation iteration of the turn renders it.
+func (b *Bot) runProactiveReaction(ctx context.Context, message t.Message, userMessageData state.Message, resolved adminconfig.ResolvedChatConfig, persona *llm.CapturedPersona) {
 	b.runConversationTurn(ctx, message, userMessageData, resolved, turnOptions{
 		trigger:                 llmcontext.TriggerProactive,
 		errorPolicy:             silentErrors,
@@ -259,18 +288,22 @@ func (b *Bot) runProactiveReaction(ctx context.Context, message t.Message, userM
 		withPreview:             false,
 		allowedTools:            []string{"set_reaction"},
 		completeAfterSideEffect: true,
+		persona:                 persona,
 	})
 }
 
 // runProactiveReply runs the ordinary turn with proactive policies: previews
 // on, the full tool set, text delivered and recorded, and failures silent —
-// an unsolicited answer never surfaces error notices or fallbacks.
-func (b *Bot) runProactiveReply(ctx context.Context, message t.Message, userMessageData state.Message, resolved adminconfig.ResolvedChatConfig) {
+// an unsolicited answer never surfaces error notices or fallbacks. persona
+// is the operation's captured persona: every generation iteration of the
+// turn renders it.
+func (b *Bot) runProactiveReply(ctx context.Context, message t.Message, userMessageData state.Message, resolved adminconfig.ResolvedChatConfig, persona *llm.CapturedPersona) {
 	b.runConversationTurn(ctx, message, userMessageData, resolved, turnOptions{
 		trigger:     llmcontext.TriggerProactive,
 		errorPolicy: silentErrors,
 		delivery:    deliverAndRecord,
 		withPreview: true,
+		persona:     persona,
 	})
 }
 

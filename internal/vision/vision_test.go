@@ -24,6 +24,10 @@ func (r *fakeRenderer) RenderChatSystemPrompt(_ context.Context, _ llm.PromptSco
 	return "chat", nil
 }
 
+func (r *fakeRenderer) RenderCapturedChatSystemPrompt(_ context.Context, _ llm.CapturedPersona, _ int64, _, _, _ string) (string, error) {
+	return "chat", nil
+}
+
 func (r *fakeRenderer) RenderSummarizeSystemPrompt(_ context.Context, _ llm.PromptScope) (string, error) {
 	return "summarize", nil
 }

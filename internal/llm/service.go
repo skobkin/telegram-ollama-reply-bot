@@ -315,7 +315,14 @@ func (s *Service) buildConversationMessages(ctx context.Context, scope PromptSco
 		model = route.Model
 	}
 
-	systemPrompt, err := s.prompts.RenderChatSystemPrompt(ctx, scope, model, requestContext.SystemHint, toolPolicy)
+	// A captured persona freezes the character for the whole turn; without
+	// one the ordinary live rendering applies (explicit turns).
+	var systemPrompt string
+	if requestContext.Persona != nil {
+		systemPrompt, err = s.prompts.RenderCapturedChatSystemPrompt(ctx, *requestContext.Persona, scope.ChatID, model, requestContext.SystemHint, toolPolicy)
+	} else {
+		systemPrompt, err = s.prompts.RenderChatSystemPrompt(ctx, scope, model, requestContext.SystemHint, toolPolicy)
+	}
 	if err != nil {
 		logger.Error("chat template processing failed", "error", err)
 		sentry.CaptureException(err)

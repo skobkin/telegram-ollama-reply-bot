@@ -50,12 +50,17 @@ func (r *fakeModelResolver) DecisionModel(context.Context, int64) (string, error
 }
 
 // fakePersonaSource serves a fixed persona, counting renders and recording
-// the settings the engine passed.
+// the settings the engine passed. CapturePersonaTemplate serves a separate
+// fixed body so tests can prove the engine forwards it as part of the
+// settings instead of resolving anything itself.
 type fakePersonaSource struct {
-	persona  string
-	err      error
-	calls    int
-	settings PersonaSettings
+	persona      string
+	err          error
+	calls        int
+	settings     PersonaSettings
+	templateBody string
+	captureErr   error
+	captureCalls int
 }
 
 func (p *fakePersonaSource) DecisionPersona(_ context.Context, _ int64, _ string, settings PersonaSettings) (string, error) {
@@ -63,6 +68,12 @@ func (p *fakePersonaSource) DecisionPersona(_ context.Context, _ int64, _ string
 	p.settings = settings
 
 	return p.persona, p.err
+}
+
+func (p *fakePersonaSource) CapturePersonaTemplate(_ context.Context, _ int64) (string, error) {
+	p.captureCalls++
+
+	return p.templateBody, p.captureErr
 }
 
 // fakeHistorySource serves a fixed snapshot, counting reads.
@@ -161,6 +172,7 @@ func testInput() DecisionInput {
 			Language:      "Russian",
 			Gender:        "female",
 			CharacterName: "Ada",
+			TemplateBody:  "captured-template-body",
 		},
 	}
 }
@@ -349,9 +361,11 @@ func TestEngineDecideHappyPath(t *testing.T) {
 		t.Fatalf("one decision must resolve each input once (resolver %d/%d, persona %d, history %d)",
 			resolver.decisionCalls, resolver.generationCalls, persona.calls, history.calls)
 	}
-	// The persona renders from the snapshot's settings, not a fresh read.
-	if persona.settings != (PersonaSettings{Language: "Russian", Gender: "female", CharacterName: "Ada"}) {
-		t.Fatalf("persona must receive the input's snapshot settings, got %+v", persona.settings)
+	// The persona renders from the snapshot's settings, not a fresh read:
+	// the captured template body travels with it, so the decision renders
+	// the exact body the operation captured.
+	if persona.settings != (PersonaSettings{Language: "Russian", Gender: "female", CharacterName: "Ada", TemplateBody: "captured-template-body"}) {
+		t.Fatalf("persona must receive the input's snapshot settings incl. the captured template body, got %+v", persona.settings)
 	}
 
 	req := client.request

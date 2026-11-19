@@ -72,14 +72,15 @@ func (r modelResolver) ResolveModel(ctx context.Context, feature llm.Feature, ch
 
 // decisionPersonaSource renders the decision context's persona through the
 // ordinary admin prompt path: the full effective character prompt the
-// generation turns use. The generation model passed in comes from the
-// operation snapshot, so any model-identity reference in the persona
-// describes the generation character; an empty snapshot model falls back to
-// the environment chat route — the same fallback ordinary prompt rendering
-// applies — so an unset override chain never renders an empty model
-// identity. The compact context stays empty — the decision state already
-// carries the conversation as bounded history — and the tool-policy section
-// states that no tools exist in a decision.
+// generation turns use, from the persona the operation captured at start.
+// The generation model passed in comes from the operation snapshot, so any
+// model-identity reference in the persona describes the generation
+// character; an empty snapshot model falls back to the environment chat
+// route — the same fallback ordinary prompt rendering applies — so an unset
+// override chain never renders an empty model identity. The compact context
+// stays empty — the decision state already carries the conversation as
+// bounded history — and the tool-policy section states that no tools exist
+// in a decision.
 type decisionPersonaSource struct {
 	prompts           *llm.AdminPromptRenderer
 	fallbackChatModel string
@@ -95,7 +96,20 @@ func (s decisionPersonaSource) DecisionPersona(ctx context.Context, chatID int64
 		generationModel = s.fallbackChatModel
 	}
 
-	return s.prompts.RenderChatSystemPromptResolved(ctx, chatID, settings.Language, settings.Gender, settings.CharacterName, generationModel, "", decisionPersonaToolPolicy)
+	return s.prompts.RenderCapturedChatSystemPrompt(ctx, llm.CapturedPersona{
+		TemplateBody:  settings.TemplateBody,
+		Language:      settings.Language,
+		Gender:        settings.Gender,
+		CharacterName: settings.CharacterName,
+	}, chatID, generationModel, "", decisionPersonaToolPolicy)
+}
+
+// CapturePersonaTemplate resolves the chat prompt template body of the
+// operation snapshot: the body the decision persona renders from and the
+// action turn renders from, identical even if the template changes in
+// between.
+func (s decisionPersonaSource) CapturePersonaTemplate(ctx context.Context, chatID int64) (string, error) {
+	return s.prompts.ChatPromptBody(ctx, chatID)
 }
 
 // envChatRouteModel resolves the environment chat-route model once at

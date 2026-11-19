@@ -15,8 +15,25 @@ type PromptScope struct {
 
 type PromptRenderer interface {
 	RenderChatSystemPrompt(ctx context.Context, scope PromptScope, model, compactContext, toolPolicy string) (string, error)
+	// RenderCapturedChatSystemPrompt renders the chat persona from a
+	// captured template body and the defining settings of an operation
+	// snapshot, instead of resolving both live: proactive operations freeze
+	// their persona so the decision context and every generation iteration
+	// of the resulting turn describe the same character.
+	RenderCapturedChatSystemPrompt(ctx context.Context, persona CapturedPersona, chatID int64, model, compactContext, toolPolicy string) (string, error)
 	RenderSummarizeSystemPrompt(ctx context.Context, scope PromptScope) (string, error)
 	RenderImageRecognitionSystemPrompt(ctx context.Context, scope PromptScope) (string, error)
+}
+
+// CapturedPersona is the persona-defining part of an operation snapshot: the
+// resolved chat prompt template body plus the character settings, captured
+// once when the operation begins and rendered for both the decision context
+// and the resulting action turn.
+type CapturedPersona struct {
+	TemplateBody  string
+	Language      string
+	Gender        string
+	CharacterName string
 }
 
 type StaticPromptRenderer struct {
@@ -115,6 +132,22 @@ func (p *StaticPromptRenderer) RenderChatSystemPrompt(_ context.Context, _ Promp
 	})
 }
 
+// RenderCapturedChatSystemPrompt renders the static renderer's own fixed
+// template with the captured persona's settings: static mode has no stored
+// template bodies to capture, so only the settings can differ per snapshot.
+func (p *StaticPromptRenderer) RenderCapturedChatSystemPrompt(_ context.Context, persona CapturedPersona, _ int64, model, compactContext, toolPolicy string) (string, error) {
+	return executeTemplate("chat", p.chatTemplate, ChatPromptData{
+		Language:                persona.Language,
+		Model:                   model,
+		Context:                 compactContext,
+		Gender:                  persona.Gender,
+		CharacterName:           persona.CharacterName,
+		ImageRecognitionEnabled: p.imageRecognitionEnabled,
+		ToolPolicy:              toolPolicy,
+		BotUsername:             p.botUsername,
+	})
+}
+
 func (p *StaticPromptRenderer) RenderSummarizeSystemPrompt(_ context.Context, _ PromptScope) (string, error) {
 	return executeTemplate("summarize", p.summarizeTemplate, SummarizePromptData{
 		Language:  p.language,
@@ -134,19 +167,56 @@ func (p *AdminPromptRenderer) RenderChatSystemPrompt(ctx context.Context, scope 
 		return "", err
 	}
 
-	return p.RenderChatSystemPromptResolved(ctx, scope.ChatID, resolved.Language, resolved.Gender, resolved.CharacterName, model, compactContext, toolPolicy)
+	return p.renderCapturedChat(ctx, CapturedPersona{
+		Language:      resolved.Language,
+		Gender:        resolved.Gender,
+		CharacterName: resolved.CharacterName,
+	}, scope.ChatID, model, compactContext, toolPolicy)
 }
 
 // RenderChatSystemPromptResolved renders the chat persona from explicit
 // settings values instead of a fresh chat-config resolve: decision contexts
 // pass their operation snapshot's fields, so the persona cannot drift from
-// the character the resulting action will use. The prompt body still
-// resolves through the ordinary per-chat path — the same live-template
-// behavior ordinary multi-iteration turns have.
+// the character the resulting action will use. Without a captured body the
+// prompt body still resolves through the ordinary per-chat path — the same
+// live-template behavior ordinary multi-iteration turns have.
 func (p *AdminPromptRenderer) RenderChatSystemPromptResolved(ctx context.Context, chatID int64, language, gender, characterName, model, compactContext, toolPolicy string) (string, error) {
-	body, err := p.promptBody(ctx, adminconfig.PromptFeatureChat, chatID, DefaultChatPromptTemplate)
-	if err != nil {
-		return "", err
+	return p.renderCapturedChat(ctx, CapturedPersona{
+		Language:      language,
+		Gender:        gender,
+		CharacterName: characterName,
+	}, chatID, model, compactContext, toolPolicy)
+}
+
+// RenderCapturedChatSystemPrompt renders the chat persona from the
+// operation's captured template body and defining settings. Proactive
+// operations capture both once at snapshot time, so the decision context
+// and every generation iteration of the resulting turn describe exactly the
+// character the snapshot froze — a template or settings change mid-operation
+// cannot split the persona.
+func (p *AdminPromptRenderer) RenderCapturedChatSystemPrompt(ctx context.Context, persona CapturedPersona, chatID int64, model, compactContext, toolPolicy string) (string, error) {
+	return p.renderCapturedChat(ctx, persona, chatID, model, compactContext, toolPolicy)
+}
+
+// ChatPromptBody resolves the effective chat prompt template body: the
+// per-chat override, else the global override, else the built-in default.
+// Proactive operations capture it once at operation start so the decision
+// and its action render the same persona even if the template changes while
+// the decision request is in flight.
+func (p *AdminPromptRenderer) ChatPromptBody(ctx context.Context, chatID int64) (string, error) {
+	return p.promptBody(ctx, adminconfig.PromptFeatureChat, chatID, DefaultChatPromptTemplate)
+}
+
+// renderCapturedChat is the shared chat persona rendering: the captured
+// body when present, the live-resolved body otherwise, executed with the
+// given settings and the renderer's static context.
+func (p *AdminPromptRenderer) renderCapturedChat(ctx context.Context, persona CapturedPersona, chatID int64, model, compactContext, toolPolicy string) (string, error) {
+	body := persona.TemplateBody
+	if body == "" {
+		var err error
+		if body, err = p.promptBody(ctx, adminconfig.PromptFeatureChat, chatID, DefaultChatPromptTemplate); err != nil {
+			return "", err
+		}
 	}
 
 	tmpl, err := template.New("chat").Parse(body)
@@ -155,11 +225,11 @@ func (p *AdminPromptRenderer) RenderChatSystemPromptResolved(ctx context.Context
 	}
 
 	return executeTemplate("chat", tmpl, ChatPromptData{
-		Language:                language,
+		Language:                persona.Language,
 		Model:                   model,
 		Context:                 compactContext,
-		Gender:                  gender,
-		CharacterName:           characterName,
+		Gender:                  persona.Gender,
+		CharacterName:           persona.CharacterName,
 		ImageRecognitionEnabled: p.imageRecognitionEnabled,
 		ToolPolicy:              toolPolicy,
 		BotUsername:             p.botUsername,

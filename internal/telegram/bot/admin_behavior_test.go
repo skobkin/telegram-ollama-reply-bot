@@ -18,6 +18,10 @@ type adminStoreStub struct {
 	adminconfig.GlobalSettings
 	chatSettings adminconfig.ChatSettings
 	chatFound    bool
+	// promptTemplates serves settable per-feature prompt template bodies;
+	// a missing feature falls through to the caller's default exactly like
+	// the hardcoded empty store it replaces.
+	promptTemplates map[adminconfig.PromptFeature]string
 	// writes counts settings/prompt writes, so isolation tests can prove an
 	// admin input was actually consumed and applied.
 	writes atomic.Int32
@@ -38,8 +42,10 @@ func (s *adminStoreStub) SetChatField(context.Context, int64, string, string, in
 	return nil
 }
 func (s *adminStoreStub) ClearChatField(context.Context, int64, string, int64) error { return nil }
-func (s *adminStoreStub) GetPromptTemplate(context.Context, adminconfig.PromptFeature, int64) (string, bool, error) {
-	return "", false, nil
+func (s *adminStoreStub) GetPromptTemplate(_ context.Context, feature adminconfig.PromptFeature, _ int64) (string, bool, error) {
+	body, ok := s.promptTemplates[feature]
+
+	return body, ok, nil
 }
 func (s *adminStoreStub) SetPromptTemplate(context.Context, adminconfig.PromptFeature, int64, string, int64) error {
 	s.writes.Add(1)

@@ -67,6 +67,12 @@ type turnOptions struct {
 	// explicit turn sets it: unsolicited proactive participation must not
 	// announce itself with a typing indicator, with or without previews.
 	typingFallback bool
+	// persona carries the proactive operation's captured persona into the
+	// generation request: every tool-loop iteration renders the system
+	// prompt from it instead of resolving settings and the template body
+	// live, so the turn keeps describing the character its operation
+	// started with. Nil keeps the ordinary live rendering (explicit turns).
+	persona *llm.CapturedPersona
 }
 
 // runConversationTurn is the shared generation-turn pipeline: preview
@@ -130,6 +136,11 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 			// its model must know text is pointless before it writes any.
 			ReactionOnly: opts.completeAfterSideEffect,
 		})
+
+		// A captured persona freezes the character for the whole proactive
+		// operation, across every tool-loop iteration; nil keeps the
+		// ordinary live rendering (explicit turns).
+		requestContext.Persona = opts.persona
 
 		llmCtx, cancel := b.withProcessingDeadline(ctx)
 		defer cancel()

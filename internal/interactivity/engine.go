@@ -88,11 +88,13 @@ type ActionDecision struct {
 // snapshot, carried into the decision so the persona is rendered from the
 // snapshot instead of a fresh settings read: the decision and its resulting
 // action must describe the same character even if settings change
-// mid-decision.
+// mid-decision. TemplateBody is the chat prompt template body captured at
+// operation start — the same captured body the action turn renders.
 type PersonaSettings struct {
 	Language      string
 	Gender        string
 	CharacterName string
+	TemplateBody  string
 }
 
 // DecisionInput is the domain input of one decision. Profile and
@@ -170,11 +172,16 @@ type HistorySource interface {
 }
 
 // PersonaSource renders the full effective character prompt used by ordinary
-// generation. The generation model passed in is the operation snapshot's
-// resolved generation model: any model-identity reference in the persona
-// must describe the generation character, never the decision model.
+// generation, from the operation snapshot's captured persona. The generation
+// model passed in is the operation snapshot's resolved generation model: any
+// model-identity reference in the persona must describe the generation
+// character, never the decision model. CapturePersonaTemplate resolves the
+// chat prompt template body once at operation start — the same captured body
+// the resulting action turn renders — so a template change mid-operation
+// cannot split the persona between decision and action.
 type PersonaSource interface {
 	DecisionPersona(ctx context.Context, chatID int64, generationModel string, settings PersonaSettings) (string, error)
+	CapturePersonaTemplate(ctx context.Context, chatID int64) (string, error)
 }
 
 // ModelResolver resolves the effective models of one operation. Production

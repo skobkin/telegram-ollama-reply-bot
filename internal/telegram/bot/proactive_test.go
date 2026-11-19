@@ -3,7 +3,10 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -106,8 +109,13 @@ func (f *fakeDecisionEngine) calls() int {
 
 // fakePersonaSource counts persona renderings: the engine renders the
 // persona only after its NoOp check and model resolution succeed.
+// CapturePersonaTemplate serves a settable body so snapshot-capture behavior
+// is observable.
 type fakePersonaSource struct {
-	calls atomic.Int32
+	calls        atomic.Int32
+	body         string
+	captureErr   error
+	captureCalls atomic.Int32
 }
 
 func (f *fakePersonaSource) DecisionPersona(_ context.Context, _ int64, _ string, _ interactivity.PersonaSettings) (string, error) {
@@ -116,20 +124,36 @@ func (f *fakePersonaSource) DecisionPersona(_ context.Context, _ int64, _ string
 	return "You are the character under evaluation.", nil
 }
 
+func (f *fakePersonaSource) CapturePersonaTemplate(context.Context, int64) (string, error) {
+	f.captureCalls.Add(1)
+
+	return f.body, f.captureErr
+}
+
 // fakeDecisionClient records outgoing System One requests and scripts
-// answers or failures.
+// answers or failures. A non-nil gate blocks Evaluate (context-aware) until
+// it is closed, so tests can mutate settings while a decision is in flight.
 type fakeDecisionClient struct {
 	mu       sync.Mutex
 	requests []systemone.Request
 	answers  map[string]systemone.Answer
 	err      error
+	gate     <-chan struct{}
 }
 
-func (f *fakeDecisionClient) Evaluate(_ context.Context, req systemone.Request) (map[string]systemone.Answer, error) {
+func (f *fakeDecisionClient) Evaluate(ctx context.Context, req systemone.Request) (map[string]systemone.Answer, error) {
 	f.mu.Lock()
 	f.requests = append(f.requests, req)
-	answer, err := f.answers, f.err
+	answer, err, gate := f.answers, f.err, f.gate
 	f.mu.Unlock()
+
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 
 	return answer, err
 }
@@ -201,9 +225,12 @@ func (s apiActionSender) SetMessageReaction(ctx context.Context, params *tg.SetM
 // proactiveTestBot drives the REAL pipeline with the full turn wiring:
 // reply-context builder, tool runtime over a stub LLM, and the fake Bot API.
 type proactiveTestBot struct {
-	bot     *Bot
-	bh      *th.BotHandler
-	api     *fakeAPIServer
+	bot *Bot
+	bh  *th.BotHandler
+	api *fakeAPIServer
+	// apiBot is the telego bot behind api; tests that rebuild the tool
+	// runtime need it for the action sender.
+	apiBot  *tg.Bot
 	store   *countingSettingsStore
 	history *countingHistoryStore
 	llm     *turnStubLLM
@@ -255,7 +282,7 @@ func newProactiveTestBot(t *testing.T, configure func(*adminStoreStub)) *proacti
 	)
 	testBot.registerRoutes(bh)
 
-	return &proactiveTestBot{bot: testBot, bh: bh, api: api, store: store, history: history, llm: stub}
+	return &proactiveTestBot{bot: testBot, bh: bh, api: api, apiBot: botAPI, store: store, history: history, llm: stub}
 }
 
 // wireFakeEngine injects the scripted engine, bypassing SetProactiveDecisions.
@@ -265,6 +292,7 @@ func (p *proactiveTestBot) wireFakeEngine(t *testing.T) *fakeDecisionEngine {
 	engine := &fakeDecisionEngine{}
 	p.bot.decisions = &proactiveDecisions{
 		engineFor: func(adminconfig.ResolvedChatConfig) interactionDecider { return engine },
+		persona:   &fakePersonaSource{},
 		budget:    96 * 1024,
 	}
 	p.bot.participation = newParticipationRunner(p.bot.ctx, 5*time.Second, p.bot.logger)
@@ -1209,5 +1237,221 @@ func TestSnapshotModelsSharesOperationSnapshot(t *testing.T) {
 	}
 	if decision, _ := unset.DecisionModel(context.Background(), 1); decision != "" {
 		t.Fatalf("unset decision model must stay empty, got %q", decision)
+	}
+}
+
+// recordingLLMBackend stands in for the OpenAI-compatible generation
+// endpoint: it records every chat-completion request body and serves the
+// next scripted JSON response, defaulting to a plain final text.
+type recordingLLMBackend struct {
+	mu        sync.Mutex
+	bodies    []string
+	responses []string
+}
+
+func (r *recordingLLMBackend) handler(w http.ResponseWriter, req *http.Request) {
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		http.Error(w, `{"error":{"message":"read failed"}}`, http.StatusBadRequest)
+
+		return
+	}
+	r.mu.Lock()
+	r.bodies = append(r.bodies, string(body))
+	response := ""
+	if len(r.responses) > 0 {
+		response = r.responses[0]
+		r.responses = r.responses[1:]
+	}
+	r.mu.Unlock()
+
+	if response == "" {
+		response = `{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"default final text"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(response))
+}
+
+func (r *recordingLLMBackend) recorded() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]string(nil), r.bodies...)
+}
+
+// realPersonaSource mirrors the production decisionPersonaSource wiring in
+// internal/app over the real admin prompt renderer: the decision persona
+// flows through the actual prompt-rendering path, not a stub.
+type realPersonaSource struct {
+	prompts           *llm.AdminPromptRenderer
+	fallbackChatModel string
+}
+
+const testDecisionPersonaToolPolicy = "No tools are available in this context."
+
+func (s realPersonaSource) DecisionPersona(ctx context.Context, chatID int64, generationModel string, settings interactivity.PersonaSettings) (string, error) {
+	if generationModel == "" {
+		generationModel = s.fallbackChatModel
+	}
+
+	return s.prompts.RenderCapturedChatSystemPrompt(ctx, llm.CapturedPersona{
+		TemplateBody:  settings.TemplateBody,
+		Language:      settings.Language,
+		Gender:        settings.Gender,
+		CharacterName: settings.CharacterName,
+	}, chatID, generationModel, "", testDecisionPersonaToolPolicy)
+}
+
+func (s realPersonaSource) CapturePersonaTemplate(ctx context.Context, chatID int64) (string, error) {
+	return s.prompts.ChatPromptBody(ctx, chatID)
+}
+
+// TestProactivePersonaSnapshotSurvivesMidDecisionChanges is the persona-
+// snapshot integration test: the whole proactive path runs over the actual
+// prompt-rendering path — a real llm.Service and tool runtime render the
+// action turn against a recording OpenAI-compatible backend, and the
+// decision persona renders through the real admin prompt renderer. The
+// character settings and the template body change while the fake System One
+// decision is blocked mid-flight; the decision context and every generation
+// iteration of the resulting reply must keep the original persona.
+func TestProactivePersonaSnapshotSurvivesMidDecisionChanges(t *testing.T) {
+	p := newProactiveTestBot(t, func(s *adminStoreStub) {
+		s.GlobalSettings = adminconfig.GlobalSettings{
+			CharacterName:             "Ada",
+			Language:                  "English",
+			Gender:                    "neutral",
+			ChatModel:                 "runtime-gen-model",
+			SystemOneModel:            "decision-model",
+			DefaultInteractivityMode:  adminconfig.InteractivityMentionsReplies,
+			DefaultInteractionProfile: adminconfig.ProfileTalkLow,
+		}
+		s.promptTemplates = map[adminconfig.PromptFeature]string{
+			adminconfig.PromptFeatureChat: "ORIGINAL-TEMPLATE character={{.CharacterName}} lang={{.Language}} model={{.Model}}",
+		}
+	})
+
+	rec := &recordingLLMBackend{responses: []string{
+		// Iteration 1: the model calls a harmless tool.
+		`{"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_current_time","arguments":"{}"}}]}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+		// Iteration 2: the final proactive text.
+		`{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"proactive final reply"}}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`,
+	}}
+	backend := httptest.NewServer(http.HandlerFunc(rec.handler))
+	t.Cleanup(backend.Close)
+
+	prompts := llm.NewAdminPromptRenderer(p.bot.admin, false, testBotID.Username)
+	service, err := llm.NewService(config.LLMConfig{
+		Backends: config.BackendConfig{OpenAICompat: config.OpenAICompatBackendConfig{BaseURL: backend.URL}},
+		Features: config.FeatureConfig{
+			Chat:      config.FeatureRouteConfig{Model: "env-chat-model"},
+			Summarize: config.FeatureRouteConfig{Model: "env-summarize-model"},
+		},
+	}, prompts, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("llm service: %v", err)
+	}
+	// Swap the harness's stub-backed tool runtime for one over the real
+	// llm.Service: the action turn renders its system prompts for real.
+	p.bot.tools = tooluse.New(
+		service,
+		p.history,
+		nil,
+		nil,
+		apiActionSender{api: p.apiBot},
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		tooluse.Config{MaxIterations: 6, BotIdentity: tooluse.BotIdentity{UserID: testBotID.ID, Name: testBotID.FirstName, Username: testBotID.Username}},
+	)
+
+	client := &fakeDecisionClient{answers: decisionAnswers(0.05, 0.0, 1.0)}
+	gate := make(chan struct{})
+	client.gate = gate
+	stop := p.bot.SetProactiveDecisions(client, realPersonaSource{prompts: prompts, fallbackChatModel: "env-chat-model"}, 96*1024)
+	t.Cleanup(stop)
+
+	p.deliver(t, proactiveGroupUpdate("anyone up for pho later?"))
+
+	// The decision request is recorded before the client blocks, and the
+	// snapshot was taken before that: the store can now be flipped safely.
+	waitFor(t, func() bool { return client.calls() >= 1 })
+	p.store.CharacterName = "Nova"
+	p.store.Language = "German"
+	p.store.promptTemplates[adminconfig.PromptFeatureChat] = "MUTATED-TEMPLATE character={{.CharacterName}} lang={{.Language}} model={{.Model}}"
+
+	close(gate)
+
+	waitFor(t, func() bool { return p.deliveredCount() >= 1 })
+
+	bodies := rec.recorded()
+	if len(bodies) != 2 {
+		t.Fatalf("expected exactly two generation requests (tool call + final), got %d", len(bodies))
+	}
+
+	systemPrompts := make([]string, 0, len(bodies))
+	wireModels := make([]string, 0, len(bodies))
+	for i, body := range bodies {
+		var payload struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal([]byte(body), &payload); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		wireModels = append(wireModels, payload.Model)
+		for _, message := range payload.Messages {
+			if message.Role != "system" {
+				continue
+			}
+			var text string
+			if err := json.Unmarshal(message.Content, &text); err != nil {
+				t.Fatalf("request %d: system content: %v", i, err)
+			}
+			systemPrompts = append(systemPrompts, text)
+		}
+	}
+	if len(systemPrompts) != 2 {
+		t.Fatalf("expected a system prompt in every generation request, got %d", len(systemPrompts))
+	}
+
+	for i, prompt := range systemPrompts {
+		if !strings.Contains(prompt, "ORIGINAL-TEMPLATE") {
+			t.Fatalf("generation request %d lost the captured template body: %q", i, prompt)
+		}
+		if strings.Contains(prompt, "MUTATED-TEMPLATE") {
+			t.Fatalf("generation request %d picked up the mutated template: %q", i, prompt)
+		}
+		if !strings.Contains(prompt, "character=Ada lang=English model=runtime-gen-model") {
+			t.Fatalf("generation request %d lost the captured settings and snapshot model: %q", i, prompt)
+		}
+		if strings.Contains(prompt, "Nova") || strings.Contains(prompt, "German") {
+			t.Fatalf("generation request %d picked up mutated settings: %q", i, prompt)
+		}
+	}
+	if systemPrompts[0] != systemPrompts[1] {
+		t.Fatalf("tool-loop iterations rendered different personas:\nfirst:  %q\nsecond: %q", systemPrompts[0], systemPrompts[1])
+	}
+	for i, model := range wireModels {
+		if model != "runtime-gen-model" {
+			t.Fatalf("generation request %d wire model = %q, want the snapshot model", i, model)
+		}
+	}
+
+	// The decision context carries the original persona too.
+	client.mu.Lock()
+	decisionState := client.requests[0].State
+	client.mu.Unlock()
+	decisionJSON, err := json.Marshal(decisionState)
+	if err != nil {
+		t.Fatalf("marshal decision state: %v", err)
+	}
+	decision := string(decisionJSON)
+	if !strings.Contains(decision, "ORIGINAL-TEMPLATE character=Ada lang=English") {
+		t.Fatalf("decision context lost the original persona: %s", decision)
+	}
+	if strings.Contains(decision, "MUTATED-TEMPLATE") || strings.Contains(decision, "Nova") || strings.Contains(decision, "German") {
+		t.Fatalf("decision context picked up mutated persona settings: %s", decision)
 	}
 }
