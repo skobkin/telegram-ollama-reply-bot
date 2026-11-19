@@ -438,6 +438,40 @@ func TestGroupPreviewCreateReplyEditDelete(t *testing.T) {
 	}
 }
 
+// TestPreviewFailDeletesGroupPreview pins the silent-proactive-failure
+// cleanup: Fail deletes the group preview message, unlike Abort's accepted
+// degradation which leaves it visible.
+func TestPreviewFailDeletesGroupPreview(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
+	if run == nil {
+		t.Fatal("expected an active preview run")
+	}
+
+	waitForCondition(t, 2*time.Second, "preview creation", func() bool {
+		return state.callCount("sendMessage") == 1
+	})
+
+	run.Fail()
+
+	waitForCondition(t, 2*time.Second, "preview delete", func() bool {
+		return state.callCount("deleteMessage") == 1
+	})
+	del := state.calls("deleteMessage")[0]
+	if del["message_id"] != float64(1) {
+		t.Fatalf("delete must target the preview message: %v", del)
+	}
+
+	// Fail is idempotent: a second call must not delete again.
+	run.Fail()
+	time.Sleep(50 * time.Millisecond)
+	if n := state.callCount("deleteMessage"); n != 1 {
+		t.Fatalf("second Fail must not delete again, got %d deletes", n)
+	}
+}
+
 func TestGroupPreviewModeFiltering(t *testing.T) {
 	state := newPreviewServerState()
 	b := newPreviewTestBot(t, state)

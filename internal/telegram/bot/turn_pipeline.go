@@ -165,17 +165,19 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 		err = b.withinProcessingDeadline(deadlineCtx, turnWork)
 	}
 	if err != nil {
-		run.Abort()
-
 		if opts.errorPolicy == silentErrors {
 			// Proactive turns fail silent: no user-facing notices, no
-			// fallback provider — content-free diagnostics only. The abort
-			// above cleaned the preview via the existing lifecycle.
+			// fallback provider — content-free diagnostics only. The failed
+			// turn's preview message is deleted: an unsolicited working
+			// indicator must not outlive an unsolicited turn.
+			run.Fail()
 			logger.Error("proactive turn failed", "error", err)
 			sentry.CaptureException(err)
 
 			return
 		}
+
+		run.Abort()
 
 		if errors.Is(err, ErrRequestTimeout) {
 			logger.Error("llm request timed out", "chat_id", message.Chat.ID, "error", err)
@@ -236,7 +238,11 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 	// backoff larger than the budget.
 	sent, err := b.deliverFinalReply(ctx, message, llmReply, toolCalls, resolved)
 	if err != nil {
-		run.Abort()
+		if opts.errorPolicy == silentErrors {
+			run.Fail()
+		} else {
+			run.Abort()
+		}
 
 		logger.Error("cannot send reply message", "error", err, "reply_length", len(llmReply))
 		sentry.CaptureException(err)
