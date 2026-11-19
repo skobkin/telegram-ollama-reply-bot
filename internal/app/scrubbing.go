@@ -1,0 +1,193 @@
+package app
+
+import (
+	"net/url"
+
+	"telegram-ollama-reply-bot/internal/config"
+	"telegram-ollama-reply-bot/internal/support/secretscrub"
+
+	"github.com/getsentry/sentry-go"
+)
+
+// newSecretScrubber registers every secret the app is configured with, so a
+// single scrubber can clean Sentry events, log records, and HTTP client
+// errors. Every new secret-bearing configuration value (API tokens, keys,
+// credential header values, URL-embedded passwords) must be added here — a
+// secret missing from this registry can surface verbatim in error messages,
+// logs, and Sentry issue titles.
+func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
+	secrets := []secretscrub.Secret{
+		{Name: "telegram-token", Value: cfg.Bot.Telegram.Token},
+		{Name: "llm-api-token", Value: cfg.LLM.Backends.OpenAICompat.APIToken},
+		{Name: "llm-image-api-token", Value: cfg.LLM.ImageRecognition.OpenAICompat.APIToken},
+		{Name: "llm-image-minimax-api-key", Value: cfg.LLM.ImageRecognition.MiniMaxVLM.APIKey},
+		{Name: "search-tavily-api-key", Value: cfg.Providers.Tavily.APIKey},
+		{Name: "search-kagi-api-key", Value: cfg.Providers.Kagi.APIKey},
+		{Name: "sentry-dsn", Value: cfg.Sentry.DSN},
+	}
+
+	for name, server := range cfg.MCP.Servers {
+		for header, value := range server.Headers {
+			secrets = append(secrets, secretscrub.Secret{
+				Name:  "mcp-" + name + "-header-" + header,
+				Value: value,
+			})
+		}
+
+		// Only the password part of an MCP endpoint URL is registered: a
+		// generic username would mutilate unrelated text, and net/http
+		// already masks passwords inside its own url.Error rendering.
+		if parsed, err := url.Parse(server.URL); err == nil && parsed.User != nil {
+			if password, ok := parsed.User.Password(); ok && password != "" {
+				secrets = append(secrets, secretscrub.Secret{
+					Name:  "mcp-" + name + "-url-password",
+					Value: password,
+				})
+			}
+		}
+	}
+
+	return secretscrub.New(secrets)
+}
+
+// newSentryBeforeSend returns a BeforeSend hook that scrubs every registered
+// secret from all string-bearing surfaces of an error event, in place, and
+// always returns the event (returning nil would drop it).
+//
+// Error chains are already flattened into Event.Exception entries before
+// BeforeSend runs (sentry-go CaptureException → EventFromException →
+// processEvent), so scrubbing each exception's Type and Value covers the
+// full chain text. Stacktraces, SDK metadata, and module lists are skipped
+// deliberately: they carry this binary's own source and build information,
+// which never embed environment-derived secret values. Transactions and
+// check-ins never reach BeforeSend (separate hooks), and the app attaches no
+// log or metric payloads through it.
+func newSentryBeforeSend(scrubber *secretscrub.Scrubber) func(*sentry.Event, *sentry.EventHint) *sentry.Event {
+	return func(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
+		if event == nil {
+			return nil
+		}
+
+		scrubEvent(scrubber, event)
+
+		return event
+	}
+}
+
+// maxScrubDepth bounds recursion into nested map/slice values before
+// leaving deeper content untouched; real payloads sit far above this, and
+// the cap also terminates self-referencing maps.
+const maxScrubDepth = 8
+
+func scrubEvent(scrubber *secretscrub.Scrubber, event *sentry.Event) {
+	if scrubber == nil {
+		return
+	}
+
+	event.Message = scrubber.Scrub(event.Message)
+	event.Transaction = scrubber.Scrub(event.Transaction)
+
+	for i, part := range event.Fingerprint {
+		event.Fingerprint[i] = scrubber.Scrub(part)
+	}
+
+	for i := range event.Exception {
+		event.Exception[i].Type = scrubber.Scrub(event.Exception[i].Type)
+		event.Exception[i].Value = scrubber.Scrub(event.Exception[i].Value)
+
+		if mechanism := event.Exception[i].Mechanism; mechanism != nil {
+			mechanism.Description = scrubber.Scrub(mechanism.Description)
+			scrubAnyMap(scrubber, mechanism.Data, maxScrubDepth)
+		}
+	}
+
+	for _, crumb := range event.Breadcrumbs {
+		if crumb == nil {
+			continue
+		}
+
+		crumb.Message = scrubber.Scrub(crumb.Message)
+		scrubAnyMap(scrubber, crumb.Data, maxScrubDepth)
+	}
+
+	if event.Request != nil {
+		event.Request.URL = scrubber.Scrub(event.Request.URL)
+		event.Request.Data = scrubber.Scrub(event.Request.Data)
+		event.Request.QueryString = scrubber.Scrub(event.Request.QueryString)
+		event.Request.Cookies = scrubber.Scrub(event.Request.Cookies)
+		scrubStringMap(scrubber, event.Request.Headers)
+		scrubStringMap(scrubber, event.Request.Env)
+	}
+
+	event.User.ID = scrubber.Scrub(event.User.ID)
+	event.User.Email = scrubber.Scrub(event.User.Email)
+	event.User.IPAddress = scrubber.Scrub(event.User.IPAddress)
+	event.User.Username = scrubber.Scrub(event.User.Username)
+	event.User.Name = scrubber.Scrub(event.User.Name)
+	scrubStringMap(scrubber, event.User.Data)
+
+	for i := range event.Threads {
+		event.Threads[i].Name = scrubber.Scrub(event.Threads[i].Name)
+	}
+
+	scrubStringMap(scrubber, event.Tags)
+	scrubAnyMap(scrubber, event.Extra, maxScrubDepth)
+
+	for _, contextData := range event.Contexts {
+		scrubAnyMap(scrubber, contextData, maxScrubDepth)
+	}
+}
+
+// scrubStringMap scrubs values in place; keys are tag/header names, not
+// secret-bearing content.
+func scrubStringMap(scrubber *secretscrub.Scrubber, values map[string]string) {
+	for key, value := range values {
+		values[key] = scrubber.Scrub(value)
+	}
+}
+
+func scrubAnyMap(scrubber *secretscrub.Scrubber, values map[string]any, depth int) {
+	if depth <= 0 {
+		return
+	}
+
+	for key, value := range values {
+		values[key] = scrubAny(scrubber, value, depth)
+	}
+}
+
+// scrubAny scrubs one arbitrary payload value: strings directly, maps and
+// slices by recursive in-place walk. Everything else (numbers, bools, SDK
+// objects) cannot carry secret text and is passed through.
+func scrubAny(scrubber *secretscrub.Scrubber, value any, depth int) any {
+	if depth <= 0 {
+		return value
+	}
+
+	switch typed := value.(type) {
+	case string:
+		return scrubber.Scrub(typed)
+	case map[string]any:
+		scrubAnyMap(scrubber, typed, depth-1)
+
+		return typed
+	case map[string]string:
+		scrubStringMap(scrubber, typed)
+
+		return typed
+	case []any:
+		for i, elem := range typed {
+			typed[i] = scrubAny(scrubber, elem, depth-1)
+		}
+
+		return typed
+	case []string:
+		for i, elem := range typed {
+			typed[i] = scrubber.Scrub(elem)
+		}
+
+		return typed
+	default:
+		return value
+	}
+}
