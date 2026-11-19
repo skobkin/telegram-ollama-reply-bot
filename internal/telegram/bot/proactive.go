@@ -139,6 +139,15 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 		return
 	}
 
+	// Re-check eligibility against the operation snapshot: the pre-Submit
+	// gate read the handler's resolve, and a task can sit queued behind the
+	// chat slot while the mode flips to disabled. Hard access restrictions
+	// stay effective at execution time; no extra settings reads are needed —
+	// this consumes the snapshot above.
+	if !b.shouldEvaluateParticipation(resolved, message) {
+		return
+	}
+
 	engine := b.decisionEngineFor(resolved)
 	if engine == nil {
 		return

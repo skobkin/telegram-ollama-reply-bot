@@ -678,6 +678,39 @@ func TestProactiveNoOpSkipsImageHydration(t *testing.T) {
 	}
 }
 
+// TestProactiveQueuedTaskHonorsModeChange pins the execution-time gate: a
+// task that passed the pre-Submit eligibility window must not run once the
+// operation snapshot says the mode flipped to disabled while it sat queued
+// behind the chat slot.
+func TestProactiveQueuedTaskHonorsModeChange(t *testing.T) {
+	p := newProactiveTestBot(t, func(s *adminStoreStub) {
+		s.DefaultInteractivityMode = adminconfig.InteractivityMentionsReplies
+		s.DefaultInteractionProfile = adminconfig.ProfileTalkLow
+		s.SystemOneModel = "decision-model"
+	})
+	persona := &fakePersonaSource{}
+	client := &fakeDecisionClient{answers: decisionAnswers(0.0, 1.0, 1.0)}
+	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024)
+	t.Cleanup(stop)
+
+	// The flip: by the time the task acquires the slot, the chat is disabled.
+	// Eligibility at Submit time (mentions_or_replies, talk-low, human
+	// sender) would have accepted this message.
+	p.store.DefaultInteractivityMode = adminconfig.InteractivityDisabled
+
+	p.bot.evaluateParticipation(context.Background(), *proactiveGroupUpdate("late chatter").Message)
+
+	if got := client.calls(); got != 0 {
+		t.Fatalf("disabled mode must block the queued task, got %d backend calls", got)
+	}
+	if got := p.llm.buildCount(); got != 0 {
+		t.Fatalf("disabled mode must not run a turn, got %d builds", got)
+	}
+	if requests := p.apiRequests(); len(requests) != 0 {
+		t.Fatalf("disabled mode must make no Telegram calls, got %v", requests)
+	}
+}
+
 // TestProactiveReactTurnIsReactionOnly drives a real React decision through
 // the restricted turn: the only Telegram call is setMessageReaction, the
 // produced text is discarded and never recorded, and no preview or typing
