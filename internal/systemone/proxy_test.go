@@ -99,10 +99,17 @@ type recordingProxy struct {
 
 // proxiedClient builds a client against the placeholder endpoint after
 // pinning the proxy environment: httpclient.New reads the environment at
-// construction, so the client must be built after t.Setenv.
+// construction, so the client must be built after t.Setenv. Every ambient
+// proxy variable is cleared first (both case variants — the resolution
+// prefers the first non-empty), so a developer or CI environment carrying
+// NO_PROXY or a stray lowercase proxy setting cannot change what these
+// regression tests observe.
 func proxiedClient(t *testing.T, env map[string]string) *Client {
 	t.Helper()
 
+	for _, key := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"} {
+		t.Setenv(key, "")
+	}
 	for key, value := range env {
 		t.Setenv(key, value)
 	}
