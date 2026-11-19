@@ -527,7 +527,7 @@ func TestScrubFatalError(t *testing.T) {
 	}
 
 	clean := errors.New("plain failure")
-	if scrubFatalError(nil, clean) != clean {
+	if scrubFatalError(nil, clean) != clean { //nolint:errorlint // identity comparison is the assertion
 		t.Fatal("nil scrubber rebuilt the error")
 	}
 }
