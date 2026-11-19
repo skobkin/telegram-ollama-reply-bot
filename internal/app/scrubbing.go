@@ -48,6 +48,17 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 				Value: value,
 			})
 
+			// HTTP transmission trims surrounding whitespace, so providers
+			// see and echo the trimmed form; register it when it differs.
+			// This also covers bare (scheme-less) header values, which
+			// credentialFromHeader does not normalize.
+			if trimmed := strings.TrimSpace(value); trimmed != "" && trimmed != value {
+				secrets = append(secrets, secretscrub.Secret{
+					Name:  "mcp-" + name + "-header-" + header + "-trimmed",
+					Value: trimmed,
+				})
+			}
+
 			// Providers echo the bare credential in errors ("invalid api
 			// key X"), not the full header value, so the credential part of
 			// scheme-prefixed values is registered alongside the whole.

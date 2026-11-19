@@ -456,7 +456,36 @@ func TestNewSecretScrubberRegistersHeaderCredential(t *testing.T) {
 			t.Fatalf("credential literal survived: %q", text)
 		}
 	}
+}
 
+func TestNewSecretScrubberRegistersTrimmedHeaderValue(t *testing.T) {
+	t.Parallel()
+
+	cfg := scrubTestConfig()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"docs": { //nolint:gosec // fake fixture, not a credential
+			URL: "https://mcp.example.test/sse",
+			Headers: map[string]string{
+				"X-API-Key": "  BAREKEYFIXTURE  ", //nolint:gosec // fake fixture, not a credential
+			},
+		},
+	}
+
+	scrubber := newSecretScrubber(cfg)
+
+	// The padded configured value, the trimmed form providers actually see
+	// over HTTP, and the bare key in an error echo all scrub.
+	for _, fixture := range []string{
+		"  BAREKEYFIXTURE  ",
+		"BAREKEYFIXTURE",
+		"invalid key BAREKEYFIXTURE",
+	} {
+		text := "upstream said: " + fixture
+
+		if got := scrubber.Scrub(text); got == text {
+			t.Fatalf("header form survived: %q", text)
+		}
+	}
 }
 
 func TestCredentialFromHeader(t *testing.T) {
