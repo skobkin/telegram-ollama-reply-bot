@@ -1988,3 +1988,45 @@ func TestRecreateMenuSkipsNonAdmin(t *testing.T) {
 		t.Fatalf("non-admin must not reach send, got %d calls", calls)
 	}
 }
+
+// TestChatStringOverrideInheritsViaClear pins the chat-scope string-field
+// inherit control: an overridden chat_model editor offers "Inherit global",
+// clearing only that override row, and the button is absent while nothing
+// is overridden (empty input is a rejected value, so the button is the only
+// way back).
+func TestChatStringOverrideInheritsViaClear(t *testing.T) {
+	c, store := newTestController(t)
+	session := mustOpen(t, c)
+
+	// Seed a chat override directly; the editor must then offer inherit.
+	store.mu.Lock()
+	store.chatRows[testGroupID] = map[string]string{"chat_model": "override-model:e4b"}
+	store.mu.Unlock()
+
+	tap(t, c, session, VerbCatalog, "1")
+	tap(t, c, session, VerbChat, strconv.FormatInt(testGroupID, 10))
+	tap(t, c, session, VerbChatSet)
+
+	outcome := tap(t, c, session, VerbField, "cm")
+	if outcome.Render.Screen.Kind != ScreenFieldEditor || outcome.Render.Screen.Field != "chat_model" {
+		t.Fatalf("field tap must open the chat-model editor: %+v", outcome.Render.Screen)
+	}
+	if !strings.Contains(screenButtons(outcome.Render.Built), "Inherit global") {
+		t.Fatalf("overridden chat string editor must offer inherit: %q", screenButtons(outcome.Render.Built))
+	}
+
+	tap(t, c, session, VerbClear, "cm")
+
+	store.mu.Lock()
+	_, still := store.chatRows[testGroupID]["chat_model"]
+	store.mu.Unlock()
+	if still {
+		t.Fatalf("inherit must clear the chat_model override row")
+	}
+
+	// With the override gone the button disappears again.
+	outcome = tap(t, c, session, VerbField, "cm")
+	if strings.Contains(screenButtons(outcome.Render.Built), "Inherit global") {
+		t.Fatalf("inherit must be hidden without an override: %q", screenButtons(outcome.Render.Built))
+	}
+}

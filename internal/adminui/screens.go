@@ -513,6 +513,12 @@ func (b screenBuilder) fieldEditor(data FieldEditorData) *Screen {
 			}
 		}
 		rows = append(rows, ButtonRow{b.btn("✏️ Enter model ID…", VerbString, code)})
+		// Chat-scope string overrides inherit by clearing the override row —
+		// empty input is a rejected value, so the button is the only way
+		// back to the global value.
+		if !data.Global && data.Overridden {
+			rows = append(rows, ButtonRow{b.btn("Inherit global", VerbClear, code)})
+		}
 		if data.Global && data.Spec.Clearable && isClearableModelField(data.Spec.Name) && hasConcreteValue(data.Value) {
 			rows = append(rows, ButtonRow{b.danger(clearGlobalModelLabel(data.Spec.Name), VerbClearGlobal, code)})
 		}
