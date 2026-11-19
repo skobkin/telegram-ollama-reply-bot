@@ -224,6 +224,27 @@ func TestEngineUnconfiguredScope(t *testing.T) {
 			t.Fatalf("resolution failure must not reach the backend")
 		}
 	})
+
+	t.Run("persona failure stays content-free", func(t *testing.T) {
+		engine, client, _, persona, history := newTestEngine(t)
+		// Template parse/exec failures quote template source; the renderer's
+		// error must never reach the engine's error text.
+		persona.err = errors.New(`template: chat:1: unexpected "{{" in operand near "You are Ada, {{.Secret}}"`)
+
+		decision, err := engine.Decide(context.Background(), testInput())
+		if decision.Action != ActionIgnore {
+			t.Fatalf("persona failure must ignore, got %s", decision.Action)
+		}
+		if !errors.Is(err, ErrModelResolution) {
+			t.Fatalf("persona failure must classify as ErrModelResolution, got %v", err)
+		}
+		if strings.Contains(err.Error(), "Secret") || strings.Contains(err.Error(), "template") {
+			t.Fatalf("persona error must stay content-free, got %q", err.Error())
+		}
+		if history.calls != 0 || client.calls != 0 {
+			t.Fatalf("persona failure must stop before history and backend (history %d, client %d)", history.calls, client.calls)
+		}
+	})
 }
 
 // TestEngineDecideHappyPath pins the request composition and the answer

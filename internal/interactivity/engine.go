@@ -274,7 +274,10 @@ func (e *Engine) Decide(ctx context.Context, input DecisionInput) (ActionDecisio
 func (e *Engine) buildRequest(ctx context.Context, input DecisionInput, generationModel, decisionModel string) (systemone.Request, error) {
 	persona, err := e.deps.Persona.DecisionPersona(ctx, input.ChatID, generationModel, input.Persona)
 	if err != nil {
-		return systemone.Request{}, fmt.Errorf("%w: %w", ErrModelResolution, err)
+		// Content-free class only: the renderer's error can quote template
+		// source (parse/exec failures) and store internals, none of which
+		// may reach diagnostics (see the package error contract above).
+		return systemone.Request{}, fmt.Errorf("%w: persona rendering failed", ErrModelResolution)
 	}
 
 	history, err := e.deps.History.DecisionHistory(ctx, state.ConversationScope{ChatID: input.ChatID, TopicID: input.TopicID})
