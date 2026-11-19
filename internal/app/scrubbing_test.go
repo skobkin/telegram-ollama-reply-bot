@@ -573,6 +573,33 @@ func TestNewSecretScrubberRegistersQuotedTrimmedForm(t *testing.T) {
 	}
 }
 
+func TestNewSecretScrubberRegistersQuotedHeaderForms(t *testing.T) {
+	t.Parallel()
+
+	cfg := scrubTestConfig()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"docs": { //nolint:gosec // fake fixture, not a credential
+			URL: "https://mcp.example.test/sse",
+			Headers: map[string]string{
+				"Authorization": `Bearer QUOTED"HEADERFIXTURE`, //nolint:gosec // fake fixture, not a credential
+			},
+		},
+	}
+
+	scrubber := newSecretScrubber(cfg)
+
+	// A diagnostic rendering the bare credential through %q escapes the
+	// quote; the quoted form of the credential must match.
+	if got := scrubber.Scrub(strconv.Quote(`QUOTED"HEADERFIXTURE`)); strings.Contains(got, "QUOTED\"HEADERFIXTURE") {
+		t.Fatalf("quoted credential rendering survived: %q", got)
+	}
+
+	// So must the quoted form of the full header value.
+	if got := scrubber.Scrub(strconv.Quote(`Bearer QUOTED"HEADERFIXTURE`)); strings.Contains(got, "QUOTED\"HEADERFIXTURE") {
+		t.Fatalf("quoted full header rendering survived: %q", got)
+	}
+}
+
 func TestNewSecretScrubberRegistersEndpointURLPasswords(t *testing.T) {
 	t.Parallel()
 

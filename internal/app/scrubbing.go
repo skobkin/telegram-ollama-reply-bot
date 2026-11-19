@@ -52,30 +52,33 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 
 	for name, server := range cfg.MCP.Servers {
 		for header, value := range server.Headers {
-			secrets = append(secrets, secretscrub.Secret{
-				Name:  "mcp-" + name + "-header-" + header,
-				Value: value,
-			})
+			headerName := "mcp-" + name + "-header-" + header
+
+			// Every form the value can take on a remote surface gets
+			// registered, each with its %q rendering alongside: diagnostics
+			// quote whichever form they carry.
+			forms := []secretscrub.Secret{
+				{Name: headerName, Value: value},
+			}
 
 			// HTTP transmission trims surrounding whitespace, so providers
-			// see and echo the trimmed form; register it when it differs.
-			// This also covers bare (scheme-less) header values, which
-			// credentialFromHeader does not normalize.
+			// see and echo the trimmed form. This also covers bare
+			// (scheme-less) header values, which credentialFromHeader does
+			// not normalize.
 			if trimmed := strings.TrimSpace(value); trimmed != "" && trimmed != value {
-				secrets = append(secrets, secretscrub.Secret{
-					Name:  "mcp-" + name + "-header-" + header + "-trimmed",
-					Value: trimmed,
-				})
+				forms = append(forms, secretscrub.Secret{Name: headerName + "-trimmed", Value: trimmed})
 			}
 
 			// Providers echo the bare credential in errors ("invalid api
 			// key X"), not the full header value, so the credential part of
 			// scheme-prefixed values is registered alongside the whole.
 			if credential, ok := credentialFromHeader(value); ok {
-				secrets = append(secrets, secretscrub.Secret{
-					Name:  "mcp-" + name + "-header-" + header + "-credential",
-					Value: credential,
-				})
+				forms = append(forms, secretscrub.Secret{Name: headerName + "-credential", Value: credential})
+			}
+
+			for _, form := range forms {
+				secrets = append(secrets, form)
+				secrets = withQuoted(secrets, form.Name, form.Value)
 			}
 		}
 
