@@ -19,7 +19,12 @@ import (
 // secret missing from this registry can surface verbatim in error messages,
 // logs, and Sentry issue titles.
 func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
-	secrets := []secretscrub.Secret{
+	var secrets []secretscrub.Secret
+
+	// Scalar secrets also register their whitespace-trimmed form: header
+	// transmission strips surrounding whitespace, so that is the form remote
+	// services receive and echo back.
+	for _, secret := range []secretscrub.Secret{
 		{Name: "telegram-token", Value: cfg.Bot.Telegram.Token},
 		{Name: "llm-api-token", Value: cfg.LLM.Backends.OpenAICompat.APIToken},
 		{Name: "llm-image-api-token", Value: cfg.LLM.ImageRecognition.OpenAICompat.APIToken},
@@ -28,6 +33,9 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 		{Name: "search-kagi-api-key", Value: cfg.Providers.Kagi.APIKey},
 		{Name: "systemone-api-key", Value: cfg.SystemOne.APIKey},
 		{Name: "sentry-dsn", Value: cfg.Sentry.DSN},
+	} {
+		secrets = append(secrets, secret)
+		secrets = withTrimmed(secrets, secret)
 	}
 
 	// Backend endpoint URLs may carry basic-auth userinfo; only the password
@@ -78,6 +86,22 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 	}
 
 	return secretscrub.New(secrets)
+}
+
+// withTrimmed registers the whitespace-trimmed form of a configured secret
+// alongside the configured value: HTTP header transmission strips surrounding
+// whitespace, so the trimmed form is what remote services actually receive
+// and echo back in their errors.
+func withTrimmed(secrets []secretscrub.Secret, secret secretscrub.Secret) []secretscrub.Secret {
+	trimmed := strings.TrimSpace(secret.Value)
+	if trimmed == "" || trimmed == secret.Value {
+		return secrets
+	}
+
+	return append(secrets, secretscrub.Secret{
+		Name:  secret.Name + "-trimmed",
+		Value: trimmed,
+	})
 }
 
 // credentialFromHeader extracts the credential part of a scheme-prefixed

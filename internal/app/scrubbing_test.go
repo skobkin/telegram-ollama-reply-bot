@@ -518,6 +518,25 @@ func TestCredentialFromHeader(t *testing.T) {
 	}
 }
 
+func TestNewSecretScrubberRegistersTrimmedTokenForm(t *testing.T) {
+	t.Parallel()
+
+	cfg := scrubTestConfig()
+	cfg.LLM.Backends.OpenAICompat.APIToken = "  PADDEDTOKENFIXTURE  "
+
+	scrubber := newSecretScrubber(cfg)
+
+	// Header transmission strips surrounding whitespace, so the backend
+	// receives and echoes the trimmed token, not the padded configured one.
+	for _, form := range []string{"PADDEDTOKENFIXTURE", "  PADDEDTOKENFIXTURE  "} {
+		text := "backend echoed " + form
+
+		if got := scrubber.Scrub(text); got == text {
+			t.Fatalf("token form survived: %q", text)
+		}
+	}
+}
+
 func TestNewSecretScrubberRegistersEndpointURLPasswords(t *testing.T) {
 	t.Parallel()
 
