@@ -110,6 +110,10 @@ type DecisionInput struct {
 	Profile adminconfig.InteractionProfile
 	// Instructions is the effective decision-instructions text ("" = none).
 	Instructions string
+	// BotUserID is the bot's own Telegram user ID. Reaction attribution in
+	// the context depends on it: bot-authored reactions are the record of
+	// its previous participation. Zero disables bot attribution.
+	BotUserID int64
 	// Persona carries the snapshot's persona fields for the context builder.
 	Persona PersonaSettings
 }

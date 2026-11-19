@@ -20,10 +20,11 @@ func TestDeriveActivity(t *testing.T) {
 		activity := deriveActivity([]state.Message{
 			{MessageID: 1, Name: "A", CreatedAt: now.Add(-time.Minute)},
 			{MessageID: 2, Name: "B", CreatedAt: now.Add(-30 * time.Second)},
-		}, now)
+		}, 999, now)
 		if activity.TimeSinceBotParticipation != "unknown" ||
 			activity.MessagesSinceBotParticipation != "unknown" ||
-			activity.BotSpokeRecently != "unknown" {
+			activity.BotSpokeRecently != "unknown" ||
+			activity.BotReactedRecently != "unknown" {
 			t.Fatalf("expected all-unknown activity, got %+v", activity)
 		}
 	})
@@ -34,7 +35,7 @@ func TestDeriveActivity(t *testing.T) {
 			{MessageID: 2, IsMe: true, Name: "Ada", CreatedAt: now.Add(-90 * time.Minute)},
 			{MessageID: 3, Name: "B", CreatedAt: now.Add(-time.Minute)},
 			{MessageID: 4, Name: "C", CreatedAt: now.Add(-30 * time.Second)},
-		}, now)
+		}, 999, now)
 		if activity.TimeSinceBotParticipation != "1h30m0s" {
 			t.Fatalf("unexpected since duration %q", activity.TimeSinceBotParticipation)
 		}
@@ -49,9 +50,76 @@ func TestDeriveActivity(t *testing.T) {
 	t.Run("recent participation boundary is inclusive", func(t *testing.T) {
 		exactly := deriveActivity([]state.Message{
 			{MessageID: 1, IsMe: true, CreatedAt: now.Add(-recentParticipationWindow)},
-		}, now)
+		}, 999, now)
 		if exactly.BotSpokeRecently != "yes" {
 			t.Fatalf("participation exactly at the window must count as recent, got %q", exactly.BotSpokeRecently)
+		}
+	})
+
+	t.Run("reaction-only participation drives the shared metadata", func(t *testing.T) {
+		activity := deriveActivity([]state.Message{
+			{MessageID: 1, Name: "A", CreatedAt: now.Add(-3 * time.Minute), Reactions: []state.Reaction{
+				{UserID: 999, Name: "Ada", Emoji: "👍", UpdatedAt: now.Add(-2 * time.Minute)},
+			}},
+			{MessageID: 2, Name: "B", CreatedAt: now.Add(-time.Minute)},
+		}, 999, now)
+		if activity.TimeSinceBotParticipation != "2m0s" {
+			t.Fatalf("reaction timestamp must drive participation time, got %q", activity.TimeSinceBotParticipation)
+		}
+		if activity.MessagesSinceBotParticipation != "1" {
+			t.Fatalf("reaction position must drive the message count, got %q", activity.MessagesSinceBotParticipation)
+		}
+		if activity.BotSpokeRecently != "unknown" {
+			t.Fatalf("no bot message must leave speaking unknown, got %q", activity.BotSpokeRecently)
+		}
+		if activity.BotReactedRecently != "yes" {
+			t.Fatalf("recent bot reaction must be reported, got %q", activity.BotReactedRecently)
+		}
+	})
+
+	t.Run("mixed participation takes the later event but keeps speaking distinct", func(t *testing.T) {
+		activity := deriveActivity([]state.Message{
+			{MessageID: 1, IsMe: true, Name: "Ada", CreatedAt: now.Add(-20 * time.Minute)},
+			{MessageID: 2, Name: "B", CreatedAt: now.Add(-time.Minute), Reactions: []state.Reaction{
+				{UserID: 999, Name: "Ada", Emoji: "🔥", UpdatedAt: now.Add(-30 * time.Second)},
+			}},
+		}, 999, now)
+		if activity.TimeSinceBotParticipation != "30s" {
+			t.Fatalf("the later event (the reaction) must drive participation, got %q", activity.TimeSinceBotParticipation)
+		}
+		if activity.MessagesSinceBotParticipation != "0" {
+			t.Fatalf("reaction on the last message must leave no messages after, got %q", activity.MessagesSinceBotParticipation)
+		}
+		if activity.BotSpokeRecently != "no" {
+			t.Fatalf("a 20m-old message must not count as recent speaking, got %q", activity.BotSpokeRecently)
+		}
+		if activity.BotReactedRecently != "yes" {
+			t.Fatalf("recent reaction must be reported, got %q", activity.BotReactedRecently)
+		}
+	})
+
+	t.Run("reactions from other participants are not bot participation", func(t *testing.T) {
+		activity := deriveActivity([]state.Message{
+			{MessageID: 1, Name: "A", CreatedAt: now.Add(-time.Minute), Reactions: []state.Reaction{
+				{UserID: 42, Name: "Mallory", Emoji: "👍", UpdatedAt: now.Add(-30 * time.Second)},
+			}},
+		}, 999, now)
+		if activity.TimeSinceBotParticipation != "unknown" || activity.BotReactedRecently != "unknown" {
+			t.Fatalf("other users' reactions must not count as bot participation, got %+v", activity)
+		}
+	})
+
+	t.Run("missing reaction timestamp falls back to the message time", func(t *testing.T) {
+		activity := deriveActivity([]state.Message{
+			{MessageID: 1, Name: "A", CreatedAt: now.Add(-4 * time.Minute), Reactions: []state.Reaction{
+				{UserID: 999, Name: "Ada", Emoji: "👍"},
+			}},
+		}, 999, now)
+		if activity.TimeSinceBotParticipation != "4m0s" {
+			t.Fatalf("zero UpdatedAt must fall back to the carrying message time, got %q", activity.TimeSinceBotParticipation)
+		}
+		if activity.BotReactedRecently != "yes" {
+			t.Fatalf("reaction within the window must be reported, got %q", activity.BotReactedRecently)
 		}
 	})
 }
@@ -59,13 +127,13 @@ func TestDeriveActivity(t *testing.T) {
 // TestHistoryEntryFor pins sender attribution and data rendering.
 func TestHistoryEntryFor(t *testing.T) {
 	bot := state.Message{IsMe: true, Name: "Ada", Text: "hello", Image: "a cat on a sofa"}
-	entry := historyEntryFor(bot)
+	entry := historyEntryFor(bot, 999)
 	if entry.Sender != "Ada (the bot)" || !entry.FromBot || entry.Image != "a cat on a sofa" {
 		t.Fatalf("bot entry rendering wrong: %+v", entry)
 	}
 
 	unnamed := state.Message{Text: "hi", HasImage: true}
-	entry = historyEntryFor(unnamed)
+	entry = historyEntryFor(unnamed, 999)
 	if entry.Sender != "unknown" {
 		t.Fatalf("nameless author must fall back to unknown, got %q", entry.Sender)
 	}
@@ -78,9 +146,49 @@ func TestHistoryEntryFor(t *testing.T) {
 		Text:    "agreed",
 		ReplyTo: &state.Message{Name: "Ivan", Text: "original thought"},
 	}
-	entry = historyEntryFor(replier)
+	entry = historyEntryFor(replier, 999)
 	if entry.ReplyingTo != "Ivan: original thought" {
 		t.Fatalf("reply attribution wrong: %q", entry.ReplyingTo)
+	}
+}
+
+// TestHistoryEntryRendersReactions pins reaction rendering with actor
+// attribution: bot-authored reactions are marked, other participants' are
+// not, and the target entry renders them identically.
+func TestHistoryEntryRendersReactions(t *testing.T) {
+	message := state.Message{
+		Name: "Dana",
+		Text: "worth reacting to",
+		Reactions: []state.Reaction{
+			{UserID: 999, Name: "Ada", Username: "adabot", Emoji: "🔥", UpdatedAt: testTime()},
+			{UserID: 42, Name: "Mallory", Emoji: "👍", UpdatedAt: testTime()},
+			{UserID: 7, Username: "no_name", Emoji: "🎉", UpdatedAt: testTime()},
+		},
+	}
+
+	entry := historyEntryFor(message, 999)
+	if len(entry.Reactions) != 3 {
+		t.Fatalf("all reactions must render, got %d", len(entry.Reactions))
+	}
+	if !entry.Reactions[0].ByBot || entry.Reactions[0].By != "Ada (the bot)" || entry.Reactions[0].Emoji != "🔥" {
+		t.Fatalf("bot reaction attribution wrong: %+v", entry.Reactions[0])
+	}
+	if entry.Reactions[1].ByBot || entry.Reactions[1].By != "Mallory" {
+		t.Fatalf("other users' reactions must not be bot-attributed: %+v", entry.Reactions[1])
+	}
+	if entry.Reactions[2].ByBot || entry.Reactions[2].By != "no_name" {
+		t.Fatalf("username fallback wrong: %+v", entry.Reactions[2])
+	}
+
+	// Zero bot ID disables bot attribution entirely (no false positives).
+	entry = historyEntryFor(message, 0)
+	for _, reaction := range entry.Reactions {
+		if reaction.ByBot {
+			t.Fatalf("zero bot id must disable attribution, got %+v", reaction)
+		}
+	}
+	if entry.Reactions[0].By != "Ada" {
+		t.Fatalf("unattributed bot reaction keeps its name, got %q", entry.Reactions[0].By)
 	}
 }
 

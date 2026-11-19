@@ -35,48 +35,66 @@ type decisionState struct {
 }
 
 // historyEntry is one conversation message rendered as data: sender display
-// identity, text, hydrated image description, and reply attribution.
+// identity, text, hydrated image description, reply attribution, and the
+// reactions the message carries with actor attribution.
 type historyEntry struct {
-	Sender     string `json:"sender"`
-	FromBot    bool   `json:"from_bot,omitempty"`
-	Text       string `json:"text,omitempty"`
-	Image      string `json:"image_description,omitempty"`
-	ReplyingTo string `json:"replying_to,omitempty"`
+	Sender     string            `json:"sender"`
+	FromBot    bool              `json:"from_bot,omitempty"`
+	Text       string            `json:"text,omitempty"`
+	Image      string            `json:"image_description,omitempty"`
+	ReplyingTo string            `json:"replying_to,omitempty"`
+	Reactions  []historyReaction `json:"reactions,omitempty"`
+}
+
+// historyReaction is one actor's reaction on a message. ByBot marks
+// reactions the bot authored itself: they are the record of its previous
+// participation, distinct from other participants' reactions.
+type historyReaction struct {
+	By    string `json:"by"`
+	ByBot bool   `json:"by_bot,omitempty"`
+	Emoji string `json:"emoji"`
 }
 
 type activity struct {
-	// TimeSinceBotParticipation is a human duration, or "unknown" when the
-	// bounded snapshot contains no bot message. Never a fabricated zero.
+	// TimeSinceBotParticipation is a human duration since the bot's last
+	// confirmed participation — a bot-authored message or a bot-authored
+	// reaction — or "unknown" when the bounded snapshot contains none. Never
+	// a fabricated zero.
 	TimeSinceBotParticipation string `json:"time_since_bot_participation"`
-	// MessagesSinceBotParticipation counts history entries after the bot's
-	// last message, or "unknown".
+	// MessagesSinceBotParticipation counts history entries after the last
+	// confirmed bot participation, or "unknown".
 	MessagesSinceBotParticipation string `json:"messages_since_bot_participation"`
 	// BotSpokeRecently is "yes", "no", or "unknown" (within the bounded
-	// snapshot and a fixed display window).
+	// snapshot and a fixed display window). It is deliberately message-only:
+	// speaking and reacting are distinct kinds of participation.
 	BotSpokeRecently string `json:"bot_spoke_recently"`
+	// BotReactedRecently reports bot-authored reaction activity within the
+	// same window, kept separate from BotSpokeRecently.
+	BotReactedRecently string `json:"bot_reacted_recently"`
 }
 
 // buildDecisionState assembles the state payload from the operation inputs
 // and the history snapshot taken at execution start. The target message is
 // excluded from the history section by message ID and rendered exactly once
-// as the target.
+// as the target. BotUserID drives reaction attribution: reactions authored
+// by the bot are its record of previous participation.
 func buildDecisionState(input DecisionInput, persona string, history HistorySnapshot) decisionState {
 	entries := make([]historyEntry, 0, len(history.Messages))
 	for _, message := range history.Messages {
 		if sameMessage(message, input.Target) {
 			continue // the target renders exactly once, as the target
 		}
-		entries = append(entries, historyEntryFor(message))
+		entries = append(entries, historyEntryFor(message, input.BotUserID))
 	}
 
 	return decisionState{
 		Persona:        persona,
 		Instructions:   input.Instructions,
 		UntrustedNote:  historyNote,
-		Activity:       deriveActivity(history.Messages, time.Now()),
+		Activity:       deriveActivity(history.Messages, input.BotUserID, time.Now()),
 		EarlierSummary: history.EarlierSummary,
 		History:        entries,
-		Target:         historyEntryFor(input.Target),
+		Target:         historyEntryFor(input.Target, input.BotUserID),
 	}
 }
 
@@ -88,47 +106,102 @@ func sameMessage(message, target state.Message) bool {
 }
 
 // deriveActivity computes the transient participation metadata from the
-// snapshot: time and messages since the bot's last message, each "unknown"
-// when the snapshot has no such event. Nothing here is persisted.
-func deriveActivity(messages []state.Message, now time.Time) activity {
-	lastBotIndex := -1
+// snapshot. Last participation is the later of the bot's last authored
+// message and its last confirmed reaction (a bot-authored reaction on any
+// message of the snapshot); each dimension is "unknown" when the snapshot
+// holds no such event. Nothing here is persisted.
+func deriveActivity(messages []state.Message, botUserID int64, now time.Time) activity {
+	// The last bot-authored message: plain speaking participation.
+	var spokeAt time.Time
+	lastSpoke := -1
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].IsMe {
-			lastBotIndex = i
+			lastSpoke = i
+			spokeAt = messages[i].CreatedAt
 
 			break
 		}
 	}
-	if lastBotIndex < 0 {
-		return activity{
-			TimeSinceBotParticipation:     "unknown",
-			MessagesSinceBotParticipation: "unknown",
-			BotSpokeRecently:              "unknown",
+
+	// The latest bot-authored reaction. It participates at the carrying
+	// message's position; its own timestamp is authoritative when present,
+	// and hand-built snapshots without timestamps fall back to the carrying
+	// message's time.
+	lastReacted := -1
+	var reactedAt time.Time
+	if botUserID != 0 {
+		for i := len(messages) - 1; i >= 0; i-- {
+			for _, reaction := range messages[i].Reactions {
+				if reaction.UserID != botUserID {
+					continue
+				}
+				at := reaction.UpdatedAt
+				if at.IsZero() {
+					at = messages[i].CreatedAt
+				}
+				if lastReacted < 0 || at.After(reactedAt) {
+					lastReacted = i
+					reactedAt = at
+				}
+			}
 		}
 	}
 
-	lastBot := messages[min(lastBotIndex, len(messages)-1)].CreatedAt
-	since := now.Sub(lastBot)
+	// Speaking and reacting stay distinct: each reports its own evidence.
+	spokeRecency := "unknown"
+	if lastSpoke >= 0 {
+		spokeRecency = recencyLabel(now.Sub(spokeAt))
+	}
+	reactedRecency := "unknown"
+	if lastReacted >= 0 {
+		reactedRecency = recencyLabel(now.Sub(reactedAt))
+	}
+
+	participated, participatedAt := lastSpoke, spokeAt
+	if lastReacted >= 0 && (participated < 0 || reactedAt.After(participatedAt)) {
+		participated, participatedAt = lastReacted, reactedAt
+	}
+	if participated < 0 {
+		return activity{
+			TimeSinceBotParticipation:     "unknown",
+			MessagesSinceBotParticipation: "unknown",
+			BotSpokeRecently:              spokeRecency,
+			BotReactedRecently:            reactedRecency,
+		}
+	}
+
+	since := now.Sub(participatedAt)
 	if since < 0 {
 		since = 0
 	}
 
-	recently := "no"
-	if since <= recentParticipationWindow {
-		recently = "yes"
-	}
-
 	return activity{
 		TimeSinceBotParticipation:     since.Round(time.Second).String(),
-		MessagesSinceBotParticipation: fmt.Sprintf("%d", len(messages)-1-lastBotIndex),
-		BotSpokeRecently:              recently,
+		MessagesSinceBotParticipation: fmt.Sprintf("%d", len(messages)-1-participated),
+		BotSpokeRecently:              spokeRecency,
+		BotReactedRecently:            reactedRecency,
 	}
+}
+
+// recencyLabel renders a duration against the fixed display window.
+func recencyLabel(since time.Duration) string {
+	if since < 0 {
+		since = 0
+	}
+	if since <= recentParticipationWindow {
+		return "yes"
+	}
+
+	return "no"
 }
 
 // historyEntryFor renders one message as a data entry. Sender display
 // identity and attribution follow the ordinary turn path conventions; image
-// descriptions come from hydration and render as data, never as instructions.
-func historyEntryFor(message state.Message) historyEntry {
+// descriptions come from hydration and render as data, never as
+// instructions. Reactions render with actor attribution: reactions authored
+// by the bot itself are marked, so the model can recognize its previous
+// participation.
+func historyEntryFor(message state.Message, botUserID int64) historyEntry {
 	entry := historyEntry{
 		Sender:  senderName(message),
 		FromBot: message.IsMe,
@@ -141,8 +214,32 @@ func historyEntryFor(message state.Message) historyEntry {
 	if message.ReplyTo != nil {
 		entry.ReplyingTo = fmt.Sprintf("%s: %s", senderName(*message.ReplyTo), message.ReplyTo.Text)
 	}
+	for _, reaction := range message.Reactions {
+		byBot := botUserID != 0 && reaction.UserID == botUserID
+		entry.Reactions = append(entry.Reactions, historyReaction{
+			By:    actorName(reaction, byBot),
+			ByBot: byBot,
+			Emoji: reaction.Emoji,
+		})
+	}
 
 	return entry
+}
+
+// actorName resolves the display identity of a reaction's actor.
+func actorName(reaction state.Reaction, byBot bool) string {
+	name := strings.TrimSpace(reaction.Name)
+	if name == "" {
+		name = strings.TrimSpace(reaction.Username)
+	}
+	if name == "" {
+		name = "unknown"
+	}
+	if byBot {
+		return name + " (the bot)"
+	}
+
+	return name
 }
 
 // senderName resolves the display identity of a message author.

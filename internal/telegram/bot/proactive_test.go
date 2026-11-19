@@ -812,6 +812,81 @@ func TestProactiveReplyRunsOrdinaryPath(t *testing.T) {
 	}
 }
 
+// TestProactiveDecisionContextCarriesReactions pins that bot-authored
+// reactions recorded in history reach the decision request: they render with
+// actor attribution and count as confirmed participation, while staying
+// distinct from speaking (no bot message exists in this conversation).
+func TestProactiveDecisionContextCarriesReactions(t *testing.T) {
+	p := newProactiveTestBot(t, func(s *adminStoreStub) {
+		s.DefaultInteractivityMode = adminconfig.InteractivityMentionsReplies
+		s.DefaultInteractionProfile = adminconfig.ProfileTalkLow
+		s.SystemOneModel = "decision-model"
+	})
+	scope := state.ConversationScope{ChatID: -100999}
+	// An earlier user message the bot has already reacted to: the store is
+	// the same one the ordinary turn path records into.
+	p.history.AppendMessage(scope, state.Message{
+		MessageID: 90,
+		Name:      "Dana",
+		Text:      "earlier note worth a reaction",
+		ChatID:    -100999,
+		CreatedAt: time.Now().Add(-2 * time.Minute),
+	})
+	if !p.history.SetBotReaction(scope, 90, state.Reaction{
+		UserID:    testBotID.ID,
+		Name:      testBotID.FirstName,
+		Username:  testBotID.Username,
+		Emoji:     "🔥",
+		UpdatedAt: time.Now().Add(-time.Minute),
+	}) {
+		t.Fatalf("bot reaction must be recorded into history")
+	}
+	persona := &fakePersonaSource{}
+	client := &fakeDecisionClient{answers: decisionAnswers(0.05, 0.0, 1.0)}
+	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024)
+	t.Cleanup(stop)
+
+	p.deliver(t, proactiveGroupUpdate("fresh chatter for evaluation"))
+
+	waitFor(t, func() bool { return client.calls() >= 1 })
+	time.Sleep(100 * time.Millisecond) // settle: nothing further may be sent
+
+	client.mu.Lock()
+	requests := len(client.requests)
+	body := ""
+	if requests > 0 {
+		encoded, err := json.Marshal(client.requests[0])
+		if err != nil {
+			client.mu.Unlock()
+			t.Fatalf("marshal decision request: %v", err)
+		}
+		body = string(encoded)
+	}
+	client.mu.Unlock()
+
+	if requests != 1 {
+		t.Fatalf("decision must run exactly once, got %d backend calls", requests)
+	}
+	if !strings.Contains(body, `"by":"TestBot (the bot)"`) || !strings.Contains(body, `"by_bot":true`) {
+		t.Fatalf("bot-authored reaction must render with actor attribution: %s", body)
+	}
+	if !strings.Contains(body, `"emoji":"🔥"`) {
+		t.Fatalf("reaction emoji must reach the decision state: %s", body)
+	}
+	if !strings.Contains(body, `"bot_reacted_recently":"yes"`) {
+		t.Fatalf("bot reaction must count as recent participation: %s", body)
+	}
+	if !strings.Contains(body, `"bot_spoke_recently":"unknown"`) {
+		t.Fatalf("reacting must stay distinct from speaking: %s", body)
+	}
+	// The store stamps its own UpdatedAt at insertion, so only the shape can
+	// be pinned here: a concrete duration — not "unknown" — must drive
+	// participation time.
+	if strings.Contains(body, `"time_since_bot_participation":"unknown"`) {
+		t.Fatalf("the bot reaction must drive participation time: %s", body)
+	}
+}
+
 // TestProactiveReplyFailureIsSilent pins the fail-silent posture: a failed
 // proactive reply sends nothing user-visible — no notices, no typing — and
 // leaves no user-facing trace.
