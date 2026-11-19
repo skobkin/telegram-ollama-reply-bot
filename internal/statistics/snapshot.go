@@ -320,4 +320,9 @@ type InteractionSnapshot struct {
 	// never presented as truth — the selection's activity may live in an
 	// overflow bucket.
 	UntrackedSelection string `json:"untracked_selection"`
+	// OversizedIDFolds counts observations folded into a model overflow key
+	// because the identifier exceeded the size bound (>128 bytes, no
+	// truncation). It distinguishes size-driven folds from the
+	// cardinality-cap folds in the overflow disclosure.
+	OversizedIDFolds uint64 `json:"oversized_id_folds"`
 }

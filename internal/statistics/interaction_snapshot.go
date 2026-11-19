@@ -28,6 +28,7 @@ func (c *Collector) InteractionSnapshot(scope InteractionScope, filters Interact
 			Resets:    c.interactionResets,
 		},
 		FilteredTotalsExact: true,
+		OversizedIDFolds:    c.interaction.oversizedIDFolds,
 	}
 
 	filtered := filters.Narrowed() || scope.ChatSpecified

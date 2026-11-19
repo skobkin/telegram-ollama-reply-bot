@@ -277,6 +277,11 @@ type interactionState struct {
 
 	execution        executionTotalsState
 	executionBuckets map[executionBucketKey]*executionBucketState
+
+	// oversizedIDFolds counts observations folded into a model overflow key
+	// because the identifier exceeded maxModelIDBytes (either dimension).
+	// Distinct from the cardinality-cap folds, and disclosed by the exports.
+	oversizedIDFolds uint64
 }
 
 type scoreHistograms [scoreDimCount]scoreHistogram
@@ -646,6 +651,8 @@ func (c *Collector) resolveChatLocked(chatID int64) chatKey {
 // WITHOUT truncation — distinct IDs sharing a prefix would silently merge.
 func (c *Collector) resolveModelLocked(set map[string]struct{}, name string) modelKey {
 	if len(name) > maxModelIDBytes {
+		c.interaction.oversizedIDFolds++
+
 		return modelKey{overflow: true}
 	}
 	if _, ok := set[name]; ok {
