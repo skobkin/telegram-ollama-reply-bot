@@ -1489,9 +1489,11 @@ func TestProactiveLogsStayIdentifierFree(t *testing.T) {
 		}
 	})
 
-	// Debug level: a stray per-message trace would be caught too.
-	var logs bytes.Buffer
-	p.bot.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	// Debug level: a stray per-message trace would be caught too. The
+	// buffer is synchronized: task goroutines keep logging while the test
+	// goroutine reads.
+	logs := &synchronizedBuffer{}
+	p.bot.logger = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	// Scenario 1: the decision itself fails (backend anomaly class).
 	client := &fakeDecisionClient{err: systemone.ErrMalformed}
@@ -1569,4 +1571,25 @@ func TestProactiveQueuedTaskHonorsAccessRevocation(t *testing.T) {
 	if requests := p.apiRequests(); len(requests) != 0 {
 		t.Fatalf("revoked chat must make no Telegram calls, got %v", requests)
 	}
+}
+
+// synchronizedBuffer is a goroutine-safe bytes.Buffer: proactive task
+// goroutines log to it while the test goroutine reads it back.
+type synchronizedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
 }
