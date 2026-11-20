@@ -145,6 +145,10 @@ Ordinary chat replies always use the tool-capable chat workflow. `LLM__FEATURES_
 - `analyze_image` for re-analyzing one of those images under the model's own focused prompt (while image recognition is enabled; each call is a paid recognition request)
 - `search_history` for indexed keyword and fuzzy full in-memory history lookup in the current chat/topic
 - `get_message_thread_context` for compact reply-chain reconstruction when an older replied-to message has scrolled out of the recent verbatim context
+- `get_message_context` for a retained message with nearest-first neighbours before and after it (retained history only)
+- `calculate` for exact local arithmetic (float64; `^` is right-associative and binds tighter than unary minus)
+- `random_choice` for real random picks without replacement from a supplied list (zero-based indexes)
+- `generate_chart` for locally rendered PNG line, bar (vertical/horizontal/stacked) and pie charts sent to the chat
 - `send_poll` for explicit vote/poll requests
 - `send_quiz` for explicit quiz and trivia requests
 - `send_dice` for explicit dice-roll and mini-game requests
