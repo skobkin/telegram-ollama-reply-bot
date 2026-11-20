@@ -174,3 +174,17 @@ func TestCandidatesJoinedDeterministic(t *testing.T) {
 		t.Errorf("CandidatesJoined() = %q, want space-joined ReactionCandidates()", first)
 	}
 }
+
+func TestNormalizeCandidate(t *testing.T) {
+	for _, value := range []string{"❤", "❤️", "❤︎", "  ❤️\n", "👍️"} {
+		normalized, ok := NormalizeCandidate(value)
+		if !ok || !Candidate(normalized) {
+			t.Fatalf("rejected %q", value)
+		}
+	}
+	for _, value := range []string{"😂", "🥳", "👍🏽", "👍👎", "👨‍👩‍👧", "❤ ❤", "❤️️"} {
+		if normalized, ok := NormalizeCandidate(value); ok {
+			t.Fatalf("changed meaning of %q to %q", value, normalized)
+		}
+	}
+}

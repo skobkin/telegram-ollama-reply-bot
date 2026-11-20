@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"sync/atomic"
 
 	"telegram-ollama-reply-bot/internal/state"
 )
@@ -99,9 +98,12 @@ func (d Definition) EffectiveVisibility() Visibility {
 type runState struct {
 	advertised         map[string]Definition
 	reactionCandidates []string
-	// reactionAttempted claims the run's single outgoing set-reaction API
-	// attempt (invalid local arguments do not consume it).
-	reactionAttempted atomic.Bool
+	// Only the runtime's sequential calls mutate this state. Cross-run sends
+	// are coordinated separately by reactionLimiter.
+	reactionAttempts  int
+	reactionSucceeded bool
+	reactionBlocked   string
+	reactionRejected  map[string]bool
 	// systemOneModel is the run's effective System One decision model from
 	// the operation snapshot ("" = decision tools unavailable). Decision
 	// tool handlers read it instead of resolving settings themselves.

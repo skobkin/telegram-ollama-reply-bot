@@ -29,7 +29,7 @@ func (r *Runtime) prepareReactionAvailability(ctx context.Context, req ChatReque
 	if req.AllowedTools != nil && !slices.Contains(req.AllowedTools, "set_reaction") {
 		return
 	}
-	if run.reactionAttempted.Load() || !r.reactionTargetSuitable(r.callContext(req, run)) {
+	if !run.canReact() || !r.reactionTargetSuitable(r.callContext(req, run)) {
 		return
 	}
 	run.reactionCandidates = reactionemoji.ReactionCandidates()
@@ -39,7 +39,7 @@ func (r *Runtime) prepareReactionAvailability(ctx context.Context, req ChatReque
 }
 
 func (r *Runtime) reactionPresentation(call CallContext, p Presentation) (Presentation, bool) {
-	if !r.reactionTargetSuitable(call) || call.run == nil || call.run.reactionAttempted.Load() {
+	if !r.reactionTargetSuitable(call) || call.run == nil || !call.run.canReact() {
 		return p, false
 	}
 	candidates := r.currentReactionCandidates(call)
@@ -63,5 +63,12 @@ func (r *Runtime) currentReactionCandidates(call CallContext) []string {
 			candidates = slices.DeleteFunc(candidates, func(emoji string) bool { return !slices.Contains(current.Candidates, emoji) })
 		}
 	}
+	if call.run != nil {
+		candidates = slices.DeleteFunc(candidates, func(emoji string) bool { return call.run.reactionRejected[emoji] })
+	}
 	return candidates
+}
+
+func (run *runState) canReact() bool {
+	return run != nil && !run.reactionSucceeded && run.reactionAttempts < 3 && run.reactionBlocked == ""
 }

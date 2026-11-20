@@ -293,7 +293,7 @@ func (r *Runtime) AttachMCP(name string, source MCPToolSource) {
 }
 
 // HasTool reports whether a tool with the given name is currently registered
-// (and therefore advertised to the model).
+// (availability for a particular turn is resolved separately).
 func (r *Runtime) HasTool(name string) bool {
 	_, ok := r.registry.Lookup(name)
 

@@ -2,6 +2,15 @@
 
 ## 0.30.0 (unreleased) — changes since 0.29.1
 
+### Model-authored reactions (#177)
+
+Reaction candidates now follow cached Telegram chat availability (30-minute TTL).
+Empty supported sets and unsuitable album targets omit the tool. Whitespace and
+equivalent Unicode presentation variants are accepted. A turn can make up to
+three outgoing attempts after definitive recoverable failures, with at most one
+confirmed success; ambiguous failures and rate limits stop further reaction sends.
+There is no automatic emoji substitution or retry and no new configuration.
+
 ### Tool result and error contract (#176)
 
 Tool errors now carry stable codes, classifications, retryability and recovery hints.

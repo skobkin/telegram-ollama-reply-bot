@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -294,10 +295,12 @@ func (r *Runtime) setReaction(ctx context.Context, callCtx CallContext, args jso
 		return setReactionError("invalid_arguments", `Provide the reaction as a JSON object with one "emoji" field, e.g. {"emoji":"👍"}.`), nil
 	}
 
-	if !reactionemoji.Candidate(payload.Emoji) {
+	canonical, validEmoji := reactionemoji.NormalizeCandidate(payload.Emoji)
+	if !validEmoji {
 		return setReactionError("invalid_emoji", "Unsupported emoji: choose exactly one emoji from the listed available values."), nil
 	}
 
+	payload.Emoji = canonical
 	if !slices.Contains(r.currentReactionCandidates(callCtx), payload.Emoji) {
 		return setReactionError("emoji_unavailable", "Choose an emoji from the current available candidates."), nil
 	}
@@ -330,12 +333,11 @@ func (r *Runtime) setReaction(ctx context.Context, callCtx CallContext, args jso
 		return setReactionError("identity_unavailable", "The bot identity is not initialized; reactions cannot be recorded."), nil
 	}
 
-	// Cheap pre-check: a spent run is rejected before it can wait for a
-	// send slot it can never use. The authoritative atomic claim happens
-	// after the waits; the pre-check cannot race anything because calls of
-	// one run are sequential.
-	if callCtx.run.reactionAttempted.Load() {
-		return setReactionError("already_reacted", "This run already attempted its one allowed reaction."), nil
+	if !callCtx.run.canReact() {
+		if callCtx.run.reactionSucceeded {
+			return setReactionError("already_reacted", "This turn already has one confirmed reaction."), nil
+		}
+		return setReactionError("reaction_attempt_limit", "No further reaction attempts are possible in this turn."), nil
 	}
 
 	// Serialize per target before pacing: two runs reacting to the same
@@ -355,22 +357,21 @@ func (r *Runtime) setReaction(ctx context.Context, callCtx CallContext, args jso
 
 	if err := r.reactions.awaitChat(ctx, target.chatID); err != nil {
 		if errors.Is(err, errReactionRateLimited) {
-			return setReactionError("rate_limited", "The chat is inside a Telegram rate-limit window for reactions; try again later."), nil
+			callCtx.run.reactionBlocked = "rate_limited"
+			return setReactionError("rate_limited", "The chat is inside a Telegram rate-limit window; do not retry in this turn."), nil
 		}
 
 		return setReactionCancelledResult(), nil
 	}
 
-	// All blocking waits are done. Claim the run's single outgoing attempt
-	// only now, so a cancelled or refused wait never consumes it. Tool calls
-	// within a run are sequential, so the claim has no in-run race. Invalid
-	// local arguments above never reach this claim.
-	if ctx.Err() != nil {
+	// Local rejection and cancelled waits never consume the outgoing budget.
+	if toolContextError(ctx) != nil {
 		return setReactionCancelledResult(), nil
 	}
-	if !callCtx.run.reactionAttempted.CompareAndSwap(false, true) {
-		return setReactionError("already_reacted", "This run already attempted its one allowed reaction."), nil
+	if !slices.Contains(r.currentReactionCandidates(callCtx), payload.Emoji) {
+		return setReactionError("emoji_unavailable", "This emoji is no longer available; choose from the current enum."), nil
 	}
+	callCtx.run.reactionAttempts++
 
 	params := &t.SetMessageReactionParams{
 		ChatID:    tu.ID(target.chatID),
@@ -381,8 +382,10 @@ func (r *Runtime) setReaction(ctx context.Context, callCtx CallContext, args jso
 
 	sendErr := r.actions.SetMessageReaction(ctx, params)
 	if sendErr != nil {
-		return r.setReactionSendError(callCtx, target.chatID, sendErr), nil
+		return r.setReactionSendError(callCtx, target.chatID, payload.Emoji, sendErr), nil
 	}
+
+	callCtx.run.reactionSucceeded = true
 
 	// Telegram confirmed the reaction: record it synchronously on the
 	// triggering message — the authoritative local state — before the
@@ -423,47 +426,54 @@ func (r *Runtime) setReaction(ctx context.Context, callCtx CallContext, args jso
 	}, nil
 }
 
-// setReactionSendError classifies one Telegram failure into a safe tool
-// error. Descriptions coming from the Telegram API itself are safe to show;
-// transport errors can embed the token-bearing request URL, so they are
-// classified instead of printed — in model-facing results and in logs alike.
-// Failures after the request was sent (a lost response, a mid-flight
-// cancellation) are ambiguous — the outcome on Telegram's side is unknown —
-// so the model is told that instead of a definite "not applied".
-func (r *Runtime) setReactionSendError(callCtx CallContext, chatID int64, sendErr error) toolResult {
-	var apiErr *telegoapi.Error
-	switch {
-	case errors.Is(sendErr, context.Canceled) || errors.Is(sendErr, context.DeadlineExceeded):
-		callCtx.Logger.Warn("set_reaction cancelled during telegram request")
-
-		// The request was already in flight, so its outcome on Telegram's
-		// side is unknown — report the uncertainty instead of a definite
-		// "not applied".
-		return setReactionError("cancelled", "The reaction request was interrupted before Telegram confirmed it; the reaction may or may not have been applied.")
-	case errors.As(sendErr, &apiErr):
-		if apiErr.ErrorCode == 429 {
-			var retryAfterSeconds int
-			if apiErr.Parameters != nil && apiErr.Parameters.RetryAfter > 0 {
-				retryAfterSeconds = apiErr.Parameters.RetryAfter
+// setReactionSendError keeps Telegram descriptions out of diagnostics and uses
+// only recognized rejection reasons to permit corrected model-driven retries.
+func (r *Runtime) setReactionSendError(call CallContext, chatID int64, emoji string, sendErr error) toolResult {
+	var api *telegoapi.Error
+	call.run.reactionBlocked = "request_failed"
+	failure := NewToolError("request_failed", ErrorAmbiguous, "The reaction was not confirmed; whether it was applied is unknown.", false, "Do not send another reaction in this turn.")
+	if errors.Is(sendErr, context.Canceled) || errors.Is(sendErr, context.DeadlineExceeded) {
+		failure.Code = "cancelled"
+		failure.Message = "The reaction request was interrupted; it may or may not have been applied."
+	} else if errors.As(sendErr, &api) {
+		switch {
+		case api.ErrorCode == 429:
+			delay := 0
+			if api.Parameters != nil && api.Parameters.RetryAfter > 0 {
+				delay = api.Parameters.RetryAfter
 			}
-			r.reactions.penalizeChat(chatID, time.Duration(retryAfterSeconds)*time.Second)
-			callCtx.Logger.Warn("set_reaction rate limited by telegram", "retry_after_seconds", retryAfterSeconds)
-
-			return setReactionError("rate_limited", "Telegram rate-limited the reaction; the chat is cooling down.")
+			r.reactions.penalizeChat(chatID, time.Duration(delay)*time.Second)
+			call.run.reactionBlocked = "rate_limited"
+			failure = NewToolError("rate_limited", ErrorRateLimited, "Telegram rate-limited the reaction; this turn cannot send another.", false, "Wait until the retry delay has passed before a later turn.")
+			failure.RetryAfterSeconds = delay
+		case api.ErrorCode == 400 && (strings.Contains(api.Description, "REACTION_INVALID") || strings.Contains(api.Description, "REACTION_NOT_ALLOWED")):
+			call.run.reactionBlocked = ""
+			if call.run.reactionRejected == nil {
+				call.run.reactionRejected = make(map[string]bool)
+			}
+			call.run.reactionRejected[emoji] = true
+			if r.reactionAvailability != nil {
+				r.reactionAvailability.Invalidate(chatID)
+			}
+			retry := call.run.canReact() && len(r.currentReactionCandidates(call)) > 0
+			failure = NewToolError("emoji_unavailable", ErrorArguments, "Telegram rejected this emoji for the triggering message.", retry, "Choose a different emoji from the next available enum.")
+			if !retry {
+				failure.RecoveryHint = "No further reaction attempt is possible in this turn."
+			}
+		case api.ErrorCode >= 400 && api.ErrorCode < 500:
+			call.run.reactionBlocked = "telegram_rejected"
+			if r.reactionAvailability != nil {
+				r.reactionAvailability.Invalidate(chatID)
+			}
+			failure = NewToolError("telegram_error", ErrorPermanent, "Telegram rejected reactions for this target or the bot's permissions.", false, "Continue without a reaction; this target cannot be changed by the tool.")
 		}
-
-		callCtx.Logger.Warn("set_reaction rejected by telegram", "error_code", apiErr.ErrorCode)
-
-		return setReactionError("telegram_error", "Telegram rejected the reaction: "+apiErr.Description)
-	default:
-		callCtx.Logger.Warn("set_reaction telegram request failed")
-
-		// A transport failure after the request was sent is ambiguous: the
-		// response may have been lost while Telegram applied the reaction.
-		// Never retry it and never claim the reaction was not applied —
-		// report the unknown outcome (spec section 5).
-		return setReactionError("request_failed", "The Telegram request failed without a confirmation; whether the reaction was applied is unknown.")
 	}
+	code := 0
+	if api != nil {
+		code = api.ErrorCode
+	}
+	call.Logger.Warn("set_reaction failed", "chat_id", chatID, "message_id", call.Requester.MessageID, "attempt", call.run.reactionAttempts, "error_code", failure.Code, "error_class", failure.Class, "telegram_error_code", code, "retryable", failure.Retryable)
+	return ErrorResult(failure)
 }
 
 // setReactionTarget resolves the reaction target from the invocation's
@@ -484,15 +494,27 @@ func setReactionTarget(callCtx CallContext) (reactionTargetKey, bool) {
 // react to; it is not a Go error, so the runtime treats it as a completed
 // (failed) tool call.
 func setReactionError(code, message string) toolResult {
-	return toolResult{
-		Status: execution.StatusError,
-		Data: map[string]any{
-			"error": map[string]any{
-				"code":    code,
-				"message": message,
-			},
-		},
+	class := ErrorPermanent
+	retry := false
+	hint := ""
+	switch code {
+	case "invalid_arguments", "invalid_emoji", "emoji_unavailable":
+		class = ErrorArguments
+		retry = true
+		hint = "Correct the arguments using the available emoji enum."
+	case "target_busy":
+		class = ErrorTransient
+		retry = true
+		hint = "Try again later if the turn still has time."
+	case "rate_limited":
+		class = ErrorRateLimited
+		hint = "Do not retry immediately."
+	case "cancelled":
+		class = ErrorCancelled
+	case "run_state_unavailable", "identity_unavailable":
+		class = ErrorUnavailable
 	}
+	return ErrorResult(NewToolError(code, class, message, retry, hint))
 }
 
 func setReactionCancelledResult() toolResult {

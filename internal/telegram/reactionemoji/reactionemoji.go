@@ -58,7 +58,7 @@ func All() []string {
 // reaction choices at all (neither to users nor to bots), so they can never
 // appear in incoming updates and must not be advertised as outgoing
 // reaction candidates — sending one is rejected outright and would burn a
-// run's only reaction attempt. They stay tracked above so a Telegram-side
+// turn's reaction attempt budget. They stay tracked above so a Telegram-side
 // extension of the reaction list needs no code change beyond removing an
 // entry here.
 var excludedFromReactions = map[string]struct{}{
@@ -115,4 +115,19 @@ func Joined() string {
 // space-separated string.
 func CandidatesJoined() string {
 	return strings.Join(ReactionCandidates(), " ")
+}
+
+// NormalizeCandidate accepts surrounding whitespace and equivalent Unicode
+// presentation selectors. It never maps a different emoji, modifier or sequence
+// onto a supported candidate; inbound feedback matching remains unchanged.
+func NormalizeCandidate(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if Candidate(value) {
+		return value, true
+	}
+	canonical := strings.TrimSuffix(strings.TrimSuffix(value, "\ufe0f"), "\ufe0e")
+	if canonical == value || (value != canonical+"\ufe0f" && value != canonical+"\ufe0e") {
+		return "", false
+	}
+	return canonical, Candidate(canonical)
 }

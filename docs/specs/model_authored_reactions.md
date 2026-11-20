@@ -10,7 +10,7 @@ with or without a subsequent text reply. It is the single source of requirements
 
 ## 1. Goals and behavioral contract
 
-A model may call `set_reaction` to acknowledge the current user message with an ordinary Telegram emoji. The model can then finish **without** a text reply if the reaction fully conveys its response, **or** continue and write a normal answer. Reaction + text is explicitly valid. The tool is available in all otherwise-authorized conversational runs by default, with no additional global or per-chat configuration.
+A model may call `set_reaction` to acknowledge the current user message with an ordinary Telegram emoji. The model can then finish **without** a text reply if the reaction fully conveys its response, **or** continue and write a normal answer. Reaction + text is explicitly valid. The tool is available in otherwise-authorized conversational runs when target eligibility, chat availability and remaining run attempts permit it, with no additional global or per-chat configuration.
 
 This is an ordinary discretionary, side-effecting tool. **It must not be terminal.** Reuse `ReplyWithTools()`'s existing successful-empty-completion path following successful side effects. The separate [terminal `say_nothing` tool (#159)](say_nothing.md) also lets the model end the turn intentionally after a reaction. Do not force a textual reply after a successful reaction.
 
@@ -26,7 +26,7 @@ Model-facing arguments:
 {"emoji":"👍"}
 ```
 
-Schema: object, **required** `emoji: string`, exact `enum` of supported Unicode emoji, `additionalProperties: false`. **No `chat_id`, `message_id`, target selector, or hidden alternate target.**
+Schema: object, **required** `emoji: string`, dynamic `enum` of available supported Unicode emoji, `additionalProperties: false`. Trim whitespace and normalize equivalent Unicode presentation selectors, without changing semantic emoji identity. **No `chat_id`, `message_id`, target selector, or hidden alternate target.**
 
 Resolve the target exclusively from the current invocation's immutable request context:
 
@@ -35,7 +35,7 @@ Resolve the target exclusively from the current invocation's immutable request c
 - `topic_id = CallContext.Scope.TopicID` (for consistency/validation only; Telegram `setMessageReaction` does not take a topic ID).
 - Reject missing/nonpositive message ID, empty/invalid chat ID, mismatched request chat/topic metadata, and bot-authored requests before any Telegram call.
 
-**Critical comment in implementation and tool description:** `Requester.MessageID` is the Telegram message that triggered **this run**. It is **not** “the latest message in the chat.” It does not change when other users send messages or multiple runs execute concurrently. Do not use the last message from history or a global “current message” variable.
+**Critical implementation invariant:** `Requester.MessageID` is the Telegram message that triggered **this run**. It is **not** “the latest message in the chat.” It does not change when other users send messages or multiple runs execute concurrently. Do not use the last message from history or a global “current message” variable.
 
 Do **not** inject message IDs into model-visible history, prompts, or tool responses as an aid to targeting. Reactions to earlier messages or the bot's previous message are out of scope.
 
@@ -83,8 +83,8 @@ Extend the existing `TelegramActionSender` with the Telego `SetMessageReaction` 
 
 - Treat **only confirmed Telegram success** as success. Do not write a reaction or publish a success event after transport, validation, permission, or API errors.
 - Do not automatically choose a different emoji. Return a compact, safe, actionable tool error, without token-bearing URLs or secrets (follow existing `safeerr` conventions).
-- Allow at most **one actual outgoing set-reaction API attempt per processing run** (invalid local arguments do not consume it), protecting against repeated model attempts. Rejected follow-up attempts return a tool error. A reaction does **not** prevent the model from calling unrelated tools or producing text.
-- Coordinate reaction attempts per chat with a small, bounded cooldown and bounded per-target serialization so concurrent runs cannot race different bot reactions on the same Telegram message. Use an explicit **run-local attempt guard** (initialized in `ReplyWithTools()` and shared across that run's tool calls), rather than a long-lived map keyed by request IDs. Extend `CallContext` minimally to carry the effective `RunID` from `runEmitter.rc`, which may be generated when `ChatRequest.RunID` is empty; do not assume the logging `RequestID` is equivalent. Do not serialize all chats or LLM generations. Respect `retry_after` from HTTP 429 for subsequent reaction attempts; avoid unbounded waiting or infinite retries. Do not automatically retry an ambiguous transport failure, as the remote side may have applied the reaction.
+- Allow at most **three outgoing set-reaction API attempts per turn** and **one confirmed success**. Invalid local arguments and cancelled/refused waits consume no attempt. Recognized definitive emoji rejections permit corrected model-driven retries; exclude the rejected emoji for this turn and invalidate availability. Success, exhaustion, rate limiting, permanent target rejection or ambiguous remote outcomes remove the tool from subsequent iterations and reject later calls in the same batch. A reaction does not prevent unrelated tools or text in ordinary turns.
+- Coordinate reaction attempts per chat with a small, bounded cooldown and bounded per-target serialization so concurrent runs cannot race different bot reactions on the same Telegram message. Use explicit **run-local attempt/success state** (initialized in `ReplyWithTools()` and shared across that run's tool calls), rather than a long-lived map keyed by request IDs. Extend `CallContext` minimally to carry the effective `RunID` from `runEmitter.rc`, which may be generated when `ChatRequest.RunID` is empty; do not assume the logging `RequestID` is equivalent. Do not serialize all chats or LLM generations. Respect `retry_after` from HTTP 429 for subsequent reaction attempts; avoid unbounded waiting or infinite retries. Do not automatically retry an ambiguous transport failure, as the remote side may have applied the reaction.
 - Keep this narrowly scoped to reaction sends. Reuse an existing suitable limiter if practical, but do not refactor the preview/final-reply delivery pipeline or invent a general message scheduler for this feature.
 - Telegram may reject reactions on certain service/otherwise restricted messages; surface the error without fictitious local state.
 
@@ -151,8 +151,8 @@ type BotReactionSet struct {
 
 **Schema and prompt**
 
-1. Tool advertised by default; its only argument is `emoji`; rejected extra fields/invalid emoji do not reach Telegram.
-2. Tool description and JSON Schema `enum` enumerate **exactly** the shared whitelist; test all values and `❤` vs `❤️`.
+1. Tool advertised when the triggering target and supported candidates permit it; its only argument is `emoji`; rejected extra fields/invalid emoji do not reach Telegram.
+2. The concise description does not duplicate the candidate list. The dynamic enum intersects chat availability and the outgoing whitelist. Trim whitespace and accept equivalent presentation forms (`❤`, `❤️`, `❤︎`) while sending canonical Telegram bytes; reject semantic substitutions and modifiers.
 3. Effective tool policy explicitly permits reaction-only and reaction+text, with the immutable current-run target rule; no fake message IDs added to prompts.
 
 **Execution**
@@ -160,7 +160,7 @@ type BotReactionSet struct {
 4. Two simultaneous runs in the same chat target their respective `Requester.MessageID`, never whichever Telegram message arrived last; the run-local attempt guard and propagated effective `RunID` must not leak across runs. Also verify separation by chat/topic.
 5. Missing/invalid or bot-authored target and media-group targets fail safely before Telegram; one outgoing request carries the correct chat/message/emoji.
 6. Unsupported/chat-restricted reactions and Telegram errors produce tool errors without state/event emission, and no automatic emoji fallback.
-7. Cap repeated API attempts in one run, and cover concurrent same-target sends, 429 `retry_after`, timeouts and cancellation without cross-chat serialization or unbounded waits.
+7. Cap outgoing attempts at three and confirmed successes at one; cover corrected retries, exhausted attempts, and concurrent same-target sends, 429 `retry_after`, timeouts and cancellation without cross-chat serialization or unbounded waits.
 8. Fake LLM: reaction only → subsequent successful empty completion → no text message; reaction + text → both appear; failed reaction cannot authorize empty success; other side-effecting tools retain their existing semantics.
 
 **State/events/preview**

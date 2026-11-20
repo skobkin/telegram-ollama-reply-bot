@@ -31,6 +31,7 @@ type stubLLM struct {
 	buildModels     []string
 	lastBuildPolicy string
 	lastBuildTools  []llm.ToolDefinition
+	buildTools      [][]llm.ToolDefinition
 	lastBuildExtras []llm.Message
 	lastGenerateReq llm.Request
 	generateModels  []string
@@ -42,6 +43,7 @@ func (s *stubLLM) BuildChatToolRequest(_ context.Context, _ llm.PromptScope, _ l
 	s.buildModels = append(s.buildModels, generationModel)
 	s.lastBuildPolicy = toolPolicy
 	s.lastBuildTools = append([]llm.ToolDefinition(nil), tools...)
+	s.buildTools = append(s.buildTools, s.lastBuildTools)
 	s.lastBuildExtras = append([]llm.Message(nil), extraMessages...)
 	if s.buildErr != nil {
 		return llm.Request{}, s.buildErr
@@ -92,6 +94,7 @@ type stubActionSender struct {
 	reactionMu            sync.Mutex
 	lastReactionParams    *tg.SetMessageReactionParams
 	reactionErr           error
+	reactionErrs          []error
 	reactionDelay         time.Duration // blocks each reaction send when > 0
 	reactionCalls         int
 	reactionStartTimes    []time.Time // API call starts, for spacing/serialization assertions
@@ -125,6 +128,10 @@ func (s *stubActionSender) SetMessageReaction(_ context.Context, params *tg.SetM
 	s.reactionStartTimes = append(s.reactionStartTimes, start)
 	s.reactionCallDurations = append(s.reactionCallDurations, time.Since(start))
 	err := s.reactionErr
+	if len(s.reactionErrs) > 0 {
+		err = s.reactionErrs[0]
+		s.reactionErrs = s.reactionErrs[1:]
+	}
 	s.reactionMu.Unlock()
 
 	return err

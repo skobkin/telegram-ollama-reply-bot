@@ -244,7 +244,7 @@ func TestRestrictedRunCompletesOnSuccessfulReaction(t *testing.T) {
 
 // TestRestrictedRunFailedReactionConsumesAttempt pins that a failed reaction
 // does not complete the run: the loop continues, a model retry hits the
-// per-run attempt guard (already_reacted, one API call total), and the run
+// availability guard (tool_unavailable, one API call total), and the run
 // ends when the model stops calling tools.
 func TestRestrictedRunFailedReactionConsumesAttempt(t *testing.T) {
 	sender := &stubActionSender{reactionErr: errors.New("telegram rejected the reaction")}
@@ -285,7 +285,7 @@ func TestRestrictedRunFailedReactionConsumesAttempt(t *testing.T) {
 	if stub.buildCount != 3 {
 		t.Fatalf("expected three generation rounds, got %d", stub.buildCount)
 	}
-	// The retry must have seen the already_reacted error, not a fresh send.
+	// The retry must have seen the tool_unavailable error, not a fresh send.
 	var retryResult string
 	for _, message := range stub.lastBuildExtras {
 		if message.ToolCallID == "call-2" {
@@ -293,7 +293,7 @@ func TestRestrictedRunFailedReactionConsumesAttempt(t *testing.T) {
 		}
 	}
 	if !strings.Contains(retryResult, "tool_unavailable") {
-		t.Fatalf("retry must see already_reacted, got %q", retryResult)
+		t.Fatalf("retry must see tool_unavailable, got %q", retryResult)
 	}
 }
 

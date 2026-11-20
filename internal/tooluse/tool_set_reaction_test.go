@@ -76,41 +76,17 @@ func callSetReaction(t *testing.T, runtime *Runtime, callCtx CallContext, args s
 // reactionErrorCode extracts the structured error code from a tool result.
 func reactionErrorCode(t *testing.T, result toolResult) string {
 	t.Helper()
-
-	if result.Status != execution.StatusError {
-		t.Fatalf("expected error result, got status %q (%+v)", result.Status, result.Data)
+	if result.Status != execution.StatusError || result.Error == nil {
+		t.Fatalf("expected structured failure: %+v", result)
 	}
-	if result.Error != nil {
-		t.Fatalf("structured tool errors must not carry a raw Go error string, got %q", result.Error)
-	}
-
-	data, ok := result.Data.(map[string]any)
-	if !ok {
-		t.Fatalf("expected structured error data, got %#v", result.Data)
-	}
-	errObj, ok := data["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected error object, got %#v", data)
-	}
-	code, _ := errObj["code"].(string)
-
-	return code
+	return result.Error.Code
 }
-
 func reactionErrorMessage(t *testing.T, result toolResult) string {
 	t.Helper()
-
-	data, ok := result.Data.(map[string]any)
-	if !ok {
-		t.Fatalf("expected structured error data, got %#v", result.Data)
+	if result.Error == nil {
+		t.Fatalf("expected error: %+v", result)
 	}
-	errObj, ok := data["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected error object, got %#v", data)
-	}
-	message, _ := errObj["message"].(string)
-
-	return message
+	return result.Error.Message
 }
 
 func reactionUserMessage(scope state.ConversationScope) (state.ConversationScope, state.Message) {
@@ -196,7 +172,7 @@ func TestSetReactionDescriptionAndEnumMatchWhitelist(t *testing.T) {
 
 	// Tracked emoji that Telegram does not offer as reactions must not be
 	// advertised: sending one is rejected outright and burns the run's
-	// only reaction attempt.
+	// reaction attempt budget.
 	for _, invalid := range reactionemoji.All() {
 		if !reactionemoji.Candidate(invalid) && slices.Contains(schema.Properties.Emoji.Enum, invalid) {
 			t.Fatalf("non-reaction emoji %q must not appear in the enum", invalid)
@@ -223,15 +199,15 @@ func TestSetReactionHeartEmojiExactForm(t *testing.T) {
 		t.Fatalf("exact heart bytes must be forwarded, got %#v", sender.lastReactionParams.Reaction[0])
 	}
 
-	// The variation-selector form must be rejected before any API call —
-	// and the rejection must not consume a fresh run's attempt.
+	// Equivalent Unicode presentation forms send the same canonical heart.
 	fresh := reactionCallCtx(scope, requester)
-	if code := reactionErrorCode(t, callSetReaction(t, runtime, fresh, `{"emoji":"❤️"}`)); code != "invalid_emoji" {
-		t.Fatalf("heart with variation selector must be invalid_emoji, got %q", code)
+	if result := callSetReaction(t, runtime, fresh, `{"emoji":" ❤️ "}`); result.Status != execution.StatusOK {
+		t.Fatalf("presentation variant rejected: %+v", result)
 	}
-	if result := callSetReaction(t, runtime, fresh, `{"emoji":"👍"}`); result.Status != execution.StatusOK {
-		t.Fatalf("invalid attempt must not consume the run attempt, got %+v", result.Data)
+	if sender.lastReactionParams.Reaction[0].(*tg.ReactionTypeEmoji).Emoji != "❤" {
+		t.Fatal("noncanonical emoji sent")
 	}
+
 }
 
 // --- local validation before Telegram ---
@@ -262,7 +238,7 @@ func TestSetReactionRejectsInvalidArgumentsBeforeTelegram(t *testing.T) {
 		t.Fatalf("invalid arguments must never reach Telegram, got %d calls", sender.reactionCallCount())
 	}
 
-	// None of the invalid attempts consumed the run's single reaction.
+	// None of the invalid attempts consumed the run's outgoing budget.
 	result := callSetReaction(t, runtime, reactionCallCtx(scope, requester), `{"emoji":"👍"}`)
 	if result.Status != execution.StatusOK {
 		t.Fatalf("valid call after invalid ones must succeed, got %+v", result.Data)
@@ -368,7 +344,7 @@ func TestSetReactionRequiresRunStateAndIdentity(t *testing.T) {
 
 // --- run attempt bound ---
 
-func TestSetReactionOneAttemptPerRun(t *testing.T) {
+func TestSetReactionOneConfirmedSuccessPerRun(t *testing.T) {
 	t.Parallel()
 
 	sender := &stubActionSender{}
@@ -550,7 +526,7 @@ func TestSetReactionTelegramAPIError(t *testing.T) {
 	runtime.config.Dispatcher = recorder
 
 	result := callSetReaction(t, runtime, reactionCallCtx(scope, state.Message{FromID: 11, ChatID: 400, MessageID: 42}), `{"emoji":"👎"}`)
-	if code := reactionErrorCode(t, result); code != "telegram_error" {
+	if code := reactionErrorCode(t, result); code != "emoji_unavailable" {
 		t.Fatalf("expected telegram_error, got %q", code)
 	}
 	if len(store.Snapshot(scope).Messages[0].Reactions) != 0 {
