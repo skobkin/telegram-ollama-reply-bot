@@ -267,7 +267,7 @@ func setReactionDescription() string {
 	var sb strings.Builder
 	sb.WriteString("React to the message that triggered this run with exactly one supported emoji. ")
 	sb.WriteString("The target is the user message that started the current run — never assume it is the latest message in the chat. ")
-	sb.WriteString("If a reaction fully communicates the response, you may end the turn without any additional text; you may also react and then provide a text reply when useful. ")
+	sb.WriteString("You may provide a text reply afterwards or call say_nothing to end the turn without additional text. ")
 	sb.WriteString("Do not replace a substantive answer to a genuine question or request with a reaction alone, and do not repeat or change reactions unnecessarily. ")
 	sb.WriteString("Available emoji: " + reactionemoji.CandidatesJoined() + ". ")
 	sb.WriteString("These are the bot's supported candidates, not a guarantee that Telegram accepts them in every chat.")

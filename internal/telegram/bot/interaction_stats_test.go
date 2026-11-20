@@ -505,6 +505,38 @@ func TestInteractionExecutionEffectClasses(t *testing.T) {
 		})
 	}
 
+	for _, precedingTool := range []string{"", "set_reaction", "send_dice"} {
+		t.Run("intentional silence after "+precedingTool, func(t *testing.T) {
+			p := newReplyBot(t)
+			var calls []llm.ToolCall
+			if precedingTool != "" {
+				args := []byte(`{}`)
+				if precedingTool == "set_reaction" {
+					args = []byte(`{"emoji":"🎉"}`)
+				}
+				calls = append(calls, llm.ToolCall{ID: "effect", Name: precedingTool, Arguments: args})
+			}
+			calls = append(calls, llm.ToolCall{ID: "silence", Name: "say_nothing", Arguments: []byte(`{}`)})
+			p.llm.mu.Lock()
+			p.llm.responses = []llm.Response{{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: calls}}}
+			p.llm.mu.Unlock()
+			p.deliver(t, proactiveGroupUpdate("reply-worthy message"))
+			snapshot := waitForInteraction(t, p.bot.stats, func(s statistics.InteractionSnapshot) bool {
+				return s.Execution.Totals.TurnsWithEffect+s.Execution.Totals.TurnsWithoutEffect+s.Execution.Totals.TurnsFailed == 1
+			})
+			exec := snapshot.Execution.Totals
+			if exec.DispatchedReply != 1 || exec.TurnsFailed != 0 || exec.TextsConfirmed != 0 || p.llm.buildCount() != 1 {
+				t.Fatalf("silence must complete successfully without text: %+v", exec)
+			}
+			if (exec.ReactionsConfirmed == 1) != (precedingTool == "set_reaction") || (exec.OtherSideEffects == 1) != (precedingTool == "send_dice") {
+				t.Fatalf("confirmed effects changed: %+v", exec)
+			}
+			if (exec.TurnsWithoutEffect == 1) != (precedingTool == "") || (exec.TurnsWithEffect == 1) != (precedingTool != "") {
+				t.Fatalf("terminal tool must not count as a side effect: %+v", exec)
+			}
+		})
+	}
+
 	t.Run("reaction-only turn via restricted react decision", func(t *testing.T) {
 		p := newProactiveTestBot(t, func(s *adminStoreStub) {
 			s.DefaultInteractivityMode = adminconfig.InteractivityMentionsReplies

@@ -546,9 +546,9 @@ func TestReplyWithTools_AccountsUsageAcrossMultipleToolCalls(t *testing.T) {
 func wireTextFor(t *testing.T, r *Runtime, req ChatRequest, call llm.ToolCall) string {
 	t.Helper()
 
-	message, _, _ := r.executeToolCall(context.Background(), runEmitter{}, &runState{}, req, call)
+	outcome := r.executeToolCall(context.Background(), runEmitter{}, &runState{}, req, call)
 
-	return message.Text()
+	return outcome.message.Text()
 }
 
 func decodeWireResult(t *testing.T, wire string) (topLevel, data map[string]any) {

@@ -140,6 +140,16 @@ type Result struct {
 	Reply     string
 	Usage     *llm.TokenUsage
 	ToolCalls []ToolCallRecord
+	// IntentionalSilence marks accepted say_nothing completion, distinct
+	// from the legacy empty reply after a successful side effect.
+	IntentionalSilence bool
+}
+
+type toolCallOutcome struct {
+	message          llm.Message
+	allowsEmptyReply bool
+	endTurn          bool
+	record           ToolCallRecord
 }
 
 // runEmitter publishes execution events for one run. Emission is guarded by
@@ -349,6 +359,7 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 		records                   []ToolCallRecord
 		started                   bool
 		allowEmptyReplyCompletion bool
+		intentionalSilence        bool
 	)
 
 	succeeded := func(reply string) (Result, error) {
@@ -359,7 +370,7 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 			ReplyLength: len([]rune(reply)),
 		})
 
-		return Result{Reply: reply, Usage: usagePointer(totalUsage), ToolCalls: records}, nil
+		return Result{Reply: reply, Usage: usagePointer(totalUsage), ToolCalls: records, IntentionalSilence: intentionalSilence}, nil
 	}
 	fail := func(err error, fallbackReason string) (Result, error) {
 		emitter.publish(execution.RunFailed{
@@ -434,10 +445,21 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 		allowEmptyReplyCompletion = false
 
 		for _, call := range resp.Message.ToolCalls {
-			toolMessage, allowsEmptyReply, record := r.executeToolCall(ctx, emitter, run, req, call)
-			records = append(records, record)
-			extraMessages = append(extraMessages, toolMessage)
-			allowEmptyReplyCompletion = allowEmptyReplyCompletion || allowsEmptyReply
+			if err := toolContextError(ctx); err != nil {
+				return fail(err, execution.ReasonBackend)
+			}
+			outcome := r.executeToolCall(ctx, emitter, run, req, call)
+			records = append(records, outcome.record)
+			if outcome.endTurn {
+				intentionalSilence = true
+
+				return succeeded("")
+			}
+			if err := toolContextError(ctx); err != nil {
+				return fail(err, execution.ReasonBackend)
+			}
+			extraMessages = append(extraMessages, outcome.message)
+			allowEmptyReplyCompletion = allowEmptyReplyCompletion || outcome.allowsEmptyReply
 		}
 
 		if req.AllowedTools != nil && req.CompleteAfterSideEffect && allowEmptyReplyCompletion {
@@ -452,7 +474,7 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 	return fail(ErrToolLoopLimitReached, execution.ReasonBackend)
 }
 
-func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *runState, req ChatRequest, call llm.ToolCall) (llm.Message, bool, ToolCallRecord) {
+func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *runState, req ChatRequest, call llm.ToolCall) toolCallOutcome {
 	logger := logging.FromContext(ctx, r.logger)
 	definition, ok := r.registry.Lookup(call.Name)
 	if ok && req.AllowedTools != nil && !slices.Contains(req.AllowedTools, call.Name) {
@@ -482,15 +504,15 @@ func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *
 			Status:     execution.StatusError,
 		})
 
-		return toolResponseMessage(call.ID, marshalResult(toolResult{
+		return toolCallOutcome{message: toolResponseMessage(call.ID, marshalResult(toolResult{
 			Status: "error",
 			Error:  fmt.Sprintf("unknown tool %q", call.Name),
-		}, defaultToolResultCharBudget)), false, ToolCallRecord{
+		}, defaultToolResultCharBudget)), record: ToolCallRecord{
 			CallID:     call.ID,
 			Name:       call.Name,
 			Visibility: VisibilityStandard,
 			Status:     execution.StatusError,
-		}
+		}}
 	}
 
 	logger.Info(
@@ -538,16 +560,19 @@ func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *
 		Status:     result.Status,
 	})
 
-	return toolResponseMessage(call.ID, marshalResult(result, definition.ResultCharBudget)),
-		definition.SideEffecting && result.Status == execution.StatusOK,
-		ToolCallRecord{
+	return toolCallOutcome{
+		message:          toolResponseMessage(call.ID, marshalResult(result, definition.ResultCharBudget)),
+		allowsEmptyReply: definition.SideEffecting && result.Status == execution.StatusOK,
+		endTurn:          result.endTurn && result.Status == execution.StatusOK,
+		record: ToolCallRecord{
 			CallID:        call.ID,
 			Name:          definition.Name,
 			Visibility:    definition.EffectiveVisibility(),
 			Status:        result.Status,
 			Duration:      duration,
 			SideEffecting: definition.SideEffecting,
-		}
+		},
+	}
 }
 
 func toolResponseMessage(toolCallID, text string) llm.Message {

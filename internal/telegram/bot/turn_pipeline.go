@@ -187,6 +187,7 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 	var llmReply string
 	var usage *llm.TokenUsage
 	var toolCalls []tooluse.ToolCallRecord
+	var intentionalSilence bool
 	var err error
 
 	turnWork := func(ctx context.Context) error {
@@ -244,6 +245,7 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 		})
 		llmReply, usage, err = result.Reply, result.Usage, runErr
 		toolCalls = result.ToolCalls
+		intentionalSilence = result.IntentionalSilence
 
 		return runErr
 	}
@@ -253,11 +255,11 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 	// suppress it entirely: a silent reaction must not announce itself as
 	// an incoming reply.
 	if opts.typingFallback {
-		err = b.runWithPreviewTimeout(ctx, chatID, run, turnWork)
+		err = b.runWithPreviewTimeout(ctx, chatID, run, turnWork, func() bool { return intentionalSilence })
 	} else {
 		deadlineCtx, cancel := b.withProcessingDeadline(ctx)
 		defer cancel()
-		err = b.withinProcessingDeadline(deadlineCtx, turnWork)
+		err = b.withinProcessingDeadline(deadlineCtx, turnWork, func() bool { return intentionalSilence })
 	}
 	if err != nil {
 		effects := effectsFromCalls(toolCalls, false)
@@ -275,7 +277,7 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 			return effects
 		}
 
-		run.Abort()
+		run.Discard()
 
 		if errors.Is(err, ErrRequestTimeout) {
 			logger.Error("llm request timed out", "chat_id", message.Chat.ID, "error", err)
@@ -301,6 +303,11 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 
 	if usage != nil {
 		b.stats.AddUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, usage.Cost)
+	}
+	if intentionalSilence {
+		run.Discard()
+
+		return effectsFromCalls(toolCalls, false)
 	}
 
 	logger.Debug("sending llm reply", "reply_length", len(llmReply))
@@ -340,7 +347,7 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 		if opts.errorPolicy == silentErrors {
 			run.Fail()
 		} else {
-			run.Abort()
+			run.Discard()
 		}
 
 		logger.Error("cannot send reply message", "error", err, "reply_length", len(llmReply))

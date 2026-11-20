@@ -2,6 +2,15 @@
 
 ## 0.30.0 (unreleased) — changes since 0.29.1
 
+### Intentional silent completion and failed-preview cleanup (#159, #156)
+
+The generation model gains a discretionary no-argument `say_nothing` tool that ends the current turn
+without another inference request or additional text. Prior tool actions remain applied; subsequent pending
+calls are skipped. `set_reaction` still permits a later text reply, and restricted proactive React is unchanged.
+Failed explicit turns now delete their temporary group preview best-effort instead of leaving it visible.
+Private drafts stop refreshing on intentional completion and expire naturally. No configuration, database,
+or custom-prompt migration is needed.
+
 ### Tone mode and teasing prompt parameters removed (breaking, #153)
 
 The `tone_mode` and `allow_teasing` settings are gone: both were pure prompt fragments (no code branched on

@@ -879,13 +879,11 @@ func (r *previewRun) Abort() {
 	r.finalize()
 }
 
-// Fail terminates the preview after a silent proactive failure and deletes
-// the group preview message best-effort: an unsolicited turn must not
-// leave an unsolicited working indicator behind. Explicit turns keep
-// Abort's accepted degradation — their error notice follows the preview
-// anyway. Private chats never run proactive turns, so only the group
-// message path applies here.
-func (r *previewRun) Fail() {
+// Discard stops the worker and typing fallback, then deletes the group
+// preview best-effort. Private drafts are not refreshed or replaced with
+// status text: their existing ephemeral lifetime dismisses them. This is
+// presentation cleanup, independent of whether the run succeeded or failed.
+func (r *previewRun) Discard() {
 	if r == nil {
 		return
 	}
@@ -893,6 +891,11 @@ func (r *previewRun) Fail() {
 	if !r.isPrivate {
 		r.deleteGroupPreview()
 	}
+}
+
+// Fail discards the preview after a silent proactive failure.
+func (r *previewRun) Fail() {
+	r.Discard()
 }
 
 // Close is the deferred safety net; idempotent with the lifecycle methods.

@@ -345,11 +345,13 @@ Coalesce frequent updates rather than issuing an API call for every token.
 
 On successful final message delivery, attempt to clean up the temporary group preview.
 
-If execution fails, preserving the last preview is acceptable. Do not add persistent recovery infrastructure solely to clean up abandoned progress messages.
+If execution fails (including an LLM timeout or final-delivery error), stop the worker and typing fallback and delete the temporary group preview best-effort (#156). Keep the existing user-facing error notice policy. Cleanup uses a bounded context independent of the failed request or cancelled lifecycle; deletion errors are sanitized and rate limits feed the existing chat gate. Do not add persistent recovery infrastructure solely to clean up abandoned progress messages.
 
 Likewise, a crash may leave a temporary group message behind. This is an accepted limitation.
 
 When an execution successfully completes without a final text response (for example, a side-effecting tool completed its action), do not leave an indefinitely active-looking preview. Finish or remove it on a best-effort basis.
+
+For accepted terminal `say_nothing` completion (#159), discard the preview without sending a final tool-history/status draft. Private drafts stop refreshing and expire through Telegram's 30-second draft lifetime. Previously completed actions remain intact; cleanup failure does not change successful completion into a backend failure.
 
 ## 7. LLM response live streaming (Phase 2 — deferred)
 

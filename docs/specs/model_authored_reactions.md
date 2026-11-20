@@ -12,7 +12,7 @@ with or without a subsequent text reply. It is the single source of requirements
 
 A model may call `set_reaction` to acknowledge the current user message with an ordinary Telegram emoji. The model can then finish **without** a text reply if the reaction fully conveys its response, **or** continue and write a normal answer. Reaction + text is explicitly valid. The tool is available in all otherwise-authorized conversational runs by default, with no additional global or per-chat configuration.
 
-This is an ordinary discretionary, side-effecting tool. **It must not be terminal.** Do not add `say_nothing` or a special completion protocol. Reuse `ReplyWithTools()`'s existing successful-empty-completion path following successful side effects. Do not force a textual reply after a successful reaction.
+This is an ordinary discretionary, side-effecting tool. **It must not be terminal.** Reuse `ReplyWithTools()`'s existing successful-empty-completion path following successful side effects. The separate [terminal `say_nothing` tool (#159)](say_nothing.md) also lets the model end the turn intentionally after a reaction. Do not force a textual reply after a successful reaction.
 
 Examples: a joke may get 🤣 alone; a thank-you may get 🙏 alone; a useful answer may get 👍 plus text. Genuine questions and actionable requests generally deserve substantive responses.
 
@@ -64,11 +64,11 @@ In particular **`❤` is U+2764 without U+FE0F**; do not silently normalize or r
 
 Add concise instruction to the **effective tool policy/description delivered to the model** (independent of operator-editable prompt templates):
 
-> `set_reaction` reacts to the user message that triggered this run, never the most recent chat message. Choose an emoji only from the listed supported values. If a reaction fully communicates the response, you may end the turn without any additional text. You may also react and then provide a text reply when useful. Do not replace a substantive answer to a genuine question or request with a reaction alone. Do not repeat or change reactions unnecessarily.
+> `set_reaction` reacts to the user message that triggered this run, never the most recent chat message. Choose an emoji only from the listed supported values. You may provide a text reply afterwards or call `say_nothing` to end the turn without additional text. Do not replace a substantive answer to a genuine question or request with a reaction alone. Do not repeat or change reactions unnecessarily.
 
 The model should receive this instruction in the tool-enabled generation context even with custom chat templates. The tool description should remain compact beyond the explicit emoji list; do not repeat the entire list in multiple prompt sections unnecessarily.
 
-No special end-of-turn sentinel, forced tool termination, or extra model-facing `say_nothing` tool. Verify the existing `allowEmptyReplyCompletion` behavior in `internal/tooluse/runtime.go`: only successful side effects permit a subsequent empty reply; failed attempts alone cannot suppress an answer. Side-effecting tool usage must preserve ordinary text+reaction flows and existing error behavior.
+Issue #135 did not introduce a special completion protocol; #159 independently adds `say_nothing`. Preserve the existing `allowEmptyReplyCompletion` behavior in `internal/tooluse/runtime.go`: only successful side effects permit a subsequent empty reply; failed attempts alone cannot suppress an answer. Side-effecting tool usage must preserve ordinary text+reaction flows and existing error behavior.
 
 ## 5. Telegram execution and rate-limit safety
 
@@ -170,7 +170,7 @@ type BotReactionSet struct {
 - Optional `message_id`, reacting to historical messages or the bot's last reply.
 - Adding message identifiers to LLM-visible history.
 - New configuration toggles, settings or per-chat emoji sets.
-- `say_nothing`, terminal tool semantics, forcing silence after a reaction.
+- `say_nothing` and terminal tool semantics were separate from #135 and are specified in [#159](say_nothing.md). Forcing silence after a reaction remains out of scope.
 - Receiving the bot's own reaction as an incoming Telegram update.
 - Custom/premium/paid emojis, reaction removal or animation options.
 - Durable history/events, a new queue, UI redesign, LLM response streaming, or generation cancellation.

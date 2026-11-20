@@ -278,6 +278,10 @@ joke may get 🤣 alone with no text reply, a useful answer may get 👍 plus a 
   (e.g. `[reactions: 🤣 MyBot]`), so later model context and summaries see it.
 - Outgoing reactions are paced per chat and rate-limit aware; one reaction attempt is allowed per model run.
 
+The model can call the no-argument `say_nothing` tool to intentionally end its turn without additional text,
+with or without a prior reaction. This stops the tool loop immediately: earlier actions remain applied, later
+pending calls are skipped, and unsent response text is discarded. Ordinary reaction-plus-text replies still work.
+
 ### Live reply previews
 
 While the bot works on a reply, chats can show a live progress preview: a neutral indicator plus the list of tool
@@ -286,9 +290,12 @@ and (in the widest mode) how long each call took.
 
 - **Groups and supergroups** get a temporary silent message replying to the trigger message, updated in place and
   deleted after the final reply has been delivered. Short runs (under ~1.5 seconds) never create one at all.
+  Request failures and intentional `say_nothing` completion also delete the preview best-effort.
 - **Private chats** get a rich-message draft in the message input area (the ephemeral "typing a draft" surface).
   The draft is refreshed internally so it stays alive during long runs and is dismissed by the final reply itself;
   if drafts are unavailable, the plain typing indicator takes over.
+  On `say_nothing`, draft refresh stops without a final status draft; the existing draft expires naturally
+  within Telegram's 30-second lifetime. Already published content cannot be recalled.
 - Wire updates are paced per chat: a minimum spacing per run plus a shared per-chat backoff after Telegram rate
   limits, so several concurrent requests in one chat do not flood the API (one run hitting the limit delays the
   others' preview updates, not their execution). After repeated delivery failures the preview for that run disables

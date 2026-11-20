@@ -330,6 +330,7 @@ func TestPreviewManagerRunForInactive(t *testing.T) {
 	var nilRun *previewRun
 	nilRun.FinalDelivered()
 	nilRun.CompleteNoText(nil)
+	nilRun.Discard()
 	nilRun.Abort()
 	nilRun.Close()
 	if nilRun.ID() != "" {
@@ -1154,6 +1155,29 @@ func TestGroupPreviewFinalDeliveredWaitsForInFlightCreate(t *testing.T) {
 	})
 	if n := state.callCount("deleteMessage"); n != 1 {
 		t.Fatalf("preview must be deleted exactly once, got %d", n)
+	}
+}
+
+func TestPreviewDiscardJoinsInFlightCreate(t *testing.T) {
+	state := newPreviewServerState()
+	b := newPreviewTestBot(t, state)
+	m := newPreviewTestManager(t, b)
+	state.delayMethod("sendMessage", 100*time.Millisecond)
+	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeAllTools))
+	waitForCondition(t, 2*time.Second, "create in flight", func() bool {
+		return state.callCount("sendMessage") == 1
+	})
+	run.Discard()
+	run.Discard()
+	toolDone(run, "say_nothing", true, true, time.Millisecond)
+	if state.callCount("deleteMessage") != 1 {
+		t.Fatal("discard must join creation and delete once")
+	}
+	m.mu.Lock()
+	remaining := len(m.runs)
+	m.mu.Unlock()
+	if remaining != 0 {
+		t.Fatal("discard left a registered run")
 	}
 }
 

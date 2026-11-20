@@ -88,8 +88,8 @@ func TestRestrictedRunAdvertisesOnlyAllowedTools(t *testing.T) {
 	if !strings.Contains(stub.lastBuildPolicy, "set_reaction") {
 		t.Fatalf("tool policy must list the allowed tool: %q", stub.lastBuildPolicy)
 	}
-	for _, forbidden := range []string{"send_dice", "search_history"} {
-		if strings.Contains(stub.lastBuildPolicy, forbidden) {
+	for _, forbidden := range []string{"send_dice", "search_history", "say_nothing"} {
+		if strings.Contains(stub.lastBuildPolicy, "- "+forbidden+": ") {
 			t.Fatalf("tool policy must not list %q: %q", forbidden, stub.lastBuildPolicy)
 		}
 	}
@@ -104,6 +104,7 @@ func TestRestrictedRunRejectsDisallowedToolCall(t *testing.T) {
 	stub.responses = []llm.Response{
 		{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{
 			{ID: "call-1", Name: "send_dice", Arguments: json.RawMessage(`{}`)},
+			{ID: "silence", Name: "say_nothing", Arguments: json.RawMessage(`{}`)},
 			{ID: "call-2", Name: "set_reaction", Arguments: json.RawMessage(`{"emoji":"🎉"}`)},
 		}}},
 	}
@@ -117,14 +118,17 @@ func TestRestrictedRunRejectsDisallowedToolCall(t *testing.T) {
 	if sender.lastDiceParams != nil {
 		t.Fatalf("disallowed tool must not execute")
 	}
-	if len(result.ToolCalls) != 2 {
+	if len(result.ToolCalls) != 3 {
 		t.Fatalf("expected both calls recorded, got %d", len(result.ToolCalls))
 	}
 	if result.ToolCalls[0].Name != "send_dice" || result.ToolCalls[0].Status != execution.StatusError {
 		t.Fatalf("disallowed call must record an error, got %+v", result.ToolCalls[0])
 	}
-	if result.ToolCalls[1].Name != "set_reaction" || result.ToolCalls[1].Status != execution.StatusOK {
-		t.Fatalf("allowed call must succeed, got %+v", result.ToolCalls[1])
+	if result.ToolCalls[1].Name != "say_nothing" || result.ToolCalls[1].Status != execution.StatusError || result.IntentionalSilence {
+		t.Fatalf("disallowed silence must not terminate, got %+v", result)
+	}
+	if result.ToolCalls[2].Name != "set_reaction" || result.ToolCalls[2].Status != execution.StatusOK {
+		t.Fatalf("allowed call must succeed, got %+v", result.ToolCalls[2])
 	}
 	// Completion happened on the successful allowed call: no second
 	// generation request.

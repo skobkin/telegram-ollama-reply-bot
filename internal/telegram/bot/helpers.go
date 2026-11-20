@@ -100,14 +100,14 @@ func (b *Bot) sendTypingUntil(ctx context.Context, chatID t.ChatID) {
 
 // runWithTimeout wraps handler work with typing feedback and the processing deadline.
 func (b *Bot) runWithTimeout(baseCtx context.Context, chatID t.ChatID, work func(ctx context.Context) error) error {
-	return b.runWithPreviewTimeout(baseCtx, chatID, nil, work)
+	return b.runWithPreviewTimeout(baseCtx, chatID, nil, work, nil)
 }
 
 // runWithPreviewTimeout wraps handler work with the processing deadline and
 // — unless an active live preview already signals activity in the chat —
 // the typing indicator. A run without a preview (mode off, master switch
 // off, or no dispatcher wired) behaves exactly like runWithTimeout.
-func (b *Bot) runWithPreviewTimeout(baseCtx context.Context, chatID t.ChatID, run *previewRun, work func(ctx context.Context) error) error {
+func (b *Bot) runWithPreviewTimeout(baseCtx context.Context, chatID t.ChatID, run *previewRun, work func(ctx context.Context) error, acceptedCompletion func() bool) error {
 	ctx, cancel := b.withProcessingDeadline(baseCtx)
 	defer cancel()
 
@@ -115,13 +115,18 @@ func (b *Bot) runWithPreviewTimeout(baseCtx context.Context, chatID t.ChatID, ru
 		go b.sendTypingUntil(ctx, chatID)
 	}
 
-	return b.withinProcessingDeadline(ctx, work)
+	return b.withinProcessingDeadline(ctx, work, acceptedCompletion)
 }
 
 // withinProcessingDeadline runs deadline-carrying work and maps deadline
 // exceedance to ErrRequestTimeout with timeout statistics.
-func (b *Bot) withinProcessingDeadline(ctx context.Context, work func(ctx context.Context) error) error {
+func (b *Bot) withinProcessingDeadline(ctx context.Context, work func(ctx context.Context) error, acceptedCompletion func() bool) error {
 	err := work(ctx)
+	// An accepted terminal tool is already a successful outcome. Do not
+	// replace it with a late timeout notice or count a timeout afterwards.
+	if err == nil && acceptedCompletion != nil && acceptedCompletion() {
+		return nil
+	}
 
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {

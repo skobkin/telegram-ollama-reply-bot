@@ -124,6 +124,9 @@ type toolResult struct {
 	Summary string `json:"summary,omitempty"`
 	Error   string `json:"error,omitempty"`
 	Data    any    `json:"data,omitempty"`
+	// endTurn is runtime control flow, never a model-facing result field.
+	// Only a successful say_nothing handler sets it.
+	endTurn bool
 }
 
 type Registry struct {
@@ -133,6 +136,14 @@ type Registry struct {
 
 func newRegistry(runtime *Runtime) *Registry {
 	definitions := []Definition{
+		{
+			Name:             "say_nothing",
+			Description:      "End the current turn without sending additional text. Previously completed tool actions remain unaffected.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+			InvocationPolicy: InvocationPolicyDiscretionary,
+			Visibility:       VisibilityInternal,
+			Handler:          sayNothingHandler,
+		},
 		{
 			Name:             "get_current_time",
 			Description:      "Read the current server time and timezone context whenever time-sensitive reasoning would be more accurate with an explicit current timestamp.",
