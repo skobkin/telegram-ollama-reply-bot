@@ -49,6 +49,7 @@ const (
 	analyzeImageResultCharBudget    = 2600
 	setReactionResultCharBudget     = 600
 	calculateResultCharBudget       = 600
+	randomChoiceResultCharBudget    = 3000
 )
 
 // ToolResult is the value a Handler returns to the runtime. It is exported
@@ -175,6 +176,15 @@ func newRegistry(runtime *Runtime) *Registry {
 			Visibility:       VisibilityStandard,
 			ResultCharBudget: calculateResultCharBudget,
 			Handler:          calculateHandler,
+		},
+		{
+			Name:             "random_choice",
+			Description:      "Pick one or more random items from a list, without replacement, using real randomness. Use it for any random pick instead of simulating randomness yourself (use send_dice only for an animated dice roll). Returns the selected items with their zero-based positions in the supplied list.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"items":{"type":"array","items":{"type":"string","minLength":1,"maxLength":100},"minItems":1,"maxItems":50,"description":"Options to choose from. Duplicate texts are treated as separate options."},"count":{"type":"integer","minimum":1,"maximum":10,"description":"How many distinct options to pick. Defaults to 1; must not exceed the number of items."}},"required":["items"],"additionalProperties":false}`),
+			InvocationPolicy: InvocationPolicyDiscretionary,
+			Visibility:       VisibilityStandard,
+			ResultCharBudget: randomChoiceResultCharBudget,
+			Handler:          runtime.randomChoice,
 		},
 		{
 			Name:             "set_reaction",

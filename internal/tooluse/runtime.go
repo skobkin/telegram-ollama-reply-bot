@@ -255,6 +255,8 @@ type Runtime struct {
 	// concurrent runs; see tool_set_reaction.go. Zero value ready to use.
 	reactions            reactionLimiter
 	reactionAvailability reactionAvailability
+	// randIntN overrides the random source in tests; nil uses math/rand/v2.
+	randIntN func(n int) int
 }
 
 type registeredCloser struct {
