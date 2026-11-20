@@ -65,11 +65,14 @@ type ToolErrorClasses struct {
 	Other            uint64 `json:"other"`
 }
 
-// ToolErrorCodeCount is one admitted error code. Code "other" collects every
-// folded or invalid code.
+// ToolErrorCodeCount is one admitted error code, or the tagged bucket that
+// collects every folded or invalid code. The bucket has a nil Code and
+// Overflow set, so it can never collide with an admitted code that is
+// literally named "other".
 type ToolErrorCodeCount struct {
-	Code  string `json:"code"`
-	Count uint64 `json:"count"`
+	Code     *string `json:"code"`
+	Overflow bool    `json:"overflow,omitempty"`
+	Count    uint64  `json:"count"`
 }
 
 // ToolRates are derived ratios; nil (JSON null) when the denominator is 0.
@@ -252,11 +255,13 @@ func toolStatsOf(row *toolRow, codeNames []string) ToolStats {
 		Percentiles: percentilesOf(row.latency),
 	}
 	for id, n := range row.codes {
-		name := "other"
-		if id != otherCodeID && int(id) < len(codeNames) {
-			name = codeNames[id]
+		if id == otherCodeID || int(id) >= len(codeNames) {
+			stats.ErrorCodes = append(stats.ErrorCodes, ToolErrorCodeCount{Overflow: true, Count: n})
+
+			continue
 		}
-		stats.ErrorCodes = append(stats.ErrorCodes, ToolErrorCodeCount{Code: name, Count: n})
+		name := codeNames[id]
+		stats.ErrorCodes = append(stats.ErrorCodes, ToolErrorCodeCount{Code: &name, Count: n})
 	}
 	sort.Slice(stats.ErrorCodes, func(i, j int) bool {
 		a, b := stats.ErrorCodes[i], stats.ErrorCodes[j]
@@ -264,7 +269,14 @@ func toolStatsOf(row *toolRow, codeNames []string) ToolStats {
 			return a.Count > b.Count
 		}
 
-		return a.Code < b.Code
+		if a.Overflow != b.Overflow {
+			return !a.Overflow // the folded bucket sorts after named codes
+		}
+		if a.Code != nil && b.Code != nil {
+			return *a.Code < *b.Code
+		}
+
+		return false
 	})
 
 	return stats

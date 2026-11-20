@@ -1,6 +1,7 @@
 package statistics
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -513,6 +514,55 @@ func TestToolChatAndModelCardinalityIsBounded(t *testing.T) {
 
 // ---- error codes ----
 
+// overflowCodeLabel keys the folded bucket in errorCodeCounts; it cannot be a
+// valid code because codes match [a-z0-9_]+.
+const overflowCodeLabel = "<overflow>"
+
+func errorCodeCounts(codes []ToolErrorCodeCount) map[string]uint64 {
+	out := map[string]uint64{}
+	for _, e := range codes {
+		if e.Overflow {
+			out[overflowCodeLabel] += e.Count
+
+			continue
+		}
+		out[*e.Code] += e.Count
+	}
+
+	return out
+}
+
+// An admitted code literally named "other" must stay distinguishable from the
+// folded bucket in the export.
+func TestToolExportedOverflowErrorCodeNeverCollidesWithACodeNamedOther(t *testing.T) {
+	c := newToolCollector()
+	calls := []ToolCallObservation{errCall("t", "other", "permanent"), errCall("t", "other", "permanent"), errCall("t", "BAD CODE", "permanent")}
+	recordTurn(c, []string{"t"}, calls)
+	row := findTool(t, c.ToolSnapshot(GlobalScope()), "t")
+
+	var named, folded *ToolErrorCodeCount
+	for i := range row.ErrorCodes {
+		if row.ErrorCodes[i].Overflow {
+			folded = &row.ErrorCodes[i]
+		} else {
+			named = &row.ErrorCodes[i]
+		}
+	}
+	if named == nil || named.Code == nil || *named.Code != "other" || named.Count != 2 {
+		t.Fatalf("the admitted code named other must keep its own entry: %+v", row.ErrorCodes)
+	}
+	if folded == nil || folded.Code != nil || folded.Count != 1 {
+		t.Fatalf("the folded bucket must be tagged, with no code name: %+v", row.ErrorCodes)
+	}
+	raw, err := json.Marshal(row.ErrorCodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"code":null,"overflow":true`) || !strings.Contains(string(raw), `"code":"other"`) {
+		t.Fatalf("the JSON must distinguish both entries: %s", raw)
+	}
+}
+
 func TestToolErrorCodeBounds(t *testing.T) {
 	c := newToolCollector()
 	var calls []ToolCallObservation
@@ -521,11 +571,8 @@ func TestToolErrorCodeBounds(t *testing.T) {
 	}
 	recordTurn(c, []string{"t"}, calls)
 	row := findTool(t, c.ToolSnapshot(GlobalScope()), "t")
-	got := map[string]uint64{}
-	for _, e := range row.ErrorCodes {
-		got[e.Code] = e.Count
-	}
-	if got["valid_code"] != 1 || got["other"] != 4 || len(got) != 2 {
+	got := errorCodeCounts(row.ErrorCodes)
+	if got["valid_code"] != 1 || got[overflowCodeLabel] != 4 || len(got) != 2 {
 		t.Fatalf("invalid codes fold into other without becoming keys: %v", got)
 	}
 }
@@ -542,7 +589,7 @@ func TestToolErrorCodesPerToolAndDictionaryCaps(t *testing.T) {
 		t.Fatalf("admitted codes per tool must be capped, got %d entries", len(row.ErrorCodes))
 	}
 	for _, e := range row.ErrorCodes {
-		if e.Code == "other" && e.Count != 5 {
+		if e.Overflow && e.Count != 5 {
 			t.Fatalf("the five late codes fold into other, got %d", e.Count)
 		}
 	}
@@ -573,12 +620,7 @@ func TestToolErrorCodeFoldingIsIdenticalAcrossProjectionsWhateverTheArrivalOrder
 	}
 
 	codeCounts := func(snap ToolSnapshot) map[string]uint64 {
-		out := map[string]uint64{}
-		for _, e := range findTool(t, snap, "t").ErrorCodes {
-			out[e.Code] = e.Count
-		}
-
-		return out
+		return errorCodeCounts(findTool(t, snap, "t").ErrorCodes)
 	}
 	global, chatA, chatB := codeCounts(c.ToolSnapshot(GlobalScope())), codeCounts(c.ToolSnapshot(ChatScope(1))), codeCounts(c.ToolSnapshot(ChatScope(2)))
 	sum := map[string]uint64{}
@@ -602,7 +644,7 @@ func TestToolErrorCodeFoldingIsIdenticalAcrossProjectionsWhateverTheArrivalOrder
 			t.Fatalf("%s was admitted first and is seen by both chats: %v", codeName(i), global)
 		}
 	}
-	if global["other"] != 2*4 {
+	if global[overflowCodeLabel] != 2*4 {
 		t.Fatalf("late codes fold into other in both projections: %v", global)
 	}
 

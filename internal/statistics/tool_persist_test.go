@@ -77,11 +77,8 @@ func TestToolRestoreKeepsAdmissionSoLaterFoldingStaysConsistent(t *testing.T) {
 	// A code that was folded before the restart must stay folded after it,
 	// in every projection, even when another chat/model brings it now.
 	recordTurn(dst, []string{"t"}, []ToolCallObservation{errCall("t", fmt.Sprintf("code_%02d", MaxErrorCodesPerTool+1), "permanent")}, inChat(2), withModel("other"))
-	global := map[string]uint64{}
-	for _, e := range findTool(t, dst.ToolSnapshot(GlobalScope()), "t").ErrorCodes {
-		global[e.Code] = e.Count
-	}
-	if global["other"] != 4 || global[fmt.Sprintf("code_%02d", MaxErrorCodesPerTool+1)] != 0 {
+	global := errorCodeCounts(findTool(t, dst.ToolSnapshot(GlobalScope()), "t").ErrorCodes)
+	if global[overflowCodeLabel] != 4 || global[fmt.Sprintf("code_%02d", MaxErrorCodesPerTool+1)] != 0 {
 		t.Fatalf("admission must survive the restart: %v", global)
 	}
 	if _, payload2 := capturePayloadOf(t, dst.ToolDataset()); newToolCollector().ToolDataset().Restore(toolFormatVersion, PersistPair{}, payload2) != nil {
