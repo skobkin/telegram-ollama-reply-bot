@@ -11,6 +11,7 @@ import (
 	"telegram-ollama-reply-bot/internal/support/secretscrub"
 
 	"github.com/getsentry/sentry-go"
+	"golang.org/x/net/http/httpproxy"
 )
 
 // newSecretScrubber registers every secret the app is configured with, so a
@@ -94,6 +95,20 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 		// generic username would mutilate unrelated text, and net/http
 		// already masks passwords inside its own url.Error rendering.
 		secrets = appendURLPassword(secrets, "mcp-"+name+"-url-password", server.URL)
+	}
+
+	// Outbound proxies follow the standard environment variables, resolved
+	// with the same httpproxy.FromEnvironment semantics the HTTP clients
+	// use (which covers the lowercase variable variants). Only the userinfo
+	// password is registered — a generic username would mutilate unrelated
+	// text — because proxy dial errors and network diagnostics can carry
+	// the proxy address. NO_PROXY is a host list without credentials.
+	proxyConfig := httpproxy.FromEnvironment()
+	for name, proxy := range map[string]string{
+		"http-proxy-url-password":  proxyConfig.HTTPProxy,
+		"https-proxy-url-password": proxyConfig.HTTPSProxy,
+	} {
+		secrets = appendURLPassword(secrets, name, proxy)
 	}
 
 	return secretscrub.New(secrets)

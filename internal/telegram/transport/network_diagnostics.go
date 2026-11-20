@@ -59,12 +59,16 @@ func resolveProxyForURL(rawURL string, proxy func(*url.URL) (*url.URL, error)) s
 
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
-		return "request_error:" + err.Error()
+		// A parse error quotes the raw URL — endpoint credentials included
+		// — so the diagnostic carries the redacted shape instead.
+		return "request_error:" + urlredact.Redact(err.Error())
 	}
 
 	proxyURL, err := proxy(parsedURL)
 	if err != nil {
-		return "proxy_error:" + err.Error()
+		// httpproxy errors can quote the proxy address with its userinfo;
+		// strip URL shapes out of the error text while keeping the cause.
+		return "proxy_error:" + urlredact.Redact(err.Error())
 	}
 	if proxyURL == nil {
 		return "direct"

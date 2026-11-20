@@ -3,6 +3,7 @@ package transport
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/url"
 	"strings"
@@ -89,6 +90,53 @@ func TestResolveProxyForURLRedactsCredentials(t *testing.T) {
 	password, _ := proxyURL.User.Password()
 	if password != "redacted" {
 		t.Fatalf("expected redacted proxy password, got %q", password)
+	}
+}
+
+func TestResolveProxyForURLRedactsParseErrorCredential(t *testing.T) {
+	t.Parallel()
+
+	// A malformed endpoint URL makes url.Parse quote the raw value —
+	// credentials included — and the diagnostic must not carry it.
+	leaky := "https://operator:secret@host.invalid:9999/pa%zz"
+	got := resolveProxyForURL(leaky, func(*url.URL) (*url.URL, error) {
+		t.Fatal("proxy resolution must not run for an unparseable URL")
+
+		return nil, nil
+	})
+
+	if !strings.HasPrefix(got, "request_error:") {
+		t.Fatalf("expected request_error classification, got %q", got)
+	}
+
+	if strings.Contains(got, "secret") || strings.Contains(got, "operator") {
+		t.Fatalf("parse error leaked credentials: %q", got)
+	}
+
+	if !strings.Contains(got, "host.invalid") {
+		t.Fatalf("parse error must keep the host diagnosable: %q", got)
+	}
+}
+
+func TestResolveProxyForURLRedactsProxyErrorCredential(t *testing.T) {
+	t.Parallel()
+
+	// Proxy resolution failures can quote the proxy address with its
+	// userinfo; the error text must be redacted, the classification kept.
+	got := resolveProxyForURL("https://api.telegram.org", func(*url.URL) (*url.URL, error) {
+		return nil, fmt.Errorf("invalid proxy address %q", "http://user:secret@proxy.internal:8080")
+	})
+
+	if !strings.HasPrefix(got, "proxy_error:") {
+		t.Fatalf("expected proxy_error classification, got %q", got)
+	}
+
+	if strings.Contains(got, "secret") {
+		t.Fatalf("proxy error leaked credentials: %q", got)
+	}
+
+	if !strings.Contains(got, "invalid proxy address") {
+		t.Fatalf("proxy error lost its cause: %q", got)
 	}
 }
 

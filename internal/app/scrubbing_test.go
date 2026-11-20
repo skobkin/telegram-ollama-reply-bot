@@ -74,6 +74,29 @@ func TestNewSecretScrubberRegistersAllSecrets(t *testing.T) {
 	}
 }
 
+// TestNewSecretScrubberRegistersProxyCredentials pins proxy credential
+// registration: the scrubber resolves the standard environment variables
+// with httpproxy.FromEnvironment semantics (lowercase variants included)
+// and registers the proxy userinfo password. Not parallel: t.Setenv.
+func TestNewSecretScrubberRegistersProxyCredentials(t *testing.T) {
+	t.Setenv("https_proxy", "http://operator:PROXYFIXTURE@proxy.internal:8080")
+
+	scrubber := newSecretScrubber(scrubTestConfig())
+
+	got := scrubber.Scrub("dial http://operator:PROXYFIXTURE@proxy.internal:8080: refused")
+	if strings.Contains(got, "PROXYFIXTURE") {
+		t.Fatalf("proxy credential not registered: %q", got)
+	}
+
+	if !strings.Contains(got, "proxy.internal:8080") {
+		t.Fatalf("proxy host must stay diagnosable: %q", got)
+	}
+
+	if !scrubber.Contains("plain text PROXYFIXTURE tail") {
+		t.Fatal("proxy password form missing from scrubber")
+	}
+}
+
 func TestNewSecretScrubberEmptyConfigNoPanic(t *testing.T) {
 	t.Parallel()
 
