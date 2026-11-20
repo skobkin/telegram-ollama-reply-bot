@@ -71,8 +71,9 @@ func (r *Runtime) getMessageContext(_ context.Context, callCtx CallContext, args
 	// The window flags must describe the neighbours actually serialized, so the
 	// selection is fitted to the budget here (farthest first) before the flags
 	// are computed; the generic reducer then has nothing left to remove.
+	selectedBefore, selectedAfter := len(beforeViews), len(afterViews)
 	build := func(b, a []map[string]any) toolResult {
-		return toolResult{
+		result := toolResult{
 			Status:  "ok",
 			Summary: "Message context retrieved",
 			Data: map[string]any{
@@ -93,6 +94,19 @@ func (r *Runtime) getMessageContext(_ context.Context, callCtx CallContext, args
 				},
 			},
 		}
+		// Budget-induced omissions are reported explicitly. The metadata is part
+		// of every candidate, so it counts toward the budget check below.
+		if omitted := map[string]int{"data.before": selectedBefore - len(b), "data.after": selectedAfter - len(a)}; omitted["data.before"] > 0 || omitted["data.after"] > 0 {
+			result.Truncated = true
+			result.Reductions = map[string]int{}
+			for path, count := range omitted {
+				if count > 0 {
+					result.Reductions[path] = count
+				}
+			}
+		}
+
+		return result
 	}
 	result := build(beforeViews, afterViews)
 	for len(beforeViews)+len(afterViews) > 0 {

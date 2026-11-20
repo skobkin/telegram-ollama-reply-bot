@@ -41,7 +41,7 @@ discarded. Author `name` / `username` are clamped (64 / 32) with `name_truncated
 
 Window flags describe the neighbours actually serialized: the handler drops the farthest neighbours until
 the result fits the budget and only then computes the flags, so a removed boundary message is never
-reported as reached.
+reported as reached. The omission is reported through `truncated` and `reductions` (`data.before` / `data.after` with omitted counts); that metadata is part of every fitting candidate.
 
 Visibility is `VisibilityStandard` on purpose: like `search_history`, the lookup should appear in normal
 tool history. Visibility only affects presentation, not availability or access control.

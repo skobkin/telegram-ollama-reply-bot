@@ -263,3 +263,63 @@ func TestMessageContextWindowFlagsMatchBudgetFittedNeighbours(t *testing.T) {
 		t.Errorf("requested = %v", got)
 	}
 }
+
+// Neighbours removed to fit the budget are reported explicitly in the
+// serialized result, and the target stays intact.
+func TestMessageContextBudgetOmissionsAreReported(t *testing.T) {
+	scope := state.ConversationScope{ChatID: 1}
+	messages := make([]state.Message, 0, 21)
+	for id := 100; id <= 120; id++ {
+		messages = append(messages, hostileMessage(id, id-1))
+	}
+	r := contextRuntime(t, scope, messages...)
+
+	result, err := callContext(t, r, scope, `{"message_id":110,"before":10,"after":10}`)
+	if err != nil || result.Status != "ok" {
+		t.Fatalf("%+v %v", result.Error, err)
+	}
+	text, preparation := prepareResult(result, messageContextResultCharBudget)
+	if preparation == ResultPreparationFailed {
+		t.Fatalf("delivery failed: %.120s", text)
+	}
+	var decoded struct {
+		Truncated  bool           `json:"truncated"`
+		Reductions map[string]int `json:"reductions"`
+		Data       struct {
+			Target struct {
+				MessageID        int `json:"message_id"`
+				ReplyToMessageID int `json:"reply_to_message_id"`
+			} `json:"target"`
+			Before []json.RawMessage `json:"before"`
+			After  []json.RawMessage `json:"after"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.Truncated {
+		t.Fatal("omissions are not flagged as truncated")
+	}
+	if got, want := decoded.Reductions["data.before"], 10-len(decoded.Data.Before); got != want {
+		t.Errorf("before omitted = %d, want %d", got, want)
+	}
+	if got, want := decoded.Reductions["data.after"], 10-len(decoded.Data.After); got != want {
+		t.Errorf("after omitted = %d, want %d", got, want)
+	}
+	if decoded.Reductions["data.before"]+decoded.Reductions["data.after"] == 0 {
+		t.Error("no omissions reported")
+	}
+	if decoded.Data.Target.MessageID != 110 || decoded.Data.Target.ReplyToMessageID != 109 {
+		t.Errorf("target damaged: %+v", decoded.Data.Target)
+	}
+	if preparation != ResultPreparationComplete {
+		t.Errorf("metadata-aware fitting should need no further reduction, got %s", preparation)
+	}
+
+	// No budget pressure: nothing is reported.
+	small := contextRuntime(t, scope, seqMessages(1, 2, 3)...)
+	ok, _ := callContext(t, small, scope, `{"message_id":2}`)
+	if ok.Truncated || ok.Reductions != nil {
+		t.Errorf("unpressured result flagged: %+v", ok)
+	}
+}
