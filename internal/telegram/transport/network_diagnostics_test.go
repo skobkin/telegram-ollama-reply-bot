@@ -98,7 +98,7 @@ func TestResolveProxyForURLRedactsParseErrorCredential(t *testing.T) {
 
 	// A malformed endpoint URL makes url.Parse quote the raw value —
 	// credentials included — and the diagnostic must not carry it.
-	leaky := "https://operator:secret@host.invalid:9999/pa%zz"
+	leaky := "https://operator:secret@host.invalid:9999/pa%zz" //nolint:gosec // fake fixture, not a credential
 	got := resolveProxyForURL(leaky, func(*url.URL) (*url.URL, error) {
 		t.Fatal("proxy resolution must not run for an unparseable URL")
 
