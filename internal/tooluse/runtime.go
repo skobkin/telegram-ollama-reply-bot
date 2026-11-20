@@ -126,6 +126,11 @@ type ToolCallRecord struct {
 	Visibility Visibility
 	Status     string
 	Duration   time.Duration
+	// SideEffecting is the tool definition's side-effect metadata. It lets
+	// callers classify a completed call as an actual side effect
+	// (SideEffecting && Status OK) instead of guessing from success alone:
+	// read-only tools succeed too.
+	SideEffecting bool
 }
 
 // Result is the authoritative outcome of a tool-enabled reply: the final
@@ -536,11 +541,12 @@ func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *
 	return toolResponseMessage(call.ID, marshalResult(result, definition.ResultCharBudget)),
 		definition.SideEffecting && result.Status == execution.StatusOK,
 		ToolCallRecord{
-			CallID:     call.ID,
-			Name:       definition.Name,
-			Visibility: definition.EffectiveVisibility(),
-			Status:     result.Status,
-			Duration:   duration,
+			CallID:        call.ID,
+			Name:          definition.Name,
+			Visibility:    definition.EffectiveVisibility(),
+			Status:        result.Status,
+			Duration:      duration,
+			SideEffecting: definition.SideEffecting,
 		}
 }
 

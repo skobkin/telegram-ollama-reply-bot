@@ -13,6 +13,9 @@ import (
 	"unicode/utf8"
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
+	"telegram-ollama-reply-bot/internal/interactivity"
+	"telegram-ollama-reply-bot/internal/statistics"
+	"telegram-ollama-reply-bot/internal/statistics/pngreport"
 )
 
 // AdminInputMarker prefixes every admin input request message the adapter
@@ -101,6 +104,7 @@ type Outcome struct {
 	Input        *InputRequest
 	Picker       *PickerRequest
 	Document     *DocumentPayload
+	Photo        *PhotoPayload
 	Message      *TextMessage
 	Verify       *VerifyChat
 	DeleteMsgIDs []int
@@ -123,6 +127,7 @@ type fx struct {
 	input      *InputRequest
 	picker     *PickerRequest
 	document   *DocumentPayload
+	photo      *PhotoPayload
 	message    *TextMessage
 	verify     *VerifyChat
 	deletes    []int
@@ -134,6 +139,7 @@ func (f fx) outcome() Outcome {
 		Input:        f.input,
 		Picker:       f.picker,
 		Document:     f.document,
+		Photo:        f.photo,
 		Message:      f.message,
 		Verify:       f.verify,
 		DeleteMsgIDs: f.deletes,
@@ -222,15 +228,31 @@ type ControllerOptions struct {
 	// active image recognizer takes no model selection (MiniMax). Hiding is
 	// render-time only: a stored global value stays untouched.
 	HideImageModel bool
+	// StatsReport renders the PNG report attached to the statistics export.
+	// Nil keeps the export JSON-only.
+	StatsReport StatsReportRenderer
 }
 
 // ControllerOption mutates ControllerOptions at wiring time.
 type ControllerOption func(*ControllerOptions)
 
+// StatsReportRenderer renders the PNG report presenter for one snapshot
+// (internal/statistics/pngreport). The seam keeps the chart dependency
+// injectable: tests exercise the JSON-only path and failing renderers
+// without a chart library in play.
+type StatsReportRenderer func(pngreport.Report) ([]byte, error)
+
 // WithModelDiscovery wires the per-feature backend discovery providers.
 func WithModelDiscovery(chat, image, systemOne ModelDiscovery) ControllerOption {
 	return func(o *ControllerOptions) {
 		o.ChatModels, o.ImageModels, o.SystemOneModels = chat, image, systemOne
+	}
+}
+
+// WithStatsReport wires the PNG report renderer for the statistics export.
+func WithStatsReport(render StatsReportRenderer) ControllerOption {
+	return func(o *ControllerOptions) {
+		o.StatsReport = render
 	}
 }
 
@@ -250,14 +272,14 @@ type Controller struct {
 	manager  *Manager
 	service  *adminconfig.Service
 	adminIDs []int64
-	stats    func() string
+	stats    *statistics.Collector
 	opts     ControllerOptions
 	started  time.Time
 }
 
 // NewController wires the controller. stats may be nil (the statistics screen
 // then reports unavailability); opts may be empty.
-func NewController(manager *Manager, service *adminconfig.Service, adminIDs []int64, stats func() string, opts ...ControllerOption) *Controller {
+func NewController(manager *Manager, service *adminconfig.Service, adminIDs []int64, stats *statistics.Collector, opts ...ControllerOption) *Controller {
 	options := ControllerOptions{}
 	for _, opt := range opts {
 		opt(&options)
@@ -1002,6 +1024,85 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 
 		return nil
 
+	case VerbStatsExport:
+		return c.handleStatsExport(s, fx)
+
+	case VerbStatsProfile:
+		if s.Screen.Kind != ScreenStatistics {
+			return errInvalidArg
+		}
+		s.Screen.StatsProfile = cycleValue(statsProfileCycle, s.Screen.StatsProfile)
+		s.Screen.Notice = ""
+		s.MarkRerender()
+
+		return nil
+
+	case VerbStatsModel:
+		if s.Screen.Kind != ScreenStatistics || c.stats == nil {
+			return errInvalidArg
+		}
+		snap := c.stats.InteractionSnapshot(statistics.GlobalScope(), statistics.InteractionFilters{})
+		cycle := append([]string{""}, observedDecisionModels(snap)...)
+		s.Screen.StatsModel = cycleValue(cycle, s.Screen.StatsModel)
+		s.Screen.Notice = ""
+		s.MarkRerender()
+
+		return nil
+
+	case VerbStatsScope:
+		if s.Screen.Kind == ScreenStatsScope {
+			// Pagination within the open scope picker.
+			page := 1
+			if len(action.Args) == 1 {
+				parsed, err := strconv.Atoi(action.Args[0])
+				if err != nil || parsed < 1 {
+					return errInvalidArg
+				}
+				page = parsed
+			} else if len(action.Args) > 1 {
+				return errInvalidArg
+			}
+			s.Screen.Page = page
+			s.Screen.Notice = ""
+			s.MarkRerender()
+
+			return nil
+		}
+		if s.Screen.Kind != ScreenStatistics || len(action.Args) != 0 {
+			return errInvalidArg
+		}
+		s.PushScreen(ScreenState{Kind: ScreenStatsScope, ChatID: s.Screen.ChatID})
+		s.MarkRerender()
+
+		return nil
+
+	case VerbStatsScopeSet:
+		if s.Screen.Kind != ScreenStatsScope || len(action.Args) != 1 {
+			return errInvalidArg
+		}
+		scope := int64(0)
+		if action.Args[0] != "g" {
+			parsed, err := strconv.ParseInt(action.Args[0], 10, 64)
+			if err != nil {
+				return errInvalidArg
+			}
+			scope = parsed
+		}
+		s.PopScreen()
+		s.Screen.ChatID = scope
+		s.Screen.Notice = ""
+		s.MarkRerender()
+
+		return nil
+
+	case VerbStatsResetI:
+		return c.beginStatsReset(s, ConfirmStatsInteraction,
+			"Reset ALL interaction statistics?\n\nThe reset is GLOBAL: every chat's interaction observations — submissions, decisions, executions — are cleared, regardless of the filters on screen. In-flight operations keep running; only their statistics land in the fresh period. This cannot be undone.")
+
+	case VerbStatsResetG:
+		return c.beginStatsReset(s, ConfirmStatsGeneral,
+			"Reset general bot statistics?\n\nThe reset is GLOBAL: request counters, token totals and costs restart. Process uptime is not reset. This cannot be undone.")
+
 	case VerbInteractivity:
 		s.PushScreen(ScreenState{Kind: ScreenInteractivity, ChatID: scopeFromScreen(s)})
 		s.MarkRerender()
@@ -1318,6 +1419,18 @@ func (c *Controller) executeConfirm(ctx context.Context, adminID int64, s *Sessi
 			return err
 		}
 		notice = "Default interaction profile set to " + adminconfig.InteractionProfileLabel(confirm.Profile) + "."
+	case ConfirmStatsInteraction:
+		if c.stats == nil {
+			return errInvalidArg
+		}
+		c.stats.ResetInteraction()
+		notice = "Interaction statistics reset — the observation period restarted."
+	case ConfirmStatsGeneral:
+		if c.stats == nil {
+			return errInvalidArg
+		}
+		c.stats.ResetGeneral()
+		notice = "General statistics reset — process uptime kept."
 	default:
 		return errInvalidArg
 	}
@@ -1742,11 +1855,42 @@ func (c *Controller) buildScreen(ctx context.Context, seq uint32, state ScreenSt
 		})
 
 	case ScreenStatistics:
-		snapshot := "Statistics are not available."
+		data := StatisticsData{General: "Statistics are not available."}
 		if c.stats != nil {
-			snapshot = c.stats()
+			data.General = statistics.GeneralJSON(c.stats.GeneralSnapshot())
+			chatName := ""
+			if state.ChatID != 0 {
+				chatName = fmt.Sprintf("%s (%d)", truncateRunes(c.chatDisplayName(ctx, state.ChatID), 32), state.ChatID)
+			}
+			data.Interaction = c.interactionStatsData(state, chatName)
 		}
-		screen = b.statistics(StatisticsData{Snapshot: snapshot})
+		screen = b.statistics(data)
+
+	case ScreenStatsScope:
+		chats, err := c.service.ChatList(ctx)
+		if err != nil {
+			return nil, err
+		}
+		page := state.Page
+		if page < 1 {
+			page = 1
+		}
+		pages := (len(chats) + statsScopePageSize - 1) / statsScopePageSize
+		if pages > 0 && page > pages {
+			page = pages
+		}
+		start := (page - 1) * statsScopePageSize
+		end := start + statsScopePageSize
+		if end > len(chats) {
+			end = len(chats)
+		}
+		screen = b.statsScope(StatsScopeData{
+			Chats:   chats[start:end],
+			Current: state.ChatID,
+			Total:   len(chats),
+			Page:    page,
+			Pages:   pages,
+		})
 
 	case ScreenConfirm:
 		screen = b.confirm(ConfirmData{Description: state.Detail, Danger: state.Danger})
@@ -2014,6 +2158,234 @@ func accessStatusLabel(policy adminconfig.AccessPolicy, allowlisted bool) string
 
 func promptDocument(feature adminconfig.PromptFeature, body string) *DocumentPayload {
 	return &DocumentPayload{Filename: string(feature) + "_template.txt", Content: []byte(body)}
+}
+
+// --- statistics screen helpers (#161) ---
+
+// statsScopePageSize bounds one page of the statistics scope picker; the
+// catalog itself is unbounded.
+const statsScopePageSize = adminconfig.DefaultChatPageSize
+
+// statsScopeOf maps the statistics screen state to the snapshot scope:
+// ChatID 0 is the global scope.
+func statsScopeOf(state ScreenState) statistics.InteractionScope {
+	if state.ChatID == 0 {
+		return statistics.GlobalScope()
+	}
+
+	return statistics.ChatScope(state.ChatID)
+}
+
+// statsFiltersOf maps the statistics screen state to the snapshot filters.
+func statsFiltersOf(state ScreenState) statistics.InteractionFilters {
+	return statistics.InteractionFilters{Profile: state.StatsProfile, DecisionModel: state.StatsModel}
+}
+
+// statsProfileCycle is the profile-filter cycle: All first, then the
+// supported profiles in their declared order.
+var statsProfileCycle = func() []string {
+	values := []string{""}
+	for _, profile := range adminconfig.InteractionProfiles() {
+		values = append(values, string(profile))
+	}
+
+	return values
+}()
+
+// cycleValue advances one step through a filter cycle, wrapping around.
+// A current value missing from the cycle (vanished from observations after
+// a reset) falls back to the first entry (All).
+func cycleValue(cycle []string, current string) string {
+	for i, value := range cycle {
+		if value == current {
+			return cycle[(i+1)%len(cycle)]
+		}
+	}
+
+	return cycle[0]
+}
+
+// observedDecisionModels extracts the distinct tracked decision models of a
+// snapshot (overflow buckets excluded — their attribution is unknown and
+// disclosed in the export instead).
+func observedDecisionModels(snap statistics.InteractionSnapshot) []string {
+	seen := make(map[string]struct{})
+	for _, bucket := range snap.Decision.Buckets {
+		if bucket.DecisionModelOverflow || bucket.DecisionModel == nil {
+			continue
+		}
+		if *bucket.DecisionModel == "" {
+			// Unset decision model — never a valid configured ID. The All
+			// cycle position already covers this traffic; adding "" as a
+			// choice would duplicate it and wedge cycleValue on All (the
+			// first empty entry always matches).
+			continue
+		}
+		seen[*bucket.DecisionModel] = struct{}{}
+	}
+	models := make([]string, 0, len(seen))
+	for model := range seen {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+
+	return models
+}
+
+// handleStatsExport renders the versioned JSON export — plus the PNG
+// report when a renderer is wired — from ONE snapshot taken under the
+// session's scope and filters, delivered to the admin DM.
+func (c *Controller) handleStatsExport(s *Session, fx *fx) error {
+	if s.Screen.Kind != ScreenStatistics || c.stats == nil {
+		return errInvalidArg
+	}
+	scope, filters := statsScopeOf(s.Screen), statsFiltersOf(s.Screen)
+	snapshot := c.stats.InteractionSnapshot(scope, filters)
+	stamp := c.manager.Now().Format("20060102-150405")
+
+	// ONE snapshot feeds both artifacts: the PNG charts and the canonical
+	// JSON must never disagree.
+	input := pngreport.Report{Snapshot: snapshot, Scope: scope, Filters: filters}
+	if filters.Profile != "" {
+		// Markers reflect the CURRENT preset values; historical presets are
+		// not reconstructible and are not pretended to be.
+		if profile, ok := interactivity.ProfileByID(adminconfig.InteractionProfile(filters.Profile)); ok {
+			input.Annotations = &pngreport.ThresholdAnnotations{
+				ProfileID:         string(profile.ID),
+				ReactionThreshold: profile.ReactionThreshold,
+				ReplyThreshold:    profile.ReplyThreshold,
+				MaxIntrusion:      profile.MaxIntrusion,
+			}
+		}
+	}
+	if c.opts.StatsReport != nil {
+		png, err := c.opts.StatsReport(input)
+		if err != nil {
+			// A rendering failure must not block the canonical export: the
+			// photo is skipped, the JSON still delivered, and the admin
+			// told why (sanitized — renderer errors carry no secrets, but
+			// the notice stays generic regardless).
+			fx.message = &TextMessage{Text: "⚠️ PNG report rendering failed — only the JSON export is attached."}
+		} else {
+			fx.photo = &PhotoPayload{
+				Filename: "interaction-stats-" + stamp + ".png",
+				Content:  png,
+			}
+		}
+	}
+
+	payload, err := statistics.InteractionJSON(snapshot, scope, filters)
+	if err != nil {
+		return err
+	}
+	fx.document = &DocumentPayload{
+		Filename: "interaction-stats-" + stamp + ".json",
+		Content:  payload,
+	}
+
+	return nil
+}
+
+// beginStatsReset arms a confirmation-gated GLOBAL statistics reset; a
+// filtered view still resets the whole dataset and the description says so.
+func (c *Controller) beginStatsReset(s *Session, kind ConfirmKind, description string) error {
+	if s.Screen.Kind != ScreenStatistics || c.stats == nil {
+		return errInvalidArg
+	}
+	s.PushScreen(confirmState(description, true, 0, ""))
+	s.Confirm = &PendingConfirm{Kind: kind}
+	s.MarkRerender()
+
+	return nil
+}
+
+// interactionStatsData assembles the interaction view of the statistics
+// screen from one snapshot under the session's scope and filters. chatName
+// labels a chat-scoped view (empty for global).
+func (c *Controller) interactionStatsData(state ScreenState, chatName string) *InteractionStatsView {
+	scope, filters := statsScopeOf(state), statsFiltersOf(state)
+	snapshot := c.stats.InteractionSnapshot(scope, filters)
+
+	view := &InteractionStatsView{
+		Mode:            snapshot.Mode,
+		RubricVersion:   snapshot.RubricVersion,
+		PeriodStartedAt: snapshot.Period.StartedAt,
+		PeriodResets:    snapshot.Period.Resets,
+		ScopeLabel:      "Global",
+		ProfileLabel:    statsFilterLabel(state.StatsProfile),
+		ModelLabel:      statsFilterLabel(state.StatsModel),
+		// A narrowed view with nothing selected must not claim the dataset
+		// is empty: observations may live outside the selection.
+		Narrowed: state.StatsProfile != "" || state.StatsModel != "" || state.ChatID != 0,
+	}
+	if state.ChatID != 0 {
+		view.ScopeLabel = chatName
+	}
+
+	var warnings []string
+	if !snapshot.FilteredTotalsExact {
+		warnings = append(warnings, "filtered totals may be incomplete: overflow folding is active (see the export notes)")
+	}
+	if snapshot.UntrackedSelection != "" {
+		warnings = append(warnings, snapshot.UntrackedSelection)
+	}
+	view.Warning = strings.Join(warnings, "; ")
+
+	decision, execution := snapshot.Decision.Totals, snapshot.Execution.Totals
+	view.HasData = decision.Outcomes.Sum() > 0 || execution.DispatchedReact+execution.DispatchedReply > 0 ||
+		(snapshot.Preflight != nil && snapshot.Preflight.Totals.Sum() > 0) ||
+		(snapshot.Submission != nil && snapshot.Submission.Submitted > 0)
+	if !view.HasData {
+		return view
+	}
+
+	// The submission ledger is chat-keyed: under profile/model filters it is
+	// omitted from the snapshot and the screen says so instead of showing a
+	// misleading zero.
+	if snapshot.Submission != nil {
+		view.Summary = append(view.Summary,
+			fmt.Sprintf("Eligible %d (rejected %d, accepted-cancelled %d)",
+				snapshot.Submission.Accepted(), snapshot.Submission.SubmitRejected, snapshot.Submission.AcceptedThenCancelled))
+	} else {
+		view.Summary = append(view.Summary, "Eligible omitted under filters")
+	}
+	if snapshot.Preflight != nil && snapshot.Preflight.Totals.Sum() > 0 {
+		view.Summary = append(view.Summary, fmt.Sprintf("Preflight skips %d", snapshot.Preflight.Totals.Sum()))
+	}
+	view.Summary = append(view.Summary, fmt.Sprintf("Evaluated %d · selected %d (%s)",
+		decision.EvaluatedAttempts,
+		decision.Outcomes.SelectedReact+decision.Outcomes.SelectedReply,
+		selectedShare(decision.Outcomes.SelectedReact+decision.Outcomes.SelectedReply, decision.EvaluatedAttempts)))
+	view.Summary = append(view.Summary, fmt.Sprintf("Veto/ignore/below %d · invalid evidence %d",
+		decision.Outcomes.SelectedIgnoreVeto+decision.Outcomes.SelectedIgnoreBelow+decision.Outcomes.NoopProfileDisabled,
+		decision.Outcomes.EvidenceInvalid))
+	view.Summary = append(view.Summary, fmt.Sprintf("Executed %d turns · reactions %d · texts %d · other effects %d",
+		execution.DispatchedReact+execution.DispatchedReply,
+		execution.ReactionsConfirmed, execution.TextsConfirmed, execution.OtherSideEffects))
+	view.Summary = append(view.Summary, fmt.Sprintf("Without effect %d · failed %d (timeout %d, cancelled %d, generation %d, delivery %d)",
+		execution.TurnsWithoutEffect, execution.TurnsFailed,
+		execution.Failures.Timeout, execution.Failures.Cancelled, execution.Failures.Generation, execution.Failures.Delivery))
+
+	return view
+}
+
+// statsFilterLabel renders a filter value (empty = unfiltered).
+func statsFilterLabel(value string) string {
+	if value == "" {
+		return "All"
+	}
+
+	return adminconfig.InteractionProfileLabel(adminconfig.InteractionProfile(value))
+}
+
+// selectedShare renders the selected share of evaluated decisions (n/a
+// without evaluations — never a fabricated zero).
+func selectedShare(selected, evaluated uint64) string {
+	if evaluated == 0 {
+		return "n/a"
+	}
+
+	return fmt.Sprintf("%.1f%%", float64(selected)/float64(evaluated)*100)
 }
 
 func hasPromptFileExtension(filename string) bool {

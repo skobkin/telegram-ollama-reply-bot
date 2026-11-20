@@ -15,6 +15,7 @@ import (
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/config"
+	"telegram-ollama-reply-bot/internal/statistics"
 
 	tg "github.com/mymmrac/telego"
 	th "github.com/mymmrac/telego/telegohandler"
@@ -33,6 +34,19 @@ type fakeAPIServer struct {
 	mu            sync.Mutex
 	requests      []fakeAPIRequest
 	nextMessageID atomic.Int64
+	failures      map[string]int
+}
+
+// failNext schedules the next `times` calls of a method to fail with an API
+// error, regardless of payload.
+func (f *fakeAPIServer) failNext(method string, times int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.failures == nil {
+		f.failures = make(map[string]int)
+	}
+	f.failures[method] += times
 }
 
 func newFakeAPIServer(t *testing.T) *fakeAPIServer {
@@ -48,6 +62,18 @@ func newFakeAPIServer(t *testing.T) *fakeAPIServer {
 		fake.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
+
+		// Injected failures exhaust per method, so delivery-failure tests
+		// can take down every fallback path of a delivery helper at once.
+		fake.mu.Lock()
+		if fake.failures[method] > 0 {
+			fake.failures[method]--
+			fake.mu.Unlock()
+			_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"injected failure"}`))
+
+			return
+		}
+		fake.mu.Unlock()
 
 		switch method {
 		case "sendMessage", "sendRichMessage", "editMessageText":
@@ -102,15 +128,6 @@ func (f *fakeAPIServer) lastText(method string) string {
 	return ""
 }
 
-// pipelineStatsSpy extends the DM-test stats spy with counters for the
-// reset-specific metric and marks when API-calling handlers run.
-type pipelineStatsSpy struct {
-	dmStatsSpy
-	chatResets atomic.Int32
-}
-
-func (s *pipelineStatsSpy) ChatHistoryReset() { s.chatResets.Add(1) }
-
 // pipelineTestBot drives the REAL registerRoutes pipeline with spy stores and
 // a fake Bot API, so handlers that answer messages run for real.
 type pipelineTestBot struct {
@@ -118,7 +135,7 @@ type pipelineTestBot struct {
 	bh      *th.BotHandler
 	api     *fakeAPIServer
 	history *dmHistorySpy
-	stats   *pipelineStatsSpy
+	stats   *statistics.Collector
 	catalog *dmCatalogSpy
 }
 
@@ -137,7 +154,7 @@ func newPipelineTestBot(t *testing.T, cfg config.BotConfig, store adminconfig.St
 	}
 
 	history := &dmHistorySpy{}
-	stats := &pipelineStatsSpy{}
+	stats := statistics.NewCollector(statistics.Config{})
 	testBot := &Bot{
 		ctx:     context.Background(),
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -200,7 +217,7 @@ func TestUnknownCommandDroppedBeforeConversationPipeline(t *testing.T) {
 		if got := p.history.appended.Load(); got != 0 {
 			t.Fatalf("%s: unknown command must not reach history, got %d appends", text, got)
 		}
-		if got := p.stats.privateRequests.Load(); got != 0 {
+		if got := p.stats.GeneralSnapshot().PrivateRequests; got != 0 {
 			t.Fatalf("%s: unknown command must not be counted, got %d", text, got)
 		}
 	}
@@ -233,7 +250,7 @@ func TestStatsAndResetIsolatedFromHistoryAndRequestStats(t *testing.T) {
 	if got := p.history.appended.Load(); got != 0 {
 		t.Fatalf("/stats must not enter history, got %d", got)
 	}
-	if got := p.stats.privateRequests.Load(); got != 0 {
+	if got := p.stats.GeneralSnapshot().PrivateRequests; got != 0 {
 		t.Fatalf("/stats must not count as a private request, got %d", got)
 	}
 
@@ -241,10 +258,10 @@ func TestStatsAndResetIsolatedFromHistoryAndRequestStats(t *testing.T) {
 	if got := p.history.appended.Load(); got != 0 {
 		t.Fatalf("/reset must not enter history, got %d", got)
 	}
-	if got := p.stats.privateRequests.Load(); got != 0 {
+	if got := p.stats.GeneralSnapshot().PrivateRequests; got != 0 {
 		t.Fatalf("/reset must not count as a private request, got %d", got)
 	}
-	if got := p.stats.chatResets.Load(); got != 1 {
+	if got := p.stats.GeneralSnapshot().ChatHistoryResets; got != 1 {
 		t.Fatalf("/reset must keep its own reset metric, got %d", got)
 	}
 	if got := p.api.lastText("sendMessage"); got != "Okay, let's start fresh." {

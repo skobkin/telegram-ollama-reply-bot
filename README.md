@@ -22,6 +22,7 @@
 - Runtime model selection: global defaults and per-chat overrides for the generation, summarize, image-recognition, and System One decision models, managed from the admin UI (a stored model overrides the `LLM__FEATURES__*` ENV route when set)
 - Opt-in interactive participation: when a chat's interaction profile enables it, a System One decision engine evaluates ordinary group messages that did not explicitly trigger the bot and reacts or replies when the profile finds them suitable (private chats are never evaluated proactively)
 - `decision_choose` / `decision_assess` tools delegating small semantic decisions to the configured System One decision model
+- Privacy-preserving interaction statistics: RAM-only aggregates of proactive-participation outcomes, exported from the admin UI as a versioned JSON document with a PNG report
 - Optional [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers that publish additional tools at startup (Streamable HTTP transport)
 
 ## Configuration
@@ -330,6 +331,29 @@ Proactive evaluation serializes per chat (at most one decision or action in flig
 never wait behind it. Decision requests contain the persona prompt, bounded recent history, and the evaluated
 message; nothing content-bearing is logged.
 
+### Interaction statistics
+
+The bot aggregates how proactive participation performs: eligible messages, decision outcomes
+(ignore/react/reply and failure classes), inference and decision latency, executed effects (confirmed reactions,
+texts, other side effects), and execution failures. Everything is counters, bounded enums, scores, and durations —
+never message content, prompts, user identities, or error strings.
+
+- **Volatile by design** — the aggregates live in RAM only: nothing is written to disk, the database, logs, or
+  error tracking, and a restart starts a fresh observation period. Reset and restart behavior is visible in the
+  admin panel; the process uptime in `/stats` never resets.
+- **Scope and filters** — the admin panel's Statistics screen narrows the view by chat, interaction profile, and
+  observed decision model. Whenever the hard cardinality caps fold chats or model IDs into overflow buckets, a
+  narrowed view discloses that its filtered totals may be incomplete instead of presenting them as exact.
+- **Export** — the `⬇ Export JSON` action delivers an inline PNG report plus the canonical, self-describing JSON
+  document (`tg-llm-bot/interaction-statistics` v1). The JSON embeds histogram bin edges, approximate-percentile
+  semantics, overflow notes, and the observation period; the PNG is an approximate rendering of the same snapshot.
+  With a single profile filter active, the PNG also marks the current preset's decision thresholds.
+- **Resets** — interaction and general statistics reset separately, from the admin panel only, with a confirmed
+  prompt that states the GLOBAL blast radius (a filtered view still resets the whole dataset). `/reset` is
+  unaffected: it only resets the current chat's conversation history.
+- **`/stats`** — unchanged: general usage counters only. Interaction data lives in the admin panel, scoped to the
+  admin DM.
+
 ### Admin UI
 
 Administration is a Telegram-native interactive panel. Send `/admin` in a private chat with the bot (users listed in
@@ -360,7 +384,9 @@ dismisses a pending input and reopens the panel. Sessions are ephemeral and expi
 - **Access** — the explicit policy (`allowlist`, the default, or `allow_all`), allowlisted chats with removal
   (confirmed), and Add chat: a native chat picker (the bot does not need to be a member) or a numeric chat ID;
   unreachable chats are added as "unverified".
-- **Statistics** — the same usage stats as `/stats`.
+- **Statistics** — the general usage stats from `/stats` plus the interaction statistics view (see
+  [Interaction statistics](#interaction-statistics)): scope picker, profile and decision-model filters, the JSON+PNG
+  export, and the confirmed global resets.
 
 Access is never conflated with membership: each chat card shows one of four states — `allowlisted`,
 `blocked (allowlist policy)`, `allowlisted (policy already allows all)`, or `allowed via allow_all (not allowlisted)`.

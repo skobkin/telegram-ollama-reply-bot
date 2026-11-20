@@ -25,6 +25,7 @@ import (
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	core "telegram-ollama-reply-bot/internal/adminui"
 	"telegram-ollama-reply-bot/internal/execution"
+	"telegram-ollama-reply-bot/internal/statistics"
 	"telegram-ollama-reply-bot/internal/support/httpclient"
 )
 
@@ -391,7 +392,8 @@ func (f *fakeAdminAPI) serve(w http.ResponseWriter, r *http.Request) {
 
 	f.parkIfGated(method) // no-op unless a test armed the gate
 
-	// Multipart bodies (sendDocument): capture filename and content.
+	// Multipart bodies (sendDocument, sendPhoto): capture filename and
+	// content; forced per-method failures apply here too.
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		document := readMultipartDocument(r)
 		f.mu.Lock()
@@ -399,7 +401,13 @@ func (f *fakeAdminAPI) serve(w http.ResponseWriter, r *http.Request) {
 			Method: method,
 			Body:   "document:" + document.filename + "\n" + document.content,
 		})
+		failure := f.failMethods[method]
 		f.mu.Unlock()
+		if failure != nil {
+			writeJSON(w, map[string]any{"ok": false, "description": failure.Error()})
+
+			return
+		}
 		writeJSON(w, map[string]any{
 			"ok": true,
 			"result": map[string]any{
@@ -490,15 +498,27 @@ func readMultipartDocument(request *http.Request) capturedDocument {
 		return capturedDocument{}
 	}
 
-	part, err := multipart.NewReader(request.Body, params["boundary"]).NextPart()
-	if err != nil {
-		return capturedDocument{}
+	reader := multipart.NewReader(request.Body, params["boundary"])
+	var first capturedDocument
+	for {
+		part, err := reader.NextPart()
+		if err != nil {
+			break
+		}
+		content, _ := io.ReadAll(part)
+		captured := capturedDocument{filename: part.FileName(), content: string(content)}
+		_ = part.Close() // read-side cleanup
+		if first.filename == "" && first.content == "" {
+			first = captured
+		}
+		if captured.filename != "" {
+			// The file part carries the upload name; prefer it over the
+			// leading text fields (sendPhoto puts chat_id first).
+			return captured
+		}
 	}
-	defer part.Close() //nolint:errcheck // read-side cleanup
 
-	content, _ := io.ReadAll(part)
-
-	return capturedDocument{filename: part.FileName(), content: string(content)}
+	return first
 }
 
 // armGate arms the one-shot request gate for a method. The FIRST request of
@@ -601,6 +621,7 @@ type harness struct {
 	adapter    *Adapter
 	manager    *core.Manager
 	controller *core.Controller
+	stats      *statistics.Collector
 	store      *memStore
 	api        *fakeAdminAPI
 	bh         *th.BotHandler
@@ -625,6 +646,14 @@ func newHarness(t *testing.T) *harness {
 func newHarnessWithAdmins(t *testing.T, adminIDs ...int64) *harness {
 	t.Helper()
 
+	return newHarnessFull(t, adminIDs, nil)
+}
+
+// newHarnessFull is the full-stack harness with explicit admins and
+// controller options (the statistics PNG renderer for export tests).
+func newHarnessFull(t *testing.T, adminIDs []int64, opts []core.ControllerOption) *harness {
+	t.Helper()
+
 	store := newMemStore()
 	builtins := adminconfig.BuiltinTemplates{
 		adminconfig.PromptFeatureChat:             "builtin chat {{.Language}}",
@@ -642,7 +671,8 @@ func newHarnessWithAdmins(t *testing.T, adminIDs ...int64) *harness {
 
 	clock := &testClock{now: time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)}
 	manager := core.NewManager(clock.Now)
-	controller := core.NewController(manager, service, adminIDs, func() string { return "stats-snapshot" })
+	stats := statistics.NewCollector(statistics.Config{})
+	controller := core.NewController(manager, service, adminIDs, stats, opts...)
 
 	api := newFakeAdminAPI(t)
 	// The HTTP caller matches production (app.Run wires WithHTTPClient):
@@ -667,6 +697,7 @@ func newHarnessWithAdmins(t *testing.T, adminIDs ...int64) *harness {
 		adapter:    adapter,
 		manager:    manager,
 		controller: controller,
+		stats:      stats,
 		store:      store,
 		api:        api,
 		bh:         bh,

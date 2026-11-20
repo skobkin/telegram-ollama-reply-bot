@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"telegram-ollama-reply-bot/internal/llm"
+	"telegram-ollama-reply-bot/internal/statistics"
 
 	"github.com/getsentry/sentry-go"
 	t "github.com/mymmrac/telego"
@@ -191,7 +192,7 @@ func (b *Bot) statsHandler(ctx *th.Context, message t.Message) error {
 	chatID := tu.ID(message.Chat.ID)
 	b.sendTyping(ctx.Context(), chatID)
 
-	statsJSON := "```json\n" + b.stats.String() + "\n```"
+	statsJSON := "```json\n" + statistics.GeneralJSON(b.stats.GeneralSnapshot()) + "\n```"
 	_, err := b.sendRichMarkdownReply(ctx.Context(), message, "Current bot stats:\n"+statsJSON)
 	if err != nil {
 		logger.Error("cannot send stats message", "error", err)

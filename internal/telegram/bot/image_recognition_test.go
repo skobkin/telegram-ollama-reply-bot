@@ -9,47 +9,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/state"
+	"telegram-ollama-reply-bot/internal/statistics"
 	"telegram-ollama-reply-bot/internal/vision"
 
 	tg "github.com/mymmrac/telego"
 )
-
-// stubStats records usage accounting calls.
-type stubStats struct {
-	mu                 sync.Mutex
-	addUsageCalls      int
-	lastPromptTokens   int
-	lastCompletionToks int
-	lastTotalTokens    int
-	lastCost           float64
-}
-
-func (s *stubStats) Snapshot() state.StatsSnapshot { return state.StatsSnapshot{} }
-func (s *stubStats) String() string                { return "" }
-func (s *stubStats) InlineQuery()                  {}
-func (s *stubStats) GroupRequest()                 {}
-func (s *stubStats) PrivateRequest()               {}
-func (s *stubStats) Mention()                      {}
-func (s *stubStats) SummarizeRequest()             {}
-func (s *stubStats) ChatHistoryReset()             {}
-func (s *stubStats) LlmTimeout()                   {}
-
-func (s *stubStats) AddUsage(prompt, completion, total int, cost float64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.addUsageCalls++
-	s.lastPromptTokens = prompt
-	s.lastCompletionToks = completion
-	s.lastTotalTokens = total
-	s.lastCost = cost
-}
 
 // fakeDescriber fakes the vision service for the bot.
 type fakeDescriber struct {
@@ -85,7 +54,7 @@ func (d *fakeDescriber) Analyze(_ context.Context, imageData []byte, prompt stri
 // newImageTestBot wires a Bot to a fake Bot API server that serves getFile
 // and file downloads, and counts requests. The returned file body is what
 // /file/bot.../ serves.
-func newImageTestBot(t *testing.T, fileBody []byte) (*Bot, *fakeDescriber, *stubStats, *atomic.Int32) {
+func newImageTestBot(t *testing.T, fileBody []byte) (*Bot, *fakeDescriber, *statistics.Collector, *atomic.Int32) {
 	t.Helper()
 
 	var requests atomic.Int32
@@ -113,7 +82,7 @@ func newImageTestBot(t *testing.T, fileBody []byte) (*Bot, *fakeDescriber, *stub
 	}
 
 	describer := &fakeDescriber{}
-	stats := &stubStats{}
+	stats := statistics.NewCollector(statistics.Config{})
 
 	b := &Bot{
 		api:    api,
@@ -153,14 +122,9 @@ func TestDescribeImage_AccountsUsage(t *testing.T) {
 		t.Fatalf("expected downloaded bytes passed to vision")
 	}
 
-	stats.mu.Lock()
-	defer stats.mu.Unlock()
-
-	if stats.addUsageCalls != 1 {
-		t.Fatalf("expected one AddUsage call, got %d", stats.addUsageCalls)
-	}
-	if stats.lastPromptTokens != 11 || stats.lastCompletionToks != 7 || stats.lastTotalTokens != 18 || stats.lastCost != 0.5 {
-		t.Fatalf("unexpected usage recorded: %+v", stats)
+	usage := stats.GeneralSnapshot()
+	if usage.PromptTokens != 11 || usage.CompletionTokens != 7 || usage.TotalTokens != 18 || usage.TotalCost != 0.5 {
+		t.Fatalf("unexpected usage recorded: %#v", usage)
 	}
 }
 
@@ -175,11 +139,8 @@ func TestDescribeImage_NilUsageSkipsAccounting(t *testing.T) {
 		t.Fatalf("describeImage: %v", err)
 	}
 
-	stats.mu.Lock()
-	defer stats.mu.Unlock()
-
-	if stats.addUsageCalls != 0 {
-		t.Fatalf("model-free routes must not account usage, got %d calls", stats.addUsageCalls)
+	if usage := stats.GeneralSnapshot(); usage.TotalTokens != 0 || usage.TotalCost != 0 {
+		t.Fatalf("model-free routes must not account usage, got %#v", usage)
 	}
 }
 
@@ -294,11 +255,9 @@ func TestAnalyzeImage_AccountsUsageAndNeverTouchesCache(t *testing.T) {
 		t.Fatalf("analysis must never write the description cache, got %v", cache.entries)
 	}
 
-	stats.mu.Lock()
-	defer stats.mu.Unlock()
-
-	if stats.addUsageCalls != 1 || stats.lastTotalTokens != 8 || stats.lastCost != 0.25 {
-		t.Fatalf("unexpected usage accounting: %+v", stats)
+	usage := stats.GeneralSnapshot()
+	if usage.TotalTokens != 8 || usage.TotalCost != 0.25 {
+		t.Fatalf("unexpected usage accounting: %#v", usage)
 	}
 }
 
@@ -330,11 +289,8 @@ func TestAnalyzeImage_NilUsageSkipsAccounting(t *testing.T) {
 		t.Fatalf("AnalyzeImage: %v", err)
 	}
 
-	stats.mu.Lock()
-	defer stats.mu.Unlock()
-
-	if stats.addUsageCalls != 0 {
-		t.Fatalf("model-free analysis must not account usage, got %d calls", stats.addUsageCalls)
+	if usage := stats.GeneralSnapshot(); usage.TotalTokens != 0 || usage.TotalCost != 0 {
+		t.Fatalf("model-free analysis must not account usage, got %#v", usage)
 	}
 }
 
@@ -418,7 +374,7 @@ func TestAnalyzeImage_GetFileErrorSanitized(t *testing.T) {
 		logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
 		ctx:              context.Background(),
 		vision:           &fakeDescriber{},
-		stats:            &stubStats{},
+		stats:            statistics.NewCollector(statistics.Config{}),
 		imageRecognition: ImageRecognitionSettings{Enabled: true, MaxImageBytes: 1 << 20},
 	}
 
@@ -552,7 +508,7 @@ func TestEnsureMessageImageDescription_GetFileErrorSanitized(t *testing.T) {
 		logger: slog.New(slog.NewTextHandler(&logs, nil)),
 		ctx:    context.Background(),
 		vision: &fakeDescriber{},
-		stats:  &stubStats{},
+		stats:  statistics.NewCollector(statistics.Config{}),
 		imageCache: &mapImageCache{
 			entries: map[string]string{},
 		},

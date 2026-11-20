@@ -11,6 +11,7 @@ import (
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/state"
+	"telegram-ollama-reply-bot/internal/statistics"
 
 	tg "github.com/mymmrac/telego"
 	th "github.com/mymmrac/telego/telegohandler"
@@ -83,24 +84,6 @@ func (s *dmHistorySpy) lastReactionCall() reactionRecord {
 	return s.lastReaction
 }
 
-// dmStatsSpy counts the request counters the middleware chain touches.
-type dmStatsSpy struct {
-	privateRequests atomic.Int32
-	groupRequests   atomic.Int32
-}
-
-func (s *dmStatsSpy) Snapshot() state.StatsSnapshot { return state.StatsSnapshot{} }
-func (s *dmStatsSpy) String() string                { return "" }
-func (s *dmStatsSpy) InlineQuery()                  {}
-func (s *dmStatsSpy) GroupRequest()                 { s.groupRequests.Add(1) }
-func (s *dmStatsSpy) PrivateRequest()               { s.privateRequests.Add(1) }
-func (s *dmStatsSpy) Mention()                      {}
-func (s *dmStatsSpy) SummarizeRequest()             {}
-func (s *dmStatsSpy) ChatHistoryReset()             {}
-func (s *dmStatsSpy) LlmTimeout()                   {}
-func (s *dmStatsSpy) AddUsage(int, int, int, float64) {
-}
-
 // dmCatalogSpy counts catalog upserts on top of the shared admin store stub.
 type dmCatalogSpy struct {
 	adminStoreStub
@@ -128,7 +111,7 @@ func (s *dmCatalogSpy) GetAccessPolicy(context.Context) (adminconfig.AccessPolic
 // handler would never fire). The base group is driven synchronously via
 // HandleUpdate: BotHandler.Start dispatches updates in goroutines and returns
 // on channel close, which would race the completion checks.
-func runDMGateChain(t *testing.T, cfg config.BotConfig, update tg.Update) (reached bool, history *dmHistorySpy, stats *dmStatsSpy, catalog *dmCatalogSpy) {
+func runDMGateChain(t *testing.T, cfg config.BotConfig, update tg.Update) (reached bool, history *dmHistorySpy, stats *statistics.Collector, catalog *dmCatalogSpy) {
 	t.Helper()
 
 	bh, err := th.NewBotHandler(nil, make(chan tg.Update))
@@ -137,7 +120,7 @@ func runDMGateChain(t *testing.T, cfg config.BotConfig, update tg.Update) (reach
 	}
 
 	history = &dmHistorySpy{}
-	stats = &dmStatsSpy{}
+	stats = statistics.NewCollector(statistics.Config{})
 	catalog = &dmCatalogSpy{}
 
 	testBot := &Bot{
@@ -187,7 +170,7 @@ func TestDMAdminsOnlyGateFlagFalseKeepsPrivateFlow(t *testing.T) {
 	if got := history.appended.Load(); got != 1 {
 		t.Fatalf("expected history append, got %d", got)
 	}
-	if got := stats.privateRequests.Load(); got != 1 {
+	if got := stats.GeneralSnapshot().PrivateRequests; got != 1 {
 		t.Fatalf("expected private request counter, got %d", got)
 	}
 	if got := catalog.upserts.Load(); got != 1 {
@@ -208,7 +191,7 @@ func TestDMAdminsOnlyGateAllowsAdminDM(t *testing.T) {
 	if got := history.appended.Load(); got != 1 {
 		t.Fatalf("expected history append for admin DM, got %d", got)
 	}
-	if got := stats.privateRequests.Load(); got != 1 {
+	if got := stats.GeneralSnapshot().PrivateRequests; got != 1 {
 		t.Fatalf("expected private request counter for admin DM, got %d", got)
 	}
 	if got := catalog.upserts.Load(); got != 1 {
@@ -231,7 +214,7 @@ func TestDMAdminsOnlyGateDropsNonAdminBeforeSideEffects(t *testing.T) {
 	if got := history.appended.Load(); got != 0 {
 		t.Fatalf("denied DM must not reach history, got %d appends", got)
 	}
-	if got := stats.privateRequests.Load(); got != 0 {
+	if got := stats.GeneralSnapshot().PrivateRequests; got != 0 {
 		t.Fatalf("denied DM must not be counted, got %d", got)
 	}
 	if got := catalog.upserts.Load(); got != 0 {
@@ -273,7 +256,7 @@ func TestDMAdminsOnlyGateDropsNonAdminPhotoAndCommands(t *testing.T) {
 			if got := history.appended.Load(); got != 0 {
 				t.Fatalf("denied DM must not reach history, got %d appends", got)
 			}
-			if got := stats.privateRequests.Load(); got != 0 {
+			if got := stats.GeneralSnapshot().PrivateRequests; got != 0 {
 				t.Fatalf("denied DM must not be counted, got %d", got)
 			}
 			if got := catalog.upserts.Load(); got != 0 {

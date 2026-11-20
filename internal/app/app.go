@@ -24,6 +24,8 @@ import (
 	"telegram-ollama-reply-bot/internal/provider"
 	"telegram-ollama-reply-bot/internal/reminders"
 	"telegram-ollama-reply-bot/internal/state/memory"
+	"telegram-ollama-reply-bot/internal/statistics"
+	"telegram-ollama-reply-bot/internal/statistics/pngreport"
 	"telegram-ollama-reply-bot/internal/support/httpclient"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/support/safeerr"
@@ -604,6 +606,9 @@ func Run(ctx context.Context) (runErr error) {
 		tools.AttachDecisionTools(systemOneClient)
 	}
 	defer tools.Close()
+	statsCollector := statistics.NewCollector(statistics.Config{
+		RubricVersion: interactivity.RubricVersion,
+	})
 	botService := bot.NewBot(
 		ctx,
 		telegramAPI,
@@ -613,7 +618,7 @@ func Run(ctx context.Context) (runErr error) {
 		sanitizer,
 		stores.Conversations(),
 		stores.Images(),
-		stores.Stats(),
+		statsCollector,
 		cfg.Bot,
 		adminService,
 		tools,
@@ -646,13 +651,12 @@ func Run(ctx context.Context) (runErr error) {
 		systemOneDiscovery = systemOneClient
 	}
 	controllerOpts = append(controllerOpts, core.WithModelDiscovery(llmc, imageDiscovery, systemOneDiscovery))
+	controllerOpts = append(controllerOpts, core.WithStatsReport(pngreport.Render))
 	if cfg.LLM.ImageRecognitionEnabled && cfg.LLM.ImageRecognition.Recognizer == config.ImageRecognizerMiniMaxVLM {
 		controllerOpts = append(controllerOpts, core.WithHiddenImageModel())
 	}
 	adminUIManager := core.NewManager(nil)
-	adminUIController := core.NewController(adminUIManager, adminService, cfg.Bot.AdminIDs, func() string {
-		return stores.Stats().Snapshot().String()
-	}, controllerOpts...)
+	adminUIController := core.NewController(adminUIManager, adminService, cfg.Bot.AdminIDs, statsCollector, controllerOpts...)
 	adminAdapter := adminui.NewAdapter(
 		adminUIController,
 		adminUIManager,
@@ -672,6 +676,7 @@ func Run(ctx context.Context) (runErr error) {
 			systemOneClient,
 			decisionPersonaSource{prompts: prompts, fallbackChatModel: envChatRouteModel(cfg.LLM)},
 			cfg.SystemOne.InputBudgetBytes,
+			envChatRouteModel(cfg.LLM),
 		)
 	}
 

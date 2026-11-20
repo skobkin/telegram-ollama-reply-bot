@@ -13,6 +13,7 @@ import (
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/llmcontext"
 	"telegram-ollama-reply-bot/internal/state"
+	"telegram-ollama-reply-bot/internal/statistics"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/tooluse"
 	"telegram-ollama-reply-bot/internal/vision"
@@ -67,7 +68,7 @@ type Bot struct {
 	vision           imageDescriber
 	extractor        extractor.Extractor
 	sanitizer        markdown.Sanitizer
-	stats            state.StatsStore
+	stats            *statistics.Collector
 	history          state.ConversationStore
 	me               botInfo
 	cfg              config.BotConfig
@@ -98,6 +99,10 @@ type Bot struct {
 	// participation serializes proactive decision tasks per chat and tracks
 	// their lifecycle; set together with decisions.
 	participation *participationRunner
+	// proactiveChatRouteModel is the environment chat route model, wired
+	// with the proactive feature: the effective generation model statistics
+	// record when a chat's model override is empty.
+	proactiveChatRouteModel string
 }
 
 func NewBot(
@@ -109,7 +114,7 @@ func NewBot(
 	sanitizer markdown.Sanitizer,
 	history state.ConversationStore,
 	imageCache state.ImageStore,
-	stats state.StatsStore,
+	stats *statistics.Collector,
 	cfg config.BotConfig,
 	admin *adminconfig.Service,
 	tools *tooluse.Runtime,

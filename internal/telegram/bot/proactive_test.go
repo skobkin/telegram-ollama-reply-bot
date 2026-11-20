@@ -21,6 +21,7 @@ import (
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/llmcontext"
 	"telegram-ollama-reply-bot/internal/state"
+	"telegram-ollama-reply-bot/internal/statistics"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/systemone"
 	"telegram-ollama-reply-bot/internal/tooluse"
@@ -44,8 +45,15 @@ type turnStubLLM struct {
 	responses []llm.Response
 	err       error
 	buildErr  error
-	builds    int
-	lastHint  string
+	// buildErrAfter makes buildErr fire only once more than this many
+	// builds have happened; 0 (default) fails every build including the
+	// first, 1 lets the first build through and fails the second.
+	buildErrAfter int
+	builds        int
+	lastHint      string
+	// gate blocks Generate until closed, so tests can observe a turn in
+	// flight (dispatch counted, completion not yet).
+	gate chan struct{}
 }
 
 func (s *turnStubLLM) BuildChatToolRequest(_ context.Context, _ llm.PromptScope, requestContext llm.ChatReplyContext, generationModel string, tools []llm.ToolDefinition, _ string, extraMessages []llm.Message, _ bool) (llm.Request, error) {
@@ -53,9 +61,11 @@ func (s *turnStubLLM) BuildChatToolRequest(_ context.Context, _ llm.PromptScope,
 	s.builds++
 	s.lastHint = requestContext.SystemHint
 	buildErr := s.buildErr
+	buildNumber := s.builds
+	failAfter := s.buildErrAfter
 	s.mu.Unlock()
 
-	if buildErr != nil {
+	if buildErr != nil && buildNumber > failAfter {
 		return llm.Request{}, buildErr
 	}
 
@@ -64,13 +74,23 @@ func (s *turnStubLLM) BuildChatToolRequest(_ context.Context, _ llm.PromptScope,
 
 func (s *turnStubLLM) Generate(_ context.Context, _ llm.Request) (llm.Response, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.err != nil {
-		return llm.Response{}, s.err
+	gate := s.gate
+	err := s.err
+	responses := s.responses
+	s.mu.Unlock()
+
+	if gate != nil {
+		<-gate
 	}
-	if len(s.responses) == 0 {
+	if err != nil {
+		return llm.Response{}, err
+	}
+	if len(responses) == 0 {
 		return llm.Response{Message: llm.TextMessage(llm.RoleAssistant, "stub answer")}, nil
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	resp := s.responses[0]
 	s.responses = s.responses[1:]
@@ -277,7 +297,7 @@ func newProactiveTestBot(t *testing.T, configure func(*adminStoreStub)) *proacti
 		logger:    proactiveDebugLogger(),
 		cfg:       config.BotConfig{AdminIDs: []int64{7}, ProcessingTimeout: 5 * time.Second},
 		history:   history,
-		stats:     &pipelineStatsSpy{},
+		stats:     statistics.NewCollector(statistics.Config{}),
 		admin:     adminconfig.NewService(store, nil, nil),
 		api:       botAPI,
 		me:        testBotID,
@@ -306,9 +326,11 @@ func (p *proactiveTestBot) wireFakeEngine(t *testing.T) *fakeDecisionEngine {
 
 	engine := &fakeDecisionEngine{}
 	p.bot.decisions = &proactiveDecisions{
-		engineFor: func(adminconfig.ResolvedChatConfig) interactionDecider { return engine },
-		persona:   &fakePersonaSource{},
-		budget:    96 * 1024,
+		engineFor: func(_ adminconfig.ResolvedChatConfig, _ uint64, _ statistics.InteractionKeys) interactionDecider {
+			return engine
+		},
+		persona: &fakePersonaSource{},
+		budget:  96 * 1024,
 	}
 	p.bot.participation = newParticipationRunner(p.bot.ctx, 5*time.Second, p.bot.logger)
 	t.Cleanup(p.bot.participation.Close)
@@ -656,15 +678,15 @@ func TestProactiveNoOpIsFree(t *testing.T) {
 	})
 	persona := &fakePersonaSource{}
 	client := &fakeDecisionClient{answers: decisionAnswers(0.0, 1.0, 1.0)}
-	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024)
+	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024, "route-model")
 	t.Cleanup(stop)
 
 	// Wrap the engine the wiring builds, so the test can prove the engine
 	// itself is invoked and answers the NoOp.
 	var decideCalls atomic.Int32
 	original := p.bot.decisions.engineFor
-	p.bot.decisions.engineFor = func(resolved adminconfig.ResolvedChatConfig) interactionDecider {
-		return &countedDecider{inner: original(resolved), calls: &decideCalls}
+	p.bot.decisions.engineFor = func(resolved adminconfig.ResolvedChatConfig, epoch uint64, keys statistics.InteractionKeys) interactionDecider {
+		return &countedDecider{inner: original(resolved, epoch, keys), calls: &decideCalls}
 	}
 
 	p.deliver(t, proactiveGroupUpdate("idle chatter"))
@@ -720,7 +742,7 @@ func TestProactiveNoOpSkipsImageHydration(t *testing.T) {
 	p.bot.imageRecognition.Enabled = true
 	persona := &fakePersonaSource{}
 	client := &fakeDecisionClient{answers: decisionAnswers(0.0, 1.0, 1.0)}
-	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024)
+	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024, "route-model")
 	t.Cleanup(stop)
 
 	p.deliver(t, tg.Update{UpdateID: 45, Message: &tg.Message{
@@ -763,7 +785,7 @@ func TestProactiveUnconfiguredModelSkipsImageHydration(t *testing.T) {
 	// file from the Bot API and run vision inference.
 	p.bot.imageRecognition.Enabled = true
 	client := &fakeDecisionClient{answers: decisionAnswers(0.0, 1.0, 1.0)}
-	stop := p.bot.SetProactiveDecisions(client, &fakePersonaSource{}, 96*1024)
+	stop := p.bot.SetProactiveDecisions(client, &fakePersonaSource{}, 96*1024, "route-model")
 	t.Cleanup(stop)
 
 	p.deliver(t, tg.Update{UpdateID: 46, Message: &tg.Message{
@@ -805,7 +827,7 @@ func TestProactiveQueuedTaskHonorsModeChange(t *testing.T) {
 	})
 	persona := &fakePersonaSource{}
 	client := &fakeDecisionClient{answers: decisionAnswers(0.0, 1.0, 1.0)}
-	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024)
+	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024, "route-model")
 	t.Cleanup(stop)
 
 	// The flip: by the time the task acquires the slot, the chat is disabled.
@@ -813,7 +835,7 @@ func TestProactiveQueuedTaskHonorsModeChange(t *testing.T) {
 	// sender) would have accepted this message.
 	p.store.DefaultInteractivityMode = adminconfig.InteractivityDisabled
 
-	p.bot.evaluateParticipation(context.Background(), *proactiveGroupUpdate("late chatter").Message)
+	p.bot.evaluateParticipation(context.Background(), *proactiveGroupUpdate("late chatter").Message, 0)
 
 	if got := client.calls(); got != 0 {
 		t.Fatalf("disabled mode must block the queued task, got %d backend calls", got)
@@ -843,7 +865,7 @@ func TestProactiveReactTurnIsReactionOnly(t *testing.T) {
 		// threshold; react suitable 1.0 >= .60. Reply is disallowed by flags.
 		answers: decisionAnswers(0.1, 1.0, 0.0),
 	}
-	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024)
+	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024, "route-model")
 	t.Cleanup(stop)
 	p.llm.mu.Lock()
 	p.llm.responses = []llm.Response{
@@ -898,7 +920,7 @@ func TestProactiveReplyRunsOrdinaryPath(t *testing.T) {
 		// threshold; reply suitable 1.0 >= .70.
 		answers: decisionAnswers(0.05, 0.0, 1.0),
 	}
-	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024)
+	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024, "route-model")
 	t.Cleanup(stop)
 
 	p.deliver(t, proactiveGroupUpdate("does anyone know a good pho place"))
@@ -958,7 +980,7 @@ func TestProactiveDecisionContextCarriesReactions(t *testing.T) {
 	}
 	persona := &fakePersonaSource{}
 	client := &fakeDecisionClient{answers: decisionAnswers(0.05, 0.0, 1.0)}
-	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024)
+	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024, "route-model")
 	t.Cleanup(stop)
 
 	p.deliver(t, proactiveGroupUpdate("fresh chatter for evaluation"))
@@ -1013,7 +1035,7 @@ func TestProactiveReplyFailureIsSilent(t *testing.T) {
 	})
 	persona := &fakePersonaSource{}
 	client := &fakeDecisionClient{answers: decisionAnswers(0.05, 0.0, 1.0)}
-	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024)
+	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024, "route-model")
 	t.Cleanup(stop)
 	p.llm.mu.Lock()
 	p.llm.err = llm.ErrLlmBackendRequestFailed
@@ -1045,7 +1067,7 @@ func TestProactiveDecisionFailureIsSilent(t *testing.T) {
 	})
 	persona := &fakePersonaSource{}
 	client := &fakeDecisionClient{err: systemone.ErrMalformed}
-	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024)
+	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024, "route-model")
 	t.Cleanup(stop)
 
 	p.deliver(t, proactiveGroupUpdate("hello from the outage"))
@@ -1134,12 +1156,12 @@ func TestParticipationRunnerSerializesPerChat(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		if !runner.Submit(1, task(true)) {
+		if !runner.Submit(1, task(true), nil) {
 			t.Fatalf("submit %d rejected before shutdown", i)
 		}
 	}
 	// A different chat must not wait on chat 1's queue.
-	if !runner.Submit(2, task(false)) {
+	if !runner.Submit(2, task(false), nil) {
 		t.Fatalf("chat 2 submit rejected")
 	}
 
@@ -1150,7 +1172,7 @@ func TestParticipationRunnerSerializesPerChat(t *testing.T) {
 	}
 
 	runner.Close()
-	if runner.Submit(1, func(context.Context) {}) {
+	if runner.Submit(1, func(context.Context) {}, nil) {
 		t.Fatalf("submit after close must be rejected")
 	}
 	if got := completed.Load(); got != 4 {
@@ -1175,12 +1197,12 @@ func TestParticipationRunnerShutdownDrains(t *testing.T) {
 		case <-release:
 		case <-ctx.Done():
 		}
-	})
+	}, nil)
 
 	<-started
 	// A queued task behind the holder must be cancellable while waiting.
 	queuedRan := make(chan struct{})
-	runner.Submit(1, func(context.Context) { close(queuedRan) })
+	runner.Submit(1, func(context.Context) { close(queuedRan) }, nil)
 
 	runner.Close() // cancels and joins: the holder aborts via its context
 
@@ -1195,7 +1217,7 @@ func TestParticipationRunnerShutdownDrains(t *testing.T) {
 		t.Fatalf("executing task must observe the shutdown cancellation")
 	}
 
-	if runner.Submit(1, func(context.Context) {}) {
+	if runner.Submit(1, func(context.Context) {}, nil) {
 		t.Fatalf("submit after close must be rejected")
 	}
 }
@@ -1213,7 +1235,7 @@ func TestParticipationRunnerZeroTimeoutHasNoDeadline(t *testing.T) {
 		started <- struct{}{}
 		observed <- ctx
 		<-ctx.Done() // ends when Close cancels the lifecycle
-	})
+	}, nil)
 
 	<-started
 	ctx := <-observed
@@ -1381,7 +1403,7 @@ func TestProactivePersonaSnapshotSurvivesMidDecisionChanges(t *testing.T) {
 	client := &fakeDecisionClient{answers: decisionAnswers(0.05, 0.0, 1.0)}
 	gate := make(chan struct{})
 	client.gate = gate
-	stop := p.bot.SetProactiveDecisions(client, realPersonaSource{prompts: prompts, fallbackChatModel: "env-chat-model"}, 96*1024)
+	stop := p.bot.SetProactiveDecisions(client, realPersonaSource{prompts: prompts, fallbackChatModel: "env-chat-model"}, 96*1024, "env-chat-model")
 	t.Cleanup(stop)
 
 	p.deliver(t, proactiveGroupUpdate("anyone up for pho later?"))
@@ -1498,7 +1520,7 @@ func TestProactiveLogsStayIdentifierFree(t *testing.T) {
 	// Scenario 1: the decision itself fails (backend anomaly class).
 	client := &fakeDecisionClient{err: systemone.ErrMalformed}
 	persona := &fakePersonaSource{}
-	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024)
+	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024, "route-model")
 	t.Cleanup(stop)
 
 	p.deliver(t, proactiveGroupUpdate("first probe message"))
@@ -1551,7 +1573,7 @@ func TestProactiveQueuedTaskHonorsAccessRevocation(t *testing.T) {
 	})
 	persona := &fakePersonaSource{}
 	client := &fakeDecisionClient{answers: decisionAnswers(0.0, 1.0, 1.0)}
-	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024)
+	stop := p.bot.SetProactiveDecisions(client, persona, 96*1024, "route-model")
 	t.Cleanup(stop)
 
 	// The flip: eligibility at Submit time (mentions_or_replies, talk-low,
@@ -1560,7 +1582,7 @@ func TestProactiveQueuedTaskHonorsAccessRevocation(t *testing.T) {
 	// allowlist policy.
 	p.store.policy = adminconfig.AccessPolicyAllowlist
 
-	p.bot.evaluateParticipation(context.Background(), *proactiveGroupUpdate("chatter from a revoked chat").Message)
+	p.bot.evaluateParticipation(context.Background(), *proactiveGroupUpdate("chatter from a revoked chat").Message, 0)
 
 	if got := client.calls(); got != 0 {
 		t.Fatalf("revoked chat must block the queued task, got %d backend calls", got)

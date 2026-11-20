@@ -1,7 +1,6 @@
 package state
 
 import (
-	"encoding/json"
 	"time"
 )
 
@@ -123,52 +122,4 @@ type ConversationStore interface {
 type ImageStore interface {
 	Get(imageMeta *ImageMeta) (string, bool)
 	Set(imageMeta *ImageMeta, description string)
-}
-
-type UsageTotals struct {
-	PromptTokens     uint64  `json:"prompt_tokens"`
-	CompletionTokens uint64  `json:"completion_tokens"`
-	TotalTokens      uint64  `json:"total_tokens"`
-	TotalCost        float64 `json:"total_cost"`
-}
-
-type StatsSnapshot struct {
-	RunningSince time.Time `json:"-"`
-	Uptime       string    `json:"uptime"`
-
-	GroupRequests   uint64 `json:"group_requests"`
-	PrivateRequests uint64 `json:"private_requests"`
-	InlineQueries   uint64 `json:"inline_queries"`
-
-	Mentions          uint64 `json:"mentions"`
-	SummarizeRequests uint64 `json:"summarize_requests"`
-	ChatHistoryResets uint64 `json:"chat_history_resets"`
-
-	PromptTokens     uint64  `json:"prompt_tokens"`
-	CompletionTokens uint64  `json:"completion_tokens"`
-	TotalTokens      uint64  `json:"total_tokens"`
-	TotalCost        float64 `json:"total_cost"`
-	LlmTimeouts      uint64  `json:"llm_timeouts"`
-}
-
-func (s StatsSnapshot) String() string {
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return "{\"error\": \"cannot serialize stats\"}"
-	}
-
-	return string(data)
-}
-
-type StatsStore interface {
-	Snapshot() StatsSnapshot
-	String() string
-	InlineQuery()
-	GroupRequest()
-	PrivateRequest()
-	Mention()
-	SummarizeRequest()
-	ChatHistoryReset()
-	AddUsage(prompt, completion, total int, cost float64)
-	LlmTimeout()
 }

@@ -1,15 +1,12 @@
 package memory
 
 import (
-	"errors"
 	"log/slog"
 	"strconv"
 	"sync"
 	"time"
 
 	"telegram-ollama-reply-bot/internal/state"
-
-	"github.com/getsentry/sentry-go"
 )
 
 const (
@@ -55,7 +52,6 @@ func (c Config) withDefaults() Config {
 type Stores struct {
 	conversations *ConversationStore
 	images        *ImageStore
-	stats         *StatsStore
 }
 
 func New(cfg Config, logger *slog.Logger) *Stores {
@@ -68,7 +64,6 @@ func New(cfg Config, logger *slog.Logger) *Stores {
 	return &Stores{
 		conversations: newConversationStore(cfg, logger.With("bucket", "conversation"), budget),
 		images:        newImageStore(cfg, logger.With("bucket", "image_cache"), budget),
-		stats:         newStatsStore(),
 	}
 }
 
@@ -78,10 +73,6 @@ func (s *Stores) Conversations() state.ConversationStore {
 
 func (s *Stores) Images() state.ImageStore {
 	return s.images
-}
-
-func (s *Stores) Stats() state.StatsStore {
-	return s.stats
 }
 
 type conversationBucket struct {
@@ -764,73 +755,6 @@ func (s *ImageStore) removeOrderKey(key string) {
 			return
 		}
 	}
-}
-
-type StatsStore struct {
-	mu sync.Mutex
-
-	runningSince time.Time
-
-	groupRequests   uint64
-	privateRequests uint64
-	inlineQueries   uint64
-	mentions        uint64
-	summarize       uint64
-	chatResets      uint64
-	promptTokens    uint64
-	completion      uint64
-	totalTokens     uint64
-	totalCost       float64
-	llmTimeouts     uint64
-}
-
-func newStatsStore() *StatsStore {
-	return &StatsStore{runningSince: time.Now()}
-}
-
-func (s *StatsStore) Snapshot() state.StatsSnapshot {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return state.StatsSnapshot{
-		RunningSince:      s.runningSince,
-		Uptime:            time.Since(s.runningSince).String(),
-		GroupRequests:     s.groupRequests,
-		PrivateRequests:   s.privateRequests,
-		InlineQueries:     s.inlineQueries,
-		Mentions:          s.mentions,
-		SummarizeRequests: s.summarize,
-		ChatHistoryResets: s.chatResets,
-		PromptTokens:      s.promptTokens,
-		CompletionTokens:  s.completion,
-		TotalTokens:       s.totalTokens,
-		TotalCost:         s.totalCost,
-		LlmTimeouts:       s.llmTimeouts,
-	}
-}
-
-func (s *StatsStore) String() string    { return s.Snapshot().String() }
-func (s *StatsStore) InlineQuery()      { s.mu.Lock(); s.inlineQueries++; s.mu.Unlock() }
-func (s *StatsStore) GroupRequest()     { s.mu.Lock(); s.groupRequests++; s.mu.Unlock() }
-func (s *StatsStore) PrivateRequest()   { s.mu.Lock(); s.privateRequests++; s.mu.Unlock() }
-func (s *StatsStore) Mention()          { s.mu.Lock(); s.mentions++; s.mu.Unlock() }
-func (s *StatsStore) SummarizeRequest() { s.mu.Lock(); s.summarize++; s.mu.Unlock() }
-func (s *StatsStore) ChatHistoryReset() { s.mu.Lock(); s.chatResets++; s.mu.Unlock() }
-func (s *StatsStore) LlmTimeout()       { s.mu.Lock(); s.llmTimeouts++; s.mu.Unlock() }
-func (s *StatsStore) AddUsage(prompt, completion, total int, cost float64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if prompt < 0 || completion < 0 || total < 0 {
-		sentry.CaptureException(errors.New("state stats: negative token usage"))
-
-		return
-	}
-
-	s.promptTokens += uint64(prompt)
-	s.completion += uint64(completion)
-	s.totalTokens += uint64(total)
-	s.totalCost += cost
 }
 
 func scopeKey(scope state.ConversationScope) string {

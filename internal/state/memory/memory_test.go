@@ -150,29 +150,6 @@ func TestImageStoreExpiresEntries(t *testing.T) {
 	}
 }
 
-func TestStatsStoreAccumulatesUsageAndCounters(t *testing.T) {
-	t.Parallel()
-
-	stores := New(Config{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
-	stats := stores.Stats()
-
-	stats.PrivateRequest()
-	stats.Mention()
-	stats.AddUsage(10, 20, 30, 0.5)
-	stats.LlmTimeout()
-
-	snapshot := stats.Snapshot()
-	if snapshot.PrivateRequests != 1 || snapshot.Mentions != 1 {
-		t.Fatalf("unexpected counter snapshot: %#v", snapshot)
-	}
-	if snapshot.PromptTokens != 10 || snapshot.CompletionTokens != 20 || snapshot.TotalTokens != 30 {
-		t.Fatalf("unexpected token snapshot: %#v", snapshot)
-	}
-	if snapshot.TotalCost != 0.5 || snapshot.LlmTimeouts != 1 {
-		t.Fatalf("unexpected totals snapshot: %#v", snapshot)
-	}
-}
-
 func TestConversationStoreSetMessageReactionsAcrossTopics(t *testing.T) {
 	t.Parallel()
 

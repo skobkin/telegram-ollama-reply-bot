@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
+	"telegram-ollama-reply-bot/internal/statistics"
 )
 
 const (
@@ -361,9 +362,7 @@ func newTestController(t *testing.T, opts ...ControllerOption) (*Controller, *re
 	}
 	service := adminconfig.NewService(store, builtins, validator)
 
-	return NewController(NewManager(nil), service, []int64{testAdminID}, func() string {
-		return "stats-snapshot"
-	}, opts...), store
+	return NewController(NewManager(nil), service, []int64{testAdminID}, statistics.NewCollector(statistics.Config{}), opts...), store
 }
 
 // mustOpen opens the dashboard and adopts a message ID the way the adapter

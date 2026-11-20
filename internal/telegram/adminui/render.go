@@ -135,6 +135,20 @@ func (a *Adapter) sendDocumentPayload(ctx *th.Context, adminID int64, payload *c
 	}
 }
 
+// sendPhotoPayload delivers a payload as an inline photo (statistics PNG
+// reports). The upload failure is logged and sanitized; the accompanying
+// document delivery is independent and unaffected.
+func (a *Adapter) sendPhotoPayload(ctx *th.Context, adminID int64, payload *core.PhotoPayload) {
+	params := tu.Photo(tu.ID(adminID), tu.FileFromBytes(payload.Content, payload.Filename))
+	if payload.Caption != "" {
+		params.Caption = payload.Caption
+	}
+	if _, err := a.api.SendPhoto(ctx, params); err != nil {
+		a.logger.Warn("admin ui photo send failed", "admin_id", adminID,
+			"error", safeerr.WrapTransport(errAdminPhotoSend, err))
+	}
+}
+
 // isMessageGone reports whether the edit failed because the target message
 // no longer exists (deleted or too old to edit) — the resend signal.
 func isMessageGone(err error) bool {

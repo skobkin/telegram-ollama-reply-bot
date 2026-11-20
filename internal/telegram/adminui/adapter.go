@@ -350,6 +350,12 @@ func (a *Adapter) applyOutcome(ctx *th.Context, adminID int64, outcome core.Outc
 	if outcome.Picker != nil {
 		a.sendPickerKeyboard(ctx, outcome.Session, adminID, outcome.Picker)
 	}
+	// The photo precedes the document (inline chart first, canonical JSON
+	// second); their failure modes are independent and both are attempted
+	// unconditionally.
+	if outcome.Photo != nil {
+		a.sendPhotoPayload(ctx, adminID, outcome.Photo)
+	}
 	if outcome.Document != nil {
 		a.sendDocumentPayload(ctx, adminID, outcome.Document)
 	}

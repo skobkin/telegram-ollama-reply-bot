@@ -11,6 +11,7 @@ import (
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/llmcontext"
 	"telegram-ollama-reply-bot/internal/state"
+	"telegram-ollama-reply-bot/internal/statistics"
 
 	"github.com/getsentry/sentry-go"
 	t "github.com/mymmrac/telego"
@@ -27,9 +28,11 @@ type interactionDecider interface {
 // boundaries per operation, and the model resolver is not stored at all —
 // each operation adapts its own settings snapshot (snapshotModels), so the
 // decision and its resulting action share one resolution without a second
-// settings read inside the engine.
+// settings read inside the engine. The builder receives the operation's
+// submission epoch and key snapshot so its instrumented client attributes
+// every inference attempt to the operation.
 type proactiveDecisions struct {
-	engineFor func(resolved adminconfig.ResolvedChatConfig) interactionDecider
+	engineFor func(resolved adminconfig.ResolvedChatConfig, epoch uint64, keys statistics.InteractionKeys) interactionDecider
 	history   interactivity.HistorySource
 	// persona renders decision personas and captures the operation's
 	// template body at snapshot time.
@@ -43,15 +46,19 @@ type proactiveDecisions struct {
 // engine, and a positive decision runs the proactive reaction or reply turn.
 // The bot contributes the history source from its own reply-context builder;
 // the caller contributes the shared System One client, the persona renderer,
-// and the request composition budget. It returns the participation runner's
-// stop function: call it at shutdown before previews, the dispatcher, and
-// the tool runtime go away, so in-flight proactive turns drain while every
-// dependency they use is still alive. A nil client or persona keeps the
-// feature entirely off.
-func (b *Bot) SetProactiveDecisions(client interactivity.DecisionClient, persona interactivity.PersonaSource, inputBudgetBytes int64) func() {
+// the request composition budget, and the environment chat route model the
+// generation falls back to when a chat override is empty (recorded as the
+// effective generation model in statistics). It returns the participation
+// runner's stop function: call it at shutdown before previews, the
+// dispatcher, and the tool runtime go away, so in-flight proactive turns
+// drain while every dependency they use is still alive. A nil client or
+// persona keeps the feature entirely off.
+func (b *Bot) SetProactiveDecisions(client interactivity.DecisionClient, persona interactivity.PersonaSource, inputBudgetBytes int64, chatRouteModel string) func() {
 	if client == nil || persona == nil {
 		return nil
 	}
+
+	b.proactiveChatRouteModel = chatRouteModel
 
 	runner := newParticipationRunner(b.ctx, b.cfg.ProcessingTimeout, b.logger)
 	decisions := &proactiveDecisions{
@@ -59,9 +66,14 @@ func (b *Bot) SetProactiveDecisions(client interactivity.DecisionClient, persona
 		persona: persona,
 		budget:  inputBudgetBytes,
 	}
-	decisions.engineFor = func(resolved adminconfig.ResolvedChatConfig) interactionDecider {
+	decisions.engineFor = func(resolved adminconfig.ResolvedChatConfig, epoch uint64, keys statistics.InteractionKeys) interactionDecider {
 		engine, err := interactivity.NewEngine(interactivity.EngineDeps{
-			Client:           client,
+			Client: &instrumentedDecisionClient{
+				inner: client,
+				stats: b.stats,
+				epoch: epoch,
+				keys:  keys,
+			},
 			Models:           snapshotModels{resolved: resolved},
 			Persona:          persona,
 			History:          decisions.history,
@@ -117,21 +129,39 @@ func (b *Bot) shouldEvaluateParticipation(resolved adminconfig.ResolvedChatConfi
 // per chat; every eligible message is evaluated, nothing is dropped, and
 // the handler goroutine never blocks on the engine. Explicit turns do not
 // touch the slots and are never delayed by a waiting proactive task.
+//
+// The submission is recorded and its statistics epoch captured atomically
+// BEFORE Submit: the runner may launch the task goroutine before Submit
+// returns, so the epoch must already exist when the first observation of
+// the operation lands. Submit returns false only for a closed runner;
+// accepted tasks discarded before their callback (slot-park or re-check
+// cancellation) surface through the runner's discard hook — the ledger's
+// accepted_then_cancelled class.
 func (b *Bot) evaluateProactiveParticipation(_ context.Context, message t.Message) {
 	if b.participation == nil {
 		return
 	}
 
-	b.participation.Submit(message.Chat.ID, func(taskCtx context.Context) {
-		b.evaluateParticipation(taskCtx, message)
+	epoch := b.stats.BeginSubmission(message.Chat.ID)
+	submitted := b.participation.Submit(message.Chat.ID, func(taskCtx context.Context) {
+		b.evaluateParticipation(taskCtx, message, epoch)
+	}, func() {
+		b.stats.RecordAcceptedCancelled(epoch, message.Chat.ID)
 	})
+	if !submitted {
+		b.stats.RecordSubmitRejected(epoch, message.Chat.ID)
+	}
 }
 
 // evaluateParticipation decides whether and how the bot participates
 // proactively in response to one non-explicit message, then runs the
 // matching proactive turn. All failures are silent by design: a failed
 // decision and an ignored one are equally invisible to chat participants.
-func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
+//
+// epoch is the statistics generation captured at submission; every
+// preflight, decision, inference, and execution observation of this
+// operation carries it.
+func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message, epoch uint64) {
 	logger := b.loggerFromContext(ctx)
 
 	// Re-run the ingress access decision before any work: a task can sit
@@ -142,11 +172,13 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 	allowed, err := b.admin.ShouldAllowChat(ctx, message.Chat.ID, b.isAdminDM(&message))
 	if err != nil {
 		logger.Warn("proactive participation skipped", "reason", "chat access check failed")
+		b.stats.RecordPreflight(statistics.PreflightObservation{Epoch: epoch, ChatID: message.Chat.ID, Kind: statistics.PreflightAccessDenied})
 
 		return
 	}
 	if !allowed {
 		logger.Debug("proactive participation skipped", "reason", "chat not authorized")
+		b.stats.RecordPreflight(statistics.PreflightObservation{Epoch: epoch, ChatID: message.Chat.ID, Kind: statistics.PreflightAccessDenied})
 
 		return
 	}
@@ -160,6 +192,7 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 		// Content-free class only: no chat identifier — proactive failure
 		// diagnostics must not link decisions to conversations.
 		logger.Warn("proactive participation skipped", "reason", "chat config resolution failed")
+		b.stats.RecordPreflight(statistics.PreflightObservation{Epoch: epoch, ChatID: message.Chat.ID, Kind: statistics.PreflightConfigResolutionFailed})
 
 		return
 	}
@@ -170,11 +203,19 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 	// stay effective at execution time; no extra settings reads are needed —
 	// this consumes the snapshot above.
 	if !b.shouldEvaluateParticipation(resolved, message) {
+		b.stats.RecordPreflight(statistics.PreflightObservation{Epoch: epoch, ChatID: message.Chat.ID, Kind: statistics.PreflightEligibilityLost})
+
 		return
 	}
 
-	engine := b.decisionEngineFor(resolved)
+	// The operation's bucket identity: fixed from the snapshot for every
+	// observation of this operation.
+	keys := interactionKeysOf(message.Chat.ID, resolved)
+
+	engine := b.decisionEngineFor(resolved, epoch, keys)
 	if engine == nil {
+		b.stats.RecordPreflight(statistics.PreflightObservation{Epoch: epoch, ChatID: message.Chat.ID, Kind: statistics.PreflightEngineWiringFailed})
+
 		return
 	}
 
@@ -188,6 +229,7 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 	templateBody, err := b.decisions.persona.CapturePersonaTemplate(ctx, message.Chat.ID)
 	if err != nil {
 		logger.Warn("proactive participation skipped", "reason", "persona template capture failed")
+		b.stats.RecordPreflight(statistics.PreflightObservation{Epoch: epoch, ChatID: message.Chat.ID, Kind: statistics.PreflightPersonaCaptureFailed})
 
 		return
 	}
@@ -221,7 +263,7 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 	}
 
 	started := time.Now()
-	decision, err := engine.Decide(ctx, interactivity.DecisionInput{
+	decision, decideErr := engine.Decide(ctx, interactivity.DecisionInput{
 		ChatID:        message.Chat.ID,
 		TopicID:       message.MessageThreadID,
 		TargetID:      message.MessageID,
@@ -240,7 +282,7 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 			TemplateBody:  templateBody,
 		},
 	})
-	if err != nil {
+	if decideErr != nil {
 		// The engine returns typed, content-free errors only, and the log
 		// carries no chat identifier: proactive failure diagnostics must
 		// not link decisions to conversations. Expected outage classes stay
@@ -248,13 +290,34 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 		// sanitized.
 		logger.Warn("proactive decision failed",
 			"duration", time.Since(started).Round(time.Millisecond).String(),
-			"error", err)
-		if errors.Is(err, interactivity.ErrInvalidResponse) {
-			sentry.CaptureException(err)
+			"error", decideErr)
+		if errors.Is(decideErr, interactivity.ErrInvalidResponse) {
+			sentry.CaptureException(decideErr)
 		}
+
+		// Terminal decision-phase classification of the failed decision.
+		b.stats.RecordDecision(statistics.DecisionObservation{
+			Epoch:           epoch,
+			Keys:            keys,
+			Outcome:         decisionOutcome(decideErr, decision),
+			Scores:          nil, // no usable evidence — no scores
+			DecisionLatency: time.Since(started),
+		})
 
 		return
 	}
+
+	// Terminal decision-phase classification of the completed decision:
+	// every callback run records exactly one outcome. Only evaluated
+	// decisions (usable evidence) carry scores — the NoOp, unconfigured,
+	// and evidence-invalid short-circuits record none.
+	b.stats.RecordDecision(statistics.DecisionObservation{
+		Epoch:           epoch,
+		Keys:            keys,
+		Outcome:         decisionOutcome(nil, decision),
+		Scores:          decisionScoresOf(profileOf(resolved.InteractionProfile), decision),
+		DecisionLatency: time.Since(started),
+	})
 
 	if decision.Action == interactivity.ActionIgnore {
 		return
@@ -270,13 +333,42 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 	}
 
 	// The action receives the same resolved config and captured persona the
-	// engine consumed.
+	// engine consumed. Dispatch is recorded BEFORE the turn starts and the
+	// completion observation AFTER it returns — the two ledger entries bound
+	// every in-flight execution, and the duration spans exactly that range.
+	generationModel := b.effectiveGenerationModel(resolved)
 	switch decision.Action {
 	case interactivity.ActionReact:
-		b.runProactiveReaction(ctx, message, target, resolved, &capturedPersona)
+		b.stats.RecordExecutionDispatch(statistics.ExecutionDispatch{
+			Epoch: epoch, Keys: keys, GenerationModel: generationModel, Action: statistics.ActionReact,
+		})
+		dispatchedAt := time.Now()
+		effects := b.runProactiveReaction(ctx, message, target, resolved, &capturedPersona)
+		b.stats.RecordExecution(executionObservationOf(epoch, keys, generationModel, statistics.ActionReact, effects, time.Since(dispatchedAt)))
 	case interactivity.ActionReply:
-		b.runProactiveReply(ctx, message, target, resolved, &capturedPersona)
+		b.stats.RecordExecutionDispatch(statistics.ExecutionDispatch{
+			Epoch: epoch, Keys: keys, GenerationModel: generationModel, Action: statistics.ActionReply,
+		})
+		dispatchedAt := time.Now()
+		effects := b.runProactiveReply(ctx, message, target, resolved, &capturedPersona)
+		b.stats.RecordExecution(executionObservationOf(epoch, keys, generationModel, statistics.ActionReply, effects, time.Since(dispatchedAt)))
 	case interactivity.ActionIgnore:
+	}
+}
+
+// executionObservationOf builds the completion observation of one
+// dispatched proactive turn.
+func executionObservationOf(epoch uint64, keys statistics.InteractionKeys, generationModel string, action statistics.InteractionAction, effects turnEffects, duration time.Duration) statistics.ExecutionObservation {
+	return statistics.ExecutionObservation{
+		Epoch:                     epoch,
+		Keys:                      keys,
+		GenerationModel:           generationModel,
+		Action:                    action,
+		ReactionConfirmed:         effects.ReactionConfirmed,
+		TextConfirmed:             effects.TextConfirmed,
+		OtherSideEffectsConfirmed: effects.OtherSideEffectsConfirmed,
+		Failure:                   execFailureOf(effects.Failure),
+		Duration:                  duration,
 	}
 }
 
@@ -284,13 +376,14 @@ func (b *Bot) evaluateParticipation(ctx context.Context, message t.Message) {
 // builder. The shared boundaries (client, persona, history, budget) come
 // from the wiring; the model resolver adapts the operation snapshot, so
 // decision and action see the same model pair without a second settings
-// read inside the engine.
-func (b *Bot) decisionEngineFor(resolved adminconfig.ResolvedChatConfig) interactionDecider {
+// read inside the engine. The epoch and bucket keys thread the operation's
+// submission identity into the instrumented decision client.
+func (b *Bot) decisionEngineFor(resolved adminconfig.ResolvedChatConfig, epoch uint64, keys statistics.InteractionKeys) interactionDecider {
 	if b.decisions == nil {
 		return nil
 	}
 
-	return b.decisions.engineFor(resolved)
+	return b.decisions.engineFor(resolved, epoch, keys)
 }
 
 // runProactiveReaction runs the restricted reaction-only turn: previews
@@ -299,9 +392,10 @@ func (b *Bot) decisionEngineFor(resolved adminconfig.ResolvedChatConfig) interac
 // reaction. Any produced text is discarded — never published, never
 // recorded. Album targets are refused by the tool itself via the media
 // group ID the pipeline forwards. persona is the operation's captured
-// persona: every generation iteration of the turn renders it.
-func (b *Bot) runProactiveReaction(ctx context.Context, message t.Message, userMessageData state.Message, resolved adminconfig.ResolvedChatConfig, persona *llm.CapturedPersona) {
-	b.runConversationTurn(ctx, message, userMessageData, resolved, turnOptions{
+// persona: every generation iteration of the turn renders it. The returned
+// effect summary feeds the execution ledger.
+func (b *Bot) runProactiveReaction(ctx context.Context, message t.Message, userMessageData state.Message, resolved adminconfig.ResolvedChatConfig, persona *llm.CapturedPersona) turnEffects {
+	return b.runConversationTurn(ctx, message, userMessageData, resolved, turnOptions{
 		trigger:                 llmcontext.TriggerProactive,
 		errorPolicy:             silentErrors,
 		delivery:                discardText,
@@ -316,9 +410,9 @@ func (b *Bot) runProactiveReaction(ctx context.Context, message t.Message, userM
 // on, the full tool set, text delivered and recorded, and failures silent —
 // an unsolicited answer never surfaces error notices or fallbacks. persona
 // is the operation's captured persona: every generation iteration of the
-// turn renders it.
-func (b *Bot) runProactiveReply(ctx context.Context, message t.Message, userMessageData state.Message, resolved adminconfig.ResolvedChatConfig, persona *llm.CapturedPersona) {
-	b.runConversationTurn(ctx, message, userMessageData, resolved, turnOptions{
+// turn renders it. The returned effect summary feeds the execution ledger.
+func (b *Bot) runProactiveReply(ctx context.Context, message t.Message, userMessageData state.Message, resolved adminconfig.ResolvedChatConfig, persona *llm.CapturedPersona) turnEffects {
+	return b.runConversationTurn(ctx, message, userMessageData, resolved, turnOptions{
 		trigger:     llmcontext.TriggerProactive,
 		errorPolicy: silentErrors,
 		delivery:    deliverAndRecord,

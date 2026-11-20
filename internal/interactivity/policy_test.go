@@ -190,3 +190,69 @@ func TestEvaluatePolicyIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// TestBaseMatchesPolicyFormula pins the exported Base helper to the exact
+// base-score formula the policy gates on: external aggregation must never
+// reimplement it.
+func TestBaseMatchesPolicyFormula(t *testing.T) {
+	profiles := Profiles()
+	if len(profiles) == 0 {
+		t.Fatalf("built-in profiles must exist")
+	}
+
+	vectors := []DecisionScores{
+		{Relevance: 1, Intrusion: 0, Contribution: 1, ReactSuitable: 1, ReplySuitable: 1},
+		{Relevance: 0.5, Intrusion: 0.2, Contribution: 0.4, ReactSuitable: 0.7, ReplySuitable: 0.3},
+		{Relevance: 0, Intrusion: 0, Contribution: 0, ReactSuitable: 0, ReplySuitable: 0},
+		{Relevance: 1, Intrusion: 1, Contribution: 0, ReactSuitable: 0, ReplySuitable: 0},
+	}
+
+	for _, profile := range profiles {
+		for _, in := range vectors {
+			want := profile.RelevanceWeight*in.Relevance +
+				profile.ContributionWeight*in.Contribution -
+				profile.IntrusionPenalty*in.Intrusion
+			if want < 0 {
+				want = 0
+			}
+			if want > 1 {
+				want = 1
+			}
+			if got := Base(profile, in); got != want {
+				t.Fatalf("Base(%s, %+v) = %v, want %v", profile.ID, in, got, want)
+			}
+		}
+	}
+
+	// Correspondence with the policy: below the veto, the selected action
+	// tracks the Base value against the profile thresholds on a grid.
+	profile, _ := ProfileByID(adminconfig.ProfileTalkLow)
+	for b := 0.0; b <= 1.0; b += 0.05 {
+		in := DecisionScores{
+			Relevance:     b,
+			Intrusion:     0.01,
+			Contribution:  b,
+			ReactSuitable: 1,
+			ReplySuitable: 1,
+		}
+		// The weights make the true base a fixed affine function of b here;
+		// derive it from Base itself so the grid stays meaningful if the
+		// coefficients change.
+		base := Base(profile, in)
+		got := EvaluatePolicy(profile, in)
+		switch {
+		case base >= profile.ReplyThreshold:
+			if got.Action != ActionReply {
+				t.Fatalf("base %.3f >= reply threshold must reply, got %s", base, got.Action)
+			}
+		case base >= profile.ReactionThreshold:
+			if got.Action != ActionReact {
+				t.Fatalf("base %.3f >= react threshold must react, got %s", base, got.Action)
+			}
+		default:
+			if got.Action != ActionIgnore || got.Reason != ReasonBelowThresholds {
+				t.Fatalf("base %.3f below thresholds must ignore-below, got %s/%s", base, got.Action, got.Reason)
+			}
+		}
+	}
+}
