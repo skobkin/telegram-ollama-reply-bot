@@ -68,26 +68,43 @@ func (r *Runtime) getMessageContext(_ context.Context, callCtx CallContext, args
 		afterViews = append(afterViews, messageContextView(index[ids[i]]))
 	}
 
-	result := toolResult{
-		Status:  "ok",
-		Summary: "Message context retrieved",
-		Data: map[string]any{
-			"chat_id":   callCtx.Scope.ChatID,
-			"topic_id":  callCtx.Scope.TopicID,
-			"target":    messageContextView(index[payload.MessageID]),
-			"before":    beforeViews,
-			"after":     afterViews,
-			"requested": map[string]any{"before": before, "after": after},
-			// Retained-window boundaries only: the returned window includes the
-			// oldest/newest retained message. They say nothing about messages
-			// that may have existed and been discarded.
-			"retained_window": map[string]any{
-				"start_reached":          position-len(beforeViews) == 0,
-				"end_reached":            position+len(afterViews) == len(ids)-1,
-				"retained_messages":      len(snapshot.Messages),
-				"earlier_summary_exists": snapshot.EarlierSummary != "",
+	// The window flags must describe the neighbours actually serialized, so the
+	// selection is fitted to the budget here (farthest first) before the flags
+	// are computed; the generic reducer then has nothing left to remove.
+	build := func(b, a []map[string]any) toolResult {
+		return toolResult{
+			Status:  "ok",
+			Summary: "Message context retrieved",
+			Data: map[string]any{
+				"chat_id":   callCtx.Scope.ChatID,
+				"topic_id":  callCtx.Scope.TopicID,
+				"target":    messageContextView(index[payload.MessageID]),
+				"before":    b,
+				"after":     a,
+				"requested": map[string]any{"before": before, "after": after},
+				// Retained-window boundaries only: the returned (post-fitting)
+				// window includes the oldest/newest retained message. They say
+				// nothing about messages that may have existed and been discarded.
+				"retained_window": map[string]any{
+					"start_reached":          position-len(b) == 0,
+					"end_reached":            position+len(a) == len(ids)-1,
+					"retained_messages":      len(snapshot.Messages),
+					"earlier_summary_exists": snapshot.EarlierSummary != "",
+				},
 			},
-		},
+		}
+	}
+	result := build(beforeViews, afterViews)
+	for len(beforeViews)+len(afterViews) > 0 {
+		if _, preparation := prepareResult(result, messageContextResultCharBudget); preparation == ResultPreparationComplete {
+			break
+		}
+		if len(beforeViews) >= len(afterViews) {
+			beforeViews = beforeViews[:len(beforeViews)-1]
+		} else {
+			afterViews = afterViews[:len(afterViews)-1]
+		}
+		result = build(beforeViews, afterViews)
 	}
 	logToolResult(callCtx, result, "before_count", len(beforeViews), "after_count", len(afterViews), "retained_messages", len(snapshot.Messages))
 

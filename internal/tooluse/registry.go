@@ -172,7 +172,7 @@ func newRegistry(runtime *Runtime) *Registry {
 		},
 		{
 			Name:             "calculate",
-			Description:      "Evaluate an arithmetic expression exactly instead of computing in your head. Supports + - * / ^ (or **), parentheses, constants pi and e, and functions sqrt cbrt abs exp ln log10 log2 sin cos tan asin acos atan sinh cosh tanh floor ceil round trunc (one argument), atan2 hypot pow mod (two), min max (two to four). Trigonometry uses radians. ^ is right-associative and binds tighter than unary minus: 2^3^2 = 512, -2^2 = -4. / is real division. Arithmetic is float64.",
+			Description:      "Evaluate an arithmetic expression instead of computing in your head (float64 arithmetic, not arbitrary precision). Supports + - * / ^ (or **), parentheses, constants pi and e, and functions sqrt cbrt abs exp ln log10 log2 sin cos tan asin acos atan sinh cosh tanh floor ceil round trunc (one argument), atan2 hypot pow mod (two), min max (two to four). Trigonometry uses radians. ^ is right-associative and binds tighter than unary minus: 2^3^2 = 512, -2^2 = -4. / is real division. Arithmetic is float64.",
 			Parameters:       json.RawMessage(`{"type":"object","properties":{"expression":{"type":"string","minLength":1,"maxLength":256,"description":"Arithmetic expression, e.g. sqrt(2) * (3 + 4)^2."}},"required":["expression"],"additionalProperties":false}`),
 			InvocationPolicy: InvocationPolicyDiscretionary,
 			Visibility:       VisibilityStandard,
@@ -181,7 +181,7 @@ func newRegistry(runtime *Runtime) *Registry {
 		},
 		{
 			Name:             "random_choice",
-			Description:      "Pick one or more random items from a list, without replacement, using real randomness. Use it for any random pick instead of simulating randomness yourself (use send_dice only for an animated dice roll). Returns the selected items with their zero-based positions in the supplied list.",
+			Description:      "Pick one or more random items from a list, without replacement, using a pseudorandom generator (not suitable for security purposes). Use it for any random pick instead of simulating randomness yourself (use send_dice only for an animated dice roll). Returns the selected items with their zero-based positions in the supplied list.",
 			Parameters:       json.RawMessage(`{"type":"object","properties":{"items":{"type":"array","items":{"type":"string","minLength":1,"maxLength":100},"minItems":1,"maxItems":50,"description":"Options to choose from. Duplicate texts are treated as separate options."},"count":{"type":"integer","minimum":1,"maximum":10,"description":"How many distinct options to pick. Defaults to 1; must not exceed the number of items."}},"required":["items"],"additionalProperties":false}`),
 			InvocationPolicy: InvocationPolicyDiscretionary,
 			Visibility:       VisibilityStandard,

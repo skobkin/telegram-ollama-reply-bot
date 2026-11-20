@@ -206,7 +206,7 @@ func TestMessageContextWorstCaseTargetStaysDeliverable(t *testing.T) {
 		t.Fatalf("invalid JSON: %v", err)
 	}
 	target := decoded.Data.Target
-	if target.MessageID != 110 || target.ReplyToMessageID != 109 || target.FromID != 1<<52 || !target.NameTruncated || !target.TextTruncated || !decoded.Truncated {
+	if target.MessageID != 110 || target.ReplyToMessageID != 109 || target.FromID != 1<<52 || !target.NameTruncated || !target.TextTruncated {
 		t.Errorf("target damaged: %+v truncated=%v", target, decoded.Truncated)
 	}
 }
@@ -217,5 +217,49 @@ func TestMessageContextTargetAloneAlwaysFits(t *testing.T) {
 	result, _ := callContext(t, r, scope, `{"message_id":5}`)
 	if _, preparation := prepareResult(result, messageContextResultCharBudget); preparation != ResultPreparationComplete {
 		t.Fatalf("target-only worst case = %s", preparation)
+	}
+}
+
+// The window flags describe the neighbours actually serialized: when the
+// budget forces neighbours out, a boundary that was reached by the initial
+// selection must not still be reported as reached.
+func TestMessageContextWindowFlagsMatchBudgetFittedNeighbours(t *testing.T) {
+	scope := state.ConversationScope{ChatID: 1}
+	messages := make([]state.Message, 0, 21)
+	for id := 100; id <= 120; id++ {
+		messages = append(messages, hostileMessage(id, id-1))
+	}
+	r := contextRuntime(t, scope, messages...)
+
+	// Without budget pressure the initial selection reaches both boundaries.
+	small := contextRuntime(t, scope, seqMessages(100, 101, 102)...)
+	smallResult, _ := callContext(t, small, scope, `{"message_id":101,"before":3,"after":3}`)
+	window := smallResult.Data.(map[string]any)["retained_window"].(map[string]any)
+	if window["start_reached"] != true || window["end_reached"] != true {
+		t.Fatalf("unpressured window = %v", window)
+	}
+
+	result, err := callContext(t, r, scope, `{"message_id":110,"before":10,"after":10}`)
+	if err != nil || result.Status != "ok" {
+		t.Fatalf("%+v %v", result.Error, err)
+	}
+	data := result.Data.(map[string]any)
+	before := data["before"].([]map[string]any)
+	after := data["after"].([]map[string]any)
+	if len(before) == 10 && len(after) == 10 {
+		t.Fatal("expected the budget to remove neighbours")
+	}
+	window = data["retained_window"].(map[string]any)
+	if window["start_reached"] != (110-len(before) == 100) || window["end_reached"] != (110+len(after) == 120) {
+		t.Errorf("flags %v inconsistent with %d before / %d after", window, len(before), len(after))
+	}
+	if window["start_reached"] != false || window["end_reached"] != false {
+		t.Errorf("a removed boundary message is still reported as reached: %v", window)
+	}
+	if _, preparation := prepareResult(result, messageContextResultCharBudget); preparation != ResultPreparationComplete {
+		t.Errorf("fitted result should need no further reduction, got %s", preparation)
+	}
+	if got := data["requested"].(map[string]any); got["before"] != 10 || got["after"] != 10 {
+		t.Errorf("requested = %v", got)
 	}
 }

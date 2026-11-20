@@ -39,6 +39,13 @@ discarded. Author `name` / `username` are clamped (64 / 32) with `name_truncated
 `username_truncated`; `text_truncated` is set only on actual shortening. A target that is not retained
 (or belongs to another topic) is `message_not_in_history` (`not_found`).
 
+Window flags describe the neighbours actually serialized: the handler drops the farthest neighbours until
+the result fits the budget and only then computes the flags, so a removed boundary message is never
+reported as reached.
+
+Visibility is `VisibilityStandard` on purpose: like `search_history`, the lookup should appear in normal
+tool history. Visibility only affects presentation, not availability or access control.
+
 #185 (per-tool result reduction) stays deferred: nearest-first ordering plus clamped fields satisfy
 the budget guarantees with the generic reducer.
 
