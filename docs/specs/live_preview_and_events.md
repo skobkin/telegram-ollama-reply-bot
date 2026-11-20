@@ -219,8 +219,8 @@ At least two categories are needed:
 
 Examples of internal tools:
 
-- `get_conversation_summary`
-- `get_history_bounds`
+- `get_message_thread_context`
+- `list_recent_images`
 
 Examples of standard tools:
 
@@ -257,7 +257,7 @@ Example:
 ✅ search_history() ⌛ 5s
 ✅ search_web() ⌛ 1m20s
 ❌ fetch_url_content() ⌛ 3s
-🔄 get_conversation_summary()
+🔄 get_message_thread_context()
 ```
 
 Formatting should be readable and compact.

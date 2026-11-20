@@ -9,6 +9,7 @@ import (
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/logging"
 	"telegram-ollama-reply-bot/internal/support/safeerr"
+	"time"
 
 	"github.com/getsentry/sentry-go"
 	"github.com/sashabaranov/go-openai"
@@ -353,6 +354,8 @@ func (s *Service) buildConversationMessages(ctx context.Context, scope PromptSco
 
 		return nil, ErrTemplateProcessing
 	}
+
+	systemPrompt += "\n\n" + renderConversationMetadata(requestContext, time.Now())
 
 	if requestContext.EarlierSummary != "" {
 		systemPrompt += "\n\n[Earlier conversation summary: " + requestContext.EarlierSummary + "]"

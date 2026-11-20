@@ -15,7 +15,7 @@ import (
 
 func historyCalls() []tooluse.ToolCallRecord {
 	return []tooluse.ToolCallRecord{
-		{CallID: "1", Name: "get_conversation_summary", Visibility: tooluse.VisibilityInternal, Status: "ok", Duration: 300 * time.Millisecond},
+		{CallID: "1", Name: "get_message_thread_context", Visibility: tooluse.VisibilityInternal, Status: "ok", Duration: 300 * time.Millisecond},
 		{CallID: "2", Name: "search_web", Visibility: tooluse.VisibilityStandard, Status: "ok", Duration: time.Second},
 		{CallID: "3", Name: "fetch_url_content", Visibility: tooluse.VisibilityStandard, Status: "error", Duration: 800 * time.Millisecond},
 	}
@@ -28,7 +28,7 @@ func TestRichToolHistoryBlockToolsMode(t *testing.T) {
 	if !strings.Contains(block, "✅ `search_web()`") || strings.Contains(block, "⌛") {
 		t.Fatalf("tools mode must list standard tools without durations: %q", block)
 	}
-	if strings.Contains(block, "get_conversation_summary") {
+	if strings.Contains(block, "get_message_thread_context") {
 		t.Fatalf("internal tools must be hidden in tools mode: %q", block)
 	}
 	if !strings.Contains(block, "❌ `fetch_url_content()`") {
@@ -42,7 +42,7 @@ func TestRichToolHistoryBlockToolsMode(t *testing.T) {
 func TestRichToolHistoryBlockAllToolsMode(t *testing.T) {
 	block := renderRichToolHistoryBlock(historyCalls(), adminconfig.PreviewModeAllTools, RichMessageCharLimit)
 
-	if !strings.Contains(block, "✅ `get_conversation_summary()` ⌛ 0.3s") {
+	if !strings.Contains(block, "✅ `get_message_thread_context()` ⌛ 0.3s") {
 		t.Fatalf("all_tools mode must include internal tools with durations: %q", block)
 	}
 	if !strings.Contains(block, "✅ `search_web()` ⌛ 1s") {
@@ -153,7 +153,7 @@ func TestSendReplyWithToolHistoryLegacyFallback(t *testing.T) {
 	// MarkdownV2-reserved parentheses would get the whole fallback
 	// rejected. (Underscores may pass through as sanitizer italic pairs —
 	// valid MarkdownV2, same treatment as the answer body.)
-	if !strings.Contains(text, "Tool calls \\(3\\):") || !strings.Contains(text, "get_conversation_summary") {
+	if !strings.Contains(text, "Tool calls \\(3\\):") || !strings.Contains(text, "get_message_thread_context") {
 		t.Fatalf("fallback suffix must list all tools in all_tools mode: %q", text)
 	}
 	// Every parenthesis must be escaped — a raw one would get the whole

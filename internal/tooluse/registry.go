@@ -34,23 +34,20 @@ const (
 const (
 	defaultToolResultCharBudget = 1800
 
-	fetchURLContentResultCharBudget     = 3500
-	searchHistoryResultCharBudget       = 6000
-	conversationSummaryResultCharBudget = 1800
-	chatActivityResultCharBudget        = 1200
-	historyBoundsResultCharBudget       = 900
-	messageThreadResultCharBudget       = 2600
-	sendPollResultCharBudget            = 1200
-	sendQuizResultCharBudget            = 1200
-	sendDiceResultCharBudget            = 800
-	reminderResultCharBudget            = 1400
-	currentTimeResultCharBudget         = 600
-	recentLinksResultCharBudget         = 1600
-	datetimeMathResultCharBudget        = 1200
-	datetimeFormatResultCharBudget      = 700
-	listImagesResultCharBudget          = 1600
-	analyzeImageResultCharBudget        = 2600
-	setReactionResultCharBudget         = 600
+	fetchURLContentResultCharBudget = 3500
+	searchHistoryResultCharBudget   = 6000
+	messageThreadResultCharBudget   = 2600
+	sendPollResultCharBudget        = 1200
+	sendQuizResultCharBudget        = 1200
+	sendDiceResultCharBudget        = 800
+	reminderResultCharBudget        = 1400
+	currentTimeResultCharBudget     = 600
+	recentLinksResultCharBudget     = 1600
+	datetimeMathResultCharBudget    = 1200
+	datetimeFormatResultCharBudget  = 700
+	listImagesResultCharBudget      = 1600
+	analyzeImageResultCharBudget    = 2600
+	setReactionResultCharBudget     = 600
 )
 
 // ToolResult is the value a Handler returns to the runtime. It is exported
@@ -162,7 +159,7 @@ func newRegistry(runtime *Runtime) *Registry {
 		},
 		{
 			Name:             "get_current_time",
-			Description:      "Read the current server time and timezone context whenever time-sensitive reasoning would be more accurate with an explicit current timestamp.",
+			Description:      "Read a fresh current server timestamp, UTC time, timezone and UTC offset. Conversation metadata also contains the request preparation time.",
 			Parameters:       json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 			InvocationPolicy: InvocationPolicyDiscretionary,
 			Visibility:       VisibilityStandard,
@@ -191,8 +188,8 @@ func newRegistry(runtime *Runtime) *Registry {
 		},
 		{
 			Name:             "datetime_math",
-			Description:      "Perform exact date/time calculations on RFC3339 timestamps, including diff, shift, weekday lookup, and timezone conversion.",
-			Parameters:       json.RawMessage(`{"type":"object","properties":{"operation":{"type":"string","enum":["diff","shift","weekday","convert_timezone"],"description":"Datetime operation to perform."},"timestamp":{"type":"string","description":"RFC3339 timestamp used by shift, weekday, and convert_timezone."},"left":{"type":"string","description":"Left RFC3339 timestamp used by diff."},"right":{"type":"string","description":"Right RFC3339 timestamp used by diff."},"target_timezone":{"type":"string","description":"Target IANA timezone name used by convert_timezone."},"years":{"type":"integer","description":"Signed calendar year delta used by shift."},"months":{"type":"integer","description":"Signed calendar month delta used by shift."},"days":{"type":"integer","description":"Signed calendar day delta used by shift."},"hours":{"type":"integer","description":"Signed hour delta used by shift."},"minutes":{"type":"integer","description":"Signed minute delta used by shift."},"seconds":{"type":"integer","description":"Signed second delta used by shift."}},"required":["operation"],"additionalProperties":false}`),
+			Description:      "Calculate dates from RFC3339 timestamps. diff computes right minus left; shift applies calendar years/months/days before duration hours/minutes/seconds; weekday uses the timestamp offset; convert_timezone preserves the instant.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"operation":{"type":"string","enum":["diff","shift","weekday","convert_timezone"],"description":"diff: left/right; shift: timestamp plus at least one delta; weekday: timestamp; convert_timezone: timestamp and target_timezone."},"timestamp":{"type":"string","description":"RFC3339 timestamp used by shift, weekday, and convert_timezone."},"left":{"type":"string","description":"Left RFC3339 timestamp used by diff."},"right":{"type":"string","description":"Right RFC3339 timestamp used by diff."},"target_timezone":{"type":"string","description":"Target IANA timezone name used by convert_timezone."},"years":{"type":"integer","description":"Signed calendar year delta used by shift."},"months":{"type":"integer","description":"Signed calendar month delta used by shift."},"days":{"type":"integer","description":"Signed calendar day delta used by shift."},"hours":{"type":"integer","description":"Signed hour delta used by shift."},"minutes":{"type":"integer","description":"Signed minute delta used by shift."},"seconds":{"type":"integer","description":"Signed second delta used by shift."}},"required":["operation"],"additionalProperties":false,"anyOf":[{"properties":{"operation":{"const":"diff"}},"required":["left","right"]},{"properties":{"operation":{"const":"shift"}},"required":["timestamp"],"anyOf":[{"required":["years"]},{"required":["months"]},{"required":["days"]},{"required":["hours"]},{"required":["minutes"]},{"required":["seconds"]}]},{"properties":{"operation":{"const":"weekday"}},"required":["timestamp"]},{"properties":{"operation":{"const":"convert_timezone"}},"required":["timestamp","target_timezone"]}]}`),
 			InvocationPolicy: InvocationPolicyDiscretionary,
 			Visibility:       VisibilityStandard,
 			ResultCharBudget: datetimeMathResultCharBudget,
@@ -200,7 +197,7 @@ func newRegistry(runtime *Runtime) *Registry {
 		},
 		{
 			Name:             "datetime_format",
-			Description:      "Format an RFC3339 timestamp into a compact user-facing string using a stable style, optionally after timezone conversion.",
+			Description:      "Format an RFC3339 timestamp using a named style, optionally converting to an IANA timezone first. Formatting is English-only; locale is accepted as a reserved hint and does not change output.",
 			Parameters:       json.RawMessage(`{"type":"object","properties":{"timestamp":{"type":"string","description":"RFC3339 timestamp to format."},"style":{"type":"string","enum":["short","long","date_only","time_only","weekday_date"],"description":"Stable output style."},"target_timezone":{"type":"string","description":"Optional IANA timezone to convert into before formatting."},"locale":{"type":"string","description":"Optional future-safe locale hint. Currently English-only formatting is used."}},"required":["timestamp","style"],"additionalProperties":false}`),
 			InvocationPolicy: InvocationPolicyDiscretionary,
 			Visibility:       VisibilityStandard,
@@ -218,39 +215,12 @@ func newRegistry(runtime *Runtime) *Registry {
 		},
 		{
 			Name:             "search_history",
-			Description:      "Search the full current chat and current topic in-memory history for evidence snippets that help answer recall questions. Provide a short list of content-word keywords and choose match_mode='all' for narrow recall or 'any' for broader discovery.",
+			Description:      "Search retained in-memory history for the current chat/topic for evidence snippets that help answer recall questions. Provide a short list of content-word keywords and choose match_mode='all' for narrow recall or 'any' for broader discovery.",
 			Parameters:       json.RawMessage(`{"type":"object","properties":{"keywords":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8,"description":"Short list of search keywords or short phrases. Words are normalized and matched token-by-token."},"match_mode":{"type":"string","enum":["all","any"],"description":"Whether all keywords must match or any keyword is enough."},"limit":{"type":"integer","minimum":1,"maximum":20,"description":"Maximum number of snippets to return."}},"required":["keywords"],"additionalProperties":false}`),
 			InvocationPolicy: InvocationPolicyDiscretionary,
 			Visibility:       VisibilityStandard,
 			ResultCharBudget: searchHistoryResultCharBudget,
 			Handler:          runtime.searchHistory,
-		},
-		{
-			Name:             "get_conversation_summary",
-			Description:      "Read the current chat and current topic in-memory earlier summary when it exists.",
-			Parameters:       json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
-			InvocationPolicy: InvocationPolicyDiscretionary,
-			Visibility:       VisibilityInternal,
-			ResultCharBudget: conversationSummaryResultCharBudget,
-			Handler:          runtime.getConversationSummary,
-		},
-		{
-			Name:             "get_chat_activity_window",
-			Description:      "Summarize the current chat/topic in-memory message cadence with first and last message times, counts, and a rough burstiness label.",
-			Parameters:       json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
-			InvocationPolicy: InvocationPolicyDiscretionary,
-			Visibility:       VisibilityInternal,
-			ResultCharBudget: chatActivityResultCharBudget,
-			Handler:          runtime.getChatActivityWindow,
-		},
-		{
-			Name:             "get_history_bounds",
-			Description:      "Report exact full-history and recent-history time bounds for the current chat/topic in-memory message scope.",
-			Parameters:       json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
-			InvocationPolicy: InvocationPolicyDiscretionary,
-			Visibility:       VisibilityInternal,
-			ResultCharBudget: historyBoundsResultCharBudget,
-			Handler:          runtime.getHistoryBounds,
 		},
 		{
 			Name:             "get_message_thread_context",

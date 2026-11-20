@@ -2,6 +2,20 @@
 
 ## 0.30.0 (unreleased) — changes since 0.29.1
 
+### Conversation metadata replaces redundant tools (breaking, #179)
+
+`get_conversation_summary`, `get_chat_activity_window`, and `get_history_bounds`
+have been removed. Earlier summaries are already included in context; compact
+metadata now supplies current server time/timezone, available retained-history
+bounds and count, and the number of conversation messages actually supplied.
+Retained RAM history is not complete Telegram history.
+
+Custom persona templates continue to work without new placeholders or a database
+migration. Remove instructions that ask the model to call the deleted tools;
+use the automatically supplied summary and metadata instead. Custom prompts are
+not rewritten. `get_current_time`, `datetime_format`, `datetime_math`,
+`decision_choose`, and `decision_assess` remain supported.
+
 ### Model-authored reactions (#177)
 
 Reaction candidates now follow cached Telegram chat availability (30-minute TTL).

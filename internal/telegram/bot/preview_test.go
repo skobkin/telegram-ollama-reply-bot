@@ -425,7 +425,7 @@ func TestGroupPreviewCreateReplyEditDelete(t *testing.T) {
 	}
 
 	// Internal tools stay hidden in tools mode.
-	if strings.Contains(edit["text"].(string), "get_conversation_summary") {
+	if strings.Contains(edit["text"].(string), "get_message_thread_context") {
 		t.Fatalf("internal tools must be hidden in tools mode: %q", edit["text"])
 	}
 
@@ -519,7 +519,7 @@ func TestGroupPreviewModeFiltering(t *testing.T) {
 	info := groupRunInfo(adminconfig.PreviewModeAllTools)
 	run := m.RunFor(info)
 	toolDone(run, "search_web", false, true, time.Second)
-	toolDone(run, "get_conversation_summary", true, true, 1500*time.Millisecond)
+	toolDone(run, "get_message_thread_context", true, true, 1500*time.Millisecond)
 	toolDone(run, "fetch_url_content", false, false, 800*time.Millisecond)
 
 	waitForCondition(t, 2*time.Second, "all_tools preview", func() bool {
@@ -529,7 +529,7 @@ func TestGroupPreviewModeFiltering(t *testing.T) {
 	text := state.calls("sendMessage")[0]["text"].(string)
 	for _, want := range []string{
 		"✅ search_web() ⌛ 1s",
-		"✅ get_conversation_summary() ⌛ 1.5s",
+		"✅ get_message_thread_context() ⌛ 1.5s",
 		"❌ fetch_url_content() ⌛ 0.8s",
 	} {
 		if !strings.Contains(text, want) {
@@ -1027,8 +1027,8 @@ func TestGroupPreviewSkipsIdenticalEdits(t *testing.T) {
 	m := newPreviewTestManager(t, b)
 	run := m.RunFor(groupRunInfo(adminconfig.PreviewModeTools))
 
-	run.applyEvent(execution.ToolStarted{RunContext: execution.RunContext{RunID: run.ID()}, CallID: "c1", ToolName: "get_conversation_summary", Internal: true})
-	run.applyEvent(execution.ToolCompleted{RunContext: execution.RunContext{RunID: run.ID()}, CallID: "c1", ToolName: "get_conversation_summary", Internal: true, Duration: 300 * time.Millisecond, Status: execution.StatusOK})
+	run.applyEvent(execution.ToolStarted{RunContext: execution.RunContext{RunID: run.ID()}, CallID: "c1", ToolName: "get_message_thread_context", Internal: true})
+	run.applyEvent(execution.ToolCompleted{RunContext: execution.RunContext{RunID: run.ID()}, CallID: "c1", ToolName: "get_message_thread_context", Internal: true, Duration: 300 * time.Millisecond, Status: execution.StatusOK})
 	waitForCondition(t, 2*time.Second, "preview created", func() bool {
 		return state.callCount("sendMessage") == 1
 	})

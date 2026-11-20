@@ -9,15 +9,14 @@ import (
 )
 
 const (
-	fetchURLContentTextCharLimit     = 2600
-	searchHistorySnippetCharLimit    = 280
-	conversationSummaryTextCharLimit = 1400
-	recentLinksSnippetCharLimit      = 180
-	messageThreadSnippetCharLimit    = 220
-	defaultSearchHistoryResultLimit  = 5
-	maxSearchHistoryResultLimit      = 20
-	defaultRecentLinksResultLimit    = 5
-	maxRecentLinksResultLimit        = 10
+	fetchURLContentTextCharLimit    = 2600
+	searchHistorySnippetCharLimit   = 280
+	recentLinksSnippetCharLimit     = 180
+	messageThreadSnippetCharLimit   = 220
+	defaultSearchHistoryResultLimit = 5
+	maxSearchHistoryResultLimit     = 20
+	defaultRecentLinksResultLimit   = 5
+	maxRecentLinksResultLimit       = 10
 )
 
 func truncateUTF8(text string, limit int) string {

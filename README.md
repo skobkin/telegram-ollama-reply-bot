@@ -132,6 +132,8 @@ You can also interact with the bot by:
 - Sending direct messages in private chat when interactivity is enabled for that chat
 - Sending images (the bot will describe what it sees in the image)
 
+Conversation requests automatically include a compact timestamp/timezone and retained-history metadata block, independent of custom persona templates. Retained history is RAM-only and is not complete Telegram history.
+
 Ordinary chat replies always use the tool-capable chat workflow. `LLM__FEATURES__CHAT__MODEL` must point to a model and backend combination that supports OpenAI-compatible tool calls. The current tool set is:
 
 - `search_web` for explicit internet lookups when `SEARCH__BACKEND` is configured to something other than `none`
@@ -142,9 +144,6 @@ Ordinary chat replies always use the tool-capable chat workflow. `LLM__FEATURES_
 - `list_recent_images` for identifying recent image-bearing messages by `message_id` in the current chat/topic (while image recognition is enabled)
 - `analyze_image` for re-analyzing one of those images under the model's own focused prompt (while image recognition is enabled; each call is a paid recognition request)
 - `search_history` for indexed keyword and fuzzy full in-memory history lookup in the current chat/topic
-- `get_conversation_summary` for the current in-memory earlier summary
-- `get_chat_activity_window` for in-memory message cadence heuristics in the current chat/topic
-- `get_history_bounds` for exact full-history and recent-history coverage in the current chat/topic
 - `get_message_thread_context` for compact reply-chain reconstruction when an older replied-to message has scrolled out of the recent verbatim context
 - `send_poll` for explicit vote/poll requests
 - `send_quiz` for explicit quiz and trivia requests

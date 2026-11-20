@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/state"
@@ -83,14 +84,17 @@ func NewReplyBuilder(history state.ConversationStore, hydrate HydrateFunc, recen
 }
 
 func (b *ReplyBuilder) BuildReplyContext(ctx context.Context, input ReplyInput) llm.ChatReplyContext {
-	history, earlierSummary := b.DecisionHistory(ctx, input.Scope)
+	snapshot := b.history.Snapshot(input.Scope)
+	metadata := retainedMetadata(snapshot.Messages)
+	history := b.hydrate(ctx, b.boundedMessages(snapshot))
 	current := hydrateOne(ctx, input.CurrentMessage, b.hydrate)
 
 	result := llm.ChatReplyContext{
-		SystemHint:     renderSystemHint(input),
-		EarlierSummary: earlierSummary,
-		History:        messagesToLLM(history),
-		UserMessage:    messageToLLM(current),
+		SystemHint:      renderSystemHint(input),
+		EarlierSummary:  snapshot.EarlierSummary,
+		RetainedHistory: metadata,
+		History:         messagesToLLM(history),
+		UserMessage:     messageToLLM(current),
 	}
 
 	return result
@@ -341,4 +345,30 @@ func quotedOrUnknown(value string) string {
 	}
 
 	return quoteValue(value)
+}
+
+func retainedMetadata(messages []state.Message) *llm.ConversationMetadata {
+	result := &llm.ConversationMetadata{RetainedMessages: len(messages)}
+	missingTime := false
+	for _, message := range messages {
+		at := message.CreatedAt
+		if at.IsZero() {
+			missingTime = true
+
+			continue
+		}
+		if result.OldestMessageAt.IsZero() || at.Before(result.OldestMessageAt) {
+			result.OldestMessageAt = at.UTC()
+		}
+		if result.NewestMessageAt.IsZero() || at.After(result.NewestMessageAt) {
+			result.NewestMessageAt = at.UTC()
+		}
+	}
+	// With unknown timestamps, exact retained bounds cannot be asserted.
+	if missingTime {
+		result.OldestMessageAt = time.Time{}
+		result.NewestMessageAt = time.Time{}
+	}
+
+	return result
 }

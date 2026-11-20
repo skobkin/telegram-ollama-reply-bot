@@ -247,10 +247,7 @@ func TestRegistryClassifiesVisibilityForAllBuiltins(t *testing.T) {
 
 	internalWant := map[string]bool{
 		"say_nothing":                true,
-		"get_conversation_summary":   true,
-		"get_history_bounds":         true,
 		"get_message_thread_context": true,
-		"get_chat_activity_window":   true,
 	}
 
 	definitions := runtime.registry.DefaultDefinitions()
