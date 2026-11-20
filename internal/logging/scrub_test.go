@@ -192,6 +192,202 @@ func TestScrubHandlerPreservesLevelAndCallerPC(t *testing.T) {
 // Compile-time interface conformance.
 var _ slog.Handler = (*scrubHandler)(nil)
 
+type payloadStruct struct {
+	URL string
+	N   int
+}
+
+type namedFixture string
+
+type marshalFixture struct{}
+
+func (marshalFixture) MarshalJSON() ([]byte, error) {
+	return []byte(`{"tok":"LOGFIXTURE","n":7}`), nil
+}
+
+type panicError struct{}
+
+func (panicError) Error() string { panic("boom LOGFIXTURE") }
+
+func decodeEntry(t *testing.T, buf *bytes.Buffer, key string) any {
+	t.Helper()
+
+	entry := decodeLastLine(t, buf)
+
+	value, ok := entry[key]
+	if !ok {
+		t.Fatalf("attribute %q missing from record: %v", key, entry)
+	}
+
+	return value
+}
+
+func TestScrubHandlerScrubsStructuredAttrs(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name  string
+		log   func(logger *slog.Logger)
+		check func(t *testing.T, value any)
+	}{
+		{
+			name: "struct attr",
+			log: func(logger *slog.Logger) {
+				logger.Error("payload", "data", payloadStruct{URL: "https://host/botLOGFIXTURE/x", N: 3})
+			},
+			check: func(t *testing.T, value any) {
+				object, ok := value.(map[string]any)
+				if !ok {
+					t.Fatalf("structured attr lost its object shape: %v", value)
+				}
+
+				if object["URL"] != "https://host/bot[REDACTED:fixture]/x" {
+					t.Fatalf("struct field not scrubbed: %v", object["URL"])
+				}
+
+				if object["N"] != float64(3) {
+					t.Fatalf("clean struct field altered: %v", object["N"])
+				}
+			},
+		},
+		{
+			name: "map attr",
+			log: func(logger *slog.Logger) {
+				logger.Error("payload", "data", map[string]any{"nested": map[string]any{"tok": "LOGFIXTURE"}})
+			},
+			check: func(t *testing.T, value any) {
+				nested, ok := value.(map[string]any)["nested"].(map[string]any)
+				if !ok {
+					t.Fatalf("nested map shape lost: %v", value)
+				}
+
+				if nested["tok"] != "[REDACTED:fixture]" {
+					t.Fatalf("nested map value not scrubbed: %v", nested["tok"])
+				}
+			},
+		},
+		{
+			name: "json.RawMessage attr",
+			log: func(logger *slog.Logger) {
+				logger.Error("payload", "data", json.RawMessage(`{"tok":"LOGFIXTURE"}`))
+			},
+			check: func(t *testing.T, value any) {
+				object, ok := value.(map[string]any)
+				if !ok {
+					t.Fatalf("raw message lost its object shape: %v", value)
+				}
+
+				if object["tok"] != "[REDACTED:fixture]" {
+					t.Fatalf("raw message content not scrubbed: %v", object["tok"])
+				}
+			},
+		},
+		{
+			name: "custom marshaler attr",
+			log: func(logger *slog.Logger) {
+				logger.Error("payload", "data", marshalFixture{})
+			},
+			check: func(t *testing.T, value any) {
+				object, ok := value.(map[string]any)
+				if !ok {
+					t.Fatalf("marshaler output lost its object shape: %v", value)
+				}
+
+				if object["tok"] != "[REDACTED:fixture]" || object["n"] != float64(7) {
+					t.Fatalf("marshaler output not scrubbed correctly: %v", object)
+				}
+			},
+		},
+		{
+			name: "named string attr",
+			log: func(logger *slog.Logger) {
+				logger.Error("payload", "data", namedFixture("LOGFIXTURE"))
+			},
+			check: func(t *testing.T, value any) {
+				if value != "[REDACTED:fixture]" {
+					t.Fatalf("named string not scrubbed: %v", value)
+				}
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			logger, buf := scrubTestLogger(t, scrubTestScrubber())
+
+			testCase.log(logger)
+
+			testCase.check(t, decodeEntry(t, buf, "data"))
+		})
+	}
+}
+
+func TestScrubHandlerKeepsCleanStructuredAttrIdentical(t *testing.T) {
+	t.Parallel()
+
+	logger, buf := scrubTestLogger(t, scrubTestScrubber())
+
+	logger.Error("payload", "data", payloadStruct{URL: "https://host/clean", N: 3})
+
+	value, ok := decodeEntry(t, buf, "data").(map[string]any)
+	if !ok {
+		t.Fatalf("clean structured attr lost its object shape: %v", buf.String())
+	}
+
+	if value["URL"] != "https://host/clean" || value["N"] != float64(3) {
+		t.Fatalf("clean structured attr was altered: %v", value)
+	}
+}
+
+func TestScrubHandlerScrubsAttrKeysAndGroupNames(t *testing.T) {
+	t.Parallel()
+
+	logger, buf := scrubTestLogger(t, scrubTestScrubber())
+
+	logger.Error("keys and groups", "key LOGFIXTURE", "value")
+
+	entry := decodeLastLine(t, buf)
+	if entry["key [REDACTED:fixture]"] != "value" {
+		t.Fatalf("attribute key not scrubbed: %v", entry)
+	}
+
+	logger, buf = scrubTestLogger(t, scrubTestScrubber())
+	logger.WithGroup("group LOGFIXTURE").Error("grouped", "x", 1)
+
+	entry = decodeLastLine(t, buf)
+	if _, ok := entry["group [REDACTED:fixture]"]; !ok {
+		t.Fatalf("group name not scrubbed: %v", entry)
+	}
+}
+
+func TestScrubHandlerScrubsPanickingErrorPanicValue(t *testing.T) {
+	t.Parallel()
+
+	logger, buf := scrubTestLogger(t, scrubTestScrubber())
+
+	// slog renders a panicking Error() as "!PANIC: <panic value>"; the panic
+	// value itself can carry secret material and must be scrubbed like any
+	// other rendering.
+	logger.Error("panicking", "err", panicError{})
+
+	entry := decodeLastLine(t, buf)
+	text, _ := entry["err"].(string)
+
+	if !strings.Contains(text, "!PANIC:") {
+		t.Fatalf("panic rendering lost: %v", entry["err"])
+	}
+
+	if strings.Contains(text, "LOGFIXTURE") {
+		t.Fatalf("panic value leaked the secret: %v", entry["err"])
+	}
+
+	if strings.Contains(buf.String(), "LOGFIXTURE") {
+		t.Fatal("fixture survived anywhere in the output")
+	}
+}
+
 type deferredSecret struct{}
 
 func (deferredSecret) LogValue() slog.Value { return slog.StringValue("carry LOGFIXTURE through") }
