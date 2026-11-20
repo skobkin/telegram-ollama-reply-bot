@@ -73,6 +73,15 @@ const (
 	VerbModelPage     = "mg" // args: <page> → paginate the cached model list
 	VerbModelPick     = "mo" // args: <code>,<index> → apply cached model at index
 	VerbClearGlobal   = "cg" // args: <code> → clear a clearable global field
+
+	// Sticker catalog management.
+	VerbStickers         = "stk" // [args: <page>] → stickers screen
+	VerbStickerSet       = "sto" // args: <index> → set card (index into the screen's set snapshot)
+	VerbStickerExportNew = "stx" // → prompt for a set name or link to export
+	VerbStickerExportCur = "ste" // → re-export the set card's set
+	VerbStickerImport    = "sti" // → prompt for an edited template upload
+	VerbStickerToggle    = "stt" // → enable/disable the set card's set
+	VerbStickerRemove    = "sdl" // → remove the set card's set (confirm)
 )
 
 // knownVerbs is the closed verb set accepted by Decode.
@@ -90,6 +99,8 @@ var knownVerbs = map[string]bool{
 	VerbStatsScope: true, VerbStatsScopeSet: true,
 	VerbStatsResetI: true, VerbStatsResetG: true,
 	VerbToolStats: true, VerbToolExport: true, VerbStatsResetT: true,
+	VerbStickers: true, VerbStickerSet: true, VerbStickerExportNew: true, VerbStickerExportCur: true,
+	VerbStickerImport: true, VerbStickerToggle: true, VerbStickerRemove: true,
 }
 
 // MaxCallbackBytes is the Telegram callback data limit.

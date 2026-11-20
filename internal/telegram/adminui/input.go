@@ -102,11 +102,16 @@ var errAdminFileMetadata = errors.New("telegram file metadata request failed")
 // upload path, sanitized the same way.
 var errAdminFileDownload = errors.New("telegram file download failed")
 
-// downloadDocument fetches a prompt upload bounded to PromptBodyLimit+1
-// actual bytes: a full 32769-byte read means oversized content, immune to
-// absent or understated FileSize metadata. Validation (.txt/.md, UTF-8) is
-// the controller's job; oversized bytes never get that far.
+// downloadDocument fetches an admin upload bounded to MaxAdminUploadBytes+1
+// actual bytes: a full over-limit read means oversized content, immune to
+// absent or understated FileSize metadata. A declared size above the bound
+// is refused without any download. The per-kind limit, the extension and the
+// UTF-8 check are the controller's job.
 func (a *Adapter) downloadDocument(ctx *th.Context, document *t.Document) (*core.DocumentInput, error) {
+	if document.FileSize > core.MaxAdminUploadBytes {
+		return &core.DocumentInput{Filename: document.FileName, Oversized: true}, nil
+	}
+
 	file, err := a.api.GetFile(ctx, &t.GetFileParams{FileID: document.FileID})
 	if err != nil {
 		return nil, safeerr.WrapTransport(errAdminFileMetadata, err)
@@ -127,7 +132,7 @@ func (a *Adapter) downloadDocument(ctx *th.Context, document *t.Document) (*core
 		return nil, fmt.Errorf("%w: http status %d", errAdminFileDownload, response.StatusCode)
 	}
 
-	content, err := io.ReadAll(io.LimitReader(response.Body, core.PromptBodyLimit+1))
+	content, err := io.ReadAll(io.LimitReader(response.Body, core.MaxAdminUploadBytes+1))
 	if err != nil {
 		return nil, safeerr.WrapTransport(errAdminFileDownload, err)
 	}

@@ -697,6 +697,7 @@ func Run(ctx context.Context) (runErr error) {
 		systemOneDiscovery = systemOneClient
 	}
 	controllerOpts = append(controllerOpts, core.WithModelDiscovery(llmc, imageDiscovery, systemOneDiscovery))
+	controllerOpts = append(controllerOpts, core.WithStickerAdmin(stickerService))
 	controllerOpts = append(controllerOpts, core.WithStatsReport(pngreport.Render), core.WithToolStatsReport(pngreport.RenderTools), core.WithStatsPersistence(statsPersister))
 	if cfg.LLM.ImageRecognitionEnabled && cfg.LLM.ImageRecognition.Recognizer == config.ImageRecognizerMiniMaxVLM {
 		controllerOpts = append(controllerOpts, core.WithHiddenImageModel())

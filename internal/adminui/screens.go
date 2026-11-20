@@ -81,6 +81,8 @@ type DashboardData struct {
 	Summary     adminconfig.AccessSummary
 	RecentChats []adminconfig.ChatCatalogEntry
 	Uptime      time.Duration
+	// Stickers shows the sticker catalog entry (a catalog is wired).
+	Stickers bool
 }
 
 func (b screenBuilder) dashboard(data DashboardData) *Screen {
@@ -103,6 +105,9 @@ func (b screenBuilder) dashboard(data DashboardData) *Screen {
 		ButtonRow{b.btn("Prompts", VerbPrompts), b.btn("Access", VerbAccess)},
 		ButtonRow{b.btn("Statistics", VerbStats), b.btn("Refresh", VerbHome)},
 	)
+	if data.Stickers {
+		rows = append(rows, ButtonRow{b.btn("🎟 Stickers", VerbStickers)})
+	}
 
 	return &Screen{Text: text.String(), Rows: rows}
 }

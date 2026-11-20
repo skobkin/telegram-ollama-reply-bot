@@ -16,6 +16,7 @@ import (
 	"telegram-ollama-reply-bot/internal/interactivity"
 	"telegram-ollama-reply-bot/internal/statistics"
 	"telegram-ollama-reply-bot/internal/statistics/pngreport"
+	"telegram-ollama-reply-bot/internal/stickers"
 )
 
 // AdminInputMarker prefixes every admin input request message the adapter
@@ -26,6 +27,11 @@ const AdminInputMarker = "⚙️ Admin input"
 // text input (32 KiB, enforced on actual bytes — the adapter additionally
 // bounds the document download itself).
 const PromptBodyLimit = 32 * 1024
+
+// MaxAdminUploadBytes bounds the admin document download itself: the largest
+// of every upload kind's own limit. The controller enforces the per-kind
+// limit on the bytes actually read.
+const MaxAdminUploadBytes = max(PromptBodyLimit, stickers.MaxUploadBytes)
 
 // Answer texts for callback acknowledgements (exact-once answering is the
 // adapter's job; the controller only decides the text).
@@ -188,6 +194,9 @@ type ReplyInput struct {
 type DocumentInput struct {
 	Filename string
 	Content  []byte
+	// Oversized reports that the document was refused without a download
+	// because its declared size already exceeds MaxAdminUploadBytes.
+	Oversized bool
 }
 
 // ChatSharedInput is a chat-selection response mapped from the Telegram
@@ -237,6 +246,9 @@ type ControllerOptions struct {
 	// ToolStatsReport renders the PNG attached to the tool statistics
 	// export. Nil keeps that export JSON-only.
 	ToolStatsReport ToolReportRenderer
+	// Stickers manages the sticker catalog. Nil hides the Stickers entry
+	// and makes every sticker verb inert.
+	Stickers StickerAdmin
 }
 
 // ControllerOption mutates ControllerOptions at wiring time.
@@ -1000,12 +1012,16 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 			s.Screen.Page == previous.Page && s.Screen.Filter == previous.Filter &&
 			s.Screen.Search == previous.Search && s.Screen.Field == previous.Field &&
 			s.Screen.Feature == previous.Feature && s.Screen.Detail == previous.Detail &&
-			s.Screen.Danger == previous.Danger && previous.Notice == "" {
+			s.Screen.Danger == previous.Danger && s.Screen.StickerSet == previous.StickerSet && previous.Notice == "" {
 			return nil // byte-identical re-render: no API call, no seq bump
 		}
 		s.MarkRerender()
 
 		return nil
+
+	case VerbStickers, VerbStickerSet, VerbStickerExportNew, VerbStickerExportCur,
+		VerbStickerImport, VerbStickerToggle, VerbStickerRemove:
+		return c.handleStickerVerb(ctx, s, action, fx)
 
 	case VerbConfirmYes:
 		return c.executeConfirm(ctx, adminID, s)
@@ -1415,7 +1431,21 @@ func (c *Controller) executeConfirm(ctx context.Context, adminID int64, s *Sessi
 	}
 
 	var notice string
+	var afterPop func()
 	switch confirm.Kind {
+	case ConfirmStickerRemove:
+		if c.opts.Stickers == nil {
+			return errInvalidArg
+		}
+		if err := c.opts.Stickers.RemoveSet(ctx, confirm.StickerSet); err != nil {
+			return errors.New(stickerFailureText(err))
+		}
+		notice = "Sticker set " + confirm.StickerSet + " removed."
+		afterPop = func() {
+			// Pop the card of the removed set too, then re-snapshot the list.
+			s.PopScreen()
+			c.refreshStickerSets(s)
+		}
 	case ConfirmPolicySwitch:
 		if err := c.service.SetAccessPolicy(ctx, confirm.Policy, adminID); err != nil {
 			return err
@@ -1475,6 +1505,9 @@ func (c *Controller) executeConfirm(ctx context.Context, adminID int64, s *Sessi
 
 	s.Confirm = nil
 	s.PopScreen()
+	if afterPop != nil {
+		afterPop()
+	}
 	s.Screen.Notice = notice
 	s.MarkRerender()
 
@@ -1635,7 +1668,7 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 			return invalid(errors.New("reply with a .txt or .md document"))
 		case !hasPromptFileExtension(doc.Filename):
 			return invalid(errors.New("only .txt and .md files are accepted"))
-		case len(doc.Content) > PromptBodyLimit:
+		case doc.Oversized || len(doc.Content) > PromptBodyLimit:
 			return invalid(fmt.Errorf("the document exceeds %d bytes", PromptBodyLimit))
 		case !utf8.Valid(doc.Content):
 			return invalid(errors.New("the document must be UTF-8 text"))
@@ -1650,6 +1683,20 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 		s.Screen.Notice = "Template saved."
 		s.MarkRerender()
 		deletePromptAndReply()
+
+		return nil
+
+	case PendingStickerSetRef, PendingStickerDocument:
+		notice, document, err := c.processStickerReply(ctx, p, in)
+		if err != nil {
+			return invalid(err)
+		}
+		s.dropPending()
+		c.refreshStickerSets(s)
+		s.Screen.Notice = notice
+		s.MarkRerender()
+		deletePromptAndReply()
+		fx.document = document
 
 		return nil
 
@@ -1717,6 +1764,10 @@ func (c *Controller) retryPrompt(ctx context.Context, p *Pending, warning error)
 		text = promptTextInputPrompt(p.Feature, p.ScopeChatID)
 	case PendingDocumentUpload:
 		text = promptUploadPrompt(p.Feature, p.ScopeChatID)
+	case PendingStickerSetRef:
+		text, placeholder = stickerSetRefPrompt(), "Sticker set name or link"
+	case PendingStickerDocument:
+		text = stickerUploadPrompt()
 	case PendingManualChatID:
 		text, placeholder = manualChatIDPrompt(), "Chat ID"
 	case PendingChatPicker:
@@ -1743,7 +1794,7 @@ func (c *Controller) buildScreen(ctx context.Context, seq uint32, state ScreenSt
 		if err != nil {
 			return nil, err
 		}
-		screen = b.dashboard(DashboardData{Summary: summary, RecentChats: recent, Uptime: c.manager.Now().Sub(c.started)})
+		screen = b.dashboard(DashboardData{Summary: summary, RecentChats: recent, Uptime: c.manager.Now().Sub(c.started), Stickers: c.opts.Stickers != nil})
 
 	case ScreenCatalog:
 		page, err := c.service.QueryChats(ctx, adminconfig.ChatQuery{Filter: state.Filter, Search: state.Search, Page: state.Page})
@@ -1936,6 +1987,18 @@ func (c *Controller) buildScreen(ctx context.Context, seq uint32, state ScreenSt
 			Page:    page,
 			Pages:   pages,
 		})
+
+	case ScreenStickers:
+		if c.opts.Stickers == nil {
+			return nil, errors.New("sticker catalog is not available")
+		}
+		screen = b.stickers(c.stickersData(state))
+
+	case ScreenStickerSet:
+		if c.opts.Stickers == nil {
+			return nil, errors.New("sticker catalog is not available")
+		}
+		screen = b.stickerSet(c.stickerSetData(state))
 
 	case ScreenConfirm:
 		screen = b.confirm(ConfirmData{Description: state.Detail, Danger: state.Danger})

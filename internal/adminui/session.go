@@ -65,6 +65,8 @@ const (
 	ScreenStatsScope    ScreenKind = "stats_scope"
 	ScreenToolStats     ScreenKind = "tool_stats"
 	ScreenInteractivity ScreenKind = "interactivity"
+	ScreenStickers      ScreenKind = "stickers"
+	ScreenStickerSet    ScreenKind = "sticker_set"
 	ScreenConfirm       ScreenKind = "confirm"
 )
 
@@ -96,7 +98,13 @@ type ScreenState struct {
 	// statistics scope there: 0 = global, otherwise the chat's ID.
 	StatsProfile string
 	StatsModel   string
-	Notice       string
+	// StickerSets snapshots the catalog's set names when the stickers
+	// screen is entered or refreshed; set buttons carry an index into it
+	// (set names do not fit every callback). StickerSet names the set of a
+	// set card.
+	StickerSets []string
+	StickerSet  string
+	Notice      string
 }
 
 // PendingKind enumerates awaited admin inputs.
@@ -115,6 +123,10 @@ const (
 	PendingManualChatID PendingKind = "manual_chat_id"
 	// PendingChatPicker awaits a KeyboardButtonRequestChat response.
 	PendingChatPicker PendingKind = "chat_picker"
+	// PendingStickerSetRef awaits a sticker set name or link to export.
+	PendingStickerSetRef PendingKind = "sticker_set_ref"
+	// PendingStickerDocument awaits an edited sticker template document.
+	PendingStickerDocument PendingKind = "sticker_document"
 )
 
 // Pending is an awaited correlated input. ID identifies one pending within
@@ -156,6 +168,9 @@ const (
 	// ConfirmStatsTools gates the dedicated tool statistics reset: global
 	// like the others, independent of general and interaction statistics.
 	ConfirmStatsTools ConfirmKind = "stats_tools_reset"
+	// ConfirmStickerRemove gates deleting a whole sticker set and all its
+	// annotations from the catalog.
+	ConfirmStickerRemove ConfirmKind = "sticker_set_remove"
 )
 
 // PendingConfirm is a stored server-side confirmation. Re-validated at
@@ -167,6 +182,7 @@ type PendingConfirm struct {
 	Feature adminconfig.PromptFeature
 	// Profile carries the target interaction profile of ConfirmGlobalProfile.
 	Profile     adminconfig.InteractionProfile
+	StickerSet  string
 	Description string
 	Danger      bool
 }
