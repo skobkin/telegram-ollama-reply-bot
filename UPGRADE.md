@@ -2,6 +2,32 @@
 
 ## 0.30.0 (unreleased) — changes since 0.29.1
 
+### Persistent interaction and tool statistics (#182, #178)
+
+Interaction statistics are no longer volatile, and tool usage statistics are new and persistent. No configuration
+or ENV change is needed. SQLite migration v13 (automatic at startup) adds the `statistics_snapshots` table; the
+database file must therefore be writable and kept on a persistent volume, as before.
+
+- **Behavior change**: the interaction statistics observation period and counters now survive restarts and container
+  updates. After upgrading, the first start begins an empty interaction dataset (nothing was stored before); from
+  then on it accumulates until you reset it from the admin panel. Operations that are open at a restart are shown
+  as *interrupted by restart* (new `submission.interrupted_by_restart` and `execution.turns_interrupted` counters).
+- **Interaction export**: `tg-llm-bot/interaction-statistics` is now schema version 2 (additive: `persistence`
+  block, interrupted counters, `profile_overflow` tags, `profile_overflow_counts`). Consumers pinned to version 1
+  keep working if they ignore unknown fields.
+- **New**: tool usage statistics (admin panel → Statistics → Tool statistics, export `tg-llm-bot/tool-statistics`
+  v1, dedicated reset). Interaction profiles are now bounded to 8 tracked values (the five built-in profiles are
+  well within it).
+- **Durability**: statistics are saved every 30 seconds and at graceful shutdown. After an abrupt termination up to
+  about 30 seconds of observations are lost. See the README section "Statistics persistence".
+- **Reset semantics**: a reset is saved immediately; the admin panel reports whether the save succeeded.
+- **Downgrade**: an older bot opens the migrated database normally (it treats the schema as up to date and ignores
+  the new table), so rolling back is safe; returning to this version restores the saved statistics. Do not delete
+  `statistics_snapshots` unless you intend to drop the accumulated statistics. Within this feature, a bot that
+  finds statistics in a *newer snapshot format* than it understands leaves them untouched and collects in memory
+  only (disclosed in the admin panel).
+- General statistics (`/stats`) are unchanged and still in memory only.
+
 ### MCP side-effect classification
 
 MCP tools without `readOnlyHint=true` are now treated as potentially side-effecting even when

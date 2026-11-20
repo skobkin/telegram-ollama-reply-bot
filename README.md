@@ -22,7 +22,7 @@
 - Runtime model selection: global defaults and per-chat overrides for the generation, summarize, image-recognition, and System One decision models, managed from the admin UI (a stored model overrides the `LLM__FEATURES__*` ENV route when set)
 - Opt-in interactive participation: when a chat's interaction profile enables it, a System One decision engine evaluates ordinary group messages that did not explicitly trigger the bot and reacts or replies when the profile finds them suitable (private chats are never evaluated proactively)
 - `decision_choose` / `decision_assess` tools delegating small semantic decisions to the configured System One decision model
-- Privacy-preserving interaction statistics: RAM-only aggregates of proactive-participation outcomes, exported from the admin UI as a versioned JSON document with a PNG report
+- Privacy-preserving, persistent aggregate statistics: System One interaction outcomes and tool usage (advertisement, calls, errors, recovery, latency per tool), kept in the SQLite database across restarts and exported from the admin UI as versioned JSON documents with PNG reports
 - Optional [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers that publish additional tools at startup (Streamable HTTP transport)
 
 ## Configuration
@@ -344,9 +344,12 @@ The bot aggregates how proactive participation performs: eligible messages, deci
 texts, other side effects), and execution failures. Everything is counters, bounded enums, scores, and durations —
 never message content, prompts, user identities, or error strings.
 
-- **Volatile by design** — the aggregates live in RAM only: nothing is written to disk, the database, logs, or
-  error tracking, and a restart starts a fresh observation period. Reset and restart behavior is visible in the
-  admin panel; the process uptime in `/stats` never resets.
+- **Persistent aggregates** — the aggregates survive restarts and container updates: they are saved as one
+  aggregate snapshot in the existing SQLite database (batched, never per decision) and restored at startup. Nothing
+  per decision, message, prompt, or user is stored. Operations that were still open when the bot stopped are
+  reported as *interrupted by restart* instead of inventing an outcome. See
+  [Statistics persistence](#statistics-persistence) for the durability guarantees. The process uptime in `/stats`
+  never resets.
 - **Scope and filters** — the admin panel's Statistics screen narrows the view by chat, interaction profile, and
   observed decision model. Whenever the hard cardinality caps fold chats or model IDs into overflow buckets, a
   narrowed view discloses that its filtered totals may be incomplete instead of presenting them as exact.
@@ -354,11 +357,50 @@ never message content, prompts, user identities, or error strings.
   document (`tg-llm-bot/interaction-statistics` v1). The JSON embeds histogram bin edges, approximate-percentile
   semantics, overflow notes, and the observation period; the PNG is an approximate rendering of the same snapshot.
   With a single profile filter active, the PNG also marks the current preset's decision thresholds.
-- **Resets** — interaction and general statistics reset separately, from the admin panel only, with a confirmed
-  prompt that states the GLOBAL blast radius (a filtered view still resets the whole dataset). `/reset` is
-  unaffected: it only resets the current chat's conversation history.
+- **Resets** — interaction, tool, and general statistics reset separately, from the admin panel only, with a
+  confirmed prompt that states the GLOBAL blast radius (a filtered view still resets the whole dataset). A reset is
+  saved immediately; the admin is told whether it was saved. `/reset` is unaffected: it only resets the current
+  chat's conversation history.
 - **`/stats`** — unchanged: general usage counters only. Interaction data lives in the admin panel, scoped to the
   admin DM.
+
+### Tool usage statistics
+
+The admin panel's **🛠 Tool statistics** screen (opened from Statistics, global or per chat) shows how the tools
+perform, so you can see which tools are used, which fail, which only cost model context, and how models compare:
+per tool the turns that advertised it, invocation attempts, successes (an empty search result is a success),
+failures and rejections (hallucinated or unavailable tools), error classes and codes, repeated calls after an error
+and whether a later call recovered, confirmed/unknown side effects, and execution latency. Registered tools with
+zero use are listed and distinguished from tools that were never advertised. Usage is attributed to the effective
+generation model and to explicit vs proactive turns.
+
+- **Export** — `⬇ Export JSON + PNG` delivers the canonical JSON (`tg-llm-bot/tool-statistics` v1) and a PNG
+  with a horizontal stacked bar chart of successful vs unsuccessful attempts per tool plus a numeric table, both
+  rendered from one snapshot. Large MCP registries are bounded to the busiest tools in the image; the JSON is
+  complete.
+- **Privacy and bounds** — only aggregates are kept: no tool arguments or results, messages, prompts, users, call
+  IDs, or per-call timestamps. Tool names, chats, models, and error codes are cardinality-bounded; hallucinated names
+  and unusual error strings fold into overflow rows and never become keys.
+- **Reset** — a dedicated confirmed reset, independent of the general and interaction resets.
+
+Counting rules and bounds are specified in `docs/specs/tool_statistics.md`.
+
+### Statistics persistence
+
+Interaction and tool statistics are persistent; general statistics (`/stats`) stay in memory. The database keeps one
+aggregate snapshot per dataset, saved every 30 seconds while the data changed and once more during a graceful
+shutdown.
+
+- After a clean shutdown nothing is lost. After an abrupt termination (kill, crash, power loss) the observations
+  collected since the last successful save (up to about 30 seconds) are lost; if saving was failing, the loss window
+  extends to the start of the failure (the bot keeps retrying and logs the failure).
+- A reset is saved synchronously. If saving a reset fails and the bot stops abruptly before a later save succeeds,
+  the previous statistics come back after the restart; the admin panel says so when it happens.
+- Unreadable stored statistics are set aside (`<dataset>.unreadable`) and collection starts fresh. Statistics stored
+  in a *newer snapshot format* than the running bot understands (for example after a downgrade) are left
+  untouched: the bot keeps collecting in memory only and says so in the admin panel.
+- Memory and database use are bounded (worst case a few tens of megabytes when every cardinality cap is saturated;
+  typically tens of kilobytes).
 
 ### Admin UI
 
@@ -392,7 +434,8 @@ dismisses a pending input and reopens the panel. Sessions are ephemeral and expi
   unreachable chats are added as "unverified".
 - **Statistics** — the general usage stats from `/stats` plus the interaction statistics view (see
   [Interaction statistics](#interaction-statistics)): scope picker, profile and decision-model filters, the JSON+PNG
-  export, and the confirmed global resets.
+  export, and the confirmed global resets; the **Tool statistics** screen (see
+  [Tool usage statistics](#tool-usage-statistics)).
 
 Access is never conflated with membership: each chat card shows one of four states — `allowlisted`,
 `blocked (allowlist policy)`, `allowlisted (policy already allows all)`, or `allowed via allow_all (not allowlisted)`.
