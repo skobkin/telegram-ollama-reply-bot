@@ -634,3 +634,31 @@ func TestScrubHandlerPreservesNumericPrecision(t *testing.T) {
 		t.Fatalf("number was rounded through float64: %s", buf.String())
 	}
 }
+
+func TestScrubHandlerInvalidJSONNumberFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	logger, buf := scrubTestLogger(t, scrubTestScrubber())
+
+	// The json.Number type is a plain string wrapper callers can construct
+	// with arbitrary text; an invalid literal makes the delegate handler's
+	// serialization fail with the literal echoed in its !ERROR rendering.
+	logger.Error("bad number", "n", json.Number("LOGFIXTURE"))
+
+	if strings.Contains(buf.String(), "LOGFIXTURE") || strings.Contains(buf.String(), "!ERROR") {
+		t.Fatalf("invalid json.Number leaked into the emitted record: %s", buf.String())
+	}
+
+	entry := decodeLastLine(t, buf)
+	if entry["n"] != "[REDACTED:fixture]" {
+		t.Fatalf("invalid json.Number not scrubbed: %v", entry["n"])
+	}
+
+	// A valid number attribute still renders as a number.
+	logger.Error("good number", "n", json.Number("42"))
+
+	entry = decodeLastLine(t, buf)
+	if !strings.Contains(buf.String(), `"n":42`) {
+		t.Fatalf("valid json.Number altered: %v", entry["n"])
+	}
+}

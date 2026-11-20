@@ -83,10 +83,14 @@ func (s *Scrubber) scrubAny(value any, depth int) any {
 	// underlying text scrubs like any other string. json.Number is
 	// string-kind too, but it is numeric literal text produced by the
 	// boundary's own decode and passes through as-is, preserving numeric
-	// precision.
+	// precision — when its text actually is a number literal. The type is
+	// a plain string wrapper that callers can construct with arbitrary
+	// text, and an invalid literal makes downstream serialization fail with
+	// the literal echoed in the error text, so anything else scrubs like
+	// any other string.
 	if reflected := reflect.ValueOf(value); reflected.Kind() == reflect.String {
-		if _, isNumber := value.(json.Number); isNumber {
-			return value
+		if number, isNumber := value.(json.Number); isNumber && isValidJSONNumber(number) {
+			return number
 		}
 
 		return s.Scrub(reflected.String())
@@ -160,6 +164,17 @@ func (s *Scrubber) scrubAny(value any, depth int) any {
 // a downstream handler would print, so the original is never handed on to
 // produce it. encoding/json bounds the boundary itself (it errors on pointer
 // cycles), so no unbounded reflective traversal is introduced.
+// isValidJSONNumber reports whether text is a JSON number literal — the
+// grammar encoding/json's encoder enforces on json.Number values (stricter
+// than a general JSON validator: bare words like "true" are valid JSON but
+// not numbers). The check round-trips through the encoder, which renders a
+// valid number verbatim and refuses anything else.
+func isValidJSONNumber(text json.Number) bool {
+	encoded, err := json.Marshal(text)
+
+	return err == nil && string(encoded) == string(text)
+}
+
 func (s *Scrubber) scrubOpaque(value any, depth int) (out any) {
 	defer func() {
 		if r := recover(); r != nil {

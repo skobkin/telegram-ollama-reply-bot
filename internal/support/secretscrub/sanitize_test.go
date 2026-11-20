@@ -174,12 +174,45 @@ func TestScrubValueScalarsPassThrough(t *testing.T) {
 		}
 	}
 
+	// A valid json.Number passes through with its text intact.
+	if got := scrubber.ScrubValue(json.Number("9007199254740993")); got != json.Number("9007199254740993") {
+		t.Fatalf("valid json.Number altered: %v", got)
+	}
+
 	if got := scrubber.ScrubValue("plain SANITIZEFIXTURE").(string); scrubber.Contains(got) {
 		t.Fatalf("string not scrubbed: %q", got)
 	}
 
 	if got := scrubber.ScrubValue(errors.New("failed for SANITIZEFIXTURE")).(string); scrubber.Contains(got) {
 		t.Fatalf("error not scrubbed: %q", got)
+	}
+}
+
+func TestScrubValueInvalidJSONNumberFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	scrubber := boundaryScrubber()
+
+	// The json.Number type is a plain string wrapper callers can construct
+	// with arbitrary text; an invalid literal fails downstream
+	// serialization with the literal echoed in the error text, so it must
+	// scrub like any other string instead of passing through.
+	got := scrubber.ScrubValue(json.Number("SANITIZEFIXTURE"))
+
+	if got != "[REDACTED:fixture]" {
+		t.Fatalf("invalid json.Number not scrubbed: %v", got)
+	}
+
+	// Anything the encoder accepts as a number passes through untouched.
+	for _, valid := range []json.Number{"0", "-17", "3.25", "1e300", "9007199254740993"} {
+		if got := scrubber.ScrubValue(valid); got != valid {
+			t.Fatalf("valid json.Number %s altered: %v", valid, got)
+		}
+	}
+
+	// Bare JSON words are not numbers and must not pass either.
+	if got := scrubber.ScrubValue(json.Number("true")); got != "true" {
+		t.Fatalf("non-number literal passed through: %v", got)
 	}
 }
 
