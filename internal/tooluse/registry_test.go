@@ -273,7 +273,7 @@ func TestRegistryClassifiesVisibilityForAllBuiltins(t *testing.T) {
 	}
 
 	// User-facing lookups over the bot's own memory stay visible in tools mode.
-	for _, name := range []string{"search_history", "list_recent_links", "fetch_url_content", "get_current_time"} {
+	for _, name := range []string{"search_history", "get_message_context", "list_recent_links", "fetch_url_content", "get_current_time"} {
 		def, ok := runtime.registry.Lookup(name)
 		if !ok {
 			t.Fatalf("expected builtin %s to be registered", name)

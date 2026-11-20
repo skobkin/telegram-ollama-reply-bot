@@ -50,6 +50,7 @@ const (
 	setReactionResultCharBudget     = 600
 	calculateResultCharBudget       = 600
 	randomChoiceResultCharBudget    = 3000
+	messageContextResultCharBudget  = 5000
 )
 
 // ToolResult is the value a Handler returns to the runtime. It is exported
@@ -250,6 +251,15 @@ func newRegistry(runtime *Runtime) *Registry {
 			Visibility:       VisibilityInternal,
 			ResultCharBudget: messageThreadResultCharBudget,
 			Handler:          runtime.getMessageThreadContext,
+		},
+		{
+			Name:             "get_message_context",
+			Description:      "Return a retained message by message_id together with up to 10 retained messages before and after it in the current chat/topic. before and after are ordered nearest first. Each message has id, author, time and reply_to_message_id. Only retained history is available: start_reached/end_reached mean the window includes the oldest/newest retained message, not that anything was discarded. Get message IDs from search_history or get_message_thread_context.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"message_id":{"type":"integer","minimum":1,"description":"Telegram message_id of the target message."},"before":{"type":"integer","minimum":0,"maximum":10,"description":"Retained messages to return before the target. Defaults to 3."},"after":{"type":"integer","minimum":0,"maximum":10,"description":"Retained messages to return after the target. Defaults to 3."}},"required":["message_id"],"additionalProperties":false}`),
+			InvocationPolicy: InvocationPolicyDiscretionary,
+			Visibility:       VisibilityStandard,
+			ResultCharBudget: messageContextResultCharBudget,
+			Handler:          runtime.getMessageContext,
 		},
 		{
 			Name:             "send_poll",

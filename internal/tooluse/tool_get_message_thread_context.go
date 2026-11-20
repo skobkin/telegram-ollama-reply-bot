@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
-	"strings"
 	"time"
+	"unicode/utf8"
 
 	"telegram-ollama-reply-bot/internal/state"
 
@@ -292,6 +292,8 @@ func threadMessagesView(messages []state.Message) []map[string]any {
 }
 
 func threadMessageView(msg state.Message) map[string]any {
+	preview, shortened := threadMessagePreview(msg)
+
 	return map[string]any{
 		"message_id":          msg.MessageID,
 		"reply_to_message_id": replyToMessageID(msg),
@@ -302,8 +304,8 @@ func threadMessageView(msg state.Message) map[string]any {
 		"is_me":               msg.IsMe,
 		"is_user_request":     msg.IsUserRequest,
 		"has_image":           msg.HasImage,
-		"text_preview":        threadMessagePreview(msg),
-		"text_truncated":      strings.HasSuffix(threadMessagePreview(msg), "…"),
+		"text_preview":        preview,
+		"text_truncated":      shortened,
 	}
 }
 
@@ -323,7 +325,9 @@ func threadMessageTime(value time.Time) string {
 	return value.UTC().Format(time.RFC3339)
 }
 
-func threadMessagePreview(msg state.Message) string {
+// threadMessagePreview returns the bounded preview and whether the text was
+// actually shortened to fit it (not merely whether it ends with an ellipsis).
+func threadMessagePreview(msg state.Message) (string, bool) {
 	text := normalizeWhitespace(msg.Text)
 	switch {
 	case msg.HasImage && msg.Image != "" && text != "":
@@ -336,5 +340,5 @@ func threadMessagePreview(msg state.Message) string {
 		text = "[Image]"
 	}
 
-	return truncateUTF8(text, messageThreadSnippetCharLimit)
+	return truncateUTF8(text, messageThreadSnippetCharLimit), utf8.RuneCountInString(text) > messageThreadSnippetCharLimit
 }
