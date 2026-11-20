@@ -10,46 +10,49 @@ import (
 	"telegram-ollama-reply-bot/internal/support/toolbudget"
 )
 
-// prepareResult serializes a tool result for the model and classifies how the
-// preparation went. It is a pure wrapper around marshalResult.
+// prepareResult serializes a tool result for the model and reports how the
+// preparation went. The classification comes from the serialization path
+// that actually produced the text, never from re-parsing the JSON:
+//
+//   - complete: the result fit its budget as the handler produced it;
+//   - reduced: text was shortened by normalization or optional data was
+//     dropped to fit the budget (the error contract, when present, is kept);
+//   - failed: the result could not be delivered and the generic delivery
+//     failure (with the preserved execution status) replaced it.
+//
+// result is the handler's result before normalization, so a message that
+// normalization shortened is still visible as a reduction.
 func prepareResult(result toolResult, budget int) (string, ResultPreparation) {
-	text := marshalResult(result, budget)
-
-	var probe struct {
-		ExecutionStatus string         `json:"execution_status"`
-		Truncated       bool           `json:"truncated"`
-		Reductions      map[string]int `json:"reductions"`
-	}
-	if err := json.Unmarshal([]byte(text), &probe); err != nil {
-		return text, ResultPreparationFailed
-	}
-
-	switch {
-	case probe.ExecutionStatus != "":
-		return text, ResultPreparationFailed
-	case (!result.Truncated && probe.Truncated) || len(probe.Reductions) > 0:
-		return text, ResultPreparationReduced
-	default:
-		return text, ResultPreparationComplete
-	}
+	return serializeResult(result, budget)
 }
 
-// marshalResult reduces structured values, never an already encoded JSON string.
-// Final escaped JSON characters (including omission metadata) count toward budget.
+// marshalResult is the wire text of prepareResult.
 func marshalResult(result toolResult, budget int) string {
+	text, _ := serializeResult(result, budget)
+
+	return text
+}
+
+// serializeResult reduces structured values, never an already encoded JSON string.
+// Final escaped JSON characters (including omission metadata) count toward budget.
+func serializeResult(result toolResult, budget int) (string, ResultPreparation) {
 	if budget <= 0 {
 		budget = defaultToolResultCharBudget
 	}
 	if budget < toolbudget.MinChars {
 		budget = toolbudget.MinChars
 	} // programmatic callers; ENV is validated at boot
-	result = normalizeResult(result)
+	result, shortened := normalizeResultReport(result)
+	fitted := ResultPreparationComplete
+	if shortened {
+		fitted = ResultPreparationReduced
+	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		return resultDeliveryFailure(result, "result_serialization_failed", budget)
 	}
 	if utf8.RuneCount(encoded) <= budget {
-		return string(encoded)
+		return string(encoded), fitted
 	}
 	var data any
 	var tree map[string]json.RawMessage
@@ -72,7 +75,7 @@ func marshalResult(result toolResult, budget int) string {
 			return resultDeliveryFailure(result, "result_serialization_failed", budget)
 		}
 		if utf8.RuneCount(encoded) <= budget {
-			return string(encoded)
+			return string(encoded), ResultPreparationReduced
 		}
 		candidate := findReduction(result.Data, "data", false)
 		if candidate.apply != nil {
@@ -228,7 +231,10 @@ func findReduction(value any, path string, protected bool) reduction {
 	return best
 }
 
-func resultDeliveryFailure(result toolResult, code string, budget int) string {
+// resultDeliveryFailure keeps the original error contract when there is one
+// (optional data dropped: reduced) and otherwise falls back to the generic
+// delivery failure (failed).
+func resultDeliveryFailure(result toolResult, code string, budget int) (string, ResultPreparation) {
 	if result.Error != nil {
 		// Retain the original failure and retry semantics when optional data is
 		// oversized or unserializable. Escaped text may still exceed the budget.
@@ -239,7 +245,7 @@ func resultDeliveryFailure(result toolResult, code string, budget int) string {
 		for {
 			encoded, err := json.Marshal(result)
 			if err == nil && utf8.RuneCount(encoded) <= budget {
-				return string(encoded)
+				return string(encoded), ResultPreparationReduced
 			}
 			e := *result.Error
 			switch {
@@ -248,13 +254,13 @@ func resultDeliveryFailure(result toolResult, code string, budget int) string {
 			case len([]rune(e.RecoveryHint)) > 32:
 				e.RecoveryHint = truncateUTF8(e.RecoveryHint, len([]rune(e.RecoveryHint))/2)
 			default:
-				return resultDeliveryFallback(result, code)
+				return resultDeliveryFallback(result, code), ResultPreparationFailed
 			}
 			result.Error = &e
 		}
 	}
 
-	return resultDeliveryFallback(result, code)
+	return resultDeliveryFallback(result, code), ResultPreparationFailed
 }
 
 func resultDeliveryFallback(result toolResult, code string) string {

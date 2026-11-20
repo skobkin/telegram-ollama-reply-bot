@@ -43,7 +43,13 @@ Statistics-facing record metadata (#178):
   model-facing result message was *prepared*. It does not claim delivery: terminal
   completion, cancellation, restricted completion or loop exhaustion can end the
   run before any later generation request carries the message. Status and side
-  effects stay authoritative and independent of it.
+  effects stay authoritative and independent of it. The classification is
+  returned by the serializer from the path it actually took (not inferred from
+  the produced JSON): `reduced` covers normalization shortening an error message
+  or hint, budget reduction (also of an already truncated result) and an error
+  contract kept while optional data was dropped; `failed` is the generic delivery
+  failure replacing an irreducible or unserializable result. The wire format is
+  unchanged.
 - `Result.AdvertisedTools` is the sorted union of names advertised in generation
   requests that were actually submitted (an iteration whose request preparation
   failed contributes nothing); each name counts once per run.

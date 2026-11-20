@@ -179,6 +179,12 @@ func TestResultPreparationClassification(t *testing.T) {
 		{"within budget", toolResult{Status: execution.StatusOK, Data: map[string]any{"a": 1}}, 4000, ResultPreparationComplete},
 		{"reduced to fit", toolResult{Status: execution.StatusOK, Data: map[string]any{"items": big}}, 2000, ResultPreparationReduced},
 		{"unserializable", toolResult{Status: execution.StatusOK, Data: make(chan int)}, 4000, ResultPreparationFailed},
+		{"previously truncated result reduced further", toolResult{Status: execution.StatusOK, Truncated: true, Data: map[string]any{"items": big}}, 2000, ResultPreparationReduced},
+		{"previously truncated reduced beyond the reduction metadata", toolResult{Status: execution.StatusOK, Truncated: true, Reductions: map[string]int{"data.x": 1}, Data: map[string]any{"items": big}}, 2000, ResultPreparationReduced},
+		{"normalization shortens the error text", toolResult{Error: NewToolError("e", ErrorPermanent, strings.Repeat("m", 400), false, "")}, 4000, ResultPreparationReduced},
+		{"error contract preserved when optional data is unserializable", toolResult{Error: NewToolError("e", ErrorTransient, "boom", true, ""), Data: make(chan int)}, 4000, ResultPreparationReduced},
+		{"error contract preserved when optional data is oversized", toolResult{Error: NewToolError("e", ErrorTransient, "boom", true, ""), Data: map[string]any{"id": strings.Repeat("x", 9000)}}, 1000, ResultPreparationReduced},
+		{"irreducible result", toolResult{Status: execution.StatusOK, Data: map[string]any{"id": strings.Repeat("x", 9000)}}, 1000, ResultPreparationFailed},
 		{"tool-set truncation is not a reduction", toolResult{Status: execution.StatusOK, Truncated: true, Data: map[string]any{"a": 1}}, 4000, ResultPreparationComplete},
 	}
 	for _, tc := range cases {
@@ -237,5 +243,44 @@ func TestToolNamesReturnsACopyOfTheCatalogInRegistrationOrder(t *testing.T) {
 	names[0] = "mutated"
 	if r.ToolNames()[0] == "mutated" {
 		t.Fatal("ToolNames must return a copy")
+	}
+}
+
+func TestResultPreparationKeepsErrorContractAndReportsNormalizationReduction(t *testing.T) {
+	text, got := prepareResult(toolResult{Error: NewToolError("rate_limited", ErrorRateLimited, strings.Repeat("m", 400), true, "")}, 4000)
+	if got != ResultPreparationReduced {
+		t.Fatalf("a normalization-shortened error is a reduction, got %q", got)
+	}
+	var wire struct {
+		Status    string `json:"status"`
+		Truncated bool   `json:"truncated"`
+		Error     struct {
+			Code      string `json:"code"`
+			Class     string `json:"class"`
+			Retryable bool   `json:"retryable"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(text), &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire.Status != execution.StatusError || !wire.Truncated || wire.Error.Code != "rate_limited" || wire.Error.Class != ErrorRateLimited || !wire.Error.Retryable {
+		t.Fatalf("the wire format and error contract must be preserved: %s", text)
+	}
+}
+
+func TestRuntimeRecordsNormalizationReductionAndKeepsExecutionStatus(t *testing.T) {
+	r, model := restrictedRuntime(t, &stubActionSender{})
+	r.registry.Register(Definition{Name: "wordy", Handler: func(context.Context, CallContext, json.RawMessage) (toolResult, error) {
+		return toolResult{Error: NewToolError("slow_down", ErrorRateLimited, strings.Repeat("m", 400), true, "")}, nil
+	}})
+	model.responses = []llm.Response{toolCalls("wordy"), {Message: llm.TextMessage(llm.RoleAssistant, "done")}}
+
+	result, err := r.ReplyWithTools(context.Background(), ChatRequest{AllowedTools: []string{"wordy"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := result.ToolCalls[0]
+	if rec.ResultPreparation != ResultPreparationReduced || rec.Status != execution.StatusError || rec.ErrorCode != "slow_down" || !rec.Retryable || !rec.Executed {
+		t.Fatalf("normalization reduction must be recorded without changing the authoritative outcome: %+v", rec)
 	}
 }

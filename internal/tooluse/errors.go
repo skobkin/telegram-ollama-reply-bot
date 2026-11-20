@@ -117,23 +117,32 @@ func ClassifyError(err error, sideEffecting bool) *ToolError {
 // normalizeResult bounds explanations before encoding, explicitly marks their
 // reduction, and supplies a safe fallback for an unclassified handler failure.
 func normalizeResult(result toolResult) toolResult {
+	result, _ = normalizeResultReport(result)
+
+	return result
+}
+
+// normalizeResultReport normalizes a result and reports whether it shortened
+// the error message or recovery hint to their bounds.
+func normalizeResultReport(result toolResult) (toolResult, bool) {
 	if result.Status == "error" && result.Error == nil {
 		result.Error = NewToolError("execution_failed", ErrorPermanent, "The tool reported a failure.", false, "")
 	}
 	if result.Error == nil {
-		return result
+		return result, false
 	}
 	result.Status = "error"
 	e := *result.Error
 	if e.Class == "" {
 		e.Class = ErrorPermanent
 	}
-	if len([]rune(e.Message)) > 160 || len([]rune(e.RecoveryHint)) > 128 {
+	shortened := len([]rune(e.Message)) > 160 || len([]rune(e.RecoveryHint)) > 128
+	if shortened {
 		result.Truncated = true
 	}
 	e.Message = truncateUTF8(e.Message, 160)
 	e.RecoveryHint = truncateUTF8(e.RecoveryHint, 128)
 	result.Error = &e
 
-	return result
+	return result, shortened
 }

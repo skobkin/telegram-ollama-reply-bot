@@ -646,6 +646,7 @@ func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *
 	if err != nil {
 		result = ErrorResult(ClassifyError(err, definition.SideEffecting))
 	}
+	raw := result
 	result = normalizeResult(result)
 	var errorCode, errorClass string
 	var retryable bool
@@ -677,7 +678,7 @@ func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *
 		ErrorCode:  errorCode, ErrorClass: errorClass, Retryable: retryable,
 	})
 
-	text, preparation := prepareResult(result, definition.ResultCharBudget)
+	text, preparation := prepareResult(raw, definition.ResultCharBudget)
 
 	return toolCallOutcome{
 		message:          toolResponseMessage(call.ID, text),
