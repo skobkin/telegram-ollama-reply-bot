@@ -27,8 +27,32 @@ Raw external error text is not forwarded to logs or model-facing failures.
 
 Returned records include handler execution, error classification/retryability and
 side-effect certainty (`none`, `not_applied`, `confirmed`, `unknown`). They remain
-authoritative independently of event delivery and are suitable input for future
-aggregate tool statistics; this feature adds no collector or persistent traces.
+authoritative independently of event delivery and are the input of the aggregate
+tool statistics (`docs/specs/tool_statistics.md`); records themselves are never
+persisted.
+
+Statistics-facing record metadata (#178):
+
+- `Rejection` distinguishes calls rejected before handler execution:
+  `not_registered` (the model-chosen name matches no registered tool),
+  `not_advertised` (registered, but not in that iteration's advertised set) and
+  `unavailable` (advertised, but the fresh availability check failed). The
+  model-facing result and the events stay identical (`tool_unavailable`). The raw
+  name of a `not_registered` call is never an aggregation key.
+- `ResultPreparation` (`complete`, `reduced`, `failed`) classifies how the
+  model-facing result message was *prepared*. It does not claim delivery: terminal
+  completion, cancellation, restricted completion or loop exhaustion can end the
+  run before any later generation request carries the message. Status and side
+  effects stay authoritative and independent of it.
+- `Result.AdvertisedTools` is the sorted union of names advertised in generation
+  requests that were actually submitted (an iteration whose request preparation
+  failed contributes nothing); each name counts once per run.
+- `Runtime.ToolNames()` is the registered catalog in registration order. It is
+  static after startup.
+- `empty` is a successful status (`execution.StatusEmpty`): the tool ran and
+  validly found nothing.
+- Calls skipped after an accepted terminal completion or a context-done batch
+  abort produce no record.
 
 Final JSON budgets count escaped serialized characters. Reduction shortens text
 and omits complete collection items with explicit `truncated` and bounded

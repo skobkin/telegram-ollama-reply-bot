@@ -11,6 +11,8 @@ import (
 
 	"telegram-ollama-reply-bot/internal/state"
 	"telegram-ollama-reply-bot/internal/vision"
+
+	"telegram-ollama-reply-bot/internal/execution"
 )
 
 const (
@@ -81,7 +83,7 @@ func (r *Runtime) listRecentImages(_ context.Context, callCtx CallContext, args 
 
 	if len(sources) == 0 {
 		result := toolResult{
-			Status:  "empty",
+			Status:  execution.StatusEmpty,
 			Summary: "No image-bearing messages were found in the current chat/topic history",
 			Data: map[string]any{
 				"chat_id":  callCtx.Scope.ChatID,

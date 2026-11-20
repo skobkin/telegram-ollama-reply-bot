@@ -46,8 +46,13 @@ type RunContext struct {
 // Tool completion statuses. A tool is successful only when its actual result
 // indicates success — a nil Go error with a structured error result is still
 // a failure.
+//
+// StatusEmpty is a SUCCESSFUL status: the tool ran and validly found nothing
+// (an empty search or listing). Statistics count it as a success, never a
+// failure.
 const (
 	StatusOK    = "ok"
+	StatusEmpty = "empty"
 	StatusError = "error"
 )
 

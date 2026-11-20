@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 	"unicode/utf8"
+
+	"telegram-ollama-reply-bot/internal/execution"
 )
 
 func (r *Runtime) listRecentLinks(_ context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error) {
@@ -57,7 +59,7 @@ func (r *Runtime) listRecentLinks(_ context.Context, callCtx CallContext, args j
 
 	if len(links) == 0 {
 		result := toolResult{
-			Status:  "empty",
+			Status:  execution.StatusEmpty,
 			Summary: "No recent HTTP or HTTPS links were found in the current chat/topic history",
 			Data: map[string]any{
 				"chat_id":  callCtx.Scope.ChatID,

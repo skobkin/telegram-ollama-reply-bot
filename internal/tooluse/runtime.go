@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -136,7 +137,51 @@ type ToolCallRecord struct {
 	ErrorClass        ErrorClass
 	Retryable         bool
 	SideEffectOutcome string
+	// Rejection says why a call was rejected before handler execution
+	// (RejectionNone when it executed). The model-facing result and the
+	// events are identical for every reason (tool_unavailable); only the
+	// authoritative record distinguishes them, so aggregate statistics can
+	// tell hallucinated names from unavailable tools. Name is the raw model
+	// string for NotRegistered calls and must never become an aggregation key.
+	Rejection Rejection
+	// ResultPreparation classifies how the model-facing result message was
+	// PREPARED (serialized within its budget). It does not claim delivery: a
+	// terminal completion, cancellation or loop exhaustion can end the run
+	// before any later generation request carries the message. Status and
+	// SideEffectOutcome stay authoritative and independent of it.
+	ResultPreparation ResultPreparation
 }
+
+// Rejection is the bounded reason a call was rejected before execution.
+type Rejection string
+
+const (
+	// RejectionNone: the call reached its handler.
+	RejectionNone Rejection = ""
+	// RejectionNotRegistered: no registered tool has the (model-chosen) name.
+	RejectionNotRegistered Rejection = "not_registered"
+	// RejectionNotAdvertised: a registered tool that this iteration did not
+	// advertise.
+	RejectionNotAdvertised Rejection = "not_advertised"
+	// RejectionUnavailable: advertised, but its fresh availability check
+	// failed (for example an earlier call of the same batch changed state).
+	RejectionUnavailable Rejection = "unavailable"
+)
+
+// ResultPreparation is the bounded classification of how a call's
+// model-facing result was prepared.
+type ResultPreparation string
+
+const (
+	// ResultPreparationComplete: serialized within budget without reduction.
+	ResultPreparationComplete ResultPreparation = "complete"
+	// ResultPreparationReduced: shortened or collection items omitted, with
+	// explicit truncation metadata.
+	ResultPreparationReduced ResultPreparation = "reduced"
+	// ResultPreparationFailed: irreducible or unserializable; the model sees
+	// an explicit delivery error carrying the original execution status.
+	ResultPreparationFailed ResultPreparation = "failed"
+)
 
 // Result is the authoritative outcome of a tool-enabled reply: the final
 // answer text (possibly empty for side-effect-only completions), the
@@ -145,6 +190,11 @@ type Result struct {
 	Reply     string
 	Usage     *llm.TokenUsage
 	ToolCalls []ToolCallRecord
+	// AdvertisedTools is the sorted union of tool names that were advertised
+	// in a generation request actually submitted during the run (an iteration
+	// whose request preparation failed contributes nothing). Each name counts
+	// once per run, not once per iteration.
+	AdvertisedTools []string
 	// IntentionalSilence marks accepted say_nothing completion, distinct
 	// from the legacy empty reply after a successful side effect.
 	IntentionalSilence bool
@@ -292,6 +342,24 @@ func (r *Runtime) AttachMCP(name string, source MCPToolSource) {
 	r.RegisterCloser(name, source.Close)
 }
 
+// ToolNames returns the registered tool catalog in registration order
+// (built-ins first, then attached tools such as MCP). The catalog is static
+// after startup: tools are attached before the bot starts and are never
+// removed or renamed at runtime.
+func (r *Runtime) ToolNames() []string {
+	return append([]string(nil), r.registry.defaults...)
+}
+
+func sortedNames(set map[string]struct{}) []string {
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	return names
+}
+
 // HasTool reports whether a tool with the given name is currently registered
 // (availability for a particular turn is resolved separately).
 func (r *Runtime) HasTool(name string) bool {
@@ -360,6 +428,7 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 		extraMessages             []llm.Message
 		totalUsage                llm.TokenUsage
 		records                   []ToolCallRecord
+		advertisedEver            = map[string]struct{}{}
 		started                   bool
 		allowEmptyReplyCompletion bool
 		intentionalSilence        bool
@@ -373,7 +442,7 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 			ReplyLength: len([]rune(reply)),
 		})
 
-		return Result{Reply: reply, Usage: usagePointer(totalUsage), ToolCalls: records, IntentionalSilence: intentionalSilence}, nil
+		return Result{Reply: reply, Usage: usagePointer(totalUsage), ToolCalls: records, AdvertisedTools: sortedNames(advertisedEver), IntentionalSilence: intentionalSilence}, nil
 	}
 	fail := func(err error, fallbackReason string) (Result, error) {
 		emitter.publish(execution.RunFailed{
@@ -383,7 +452,7 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 			Reason:     classifyRunFailure(err, fallbackReason),
 		})
 
-		return Result{Usage: usagePointer(totalUsage), ToolCalls: records}, err
+		return Result{Usage: usagePointer(totalUsage), ToolCalls: records, AdvertisedTools: sortedNames(advertisedEver)}, err
 	}
 
 	for i := 0; i < r.config.MaxIterations; i++ {
@@ -411,6 +480,10 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 		// returned error are content-free too.
 		request.SilentErrors = req.SilentErrors
 
+		// Advertisement counts only for a request that is actually submitted.
+		for _, definition := range definitions {
+			advertisedEver[definition.Name] = struct{}{}
+		}
 		resp, err := r.llm.Generate(ctx, request)
 		if err != nil {
 			if started && allowEmptyReplyCompletion && errors.Is(err, llm.ErrNoChoices) {
@@ -499,12 +572,20 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *runState, req ChatRequest, call llm.ToolCall) toolCallOutcome {
 	logger := logging.FromContext(ctx, r.logger)
 	definition, ok := run.advertised[call.Name]
-	if ok {
+	rejection := RejectionNone
+	base, registered := r.registry.Lookup(call.Name)
+	switch {
+	case !registered:
+		ok, rejection = false, RejectionNotRegistered
+	case !ok:
+		rejection = RejectionNotAdvertised
+	default:
 		// Re-resolve the registered definition, never a previously transformed
 		// presentation. Earlier calls in this batch may have changed state.
-		base, registered := r.registry.Lookup(call.Name)
 		definition, ok = resolveDefinition(base, r.callContext(req, run))
-		ok = ok && registered
+		if !ok {
+			rejection = RejectionUnavailable
+		}
 	}
 	if !ok {
 		logger.Warn("tool call unavailable", "tool_name", call.Name, "tool_call_id", call.ID, "error_code", "tool_unavailable", "error_class", ErrorUnavailable)
@@ -521,15 +602,18 @@ func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *
 			ErrorCode:  "tool_unavailable", ErrorClass: ErrorUnavailable,
 		})
 
-		return toolCallOutcome{message: toolResponseMessage(call.ID, marshalResult(toolResult{
+		text, preparation := prepareResult(toolResult{
 			Status: "error",
 			Error:  NewToolError("tool_unavailable", ErrorUnavailable, "Unknown tool or tool unavailable for this turn.", false, "Choose a tool from the current definitions."),
-		}, defaultToolResultCharBudget)), record: ToolCallRecord{
+		}, defaultToolResultCharBudget)
+
+		return toolCallOutcome{message: toolResponseMessage(call.ID, text), record: ToolCallRecord{
 			CallID:     call.ID,
 			Name:       call.Name,
 			Visibility: VisibilityStandard,
 			Status:     execution.StatusError,
 			ErrorCode:  "tool_unavailable", ErrorClass: ErrorUnavailable,
+			Rejection: rejection, ResultPreparation: preparation,
 		}}
 	}
 
@@ -593,8 +677,10 @@ func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *
 		ErrorCode:  errorCode, ErrorClass: errorClass, Retryable: retryable,
 	})
 
+	text, preparation := prepareResult(result, definition.ResultCharBudget)
+
 	return toolCallOutcome{
-		message:          toolResponseMessage(call.ID, marshalResult(result, definition.ResultCharBudget)),
+		message:          toolResponseMessage(call.ID, text),
 		allowsEmptyReply: definition.SideEffecting && result.Status == execution.StatusOK,
 		endTurn:          result.endTurn && result.Status == execution.StatusOK,
 		record: ToolCallRecord{
@@ -605,6 +691,7 @@ func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *
 			Duration:      duration,
 			SideEffecting: definition.SideEffecting,
 			Executed:      true, ErrorCode: errorCode, ErrorClass: errorClass, Retryable: retryable, SideEffectOutcome: sideEffectOutcome,
+			ResultPreparation: preparation,
 		},
 	}
 }

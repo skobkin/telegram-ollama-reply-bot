@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"telegram-ollama-reply-bot/internal/state"
+
+	"telegram-ollama-reply-bot/internal/execution"
 )
 
 const (
@@ -20,7 +22,7 @@ func (r *Runtime) getMessageThreadContext(_ context.Context, callCtx CallContext
 	snapshot := r.history.Snapshot(callCtx.Scope)
 	if isEmptyThreadMessage(callCtx.Requester) {
 		result := toolResult{
-			Status:  "empty",
+			Status:  execution.StatusEmpty,
 			Summary: "No current message context is available for thread lookup",
 			Data: map[string]any{
 				"chat_id":  callCtx.Scope.ChatID,

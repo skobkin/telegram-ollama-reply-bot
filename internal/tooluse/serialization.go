@@ -10,6 +10,30 @@ import (
 	"telegram-ollama-reply-bot/internal/support/toolbudget"
 )
 
+// prepareResult serializes a tool result for the model and classifies how the
+// preparation went. It is a pure wrapper around marshalResult.
+func prepareResult(result toolResult, budget int) (string, ResultPreparation) {
+	text := marshalResult(result, budget)
+
+	var probe struct {
+		ExecutionStatus string         `json:"execution_status"`
+		Truncated       bool           `json:"truncated"`
+		Reductions      map[string]int `json:"reductions"`
+	}
+	if err := json.Unmarshal([]byte(text), &probe); err != nil {
+		return text, ResultPreparationFailed
+	}
+
+	switch {
+	case probe.ExecutionStatus != "":
+		return text, ResultPreparationFailed
+	case (!result.Truncated && probe.Truncated) || len(probe.Reductions) > 0:
+		return text, ResultPreparationReduced
+	default:
+		return text, ResultPreparationComplete
+	}
+}
+
 // marshalResult reduces structured values, never an already encoded JSON string.
 // Final escaped JSON characters (including omission metadata) count toward budget.
 func marshalResult(result toolResult, budget int) string {
