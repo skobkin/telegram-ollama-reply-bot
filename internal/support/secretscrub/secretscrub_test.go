@@ -124,6 +124,86 @@ func TestScrubIsIdempotent(t *testing.T) {
 	}
 }
 
+// assertSecretFree fails when the text carries any of the scrubber's
+// registered values — including inside generated markers.
+func assertSecretFree(t *testing.T, scrubber *Scrubber, text string) {
+	t.Helper()
+
+	if scrubber.containsAnyValue(text) {
+		t.Fatalf("registered secret survived in output: %q", text)
+	}
+}
+
+func TestScrubMarkerCollisionNeverReintroducesSecret(t *testing.T) {
+	t.Parallel()
+
+	// A secret literally equal to the marker prefix would ride inside every
+	// standard marker; the construction-time fallback must deny it.
+	scrubber := New([]Secret{
+		{Name: "trap", Value: "REDACTED"},
+		{Name: "normal", Value: leakA},
+	})
+
+	got := scrubber.Scrub("before REDACTED after " + leakA)
+	assertSecretFree(t, scrubber, got)
+
+	twice := scrubber.Scrub(got)
+	if twice != got {
+		t.Fatalf("collision scrubbing is not idempotent: %q -> %q", got, twice)
+	}
+}
+
+func TestScrubSequentialMarkersStayIntact(t *testing.T) {
+	t.Parallel()
+
+	// One secret's value is a fragment of the standard marker shape, so a
+	// sequential per-secret ReplaceAll would rewrite an earlier marker.
+	scrubber := New([]Secret{
+		{Name: "full", Value: "REDACTED:zz"},
+		{Name: "frag", Value: "zz"},
+	})
+
+	if got, want := scrubber.Scrub("REDACTED:zz"), "[REDACTED:full]"; got != want {
+		t.Fatalf("fragment corrupted the longer match: got %q, want %q", got, want)
+	}
+
+	if got, want := scrubber.Scrub("a zz b"), "a [REDACTED:frag] b"; got != want {
+		t.Fatalf("fragment secret lost: got %q, want %q", got, want)
+	}
+
+	assertSecretFree(t, scrubber, scrubber.Scrub("REDACTED:zz and zz"))
+}
+
+func TestScrubOverlappingSecrets(t *testing.T) {
+	t.Parallel()
+
+	scrubber := New([]Secret{
+		{Name: "short", Value: "cde"},
+		{Name: "long", Value: "abcdef"},
+	})
+
+	if got, want := scrubber.Scrub("x abcdef y"), "x [REDACTED:long] y"; got != want {
+		t.Fatalf("overlap picked the short match: got %q, want %q", got, want)
+	}
+
+	assertSecretFree(t, scrubber, scrubber.Scrub("x abcdef y"))
+}
+
+func TestScrubShortCredentialMarkerFallback(t *testing.T) {
+	t.Parallel()
+
+	// A credential whose own name collides with its value cannot use the
+	// standard marker; the name-less fallback keeps the output secret-free.
+	scrubber := New([]Secret{{Name: "ab", Value: "ab"}})
+
+	got := scrubber.Scrub("token=ab end")
+	assertSecretFree(t, scrubber, got)
+
+	if !strings.Contains(got, "token=") {
+		t.Fatalf("surrounding text was mutilated: %q", got)
+	}
+}
+
 // leakingDoer returns the given error from every Do call.
 type leakingDoer struct {
 	resp *http.Response

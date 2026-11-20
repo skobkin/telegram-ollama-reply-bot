@@ -36,14 +36,24 @@ type Secret struct {
 // Scrubber replaces registered secret values with "[REDACTED:<name>]". It is
 // immutable after New and safe for concurrent use.
 type Scrubber struct {
-	names  []string // parallel to values
-	values []string // longest first
+	names    []string // parallel to values
+	values   []string // longest first
+	replacer *strings.Replacer
 }
 
 // New builds a Scrubber. Empty values are skipped and duplicate values are
 // collapsed (the first name wins). Secrets are ordered longest-value-first,
 // so a value that is a prefix of another is replaced as part of the longer
 // match.
+//
+// Replacement is a single left-to-right pass that never rescans emitted
+// markers, and every marker is verified at construction time to contain no
+// registered value: a secret equal to (or embedded in) a marker string is
+// otherwise reintroduced by the redaction itself, and sequential
+// replacements could corrupt earlier markers. Markers fall back to the
+// name-less "[REDACTED]" and then to an empty replacement, in that order —
+// so the result of Scrub can never carry a registered value, whatever the
+// configured secrets are.
 func New(secrets []Secret) *Scrubber {
 	byValue := make(map[string]string, len(secrets))
 	for _, secret := range secrets {
@@ -83,24 +93,52 @@ func New(secrets []Secret) *Scrubber {
 	s.names = names
 	s.values = values
 
+	pairs := make([]string, 0, len(s.values)*2)
+	for i := range s.values {
+		pairs = append(pairs, s.values[i], s.safeMarker(s.names[i]))
+	}
+
+	if len(pairs) > 0 {
+		s.replacer = strings.NewReplacer(pairs...)
+	}
+
 	return s
+}
+
+// safeMarker picks the replacement string for one secret: the first of the
+// standard marker, the name-less fallback, and the empty replacement that
+// contains no registered value. Empty always qualifies, so the search
+// terminates with a secret-free result.
+func (s *Scrubber) safeMarker(name string) string {
+	for _, candidate := range []string{marker(name), "[REDACTED]", ""} {
+		if !s.containsAnyValue(candidate) {
+			return candidate
+		}
+	}
+
+	return ""
+}
+
+func (s *Scrubber) containsAnyValue(text string) bool {
+	for _, value := range s.values {
+		if strings.Contains(text, value) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // Scrub replaces every occurrence of every registered secret value in text
 // with "[REDACTED:<name>]". Text carrying no secret is returned unchanged,
-// and scrubbing is idempotent: the markers contain no secret material.
+// and scrubbing is idempotent: the pass never rescans its own output and
+// every marker is constructed to contain no registered value.
 func (s *Scrubber) Scrub(text string) string {
-	if s == nil || len(s.values) == 0 || !s.Contains(text) {
+	if s == nil || s.replacer == nil || !s.Contains(text) {
 		return text
 	}
 
-	for i, value := range s.values {
-		if strings.Contains(text, value) {
-			text = strings.ReplaceAll(text, value, marker(s.names[i]))
-		}
-	}
-
-	return text
+	return s.replacer.Replace(text)
 }
 
 // Contains reports whether text carries any registered secret value. It is a
