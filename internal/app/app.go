@@ -26,6 +26,7 @@ import (
 	"telegram-ollama-reply-bot/internal/state/memory"
 	"telegram-ollama-reply-bot/internal/statistics"
 	"telegram-ollama-reply-bot/internal/statistics/pngreport"
+	"telegram-ollama-reply-bot/internal/stickers"
 	"telegram-ollama-reply-bot/internal/support/httpclient"
 	"telegram-ollama-reply-bot/internal/support/markdown"
 	"telegram-ollama-reply-bot/internal/support/safeerr"
@@ -386,6 +387,21 @@ func Run(ctx context.Context) (runErr error) {
 		return err
 	}
 	defer func() { _ = persistentStore.Close() }()
+
+	// The operator-curated sticker catalog is restored all-or-nothing before
+	// any consumer (admin UI, model tools) exists: a corrupt persisted row
+	// aborts boot rather than advertising a partial or unvalidated catalog.
+	stickerService := stickers.NewService(
+		stickerCatalogStore{store: persistentStore},
+		telegoStickerFetcher{api: telegramAPI},
+		logManager.Logger("stickers"),
+	)
+	if err := stickerService.Load(ctx); err != nil {
+		logger.Error("failed to restore sticker catalog", "error", err)
+		sentry.CaptureException(err)
+
+		return err
+	}
 
 	adminService := adminconfig.NewService(persistentStore, adminconfig.BuiltinTemplates{
 		adminconfig.PromptFeatureChat:             llm.DefaultChatPromptTemplate,
