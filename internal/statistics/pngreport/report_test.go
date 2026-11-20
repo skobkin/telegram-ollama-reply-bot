@@ -316,19 +316,21 @@ func TestBinLabelsDeriveFromSnapshot(t *testing.T) {
 		t.Fatalf("score label edges wrong: %q, %q", labels[0], labels[1])
 	}
 
-	// Latency histograms: humanized lower edges and an open-ended terminal
-	// marker.
+	// Latency histograms: len(edges)+1 bins (the collector's real shape) —
+	// finite bins labeled with their LOWER edge, bin 0 starting at 0.
 	latency := statistics.HistogramSnapshot{
 		Edges:     []float64{100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000, 120000},
 		OpenEnded: true,
-		Counts:    make([]uint64, 10),
+		Counts:    make([]uint64, 11),
 	}
 	latencyLabels := binLabels(latency)
-	if len(latencyLabels) != 10 {
-		t.Fatalf("latency bin labels = %d, want 10", len(latencyLabels))
+	if len(latencyLabels) != 11 {
+		t.Fatalf("latency bin labels = %d, want 11", len(latencyLabels))
 	}
-	if latencyLabels[0] != "100" || latencyLabels[3] != "1s" {
-		t.Fatalf("latency labels not humanized: %v", latencyLabels)
+	// Bin 0 is [0,100); bin 3 is [500,1000); a 150ms observation must not
+	// appear under the 250 or 500 marks.
+	if latencyLabels[0] != "0" || latencyLabels[1] != "100" || latencyLabels[3] != "500" || latencyLabels[4] != "1s" {
+		t.Fatalf("latency labels must use lower bin edges: %v", latencyLabels)
 	}
 	if latencyLabels[len(latencyLabels)-1] != "≥120s" {
 		t.Fatalf("open-ended terminal bin must be marked: %q", latencyLabels[len(latencyLabels)-1])

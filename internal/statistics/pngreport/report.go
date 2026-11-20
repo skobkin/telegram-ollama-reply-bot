@@ -542,23 +542,26 @@ func countsToValues(histogram statistics.HistogramSnapshot) []float64 {
 	return values
 }
 
-// binLabels renders one category label per bin: latency histograms label
-// the (humanized) lower edge with an open-ended terminal bin marker.
+// binLabels renders one category label per bin, each bin labeled with its
+// (humanized) LOWER bound. The two histogram shapes differ: open-ended
+// (latency) histograms have counts = len(edges)+1 — bin 0 is
+// [0, edges[0]), finite bin i is [edges[i-1], edges[i]), and the terminal
+// bin is marked ≥ last edge — while score histograms carry one edge per
+// bin boundary (bin i = [edges[i], edges[i+1])).
 func binLabels(histogram statistics.HistogramSnapshot) []string {
 	labels := make([]string, len(histogram.Counts))
 	for i := range histogram.Counts {
-		if i < len(histogram.Edges) {
+		switch {
+		case histogram.OpenEnded && i == 0:
+			labels[i] = humanMs(0)
+		case histogram.OpenEnded && i < len(histogram.Edges):
+			labels[i] = humanMs(histogram.Edges[i-1])
+		case i < len(histogram.Edges):
 			labels[i] = humanMs(histogram.Edges[i])
-
-			continue
 		}
-		labels[i] = ""
 	}
-	if histogram.OpenEnded && len(labels) > 0 {
-		last := len(histogram.Edges) - 1
-		if last >= 0 && last < len(histogram.Edges) {
-			labels[len(labels)-1] = "≥" + humanMs(histogram.Edges[last])
-		}
+	if histogram.OpenEnded && len(labels) > 0 && len(histogram.Edges) > 0 {
+		labels[len(labels)-1] = "≥" + humanMs(histogram.Edges[len(histogram.Edges)-1])
 	}
 
 	return labels
