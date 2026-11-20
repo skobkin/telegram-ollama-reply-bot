@@ -87,6 +87,7 @@ func ClassifyError(err error, sideEffecting bool) *ToolError {
 			if api.Parameters != nil {
 				result.RetryAfterSeconds = api.Parameters.RetryAfter
 			}
+
 			return result
 		}
 		if api.ErrorCode >= 400 && api.ErrorCode < 500 {
@@ -100,6 +101,8 @@ func ClassifyError(err error, sideEffecting bool) *ToolError {
 		return NewToolError("cancelled", ErrorCancelled, "The call was cancelled or its deadline elapsed.", false, "")
 	}
 	switch provider.KindOf(err) {
+	case provider.ErrorKindBadRequest:
+		return NewToolError("invalid_arguments", ErrorArguments, "The provider rejected the supplied request.", true, "Correct or shorten the arguments before trying again.")
 	case provider.ErrorKindRateLimited:
 		return NewToolError("rate_limited", ErrorRateLimited, "The provider rate-limited the call.", true, "Wait before trying again.")
 	case provider.ErrorKindAuthFailed, provider.ErrorKindCreditsExhausted, provider.ErrorKindMisconfigured, provider.ErrorKindUnsupported:
@@ -111,78 +114,26 @@ func ClassifyError(err error, sideEffecting bool) *ToolError {
 	}
 }
 
-// normalizeResult lifts legacy handler payloads at the shared boundary. This
-// also keeps third-party adapters from bypassing the model-facing contract.
+// normalizeResult bounds explanations before encoding, explicitly marks their
+// reduction, and supplies a safe fallback for an unclassified handler failure.
 func normalizeResult(result toolResult) toolResult {
-	if result.Error != nil {
-		e := *result.Error
-		if len([]rune(e.Message)) > 160 || len([]rune(e.RecoveryHint)) > 128 {
-			result.Truncated = true
-		}
-		e.Message = truncateUTF8(e.Message, 160)
-		e.RecoveryHint = truncateUTF8(e.RecoveryHint, 128)
-		result.Error = &e
-	}
-	if result.Status != "error" {
-		return result
-	}
-	if result.Error == nil {
-		if data, ok := result.Data.(map[string]any); ok {
-			var payload *ToolError
-			switch v := data["error"].(type) {
-			case toolErrorPayload:
-				payload = &v
-			case map[string]any:
-				code, _ := v["code"].(string)
-				message, _ := v["message"].(string)
-				payload = &ToolError{Code: code, Message: message}
-			}
-			if payload != nil {
-				copyData := make(map[string]any, len(data))
-				for k, v := range data {
-					if k != "error" {
-						copyData[k] = v
-					}
-				}
-				result.Data = copyData
-				result.Error = payload
-			}
-		}
-	}
-	if result.Error == nil {
+	if result.Status == "error" && result.Error == nil {
 		result.Error = NewToolError("execution_failed", ErrorPermanent, "The tool reported a failure.", false, "")
 	}
-	if result.Error.Class == "" {
-		e := *result.Error
-		switch e.Code {
-		case "missing_required_field", "invalid_timestamp", "invalid_timezone", "invalid_operation", "invalid_style", "empty_shift", "invalid_match_mode", "prompt_invalid", "invalid_arguments", "invalid_emoji":
-			e.Class = ErrorArguments
-			e.Retryable = true
-			e.RecoveryHint = "Correct the arguments using the tool schema and try again."
-		case "image_not_found":
-			e.Class = ErrorNotFound
-			e.Retryable = true
-			e.RecoveryHint = "Use list_recent_images to find an available message_id."
-		case "rate_limited":
-			e.Class = ErrorRateLimited
-			e.RecoveryHint = "Wait before trying again."
-		case "cancelled":
-			e.Class = ErrorCancelled
-		case "request_failed":
-			e.Class = ErrorAmbiguous
-		default:
-			e.Class = ErrorPermanent
-		}
-		result.Error = &e
+	if result.Error == nil {
+		return result
 	}
-	if result.Error != nil {
-		e := *result.Error
-		if len([]rune(e.Message)) > 160 || len([]rune(e.RecoveryHint)) > 128 {
-			result.Truncated = true
-		}
-		e.Message = truncateUTF8(e.Message, 160)
-		e.RecoveryHint = truncateUTF8(e.RecoveryHint, 128)
-		result.Error = &e
+	result.Status = "error"
+	e := *result.Error
+	if e.Class == "" {
+		e.Class = ErrorPermanent
 	}
+	if len([]rune(e.Message)) > 160 || len([]rune(e.RecoveryHint)) > 128 {
+		result.Truncated = true
+	}
+	e.Message = truncateUTF8(e.Message, 160)
+	e.RecoveryHint = truncateUTF8(e.RecoveryHint, 128)
+	result.Error = &e
+
 	return result
 }

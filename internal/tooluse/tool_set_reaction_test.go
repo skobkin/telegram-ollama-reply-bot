@@ -79,6 +79,7 @@ func reactionErrorCode(t *testing.T, result toolResult) string {
 	if result.Status != execution.StatusError || result.Error == nil {
 		t.Fatalf("expected structured failure: %+v", result)
 	}
+
 	return result.Error.Code
 }
 func reactionErrorMessage(t *testing.T, result toolResult) string {
@@ -86,6 +87,7 @@ func reactionErrorMessage(t *testing.T, result toolResult) string {
 	if result.Error == nil {
 		t.Fatalf("expected error: %+v", result)
 	}
+
 	return result.Error.Message
 }
 
@@ -699,6 +701,10 @@ func TestSetReactionCancelledWhileWaitingCooldown(t *testing.T) {
 		t.Fatal("a cancelled wait must not send")
 	}
 
+	if callCtx.run.reactionAttempts != 0 {
+		t.Fatal("cancelled wait consumed an outgoing attempt")
+	}
+
 	// The cancellation consumed nothing: the same run's next call proceeds
 	// once the chat is free again.
 	runtime.reactions.mu.Lock()
@@ -711,6 +717,7 @@ func TestSetReactionCancelledWhileWaitingCooldown(t *testing.T) {
 	if sender.reactionCallCount() != 1 {
 		t.Fatalf("unexpected call count: %d", sender.reactionCallCount())
 	}
+
 }
 
 // --- cross-run coordination ---

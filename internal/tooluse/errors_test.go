@@ -7,8 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mymmrac/telego/telegoapi"
 	"telegram-ollama-reply-bot/internal/llm"
+
+	"github.com/mymmrac/telego/telegoapi"
 )
 
 func TestSafeErrorClassification(t *testing.T) {
@@ -43,6 +44,7 @@ func TestRuntimeRecordsFailureAndConfirmedEffectDespiteSerializationFailure(t *t
 		if calls == 1 {
 			return toolResult{}, invalidArguments("value is required")
 		}
+
 		return toolResult{Status: "ok", Data: make(chan int)}, nil
 	}})
 	model.responses = []llm.Response{
@@ -60,5 +62,15 @@ func TestRuntimeRecordsFailureAndConfirmedEffectDespiteSerializationFailure(t *t
 	}
 	if !strings.Contains(model.lastBuildExtras[len(model.lastBuildExtras)-1].Text(), "result_serialization_failed") {
 		t.Fatal("missing delivery error")
+	}
+}
+
+func TestQuizRequiresExplicitCorrectAnswer(t *testing.T) {
+	sender := &stubActionSender{}
+	r, _ := restrictedRuntime(t, sender)
+	_, err := r.sendQuiz(context.Background(), CallContext{}, json.RawMessage(`{"question":"Choose","options":["A","B"]}`))
+	var failure *ToolError
+	if !errors.As(err, &failure) || failure.Class != ErrorArguments || !failure.Retryable || sender.lastPollParams != nil {
+		t.Fatalf("err=%v params=%+v", err, sender.lastPollParams)
 	}
 }

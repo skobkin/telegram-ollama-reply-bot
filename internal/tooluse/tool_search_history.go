@@ -82,13 +82,5 @@ func (r *Runtime) searchHistory(_ context.Context, callCtx CallContext, args jso
 }
 
 func searchHistoryErrorResult(code, message string) toolResult {
-	return toolResult{
-		Status: "error",
-		Data: map[string]any{
-			"error": toolErrorPayload{
-				Code:    code,
-				Message: message,
-			},
-		},
-	}
+	return ErrorResult(NewToolError(code, ErrorArguments, message, true, "Provide keywords and select match_mode all or any."))
 }

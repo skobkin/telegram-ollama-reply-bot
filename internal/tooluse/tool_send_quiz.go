@@ -13,7 +13,7 @@ func (r *Runtime) sendQuiz(ctx context.Context, callCtx CallContext, args json.R
 	var payload struct {
 		Question           string   `json:"question"`
 		Options            []string `json:"options"`
-		CorrectOptionIndex int      `json:"correct_option_index"`
+		CorrectOptionIndex *int     `json:"correct_option_index"`
 		Explanation        string   `json:"explanation"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
@@ -24,7 +24,7 @@ func (r *Runtime) sendQuiz(ctx context.Context, callCtx CallContext, args json.R
 	if err != nil {
 		return toolResult{}, err
 	}
-	if payload.CorrectOptionIndex < 0 || payload.CorrectOptionIndex >= len(options) {
+	if payload.CorrectOptionIndex == nil || *payload.CorrectOptionIndex < 0 || *payload.CorrectOptionIndex >= len(options) {
 		return toolResult{}, invalidArguments("correct_option_index must reference an existing option")
 	}
 
@@ -33,7 +33,7 @@ func (r *Runtime) sendQuiz(ctx context.Context, callCtx CallContext, args json.R
 		Question:         strings.TrimSpace(payload.Question),
 		Options:          options,
 		Type:             "quiz",
-		CorrectOptionIDs: []int{payload.CorrectOptionIndex},
+		CorrectOptionIDs: []int{*payload.CorrectOptionIndex},
 	}
 	if explanation := strings.TrimSpace(payload.Explanation); explanation != "" {
 		params.Explanation = explanation
@@ -53,7 +53,7 @@ func (r *Runtime) sendQuiz(ctx context.Context, callCtx CallContext, args json.R
 		"message_id":           message.MessageID,
 		"question":             strings.TrimSpace(payload.Question),
 		"options":              trimmedOptionTexts(options),
-		"correct_option_index": payload.CorrectOptionIndex,
+		"correct_option_index": *payload.CorrectOptionIndex,
 	}
 	if params.Explanation != "" {
 		data["explanation"] = params.Explanation
@@ -64,7 +64,7 @@ func (r *Runtime) sendQuiz(ctx context.Context, callCtx CallContext, args json.R
 		Summary: "Quiz sent",
 		Data:    data,
 	}
-	logToolResult(callCtx, result, "message_id", message.MessageID, "options_count", len(options), "correct_option_index", payload.CorrectOptionIndex)
+	logToolResult(callCtx, result, "message_id", message.MessageID, "options_count", len(options), "correct_option_index", *payload.CorrectOptionIndex)
 
 	return result, nil
 }

@@ -6,9 +6,10 @@ import (
 	"slices"
 	"testing"
 
-	t "github.com/mymmrac/telego"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/telegram/reactionavailability"
+
+	t "github.com/mymmrac/telego"
 )
 
 type availableChat struct {
@@ -18,6 +19,7 @@ type availableChat struct {
 
 func (g *availableChat) GetChat(context.Context, *t.GetChatParams) (*t.ChatFullInfo, error) {
 	g.calls++
+
 	return &t.ChatFullInfo{AvailableReactions: g.reactions}, nil
 }
 

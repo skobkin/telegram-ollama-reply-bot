@@ -366,7 +366,7 @@ func (s *Service) buildReminder(scope state.ConversationScope, creatorUserID int
 
 	schedule, nextDueAt, err := buildSchedule(now, req)
 	if err != nil {
-		return Reminder{}, &ValidationError{Message: "Invalid schedule: one_shot/interval schedules require a future RFC3339 run_at; interval_value must be positive. Calendar schedules require an IANA timezone, HH:MM time_of_day, and valid weekdays or day_of_month."}
+		return Reminder{}, &ValidationError{Message: scheduleValidationHint(req.ScheduleType)}
 	}
 
 	id, err := newReminderID()
@@ -557,4 +557,19 @@ func newReminderID() (string, error) {
 	}
 
 	return "rem_" + hex.EncodeToString(bytes[:]), nil
+}
+
+func scheduleValidationHint(scheduleType string) string {
+	switch ScheduleType(strings.TrimSpace(scheduleType)) {
+	case ScheduleTypeOneShot:
+		return "run_at must be a future RFC3339 timestamp with an explicit timezone offset."
+	case ScheduleTypeIntervalDays, ScheduleTypeIntervalWeeks:
+		return "run_at must be a future RFC3339 timestamp and interval_value must be positive."
+	case ScheduleTypeWeekdays:
+		return "Provide a valid IANA timezone, HH:MM time_of_day, and a nonempty list of weekday names."
+	case ScheduleTypeMonthly:
+		return "Provide a valid IANA timezone, HH:MM time_of_day, and day_of_month between 1 and 31."
+	default:
+		return "schedule_type must be one_shot, interval_days, interval_weeks, weekdays, or monthly."
+	}
 }

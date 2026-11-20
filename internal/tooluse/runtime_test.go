@@ -24,6 +24,7 @@ import (
 type stubLLM struct {
 	buildErr        error
 	generateErr     error
+	generateHook    func()
 	generateErrs    []error
 	buildCount      int
 	responses       []llm.Response
@@ -53,6 +54,9 @@ func (s *stubLLM) BuildChatToolRequest(_ context.Context, _ llm.PromptScope, _ l
 }
 
 func (s *stubLLM) Generate(_ context.Context, req llm.Request) (llm.Response, error) {
+	if s.generateHook != nil {
+		s.generateHook()
+	}
 	s.lastGenerateReq = req
 	s.generateModels = append(s.generateModels, req.Model)
 	if len(s.generateErrs) > 0 {
@@ -1553,16 +1557,7 @@ func assertToolDataSubset(t *testing.T, result toolResult, want map[string]any) 
 func assertToolError(t *testing.T, result toolResult, wantCode, wantMessage string) {
 	t.Helper()
 
-	data, ok := result.Data.(map[string]any)
-	if !ok {
-		t.Fatalf("unexpected data type: %T", result.Data)
-	}
-
-	errPayload, ok := data["error"].(toolErrorPayload)
-	if !ok {
-		t.Fatalf("unexpected error payload type: %T", data["error"])
-	}
-	if errPayload.Code != wantCode || errPayload.Message != wantMessage {
-		t.Fatalf("unexpected error payload: %+v", errPayload)
+	if result.Error == nil || result.Error.Code != wantCode || result.Error.Message != wantMessage || !result.Error.Retryable {
+		t.Fatalf("unexpected error payload: %+v", result.Error)
 	}
 }

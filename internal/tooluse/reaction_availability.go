@@ -22,6 +22,7 @@ func (r *Runtime) AttachReactionAvailability(provider *reactionavailability.Prov
 
 func (r *Runtime) reactionTargetSuitable(call CallContext) bool {
 	target, ok := setReactionTarget(call)
+
 	return ok && target.chatID != 0 && target.messageID > 0 && !call.Requester.IsMe && call.RequesterMediaGroupID == "" && !r.config.BotIdentity.zero() && r.actions != nil
 }
 
@@ -47,6 +48,7 @@ func (r *Runtime) reactionPresentation(call CallContext, p Presentation) (Presen
 		return p, false
 	}
 	p.Parameters = reactionParameters(candidates)
+
 	return p, true
 }
 
@@ -66,6 +68,7 @@ func (r *Runtime) currentReactionCandidates(call CallContext) []string {
 	if call.run != nil {
 		candidates = slices.DeleteFunc(candidates, func(emoji string) bool { return call.run.reactionRejected[emoji] })
 	}
+
 	return candidates
 }
 

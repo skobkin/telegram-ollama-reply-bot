@@ -62,6 +62,7 @@ func New(getter ChatGetter, logger *slog.Logger) *Provider {
 	if logger == nil {
 		logger = slog.Default()
 	}
+
 	return &Provider{getter: getter, logger: logger, entries: make(map[int64]*entry), now: time.Now,
 		ttl: DefaultTTL, timeLimit: lookupTimeout, backoff: failureBackoff, capacity: maxEntries}
 }
@@ -74,6 +75,7 @@ func snapshot(e *entry, now time.Time) Snapshot {
 	if !e.known {
 		candidates = reactionemoji.ReactionCandidates()
 	}
+
 	return Snapshot{Candidates: slices.Clone(candidates), Known: e.known, Stale: e.known && !now.Before(e.expires), Title: e.title}
 }
 
@@ -81,6 +83,7 @@ func snapshot(e *entry, now time.Time) Snapshot {
 func (p *Provider) Peek(chatID int64) Snapshot {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	return snapshot(p.entries[chatID], p.now())
 }
 
@@ -112,6 +115,7 @@ func (p *Provider) room() bool {
 		return false
 	}
 	delete(p.entries, key)
+
 	return true
 }
 
@@ -123,6 +127,7 @@ func (p *Provider) Lookup(ctx context.Context, chatID int64, title string) Snaps
 		if e == nil {
 			if !p.room() {
 				p.mu.Unlock()
+
 				return snapshot(nil, now)
 			}
 			e = &entry{title: title}
@@ -135,6 +140,7 @@ func (p *Provider) Lookup(ctx context.Context, chatID int64, title string) Snaps
 		if (e.known && now.Before(e.expires)) || now.Before(e.retryAt) || ctx.Err() != nil || p.getter == nil {
 			result := snapshot(e, now)
 			p.mu.Unlock()
+
 			return result
 		}
 		if done := e.loading; done != nil {
@@ -191,6 +197,7 @@ func (p *Provider) Lookup(ctx context.Context, chatID int64, title string) Snaps
 		close(done)
 		result := snapshot(e, now)
 		p.mu.Unlock()
+
 		return result
 	}
 }
@@ -212,6 +219,7 @@ func candidates(available []t.ReactionType) []string {
 			result = append(result, emoji)
 		}
 	}
+
 	return result
 }
 
@@ -223,12 +231,15 @@ func lookupFailure(err error) (string, int, time.Duration) {
 			if api.Parameters != nil {
 				delay = time.Duration(api.Parameters.RetryAfter) * time.Second
 			}
+
 			return "rate_limited", api.ErrorCode, delay
 		}
+
 		return "telegram_rejected", api.ErrorCode, 0
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "cancelled", 0, 0
 	}
+
 	return "transport", 0, 0
 }

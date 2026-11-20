@@ -268,6 +268,7 @@ func setReactionDescription(reactionOnly bool) string {
 	if reactionOnly {
 		return "React to the triggering message using one available emoji."
 	}
+
 	return "React to the triggering message using one available emoji. You may reply afterwards or call say_nothing."
 }
 
@@ -337,6 +338,7 @@ func (r *Runtime) setReaction(ctx context.Context, callCtx CallContext, args jso
 		if callCtx.run.reactionSucceeded {
 			return setReactionError("already_reacted", "This turn already has one confirmed reaction."), nil
 		}
+
 		return setReactionError("reaction_attempt_limit", "No further reaction attempts are possible in this turn."), nil
 	}
 
@@ -358,6 +360,7 @@ func (r *Runtime) setReaction(ctx context.Context, callCtx CallContext, args jso
 	if err := r.reactions.awaitChat(ctx, target.chatID); err != nil {
 		if errors.Is(err, errReactionRateLimited) {
 			callCtx.run.reactionBlocked = "rate_limited"
+
 			return setReactionError("rate_limited", "The chat is inside a Telegram rate-limit window; do not retry in this turn."), nil
 		}
 
@@ -473,6 +476,7 @@ func (r *Runtime) setReactionSendError(call CallContext, chatID int64, emoji str
 		code = api.ErrorCode
 	}
 	call.Logger.Warn("set_reaction failed", "chat_id", chatID, "message_id", call.Requester.MessageID, "attempt", call.run.reactionAttempts, "error_code", failure.Code, "error_class", failure.Class, "telegram_error_code", code, "retryable", failure.Retryable)
+
 	return ErrorResult(failure)
 }
 
@@ -514,6 +518,7 @@ func setReactionError(code, message string) toolResult {
 	case "run_state_unavailable", "identity_unavailable":
 		class = ErrorUnavailable
 	}
+
 	return ErrorResult(NewToolError(code, class, message, retry, hint))
 }
 

@@ -129,5 +129,6 @@ func NormalizeCandidate(value string) (string, bool) {
 	if canonical == value || (value != canonical+"\ufe0f" && value != canonical+"\ufe0e") {
 		return "", false
 	}
+
 	return canonical, Candidate(canonical)
 }

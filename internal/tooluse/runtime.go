@@ -507,7 +507,7 @@ func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *
 		ok = ok && registered
 	}
 	if !ok {
-		logger.Warn("tool call references unknown tool", "tool_name", call.Name, "tool_call_id", call.ID)
+		logger.Warn("tool call unavailable", "tool_name", call.Name, "tool_call_id", call.ID, "error_code", "tool_unavailable", "error_class", ErrorUnavailable)
 	}
 	if !ok {
 		emitter.publish(execution.ToolStarted{RunContext: emitter.rc, At: time.Now(), CallID: call.ID, ToolName: call.Name})
@@ -518,6 +518,7 @@ func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *
 			ToolName:   call.Name,
 			Duration:   time.Duration(0),
 			Status:     execution.StatusError,
+			ErrorCode:  "tool_unavailable", ErrorClass: ErrorUnavailable,
 		})
 
 		return toolCallOutcome{message: toolResponseMessage(call.ID, marshalResult(toolResult{

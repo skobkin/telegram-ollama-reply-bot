@@ -1,12 +1,16 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 
 	"telegram-ollama-reply-bot/internal/tooluse"
 
@@ -401,5 +405,25 @@ func TestCallToolHandlerReturnsErrorWhenSessionIsNil(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "MCP session is not connected") {
 		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestMCPErrorRecoveryClassification(t *testing.T) {
+	for _, tc := range []struct {
+		err    error
+		action bool
+		class  string
+		retry  bool
+	}{
+		{&jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "secret"}, true, tooluse.ErrorArguments, true},
+		{&jsonrpc.Error{Code: jsonrpc.CodeMethodNotFound, Message: "secret"}, true, tooluse.ErrorUnavailable, false},
+		{errors.New("secret"), true, tooluse.ErrorAmbiguous, false},
+		{errors.New("secret"), false, tooluse.ErrorTransient, true},
+		{context.Canceled, false, tooluse.ErrorCancelled, false},
+	} {
+		got := classifyCallError(tc.err, tc.action)
+		if got.Class != tc.class || got.Retryable != tc.retry || strings.Contains(got.Message, "secret") {
+			t.Fatalf("%+v", got)
+		}
 	}
 }

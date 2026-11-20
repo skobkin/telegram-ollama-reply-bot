@@ -11,10 +11,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
-	t "github.com/mymmrac/telego"
 	"telegram-ollama-reply-bot/internal/telegram/reactionemoji"
+
+	t "github.com/mymmrac/telego"
+	"github.com/mymmrac/telego/telegoapi"
 )
 
 type getterFunc func(context.Context, *t.GetChatParams) (*t.ChatFullInfo, error)
@@ -59,6 +62,7 @@ func TestTTLFailuresAndEmptyWarningSuppression(tst *testing.T) {
 		if !empty {
 			reactions = append(reactions, &t.ReactionTypeEmoji{Emoji: "👍"})
 		}
+
 		return &t.ChatFullInfo{Title: "Test title", AvailableReactions: reactions}, nil
 	}), slog.New(slog.NewTextHandler(&logs, nil)))
 	p.now = func() time.Time { return now }
@@ -109,6 +113,7 @@ func TestConcurrentLookupCancellationAndInvalidation(tst *testing.T) {
 			close(started)
 		}
 		<-release
+
 		return &t.ChatFullInfo{Title: "Test"}, nil
 	}), nil)
 	var wg sync.WaitGroup
@@ -146,6 +151,7 @@ func TestInvalidationWinsOverInflightResponse(tst *testing.T) {
 	p := New(getterFunc(func(context.Context, *t.GetChatParams) (*t.ChatFullInfo, error) {
 		close(started)
 		<-release
+
 		return &t.ChatFullInfo{}, nil
 	}), nil)
 	go func() { p.Lookup(context.Background(), 1, ""); close(done) }()
@@ -165,6 +171,7 @@ func TestCacheCapacityIncludesActiveRefreshes(tst *testing.T) {
 	p := New(getterFunc(func(context.Context, *t.GetChatParams) (*t.ChatFullInfo, error) {
 		started <- struct{}{}
 		<-release
+
 		return &t.ChatFullInfo{}, nil
 	}), nil)
 	p.capacity = 2
@@ -190,5 +197,68 @@ func TestCacheCapacityIncludesActiveRefreshes(tst *testing.T) {
 	p.Lookup(context.Background(), 3, "")
 	if len(p.entries) != 2 {
 		tst.Fatal(len(p.entries))
+	}
+}
+
+func TestLookupTimeoutUsesColdFallbackAndBackoff(tst *testing.T) {
+	synctest.Test(tst, func(tst *testing.T) {
+		calls := 0
+		p := New(getterFunc(func(ctx context.Context, _ *t.GetChatParams) (*t.ChatFullInfo, error) {
+			calls++
+			<-ctx.Done()
+
+			return nil, ctx.Err()
+		}), nil)
+		started := time.Now()
+		got := p.Lookup(context.Background(), 1, "Test")
+		if time.Since(started) != lookupTimeout || got.Known || len(got.Candidates) == 0 || calls != 1 {
+			tst.Fatal(got, calls, time.Since(started))
+		}
+		p.Lookup(context.Background(), 1, "Test")
+		if calls != 1 {
+			tst.Fatal("timeout lookup not backed off")
+		}
+	})
+}
+
+func TestLookup429UsesFullRetryAfter(tst *testing.T) {
+	now := time.Unix(100, 0)
+	calls := 0
+	p := New(getterFunc(func(context.Context, *t.GetChatParams) (*t.ChatFullInfo, error) {
+		calls++
+
+		return nil, &telegoapi.Error{ErrorCode: 429, Parameters: &telegoapi.ResponseParameters{RetryAfter: 180}}
+	}), nil)
+	p.now = func() time.Time { return now }
+	p.Lookup(context.Background(), 1, "")
+	now = now.Add(time.Minute + time.Second)
+	p.Lookup(context.Background(), 1, "")
+	if calls != 1 {
+		tst.Fatal("retry_after shortened")
+	}
+	now = now.Add(2 * time.Minute)
+	p.Lookup(context.Background(), 1, "")
+	if calls != 2 {
+		tst.Fatal("retry_after never expired")
+	}
+}
+
+func TestFailedRefreshPreservesKnownEmptyAvailability(tst *testing.T) {
+	now := time.Unix(100, 0)
+	failed := false
+	p := New(getterFunc(func(context.Context, *t.GetChatParams) (*t.ChatFullInfo, error) {
+		if failed {
+			return nil, errors.New("offline")
+		}
+
+		return &t.ChatFullInfo{AvailableReactions: []t.ReactionType{}}, nil
+	}), nil)
+	p.now = func() time.Time { return now }
+	p.Lookup(context.Background(), 1, "")
+	now = now.Add(DefaultTTL)
+	failed = true
+	got := p.Lookup(context.Background(), 1, "")
+	if !got.Known || !got.Stale || len(got.Candidates) != 0 {
+		tst.Fatal(got)
 	}
 }

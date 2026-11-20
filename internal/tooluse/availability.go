@@ -16,6 +16,7 @@ func resolveDefinition(d Definition, call CallContext) (Definition, bool) {
 		}
 		d.Description, d.Parameters = presentation.Description, slices.Clone(presentation.Parameters)
 	}
+
 	return d, true
 }
 
@@ -32,5 +33,6 @@ func (r *Runtime) resolveDefinitions(req ChatRequest, run *runState) []Definitio
 		}
 		resolved = append(resolved, definition)
 	}
+
 	return resolved
 }

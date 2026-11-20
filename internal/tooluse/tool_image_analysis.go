@@ -234,19 +234,7 @@ func (r *Runtime) analyzeImage(ctx context.Context, callCtx CallContext, args js
 	if meta == nil {
 		// Deliberately indistinguishable for never-existed, evicted,
 		// another chat/topic, and text-only message ids — no probing.
-		result := toolResult{
-			Status:  "error",
-			Summary: "No image is available for that message in the current chat/topic",
-			Data: map[string]any{
-				"chat_id":    callCtx.Scope.ChatID,
-				"topic_id":   callCtx.Scope.TopicID,
-				"message_id": payload.MessageID,
-				"error": toolErrorPayload{
-					Code:    analyzeErrorCodeImageNotFound,
-					Message: "No image is available for that message in the current chat/topic. Use list_recent_images to find image-bearing message_ids.",
-				},
-			},
-		}
+		result := imageAnalysisErrorResult(callCtx, analyzeErrorCodeImageNotFound, "No image is available for that message in the current chat/topic.", payload.MessageID)
 		logToolResult(callCtx, result, "message_id", payload.MessageID)
 
 		return result, nil
@@ -254,6 +242,9 @@ func (r *Runtime) analyzeImage(ctx context.Context, callCtx CallContext, args js
 
 	rawAnalysis, err := r.imageAnalyzer.AnalyzeImage(ctx, *meta, prompt)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return ErrorResult(ClassifyError(err, false)), nil
+		}
 		result := imageAnalysisErrorResult(callCtx, analyzeErrorCode(err), "Image analysis could not complete. Check the image type and size or try a different image.", payload.MessageID)
 		logToolResult(callCtx, result, "message_id", payload.MessageID, "analysis_length", 0)
 
@@ -431,15 +422,24 @@ func imageAnalysisErrorResult(callCtx CallContext, code, message string, message
 		"chat_id":    callCtx.Scope.ChatID,
 		"topic_id":   callCtx.Scope.TopicID,
 		"message_id": messageID,
-		"error": toolErrorPayload{
-			Code:    code,
-			Message: message,
-		},
+	}
+
+	class := ErrorArguments
+	retry := true
+	hint := "Use a supported image and a non-empty focused prompt of at most 4000 characters."
+	if code == analyzeErrorCodeImageNotFound {
+		class = ErrorNotFound
+		hint = "Use list_recent_images to find an available message_id."
+	}
+	if code == analyzeErrorCodeRecognitionFailed {
+		class = ErrorTransient
+		hint = "Try again if the analysis is still needed."
 	}
 
 	return toolResult{
 		Status:  "error",
 		Summary: "Image analysis failed",
+		Error:   NewToolError(code, class, message, retry, hint),
 		Data:    data,
 	}
 }

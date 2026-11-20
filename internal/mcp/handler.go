@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"telegram-ollama-reply-bot/internal/tooluse"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -35,10 +37,10 @@ import (
 //
 //   - protocol-level errors (network down, server unreachable, mid-call
 //     disconnect, per-call timeout exceeded) -> a Go `error` and
-//     `toolResult{Status:"error"}` with the structured code `mcp_unreachable`.
-//     The LLM can self-correct by retrying or telling the user.
+//     the common safe error contract; read-only transport failures may be
+//     retried, while ambiguous side effects cannot.
 //   - tool-level errors (server returned `IsError: true`) -> a successful Go
-//     return whose `Summary` carries the server's message. The existing
+//     return whose structured error carries the server's message. The existing
 //     tooluse audit logger surfaces it as `is_error` / `error`; the LLM can
 //     also see it directly in the data block.
 //   - non-text content (image, audio, embedded resources) -> collected under
@@ -46,6 +48,7 @@ import (
 //     are visible at the call site.
 func callToolHandler(session *mcp.ClientSession, originalName, namespacedName string, callTimeout time.Duration, logger *slog.Logger, sideEffecting ...bool) tooluse.Handler {
 	action := len(sideEffecting) == 0 || sideEffecting[0]
+
 	return func(ctx context.Context, callCtx tooluse.CallContext, args json.RawMessage) (tooluse.ToolResult, error) {
 		if session == nil {
 			return tooluse.ToolResult{}, tooluse.NewToolError("mcp_unavailable", tooluse.ErrorUnavailable, "The MCP session is not connected.", false, "")
@@ -72,7 +75,7 @@ func callToolHandler(session *mcp.ClientSession, originalName, namespacedName st
 			// Transport errors quote the full request URL, which may carry
 			// credentials as query parameters. Redact before logging and
 			// before the text is copied into the tool response the LLM sees.
-			classified := tooluse.ClassifyError(callErr, action)
+			classified := classifyCallError(callErr, action)
 			perCall.Warn("mcp call failed", "error_code", classified.Code, "error_class", classified.Class)
 			logCallResult(perCall, namespacedName, originalName, callCtx.RequestID, true, 0, 0, 0)
 
@@ -141,9 +144,9 @@ func parseToolArguments(args json.RawMessage) (json.RawMessage, error) {
 }
 
 // decodeCallResult turns an MCP `CallToolResult` into a tooluse.ToolResult.
-// Error results (`IsError: true`) become Status "error" with `Summary`
-// carrying the server's own message (its text content, joined with newlines),
-// or "tool returned an error" when the server sent no text at all.
+// Error results (`IsError: true`) become Status "error" with the common
+// ToolError contract. Text content supplies the explanation; absence of text
+// produces a safe generic failure. Side-effecting calls remain ambiguous.
 //
 // The `Data` field carries each piece of content exactly once:
 //
@@ -267,4 +270,24 @@ func logCallResult(logger *slog.Logger, namespacedName, originalName, requestID 
 		"unsupported", unsupportedCount,
 		"request_id", requestID,
 	)
+}
+
+// Only standard pre-execution JSON-RPC rejections prove corrected replay safe.
+// Arbitrary tool errors and transport failures may follow partial side effects.
+func classifyCallError(err error, action bool) *tooluse.ToolError {
+	var rpc *jsonrpc.Error
+	if errors.As(err, &rpc) {
+		switch rpc.Code {
+		case jsonrpc.CodeInvalidParams, jsonrpc.CodeParseError:
+			return tooluse.NewToolError("invalid_arguments", tooluse.ErrorArguments, "The MCP server rejected the call arguments.", true, "Correct the arguments using the tool's native schema.")
+		case jsonrpc.CodeMethodNotFound:
+			return tooluse.NewToolError("mcp_unavailable", tooluse.ErrorUnavailable, "The MCP method is unavailable.", false, "Choose another currently available tool.")
+		}
+	}
+	result := tooluse.ClassifyError(err, action)
+	if !action && result.Class == tooluse.ErrorPermanent {
+		return tooluse.NewToolError("mcp_unreachable", tooluse.ErrorTransient, "The MCP server could not complete this read-only call.", true, "Try again if the information is still needed.")
+	}
+
+	return result
 }

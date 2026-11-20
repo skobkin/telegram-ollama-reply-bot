@@ -220,7 +220,7 @@ At least two categories are needed:
 Examples of internal tools:
 
 - `get_message_thread_context`
-- `list_recent_images`
+- `say_nothing`
 
 Examples of standard tools:
 

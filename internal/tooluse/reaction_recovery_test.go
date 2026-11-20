@@ -7,15 +7,17 @@ import (
 	"slices"
 	"testing"
 
-	t "github.com/mymmrac/telego"
-	"github.com/mymmrac/telego/telegoapi"
 	"telegram-ollama-reply-bot/internal/execution"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/telegram/reactionavailability"
+
+	t "github.com/mymmrac/telego"
+	"github.com/mymmrac/telego/telegoapi"
 )
 
 func reactionCall(id, emoji string) llm.ToolCall {
 	args, _ := json.Marshal(map[string]string{"emoji": emoji})
+
 	return llm.ToolCall{ID: id, Name: "set_reaction", Arguments: args}
 }
 func toolBatch(calls ...llm.ToolCall) llm.Response {

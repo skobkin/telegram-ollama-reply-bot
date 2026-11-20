@@ -73,3 +73,16 @@ func TestIrreducibleAndUnserializableResultsReportDeliveryFailure(t *testing.T) 
 		}
 	}
 }
+
+func TestMCPShapedResultReductionPreservesStructuredScalars(t *testing.T) {
+	result := toolResult{Status: "ok", Data: map[string]any{"text": strings.Repeat("explanation", 1000), "structured": map[string]any{"id": "resource-1", "status": "partial", "next_cursor": "next-page-token", "value": json.Number("9007199254740993"), "description": strings.Repeat("detail", 1000)}, "blocks": []map[string]any{{"type": "embedded_resource", "uri": "urn:resource:1"}}}}
+	wire := marshalResult(result, 600)
+	if !json.Valid([]byte(wire)) || utf8.RuneCountInString(wire) > 600 {
+		t.Fatal(wire)
+	}
+	for _, want := range []string{"resource-1", "partial", "next-page-token", "9007199254740993", "urn:resource:1", `"truncated":true`} {
+		if !strings.Contains(wire, want) {
+			t.Fatalf("missing %q: %s", want, wire)
+		}
+	}
+}

@@ -27,14 +27,12 @@ func marshalResult(result toolResult, budget int) string {
 		return string(encoded)
 	}
 	var data any
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	decoder.UseNumber()
 	var tree map[string]json.RawMessage
 	if json.Unmarshal(encoded, &tree) != nil {
 		return resultDeliveryFailure(result, "result_serialization_failed")
 	}
 	if raw := tree["data"]; raw != nil {
-		decoder = json.NewDecoder(bytes.NewReader(raw))
+		decoder := json.NewDecoder(bytes.NewReader(raw))
 		decoder.UseNumber()
 		if decoder.Decode(&data) != nil {
 			return resultDeliveryFailure(result, "result_serialization_failed")
@@ -59,16 +57,20 @@ func marshalResult(result toolResult, budget int) string {
 			if len(result.Reductions) < 8 && len(candidate.path) <= 120 {
 				result.Reductions[candidate.path] += candidate.removed
 			}
+
 			continue
 		}
 		if result.Summary != "" {
 			result.Summary = ""
+
 			continue
 		}
 		if result.Reductions != nil {
 			result.Reductions = nil
+
 			continue
 		}
+
 		return resultDeliveryFailure(result, "result_too_large")
 	}
 }
@@ -114,10 +116,17 @@ func findReduction(value any, path string, protected bool) reduction {
 		for _, key := range keys {
 			item := v[key]
 			nextPath := path + "." + key
+			// Bound reduction work for large external collections. Retain complete
+			// items and halve before scanning potentially thousands of text fields.
+			if list, ok := item.([]any); ok && len(list) > 32 && !semanticUnit(key) {
+				keep := len(list) / 2
+
+				return reduction{size: len(list) - keep, removed: len(list) - keep, path: nextPath, apply: func() { v[key] = list[:keep] }}
+			}
 			if text, ok := item.(string); ok && reducibleText(key) && utf8.RuneCountInString(text) > 32 {
 				runes := []rune(text)
 				keep := len(runes) / 2
-				candidate := reduction{size: len(runes) - keep, removed: len(runes) - keep, path: nextPath, apply: func() { v[key] = string(runes[:keep]) + "…" }}
+				candidate := reduction{size: len(runes) - keep, removed: len(runes) - keep - 1, path: nextPath, apply: func() { v[key] = string(runes[:keep]) + "…" }}
 				if candidate.size > best.size {
 					best = candidate
 				}
@@ -141,6 +150,7 @@ func findReduction(value any, path string, protected bool) reduction {
 			}
 		}
 	}
+
 	return best
 }
 
@@ -150,5 +160,6 @@ func resultDeliveryFailure(result toolResult, code string) string {
 	failure.Truncated = true
 	// Contract fields are fixed, bounded text, independent of the bad payload.
 	encoded, _ := json.Marshal(failure)
+
 	return string(encoded)
 }

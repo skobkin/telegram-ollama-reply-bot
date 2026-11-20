@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-type toolErrorPayload = ToolError
-
 func decodeToolJSON[T any](args json.RawMessage, target *T) bool {
 	decoder := json.NewDecoder(bytes.NewReader(args))
 	decoder.DisallowUnknownFields()
@@ -17,19 +15,12 @@ func decodeToolJSON[T any](args json.RawMessage, target *T) bool {
 	if decoder.Decode(target) != nil {
 		return false
 	}
+
 	return decoder.Decode(new(any)) == io.EOF
 }
 
 func datetimeErrorResult(code, message string) toolResult {
-	return toolResult{
-		Status: "error",
-		Data: map[string]any{
-			"error": toolErrorPayload{
-				Code:    code,
-				Message: message,
-			},
-		},
-	}
+	return ErrorResult(NewToolError(code, ErrorArguments, message, true, "Correct the arguments using the operation requirements and try again."))
 }
 
 func parseRequiredRFC3339(value, field string) (time.Time, *toolResult) {

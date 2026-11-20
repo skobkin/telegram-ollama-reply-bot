@@ -92,16 +92,11 @@ func runAnalyzeImage(t *testing.T, r *Runtime, callCtx CallContext, args string)
 func analyzeResultCode(t *testing.T, result toolResult) string {
 	t.Helper()
 
-	data, ok := result.Data.(map[string]any)
-	if !ok {
-		t.Fatalf("expected data map, got %#v", result.Data)
-	}
-	payload, ok := data["error"].(toolErrorPayload)
-	if !ok {
-		t.Fatalf("expected error payload, got %#v", data["error"])
+	if result.Error == nil {
+		t.Fatalf("expected error payload: %+v", result)
 	}
 
-	return payload.Code
+	return result.Error.Code
 }
 
 func listedImageIDs(t *testing.T, result toolResult) []int {
