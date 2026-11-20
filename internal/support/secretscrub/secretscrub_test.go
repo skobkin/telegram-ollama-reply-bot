@@ -204,6 +204,67 @@ func TestScrubShortCredentialMarkerFallback(t *testing.T) {
 	}
 }
 
+func TestScrubSplicedResultFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	// Scrubbing "aREDACTEDb" removes the whole secret "REDACTED" — its
+	// marker fell back to empty — and splices the surrounding text into
+	// "ab", the other registered secret. The complete-result check must
+	// catch the splice and fail closed instead of emitting the joined
+	// secret.
+	scrubber := New([]Secret{
+		{Name: "whole", Value: "REDACTED"},
+		{Name: "splice", Value: "ab"},
+	})
+
+	got := scrubber.Scrub("aREDACTEDb")
+	assertSecretFree(t, scrubber, got)
+}
+
+func TestScrubCompleteResultCheckNoFalseTrigger(t *testing.T) {
+	t.Parallel()
+
+	// Without a splice, normal multi-secret scrubbing is untouched:
+	// removing one secret must not wholesale-replace the rest of the text.
+	scrubber := New([]Secret{
+		{Name: "first", Value: leakA},
+		{Name: "second", Value: leakB},
+	})
+
+	if got, want := scrubber.Scrub("x "+leakA+" y "+leakB+" z"), "x [REDACTED:first] y [REDACTED:second] z"; got != want {
+		t.Fatalf("complete-result check altered normal scrubbing: got %q, want %q", got, want)
+	}
+}
+
+func TestOmissionMarkersAreCollisionSafe(t *testing.T) {
+	t.Parallel()
+
+	// A registered secret embedded in the standard omission marker text
+	// must not ride back into scrubbed output through the marker itself;
+	// the markers are chosen per scrubber like every other replacement
+	// string.
+	scrubber := New([]Secret{
+		{Name: "trap", Value: "[REDACTED:depth-limit]"},
+		{Name: "normal", Value: leakA},
+	})
+
+	for _, omission := range []string{scrubber.TruncatedMarker(), scrubber.UnserializableMarker()} {
+		if scrubber.containsAnyValue(omission) {
+			t.Fatalf("omission marker carries a registered value: %q", omission)
+		}
+	}
+
+	// Unaffected registries keep the standard marker text.
+	plain := testScrubber()
+	if got, want := plain.TruncatedMarker(), "[REDACTED:depth-limit]"; got != want {
+		t.Fatalf("unexpected truncation marker: got %q, want %q", got, want)
+	}
+
+	if got, want := plain.UnserializableMarker(), "[REDACTED:unserializable]"; got != want {
+		t.Fatalf("unexpected unserializable marker: got %q, want %q", got, want)
+	}
+}
+
 // leakingDoer returns the given error from every Do call.
 type leakingDoer struct {
 	resp *http.Response

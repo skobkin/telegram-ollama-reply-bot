@@ -39,6 +39,14 @@ type Scrubber struct {
 	names    []string // parallel to values
 	values   []string // longest first
 	replacer *strings.Replacer
+
+	// Omission markers, computed at construction time so none of them can
+	// reintroduce a registered value (see safeMarker). Composite marks the
+	// wholesale failure of Scrub; truncated and unserializable close the
+	// value walk's depth cap and serialization boundary (see ScrubValue).
+	compositeMarker      string
+	truncatedMarker      string
+	unserializableMarker string
 }
 
 // New builds a Scrubber. Empty values are skipped and duplicate values are
@@ -102,6 +110,13 @@ func New(secrets []Secret) *Scrubber {
 		s.replacer = strings.NewReplacer(pairs...)
 	}
 
+	// The omission markers are chosen after the values are known, so none of
+	// them can itself carry a registered value and reintroduce it into
+	// scrubbed output.
+	s.compositeMarker = s.safeMarker("composite")
+	s.truncatedMarker = s.safeMarker("depth-limit")
+	s.unserializableMarker = s.safeMarker("unserializable")
+
 	return s
 }
 
@@ -133,12 +148,48 @@ func (s *Scrubber) containsAnyValue(text string) bool {
 // with "[REDACTED:<name>]". Text carrying no secret is returned unchanged,
 // and scrubbing is idempotent: the pass never rescans its own output and
 // every marker is constructed to contain no registered value.
+//
+// Because the pass emits the result in one sweep, the complete result is
+// verified once before it is returned. Removing a secret can splice the
+// text around it into another one — with "REDACTED" and "ab" registered,
+// scrubbing "aREDACTEDb" joins the outer text into "ab" — so a result that
+// still carries any registered value is replaced wholesale by the composite
+// marker: redaction fails closed, without an unbounded replacement loop.
 func (s *Scrubber) Scrub(text string) string {
 	if s == nil || s.replacer == nil || !s.Contains(text) {
 		return text
 	}
 
-	return s.replacer.Replace(text)
+	scrubbed := s.replacer.Replace(text)
+
+	if s.Contains(scrubbed) {
+		return s.compositeMarker
+	}
+
+	return scrubbed
+}
+
+// TruncatedMarker returns the marker ScrubValue substitutes for subtrees its
+// walk cannot complete before the depth cap. Like every marker, it was
+// chosen at construction time to contain no registered value.
+func (s *Scrubber) TruncatedMarker() string {
+	if s == nil {
+		return ""
+	}
+
+	return s.truncatedMarker
+}
+
+// UnserializableMarker returns the marker the serialization boundary of
+// ScrubValue substitutes for values it cannot inspect (marshal failures,
+// panicking marshalers). Like every marker, it was chosen at construction
+// time to contain no registered value.
+func (s *Scrubber) UnserializableMarker() string {
+	if s == nil {
+		return ""
+	}
+
+	return s.unserializableMarker
 }
 
 // Contains reports whether text carries any registered secret value. It is a

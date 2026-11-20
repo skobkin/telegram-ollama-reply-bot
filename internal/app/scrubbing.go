@@ -405,18 +405,9 @@ func newSentryBeforeSend(scrubber *secretscrub.Scrubber) func(*sentry.Event, *se
 
 // maxScrubDepth bounds recursion into nested map/slice values; the cap also
 // terminates self-referencing maps. Real payloads sit far above it, and
-// content beyond it fails closed (see scrubTruncatedMarker) rather than
+// content beyond it fails closed (see Scrubber.TruncatedMarker) rather than
 // surviving unredacted.
 const maxScrubDepth = 8
-
-// scrubTruncatedMarker replaces subtrees the walk cannot complete before the
-// depth cap: redaction fails closed, so the original content never survives
-// to serialization.
-const scrubTruncatedMarker = "[REDACTED:depth-limit]"
-
-// scrubOpaqueMarker replaces values that cannot be serialized for the
-// boundary walk (pointer cycles, channels, functions).
-const scrubOpaqueMarker = "[REDACTED:unserializable]"
 
 func scrubEvent(scrubber *secretscrub.Scrubber, event *sentry.Event) {
 	if scrubber == nil {
@@ -527,14 +518,15 @@ func scrubStringMap(scrubber *secretscrub.Scrubber, values map[string]string) {
 
 // copyScrubAnyMap returns an event-owned copy of an arbitrary payload map
 // with every key and text value scrubbed, replacing the shared original.
-// Subtrees beyond the depth cap collapse to the truncation marker.
+// Subtrees beyond the depth cap collapse to the scrubber's truncation
+// marker.
 func copyScrubAnyMap(scrubber *secretscrub.Scrubber, values map[string]any, depth int) map[string]any {
 	if values == nil {
 		return nil
 	}
 
 	if depth <= 0 {
-		return map[string]any{"omitted": scrubTruncatedMarker}
+		return map[string]any{"omitted": scrubber.TruncatedMarker()}
 	}
 
 	out := make(map[string]any, len(values))
@@ -555,7 +547,7 @@ func copyScrubAnyMap(scrubber *secretscrub.Scrubber, values map[string]any, dept
 // uninspected.
 func copyScrubAny(scrubber *secretscrub.Scrubber, value any, depth int) any {
 	if depth <= 0 {
-		return scrubTruncatedMarker
+		return scrubber.TruncatedMarker()
 	}
 
 	switch typed := value.(type) {
@@ -598,19 +590,20 @@ func copyScrubAny(scrubber *secretscrub.Scrubber, value any, depth int) any {
 // scrubOpaque scrubs composite values the typed walk cannot enter: the SDK
 // serializes them through encoding/json at send time, so their JSON is
 // produced here — the exact bytes the payload would carry — scrubbed, and
-// rebuilt into equivalent JSON values. Unserializable values collapse to an
-// omission marker. encoding/json bounds the walk itself (it errors on
-// pointer cycles), so no unbounded reflective traversal is introduced.
+// rebuilt into equivalent JSON values. Unserializable values collapse to the
+// scrubber's omission marker. encoding/json bounds the walk itself (it
+// errors on pointer cycles), so no unbounded reflective traversal is
+// introduced.
 func scrubOpaque(scrubber *secretscrub.Scrubber, value any) (out any) {
 	defer func() {
 		if r := recover(); r != nil {
-			out = scrubOpaqueMarker
+			out = scrubber.UnserializableMarker()
 		}
 	}()
 
 	encoded, err := json.Marshal(value)
 	if err != nil {
-		return scrubOpaqueMarker
+		return scrubber.UnserializableMarker()
 	}
 
 	text := string(encoded)
