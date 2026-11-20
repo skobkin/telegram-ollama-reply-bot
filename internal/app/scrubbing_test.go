@@ -98,6 +98,25 @@ func TestNewSecretScrubberRegistersProxyCredentials(t *testing.T) {
 	}
 }
 
+// TestNewSecretScrubberRegistersSchemelessProxyCredentials pins the
+// scheme-less proxy address form: httpproxy's parseProxy accepts
+// "user:pass@host:8080" by retrying with an "http://" prefix, so the same
+// password must register. Not parallel: t.Setenv.
+func TestNewSecretScrubberRegistersSchemelessProxyCredentials(t *testing.T) {
+	t.Setenv("http_proxy", "operator:SCHEMELESSPWFIXTURE@proxy.internal:8080")
+
+	scrubber := newSecretScrubber(scrubTestConfig())
+
+	got := scrubber.Scrub("dial operator:SCHEMELESSPWFIXTURE@proxy.internal:8080: refused")
+	if strings.Contains(got, "SCHEMELESSPWFIXTURE") {
+		t.Fatalf("scheme-less proxy credential not registered: %q", got)
+	}
+
+	if !strings.Contains(got, "proxy.internal:8080") {
+		t.Fatalf("proxy host must stay diagnosable: %q", got)
+	}
+}
+
 func TestNewSecretScrubberEmptyConfigNoPanic(t *testing.T) {
 	t.Parallel()
 
@@ -1115,6 +1134,7 @@ func TestBootstrapEnvSecretsRegistersEnvValues(t *testing.T) {
 	t.Setenv("MCP__SERVERS__DOCS__HEADERS__AUTH", "BOOTHEADERFIXTURE")
 	t.Setenv("SYSTEMONE__BASE_URL", "https://user:BOOTURLPASSWORD@so.internal:8090") //nolint:gosec // fake fixture, not a credential
 	t.Setenv("https_proxy", "http://operator:BOOTPROXYFIXTURE@proxy.internal:8080")  //nolint:gosec // fake fixture, not a credential
+	t.Setenv("http_proxy", "operator:BOOTSCHEMELESSPW@proxy.internal:3128")          //nolint:gosec // fake fixture, not a credential
 
 	scrubber := secretscrub.New(bootstrapEnvSecrets())
 
@@ -1123,6 +1143,7 @@ func TestBootstrapEnvSecretsRegistersEnvValues(t *testing.T) {
 		"BOOTHEADERFIXTURE",
 		"BOOTURLPASSWORD",
 		"BOOTPROXYFIXTURE",
+		"BOOTSCHEMELESSPW",
 	} {
 		text := "bootstrap diagnostic " + fixture + " tail"
 

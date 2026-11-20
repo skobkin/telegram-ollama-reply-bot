@@ -99,16 +99,17 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 
 	// Outbound proxies follow the standard environment variables, resolved
 	// with the same httpproxy.FromEnvironment semantics the HTTP clients
-	// use (which covers the lowercase variable variants). Only the userinfo
-	// password is registered — a generic username would mutilate unrelated
-	// text — because proxy dial errors and network diagnostics can carry
-	// the proxy address. NO_PROXY is a host list without credentials.
+	// use (which covers the lowercase variable variants and the scheme-less
+	// address forms parseProxy accepts). Only the userinfo password is
+	// registered — a generic username would mutilate unrelated text —
+	// because proxy dial errors and network diagnostics can carry the proxy
+	// address. NO_PROXY is a host list without credentials.
 	proxyConfig := httpproxy.FromEnvironment()
 	for name, proxy := range map[string]string{
 		"http-proxy-url-password":  proxyConfig.HTTPProxy,
 		"https-proxy-url-password": proxyConfig.HTTPSProxy,
 	} {
-		secrets = appendURLPassword(secrets, name, proxy)
+		secrets = appendProxyPassword(secrets, name, proxy)
 	}
 
 	return secretscrub.New(secrets)
@@ -177,7 +178,7 @@ func bootstrapEnvSecrets() []secretscrub.Secret {
 		"http-proxy-url-password":  proxyConfig.HTTPProxy,
 		"https-proxy-url-password": proxyConfig.HTTPSProxy,
 	} {
-		secrets = appendURLPassword(secrets, name, proxy)
+		secrets = appendProxyPassword(secrets, name, proxy)
 	}
 
 	return secrets
@@ -350,6 +351,23 @@ func appendURLPassword(secrets []secretscrub.Secret, name, rawURL string) []secr
 	}
 
 	return secrets
+}
+
+// appendProxyPassword registers the userinfo password of a proxy address.
+// The address is normalized exactly the way x/net/http/httpproxy's
+// parseProxy accepts one: a value that does not parse to a scheme and host
+// is retried with an "http://" prefix, so the scheme-less authenticated
+// form ("user:pass@host:8080") registers too. The normalization is
+// best-effort — parseProxy's failure message quotes a rejected address
+// verbatim, credentials included, so extraction is attempted regardless.
+// The same helper serves both registries: the post-Load one and the
+// bootstrap one.
+func appendProxyPassword(secrets []secretscrub.Secret, name, address string) []secretscrub.Secret {
+	if parsed, err := url.Parse(address); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		return appendURLPassword(secrets, name, address)
+	}
+
+	return appendURLPassword(secrets, name, "http://"+address)
 }
 
 // urlUserinfoPrefix extracts the userinfo part ("user:password") of a URL
