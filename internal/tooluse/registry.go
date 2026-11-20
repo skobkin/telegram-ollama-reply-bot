@@ -53,6 +53,7 @@ const (
 	messageContextResultCharBudget  = 5000
 	generateChartResultCharBudget   = 800
 	listStickersResultCharBudget    = 2400
+	sendStickerResultCharBudget     = 600
 )
 
 // ToolResult is the value a Handler returns to the runtime. It is exported
@@ -110,6 +111,15 @@ type runState struct {
 	// the operation snapshot ("" = decision tools unavailable). Decision
 	// tool handlers read it instead of resolving settings themselves.
 	systemOneModel string
+	// proactive mirrors ChatRequest.Proactive for this run.
+	proactive bool
+	// stickerAttempted is set immediately before a sticker send is
+	// dispatched, so a failed or ambiguous attempt also uses up the turn's
+	// single sticker send. stickerMisses counts unknown or malformed sticker
+	// ids; they never consume the attempt but are bounded. Only the
+	// runtime's sequential calls mutate them.
+	stickerAttempted bool
+	stickerMisses    int
 }
 
 type CallContext struct {

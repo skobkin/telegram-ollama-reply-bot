@@ -156,7 +156,12 @@ func TestEventPublishingBotPublishesOnSuccess(t *testing.T) {
 		t.Fatalf("SendPhoto: %v", err)
 	}
 
-	events := requireMessageSent(t, rec, 4)
+	sticker, err := bot.SendSticker(ctx, tu.Sticker(tu.ID(100), tu.FileFromID("sticker-file-id")))
+	if err != nil {
+		t.Fatalf("SendSticker: %v", err)
+	}
+
+	events := requireMessageSent(t, rec, 5)
 	for i, want := range []struct {
 		messageID int
 	}{
@@ -164,6 +169,7 @@ func TestEventPublishingBotPublishesOnSuccess(t *testing.T) {
 		{poll.MessageID},
 		{dice.MessageID},
 		{photo.MessageID},
+		{sticker.MessageID},
 	} {
 		if events[i].ChatID != 100 {
 			t.Fatalf("event %d: expected chat id 100, got %d", i, events[i].ChatID)
@@ -181,7 +187,7 @@ func TestEventPublishingBotPublishesOnSuccess(t *testing.T) {
 // nothing: the event must describe delivered messages only.
 func TestEventPublishingBotSilentOnFailure(t *testing.T) {
 	rec := &eventRecorder{}
-	fake := newEventsTestAPI(t, "sendMessage", "sendPoll", "sendDice", "sendPhoto")
+	fake := newEventsTestAPI(t, "sendMessage", "sendPoll", "sendDice", "sendPhoto", "sendSticker")
 	bot := newEventsTestBot(t, fake, rec)
 	ctx := context.Background()
 
@@ -197,7 +203,29 @@ func TestEventPublishingBotSilentOnFailure(t *testing.T) {
 	if _, err := bot.SendPhoto(ctx, tu.Photo(tu.ID(100), tu.FileFromBytes([]byte("png"), "chart.png"))); err == nil {
 		t.Fatal("expected SendPhoto failure")
 	}
+	if _, err := bot.SendSticker(ctx, tu.Sticker(tu.ID(100), tu.FileFromID("sticker-file-id"))); err == nil {
+		t.Fatal("expected SendSticker failure")
+	}
 
+	requireMessageSent(t, rec, 0)
+}
+
+// TestEventPublishingBotSendStickerPublishesOnlyConfirmedSends proves a
+// "successful" response that carries no message id is returned untouched for
+// the tool to classify and publishes no MessageSent: it confirms nothing.
+func TestEventPublishingBotSendStickerPublishesOnlyConfirmedSends(t *testing.T) {
+	rec := &eventRecorder{}
+	fake := newEventsTestAPI(t)
+	fake.nextID = 0
+	bot := newEventsTestBot(t, fake, rec)
+
+	message, err := bot.SendSticker(context.Background(), tu.Sticker(tu.ID(100), tu.FileFromID("sticker-file-id")))
+	if err != nil {
+		t.Fatalf("SendSticker: %v", err)
+	}
+	if message == nil || message.MessageID != 0 {
+		t.Fatalf("the unconfirmed response must be returned untouched, got %+v", message)
+	}
 	requireMessageSent(t, rec, 0)
 }
 

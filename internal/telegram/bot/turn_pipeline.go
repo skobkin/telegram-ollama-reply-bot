@@ -248,6 +248,9 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 			// provider error bodies can echo chat content, and nothing
 			// user-initiated is waiting on the details.
 			SilentErrors: opts.errorPolicy == silentErrors,
+			// The trigger is derived from Telegram metadata (mention, reply,
+			// private chat vs the participation engine), never from the model.
+			Proactive: opts.trigger == llmcontext.TriggerProactive,
 		})
 		llmReply, usage, err = result.Reply, result.Usage, runErr
 		toolCalls = result.ToolCalls

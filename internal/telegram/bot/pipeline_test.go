@@ -76,7 +76,7 @@ func newFakeAPIServer(t *testing.T) *fakeAPIServer {
 		fake.mu.Unlock()
 
 		switch method {
-		case "sendMessage", "sendRichMessage", "editMessageText":
+		case "sendMessage", "sendRichMessage", "editMessageText", "sendSticker":
 			// Real message IDs so admin UI correlation flows work.
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":` +
 				strconv.FormatInt(fake.nextMessageID.Add(1), 10) + `}}`))

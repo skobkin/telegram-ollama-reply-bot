@@ -97,6 +97,14 @@ type stubActionSender struct {
 	diceMessage     *tg.Message
 	err             error
 
+	// Sticker sends are recorded under a mutex: concurrent runs call them.
+	stickerMu      sync.Mutex
+	stickerParams  []*tg.SendStickerParams
+	stickerMessage *tg.Message
+	stickerErr     error
+	// stickerHook runs inside every sticker send, before it returns.
+	stickerHook func(ctx context.Context)
+
 	reactionMu            sync.Mutex
 	lastReactionParams    *tg.SetMessageReactionParams
 	reactionErr           error
@@ -127,6 +135,32 @@ func (s *stubActionSender) SendPhoto(_ context.Context, params *tg.SendPhotoPara
 	s.lastPhotoParams = params
 
 	return s.message, s.err
+}
+
+func (s *stubActionSender) SendSticker(ctx context.Context, params *tg.SendStickerParams) (*tg.Message, error) {
+	s.stickerMu.Lock()
+	s.stickerParams = append(s.stickerParams, params)
+	hook, message, err := s.stickerHook, s.stickerMessage, s.stickerErr
+	s.stickerMu.Unlock()
+
+	if hook != nil {
+		hook(ctx)
+	}
+	if err == nil {
+		err = s.err
+	}
+	if message == nil {
+		message = s.message
+	}
+
+	return message, err
+}
+
+func (s *stubActionSender) stickerCalls() []*tg.SendStickerParams {
+	s.stickerMu.Lock()
+	defer s.stickerMu.Unlock()
+
+	return append([]*tg.SendStickerParams(nil), s.stickerParams...)
 }
 
 func (s *stubActionSender) SetMessageReaction(_ context.Context, params *tg.SetMessageReactionParams) error {

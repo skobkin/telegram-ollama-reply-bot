@@ -78,6 +78,21 @@ func (b *eventPublishingBot) SendPhoto(ctx context.Context, params *tg.SendPhoto
 	return message, nil
 }
 
+// SendSticker sends a catalog sticker. MessageSent is published only for a
+// confirmed send: a nil or id-less response is returned untouched for the
+// caller to classify (it is never a confirmation), and nothing is published.
+func (b *eventPublishingBot) SendSticker(ctx context.Context, params *tg.SendStickerParams) (*tg.Message, error) {
+	message, err := b.api.SendSticker(ctx, params)
+	if err != nil {
+		return message, err
+	}
+	if message != nil && message.MessageID > 0 {
+		b.publish(params.ChatID.ID, message.MessageID)
+	}
+
+	return message, nil
+}
+
 // SetMessageReaction sets an outgoing bot reaction. It creates no message,
 // so no MessageSent is published here; the tool runtime publishes the
 // run-correlated BotReactionSet event itself after the reaction and the

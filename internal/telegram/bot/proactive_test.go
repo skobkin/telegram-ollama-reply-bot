@@ -257,6 +257,10 @@ func (s apiActionSender) SendPhoto(ctx context.Context, params *tg.SendPhotoPara
 	return s.api.SendPhoto(ctx, params)
 }
 
+func (s apiActionSender) SendSticker(ctx context.Context, params *tg.SendStickerParams) (*tg.Message, error) {
+	return s.api.SendSticker(ctx, params)
+}
+
 func (s apiActionSender) SetMessageReaction(ctx context.Context, params *tg.SetMessageReactionParams) error {
 	return s.api.SetMessageReaction(ctx, params)
 }

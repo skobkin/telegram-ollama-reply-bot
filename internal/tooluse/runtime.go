@@ -37,6 +37,7 @@ type TelegramActionSender interface {
 	SendPoll(ctx context.Context, params *t.SendPollParams) (*t.Message, error)
 	SendDice(ctx context.Context, params *t.SendDiceParams) (*t.Message, error)
 	SendPhoto(ctx context.Context, params *t.SendPhotoParams) (*t.Message, error)
+	SendSticker(ctx context.Context, params *t.SendStickerParams) (*t.Message, error)
 	// SetMessageReaction sets exactly one ordinary emoji reaction on a
 	// Telegram message. Unlike the send actions it creates no message, so
 	// callers must not treat it as one and the wrapper publishes no
@@ -117,6 +118,11 @@ type ChatRequest struct {
 	// proactive turns set it, because provider error bodies can echo chat
 	// content. Ordinary turns never set it and keep raw diagnostics.
 	SilentErrors bool
+	// Proactive marks a turn the bot started on its own (no user addressed
+	// it). It comes from the trigger the bot derived from Telegram metadata,
+	// never from model output; tools use it to apply limits that must not
+	// get in the way of an explicit request (the sticker cooldown).
+	Proactive bool
 }
 
 // ToolCallRecord is the authoritative record of one tool invocation, in
@@ -264,6 +270,10 @@ type Runtime struct {
 	// stickers is the curated sticker catalog behind the sticker tools; nil
 	// until AttachStickerCatalog.
 	stickers StickerCatalog
+	// stickerCooldown spaces proactive sticker sends per chat; stickerNow
+	// overrides the clock in tests. Zero values are ready to use.
+	stickerCooldown stickerLimiter
+	stickerNow      func() time.Time
 }
 
 type registeredCloser struct {
@@ -431,7 +441,7 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 	// Per-run tool state is shared by every tool call of this run and never
 	// leaks across runs — even for concurrent runs in the same chat. The
 	// decision model is pinned from the turn's operation snapshot.
-	run := &runState{systemOneModel: req.TurnConfig.SystemOneModel}
+	run := &runState{systemOneModel: req.TurnConfig.SystemOneModel, proactive: req.Proactive}
 
 	var (
 		extraMessages             []llm.Message

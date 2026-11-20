@@ -28,7 +28,7 @@ func (r *Runtime) AttachStickerCatalog(catalog StickerCatalog) {
 
 	r.registry.Register(Definition{
 		Name:             listStickersToolName,
-		Description:      "Search the curated sticker catalog. Give a short query (any language) and/or tags; results are ranked deterministically and carry a stable sticker id, a description, emoji and tags. Only ids returned here exist: never invent one.",
+		Description:      "Search the curated sticker catalog. Give a short query (any language) and/or tags; results are ranked deterministically and carry a stable sticker id, a description, emoji and tags. Only ids returned here exist: never invent one. Send a result with send_sticker.",
 		Parameters:       json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","maxLength":200,"description":"Optional free-text query matched against ids, descriptions, tags and emoji. Empty lists the catalog in a stable order."},"tags":{"type":"array","maxItems":8,"items":{"type":"string","minLength":1,"maxLength":32},"description":"Optional tags; every given tag must match."},"limit":{"type":"integer","minimum":1,"maximum":20,"description":"Maximum stickers to return. Defaults to 10."}},"additionalProperties":false}`),
 		InvocationPolicy: InvocationPolicyDiscretionary,
 		Visibility:       VisibilityStandard,
@@ -36,14 +36,26 @@ func (r *Runtime) AttachStickerCatalog(catalog StickerCatalog) {
 		Handler:          r.listStickers,
 		Resolve:          r.stickersPresentation,
 	})
+	r.registry.Register(Definition{
+		Name:             sendStickerToolName,
+		Description:      "Send one sticker from the curated catalog into the current conversation, by the id returned from list_stickers. A turn gets a single send attempt, and a sticker can be the whole reply (follow it with say_nothing instead of extra text). Use it sparingly, only when it genuinely fits the moment.",
+		Parameters:       json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","minLength":3,"maxLength":48,"description":"Sticker id exactly as returned by list_stickers."}},"required":["id"],"additionalProperties":false}`),
+		InvocationPolicy: InvocationPolicyDiscretionary,
+		Visibility:       VisibilityStandard,
+		ResultCharBudget: sendStickerResultCharBudget,
+		SideEffecting:    true,
+		Handler:          r.sendSticker,
+		Resolve:          r.sendStickerPresentation,
+	})
 }
 
 const listStickersToolName = "list_stickers"
 
 // stickersPresentation hides the sticker tools while no sticker is active, so
-// a model is never offered a catalog that cannot serve anything.
-func (r *Runtime) stickersPresentation(_ CallContext, p Presentation) (Presentation, bool) {
-	if r.stickers == nil || r.stickers.Snapshot().Len() == 0 {
+// a model is never offered a catalog that cannot serve anything, and while a
+// proactive turn is inside the sticker cooldown (browsing would be wasted).
+func (r *Runtime) stickersPresentation(call CallContext, p Presentation) (Presentation, bool) {
+	if r.stickers == nil || r.stickers.Snapshot().Len() == 0 || r.proactivelyCooling(call) {
 		return p, false
 	}
 
