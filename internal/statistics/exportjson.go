@@ -7,10 +7,12 @@ import (
 )
 
 // Schema and version of the interaction-statistics export. Any shape change
-// bumps the version.
+// bumps the version. Version 2 (additive over 1) adds the persistence
+// disclosure, the interrupted-operation counters and the profile overflow
+// tags that came with persistent interaction statistics.
 const (
 	InteractionSchemaName    = "tg-llm-bot/interaction-statistics"
-	InteractionSchemaVersion = 1
+	InteractionSchemaVersion = 2
 )
 
 // GeneralJSON renders the legacy pretty-JSON representation of a general
@@ -41,6 +43,7 @@ func InteractionJSON(snapshot InteractionSnapshot, scope InteractionScope, filte
 		Mode:              snapshot.Mode,
 		RubricVersion:     snapshot.RubricVersion,
 		ObservationPeriod: snapshot.Period,
+		Persistence:       snapshot.Persistence,
 		Scope:             exportScopeOf(scope),
 		FiltersApplied:    exportFiltersOf(filters),
 		Submission:        snapshot.Submission,
@@ -66,8 +69,12 @@ type interactionExport struct {
 	Mode              string            `json:"mode"`
 	RubricVersion     int               `json:"rubric_version"`
 	ObservationPeriod InteractionPeriod `json:"observation_period"`
-	Scope             exportScope       `json:"scope"`
-	FiltersApplied    exportFilters     `json:"filters_applied"`
+	// Persistence discloses whether the statistics survive restarts. The
+	// observation period and counters are persistent aggregates; they are
+	// reset only by the explicit admin reset.
+	Persistence    PersistenceInfo `json:"persistence"`
+	Scope          exportScope     `json:"scope"`
+	FiltersApplied exportFilters   `json:"filters_applied"`
 
 	// Submission and Preflight are nil when profile/model filters omitted
 	// them (chat-keyed denominators are not filterable); the notes say so.
@@ -116,6 +123,8 @@ type exportNotes struct {
 	// in the export (decision section and execution decision_model
 	// dimension).
 	ModelOverflowCounts uint64 `json:"model_overflow_counts"`
+	// ProfileOverflowCounts is the number of profile overflow buckets.
+	ProfileOverflowCounts uint64 `json:"profile_overflow_counts"`
 	// GenerationModelOverflowCounts covers the execution generation_model
 	// dimension.
 	GenerationModelOverflowCounts uint64 `json:"generation_model_overflow_counts"`
@@ -171,6 +180,9 @@ func exportNotesOf(snapshot InteractionSnapshot) exportNotes {
 		if bucket.DecisionModelOverflow {
 			notes.ModelOverflowCounts++
 		}
+		if bucket.ProfileOverflow {
+			notes.ProfileOverflowCounts++
+		}
 	}
 	for _, bucket := range snapshot.Execution.Buckets {
 		if bucket.ChatOverflow {
@@ -182,11 +194,15 @@ func exportNotesOf(snapshot InteractionSnapshot) exportNotes {
 		if bucket.GenerationModelOverflow {
 			notes.GenerationModelOverflowCounts++
 		}
+		if bucket.ProfileOverflow {
+			notes.ProfileOverflowCounts++
+		}
 	}
 
 	notes.OversizedIDsOverflowed = snapshot.OversizedIDFolds > 0
 	notes.AttributionIncomplete = notes.ChatOverflowCounts > 0 ||
 		notes.ModelOverflowCounts > 0 ||
+		notes.ProfileOverflowCounts > 0 ||
 		notes.GenerationModelOverflowCounts > 0
 
 	return notes

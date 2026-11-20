@@ -39,9 +39,12 @@ type Collector struct {
 	general                generalCounters
 	generalPeriodStartedAt time.Time
 
-	interaction           interactionState
-	interactionGeneration uint64
-	interactionResets     uint64
+	interaction interactionState
+	// interactionPersist carries the reset generation (the statistics
+	// epoch, monotonic across restarts once restored) and the revision used
+	// for dirty tracking.
+	interactionPersist persistTracker
+	interactionResets  uint64
 }
 
 // NewCollector constructs the collector. Both observation periods start at
@@ -59,5 +62,6 @@ func NewCollector(cfg Config) *Collector {
 		processStartedAt:       started,
 		generalPeriodStartedAt: started,
 		interaction:            initInteraction(started),
+		interactionPersist:     newPersistTracker(),
 	}
 }

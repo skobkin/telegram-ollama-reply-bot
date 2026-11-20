@@ -240,10 +240,17 @@ type modelKey struct {
 	overflow bool
 }
 
+// profileKey resolves an interaction profile ID to its tracked identity or
+// the profile overflow key (cardinality cap or oversized identifier).
+type profileKey struct {
+	name     string
+	overflow bool
+}
+
 // decisionBucketKey identifies one decision bucket.
 type decisionBucketKey struct {
 	chat    chatKey
-	profile string
+	profile profileKey
 	model   modelKey
 }
 
@@ -251,7 +258,7 @@ type decisionBucketKey struct {
 // are retained so execution outcomes stay filterable by decision model.
 type executionBucketKey struct {
 	chat            chatKey
-	profile         string
+	profile         profileKey
 	decisionModel   modelKey
 	generationModel modelKey
 }
@@ -263,6 +270,7 @@ type interactionState struct {
 	periodStartedAt time.Time
 
 	trackedChats     map[int64]struct{}
+	profiles         map[string]struct{}
 	decisionModels   map[string]struct{}
 	generationModels map[string]struct{}
 
@@ -278,8 +286,8 @@ type interactionState struct {
 	execution        executionTotalsState
 	executionBuckets map[executionBucketKey]*executionBucketState
 
-	// oversizedIDFolds counts observations folded into a model overflow key
-	// because the identifier exceeded maxModelIDBytes (either dimension).
+	// oversizedIDFolds counts observations folded into a model or profile
+	// overflow key because the identifier exceeded its size bound.
 	// Distinct from the cardinality-cap folds, and disclosed by the exports.
 	oversizedIDFolds uint64
 }
@@ -312,6 +320,7 @@ type executionCountersState struct {
 	turnsWithEffect    uint64
 	turnsWithoutEffect uint64
 	turnsFailed        uint64
+	turnsInterrupted   uint64                       // reconciled at restore; never recorded live
 	failures           [execFailureCount - 1]uint64 // indexed by ExecFailure-1 (None excluded)
 }
 
@@ -331,6 +340,7 @@ func initInteraction(started time.Time) interactionState {
 	return interactionState{
 		periodStartedAt:  started,
 		trackedChats:     map[int64]struct{}{},
+		profiles:         map[string]struct{}{},
 		decisionModels:   map[string]struct{}{},
 		generationModels: map[string]struct{}{},
 		submissionByChat: map[chatKey]*SubmissionTotals{},
@@ -351,10 +361,11 @@ func initInteraction(started time.Time) interactionState {
 // restarts the observation period, and clears the whole interaction dataset.
 // In-flight old-epoch operations contribute NOTHING to the new period —
 // their observations are dropped by the epoch check, never staged.
-func (c *Collector) resetInteraction() {
+func (c *Collector) resetInteraction() uint64 {
 	c.interaction = initInteraction(c.now())
-	c.interactionGeneration++
 	c.interactionResets++
+
+	return c.interactionPersist.reset()
 }
 
 // BeginSubmission records one submission and returns the operation's epoch
@@ -371,8 +382,9 @@ func (c *Collector) BeginSubmission(chatID int64) uint64 {
 
 	c.interaction.submission.Submitted++
 	c.submissionCountLocked(chatID).Submitted++
+	c.interactionPersist.touch()
 
-	return c.interactionGeneration
+	return c.interactionPersist.current.Generation
 }
 
 // RecordSubmitRejected records a closed-runner rejection: Submit returned
@@ -386,6 +398,7 @@ func (c *Collector) RecordSubmitRejected(epoch uint64, chatID int64) {
 	}
 	c.interaction.submission.SubmitRejected++
 	c.submissionCountLocked(chatID).SubmitRejected++
+	c.interactionPersist.touch()
 }
 
 // RecordAcceptedCancelled records an accepted task discarded before its
@@ -402,6 +415,7 @@ func (c *Collector) RecordAcceptedCancelled(epoch uint64, chatID int64) {
 	}
 	c.interaction.submission.AcceptedThenCancelled++
 	c.submissionCountLocked(chatID).AcceptedThenCancelled++
+	c.interactionPersist.touch()
 }
 
 // RecordPreflight records one pre-engine skip.
@@ -417,6 +431,7 @@ func (c *Collector) RecordPreflight(obs PreflightObservation) {
 	}
 	c.interaction.preflightTotal[obs.Kind]++
 	c.preflightByChatLocked(obs.ChatID)[obs.Kind]++
+	c.interactionPersist.touch()
 }
 
 // RecordDecision records one terminal decision-phase classification.
@@ -445,6 +460,7 @@ func (c *Collector) RecordDecision(obs DecisionObservation) {
 	ms := obs.DecisionLatency.Seconds() * 1000
 	bucket.decisionLatency.record(ms)
 	c.interaction.decision.decisionLatency.record(ms)
+	c.interactionPersist.touch()
 }
 
 // RecordInference records one Client.Evaluate invocation (attempt).
@@ -470,6 +486,7 @@ func (c *Collector) RecordInference(obs InferenceAttempt) {
 	ms := obs.Latency.Seconds() * 1000
 	bucket.inferenceLatency.record(ms)
 	c.interaction.decision.inferenceLatency.record(ms)
+	c.interactionPersist.touch()
 }
 
 // RecordExecutionDispatch records one dispatched proactive turn (before the
@@ -488,6 +505,7 @@ func (c *Collector) RecordExecutionDispatch(obs ExecutionDispatch) {
 	bucket := c.executionBucketLocked(obs.Keys.normalize(), obs.GenerationModel)
 	bucket.counters.dispatched[obs.Action]++
 	c.interaction.execution.counters.dispatched[obs.Action]++
+	c.interactionPersist.touch()
 }
 
 // RecordExecution records one completed proactive turn.
@@ -548,23 +566,25 @@ func (c *Collector) RecordExecution(obs ExecutionObservation) {
 		global.turnsWithoutEffect++
 	}
 	c.interaction.execution.duration.record(ms)
+	c.interactionPersist.touch()
 }
 
 // ResetInteraction resets the interaction dataset (global scope only; a
 // filtered admin view resets the global dataset). General counters are
-// never touched.
-func (c *Collector) ResetInteraction() {
+// never touched. It returns the new reset generation, which the admin path
+// hands to the persister to acknowledge the reset durably.
+func (c *Collector) ResetInteraction() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.resetInteraction()
+	return c.resetInteraction()
 }
 
 // liveEpochLocked reports whether an observation captured at the given
 // epoch belongs to the current period. Old-epoch observations are silently
 // dropped (reset consistency).
 func (c *Collector) liveEpochLocked(epoch uint64) bool {
-	return epoch == c.interactionGeneration
+	return epoch == c.interactionPersist.current.Generation
 }
 
 // submissionCountLocked resolves the per-chat submission counters.
@@ -595,7 +615,7 @@ func (c *Collector) preflightByChatLocked(chatID int64) *[preflightKindCount]uin
 func (c *Collector) decisionBucketLocked(keys InteractionKeys) *decisionBucketState {
 	key := decisionBucketKey{
 		chat:    c.resolveChatLocked(keys.ChatID),
-		profile: keys.Profile,
+		profile: c.resolveProfileLocked(keys.Profile),
 		model:   c.resolveModelLocked(c.interaction.decisionModels, keys.DecisionModel),
 	}
 	bucket, ok := c.interaction.decisionBuckets[key]
@@ -615,7 +635,7 @@ func (c *Collector) decisionBucketLocked(keys InteractionKeys) *decisionBucketSt
 func (c *Collector) executionBucketLocked(keys InteractionKeys, generationModel string) *executionBucketState {
 	key := executionBucketKey{
 		chat:            c.resolveChatLocked(keys.ChatID),
-		profile:         keys.Profile,
+		profile:         c.resolveProfileLocked(keys.Profile),
 		decisionModel:   c.resolveModelLocked(c.interaction.decisionModels, keys.DecisionModel),
 		generationModel: c.resolveModelLocked(c.interaction.generationModels, generationModel),
 	}
@@ -665,4 +685,25 @@ func (c *Collector) resolveModelLocked(set map[string]struct{}, name string) mod
 	}
 
 	return modelKey{overflow: true}
+}
+
+// resolveProfileLocked maps a profile ID to its tracked key within the
+// profile cap. Oversized identifiers fold into the overflow key without
+// truncation, like models.
+func (c *Collector) resolveProfileLocked(name string) profileKey {
+	if len(name) > maxProfileIDBytes {
+		c.interaction.oversizedIDFolds++
+
+		return profileKey{overflow: true}
+	}
+	if _, ok := c.interaction.profiles[name]; ok {
+		return profileKey{name: name}
+	}
+	if len(c.interaction.profiles) < MaxTrackedProfiles {
+		c.interaction.profiles[name] = struct{}{}
+
+		return profileKey{name: name}
+	}
+
+	return profileKey{overflow: true}
 }

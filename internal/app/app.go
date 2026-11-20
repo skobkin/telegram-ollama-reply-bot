@@ -620,6 +620,25 @@ func Run(ctx context.Context) (runErr error) {
 	statsCollector := statistics.NewCollector(statistics.Config{
 		RubricVersion: interactivity.RubricVersion,
 	})
+	// Persistent statistics datasets are restored synchronously before any
+	// producer (bot handlers, admin UI) can record, and flushed on a ticker.
+	// The persister is stopped before the store closes: it is deferred after
+	// the store's defer, so LIFO runs it first on every exit path. The
+	// ordinary shutdown path below stops it explicitly after every producer
+	// has been joined.
+	statsPersister := statistics.NewPersister(statistics.PersisterConfig{
+		Store:  statisticsSnapshotStore{store: persistentStore},
+		Logger: logManager.Logger("statistics/persistence"),
+		Report: func(err error) { sentry.CaptureException(err) },
+	}, statsCollector.InteractionDataset())
+	if err := statsPersister.Restore(ctx); err != nil {
+		logger.Error("failed to restore persistent statistics", "error", err)
+		sentry.CaptureException(err)
+
+		return err
+	}
+	statsPersister.Start(ctx)
+	defer func() { _ = statsPersister.Stop() }()
 	botService := bot.NewBot(
 		ctx,
 		telegramAPI,
@@ -662,7 +681,7 @@ func Run(ctx context.Context) (runErr error) {
 		systemOneDiscovery = systemOneClient
 	}
 	controllerOpts = append(controllerOpts, core.WithModelDiscovery(llmc, imageDiscovery, systemOneDiscovery))
-	controllerOpts = append(controllerOpts, core.WithStatsReport(pngreport.Render))
+	controllerOpts = append(controllerOpts, core.WithStatsReport(pngreport.Render), core.WithStatsPersistence(statsPersister))
 	if cfg.LLM.ImageRecognitionEnabled && cfg.LLM.ImageRecognition.Recognizer == config.ImageRecognizerMiniMaxVLM {
 		controllerOpts = append(controllerOpts, core.WithHiddenImageModel())
 	}
@@ -719,6 +738,11 @@ func Run(ctx context.Context) (runErr error) {
 		stopPreviews()
 	}
 	dispatcher.Stop()
+	// Every statistics producer has been joined: flush what is pending.
+	if err := statsPersister.Stop(); err != nil {
+		logger.Error("final statistics flush failed; recently collected statistics may be lost", "error", err)
+		sentry.CaptureException(err)
+	}
 	if runErr != nil {
 		logger.Error("bot exited with error", "error", runErr)
 		sentry.CaptureMessage("Bot start error")

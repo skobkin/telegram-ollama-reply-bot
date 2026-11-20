@@ -29,6 +29,7 @@ func (c *Collector) InteractionSnapshot(scope InteractionScope, filters Interact
 		},
 		FilteredTotalsExact: true,
 		OversizedIDFolds:    c.interaction.oversizedIDFolds,
+		Persistence:         c.interactionPersist.info,
 	}
 
 	filtered := filters.Narrowed() || scope.ChatSpecified
@@ -70,6 +71,11 @@ func (c *Collector) selectionUntrackedLocked(scope InteractionScope, filters Int
 			return true
 		}
 	}
+	if filters.Profile != "" {
+		if _, tracked := c.interaction.profiles[filters.Profile]; !tracked {
+			return true
+		}
+	}
 
 	return false
 }
@@ -81,12 +87,12 @@ func (c *Collector) overflowActiveLocked() bool {
 		if key.chat.overflow && bucket.nonEmpty() {
 			return true
 		}
-		if key.model.overflow && bucket.nonEmpty() {
+		if (key.model.overflow || key.profile.overflow) && bucket.nonEmpty() {
 			return true
 		}
 	}
 	for key, bucket := range c.interaction.executionBuckets {
-		if (key.chat.overflow || key.decisionModel.overflow || key.generationModel.overflow) && bucket.nonEmpty() {
+		if (key.chat.overflow || key.profile.overflow || key.decisionModel.overflow || key.generationModel.overflow) && bucket.nonEmpty() {
 			return true
 		}
 	}
@@ -225,7 +231,7 @@ func decisionBucketSelected(key decisionBucketKey, scope InteractionScope, filte
 	if scope.ChatSpecified && (key.chat.overflow || key.chat.id != scope.ChatID) {
 		return false
 	}
-	if filters.Profile != "" && key.profile != filters.Profile {
+	if filters.Profile != "" && (key.profile.overflow || key.profile.name != filters.Profile) {
 		return false
 	}
 	if filters.DecisionModel != "" && (key.model.overflow || key.model.name != filters.DecisionModel) {
@@ -241,7 +247,7 @@ func executionBucketSelected(key executionBucketKey, scope InteractionScope, fil
 	if scope.ChatSpecified && (key.chat.overflow || key.chat.id != scope.ChatID) {
 		return false
 	}
-	if filters.Profile != "" && key.profile != filters.Profile {
+	if filters.Profile != "" && (key.profile.overflow || key.profile.name != filters.Profile) {
 		return false
 	}
 	if filters.DecisionModel != "" && (key.decisionModel.overflow || key.decisionModel.name != filters.DecisionModel) {
@@ -454,6 +460,7 @@ func executionCountersOf(state executionCountersState) ExecutionCounters {
 		TurnsWithEffect:    state.turnsWithEffect,
 		TurnsWithoutEffect: state.turnsWithoutEffect,
 		TurnsFailed:        state.turnsFailed,
+		TurnsInterrupted:   state.turnsInterrupted,
 		Failures: ExecutionFailureTotals{
 			Timeout:         state.failures[ExecFailureTimeout-1],
 			Cancelled:       state.failures[ExecFailureCancelled-1],
@@ -474,6 +481,7 @@ func (s *executionCountersState) add(other executionCountersState) {
 	s.turnsWithEffect += other.turnsWithEffect
 	s.turnsWithoutEffect += other.turnsWithoutEffect
 	s.turnsFailed += other.turnsFailed
+	s.turnsInterrupted += other.turnsInterrupted
 	for i := range s.failures {
 		s.failures[i] += other.failures[i]
 	}
@@ -497,7 +505,8 @@ func (s *decisionBucketState) nonEmpty() bool {
 func (s *executionBucketState) nonEmpty() bool {
 	return s.counters.dispatched[ActionReact] > 0 || s.counters.dispatched[ActionReply] > 0 ||
 		s.counters.reactions > 0 || s.counters.texts > 0 || s.counters.otherSideEffects > 0 ||
-		s.counters.turnsWithEffect > 0 || s.counters.turnsWithoutEffect > 0 || s.counters.turnsFailed > 0
+		s.counters.turnsWithEffect > 0 || s.counters.turnsWithoutEffect > 0 || s.counters.turnsFailed > 0 ||
+		s.counters.turnsInterrupted > 0
 }
 
 func chatIDPointer(key chatKey) *int64 {
@@ -522,7 +531,8 @@ func decisionBucketOf(key decisionBucketKey, state *decisionBucketState) Decisio
 	return DecisionBucket{
 		ChatID:                chatIDPointer(key.chat),
 		ChatOverflow:          key.chat.overflow,
-		Profile:               key.profile,
+		Profile:               key.profile.name,
+		ProfileOverflow:       key.profile.overflow,
 		DecisionModel:         modelPointer(key.model),
 		DecisionModelOverflow: key.model.overflow,
 		Counters:              outcomeTotals(state.outcomes),
@@ -534,7 +544,8 @@ func executionBucketOf(key executionBucketKey, state *executionBucketState) Exec
 	return ExecutionBucket{
 		ChatID:                  chatIDPointer(key.chat),
 		ChatOverflow:            key.chat.overflow,
-		Profile:                 key.profile,
+		Profile:                 key.profile.name,
+		ProfileOverflow:         key.profile.overflow,
 		DecisionModel:           modelPointer(key.decisionModel),
 		DecisionModelOverflow:   key.decisionModel.overflow,
 		GenerationModel:         modelPointer(key.generationModel),
@@ -574,6 +585,9 @@ func sortDecisionBuckets(buckets []DecisionBucket) {
 		if !a.ChatOverflow && *a.ChatID != *b.ChatID {
 			return *a.ChatID < *b.ChatID
 		}
+		if a.ProfileOverflow != b.ProfileOverflow {
+			return overflowRank(b.ProfileOverflow) < overflowRank(a.ProfileOverflow)
+		}
 		if a.Profile != b.Profile {
 			return a.Profile < b.Profile
 		}
@@ -593,6 +607,9 @@ func sortExecutionBuckets(buckets []ExecutionBucket) {
 		}
 		if !a.ChatOverflow && *a.ChatID != *b.ChatID {
 			return *a.ChatID < *b.ChatID
+		}
+		if a.ProfileOverflow != b.ProfileOverflow {
+			return overflowRank(b.ProfileOverflow) < overflowRank(a.ProfileOverflow)
 		}
 		if a.Profile != b.Profile {
 			return a.Profile < b.Profile

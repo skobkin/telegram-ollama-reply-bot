@@ -513,6 +513,10 @@ func renderExecution(p *charts.Painter, snapshot statistics.InteractionSnapshot,
 		{"Delivery", failures.Failures.Delivery},
 		{"Abandoned target (defensive)", failures.Failures.AbandonedTarget},
 		{"Turns without effect", failures.TurnsWithoutEffect},
+		{"Turns interrupted by restart", failures.TurnsInterrupted},
+	}
+	if snapshot.Submission != nil {
+		rows = append(rows, labelValue{"Submissions interrupted by restart", snapshot.Submission.InterruptedByRestart})
 	}
 	for i, row := range rows {
 		child.Text(row.label, 20, 44+i*30, 0, fontStyle(fontSizeBody, colorTextDim))

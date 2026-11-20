@@ -99,7 +99,7 @@ func TestInteractionExportShapeAndRoundTrip(t *testing.T) {
 	}
 	wantTop := []string{
 		"schema", "version", "generated_at", "mode", "rubric_version",
-		"observation_period", "scope", "filters_applied", "submission",
+		"observation_period", "persistence", "scope", "filters_applied", "submission",
 		"preflight", "decision", "execution", "notes",
 	}
 	if len(raw) != len(wantTop) {
@@ -117,7 +117,7 @@ func TestInteractionExportShapeAndRoundTrip(t *testing.T) {
 	}
 	wantNotes := []string{
 		"percentiles", "chat_overflow_counts", "model_overflow_counts",
-		"generation_model_overflow_counts", "oversized_ids_overflowed",
+		"profile_overflow_counts", "generation_model_overflow_counts", "oversized_ids_overflowed",
 		"attribution_incomplete", "filtered_totals_exact",
 		"untracked_selection", "evaluated_definition", "omitted_under_filters",
 	}

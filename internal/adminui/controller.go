@@ -231,6 +231,9 @@ type ControllerOptions struct {
 	// StatsReport renders the PNG report attached to the statistics export.
 	// Nil keeps the export JSON-only.
 	StatsReport StatsReportRenderer
+	// StatsPersistence acknowledges statistics resets durably. Nil keeps
+	// resets as plain in-memory notices.
+	StatsPersistence StatsPersister
 }
 
 // ControllerOption mutates ControllerOptions at wiring time.
@@ -1097,7 +1100,7 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 
 	case VerbStatsResetI:
 		return c.beginStatsReset(s, ConfirmStatsInteraction,
-			"Reset ALL interaction statistics?\n\nThe reset is GLOBAL: every chat's interaction observations — submissions, decisions, executions — are cleared, regardless of the filters on screen. In-flight operations keep running; only their statistics land in the fresh period. This cannot be undone.")
+			"Reset ALL interaction statistics?\n\nThe reset is GLOBAL: every chat's interaction observations — submissions, decisions, executions — are cleared, regardless of the filters on screen. In-flight operations keep running; only their statistics land in the fresh period. The saved copy in the database is replaced as well. This cannot be undone.")
 
 	case VerbStatsResetG:
 		return c.beginStatsReset(s, ConfirmStatsGeneral,
@@ -1423,8 +1426,9 @@ func (c *Controller) executeConfirm(ctx context.Context, adminID int64, s *Sessi
 		if c.stats == nil {
 			return errInvalidArg
 		}
-		c.stats.ResetInteraction()
-		notice = "Interaction statistics reset — the observation period restarted."
+		generation := c.stats.ResetInteraction()
+		notice = c.resetNotice(ctx, statistics.InteractionDatasetName, generation,
+			"Interaction statistics reset — the observation period restarted.")
 	case ConfirmStatsGeneral:
 		if c.stats == nil {
 			return errInvalidArg

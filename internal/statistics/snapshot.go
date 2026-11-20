@@ -19,10 +19,17 @@ const (
 	// (decision, generation). Further values fold into the per-dimension
 	// overflow key.
 	MaxTrackedModels = 8
+	// MaxTrackedProfiles bounds the distinct interaction-profile IDs. The
+	// built-in set is five; further values fold into the profile overflow
+	// key like models do.
+	MaxTrackedProfiles = 8
 	// maxModelIDBytes bounds a retained model identifier. Oversized
 	// identifiers fold into the overflow bucket WITHOUT truncation —
 	// truncated IDs would silently merge distinct models sharing a prefix.
 	maxModelIDBytes = 128
+	// maxProfileIDBytes bounds a retained profile identifier (same folding
+	// rule as maxModelIDBytes).
+	maxProfileIDBytes = 64
 )
 
 // InteractionScope selects the chat slice of an interaction snapshot.
@@ -60,11 +67,17 @@ type InteractionPeriod struct {
 
 // SubmissionTotals is the submission ledger. Accepted is the eligibility
 // denominator; pending decision phases are derivable as
-// Accepted - terminated decision-phase classifications (§ invariant).
+// Accepted - AcceptedThenCancelled - Preflight - Decisions -
+// InterruptedByRestart (§ invariant).
 type SubmissionTotals struct {
 	Submitted             uint64 `json:"submitted"`
 	SubmitRejected        uint64 `json:"submit_rejected"`
 	AcceptedThenCancelled uint64 `json:"accepted_then_cancelled"`
+	// InterruptedByRestart counts accepted submissions whose decision phase
+	// never terminated before the process stopped (reconciled once at
+	// restore). It is a ledger class of its own: never a backend failure,
+	// never a cancellation, and never an invented outcome.
+	InterruptedByRestart uint64 `json:"interrupted_by_restart"`
 }
 
 // Accepted derives the accepted-submission count. Submit returns false only
@@ -215,6 +228,7 @@ type DecisionBucket struct {
 	ChatID                *int64                   `json:"chat_id"`
 	ChatOverflow          bool                     `json:"chat_overflow"`
 	Profile               string                   `json:"profile"`
+	ProfileOverflow       bool                     `json:"profile_overflow"`
 	DecisionModel         *string                  `json:"decision_model"`
 	DecisionModelOverflow bool                     `json:"decision_model_overflow"`
 	Counters              InteractionOutcomeTotals `json:"counters"`
@@ -235,15 +249,20 @@ type DecisionSection struct {
 // text participation, and other-side-effect-only execution remain separately
 // observable).
 type ExecutionCounters struct {
-	DispatchedReact    uint64                 `json:"dispatched_react"`
-	DispatchedReply    uint64                 `json:"dispatched_reply"`
-	ReactionsConfirmed uint64                 `json:"reactions_confirmed"`
-	TextsConfirmed     uint64                 `json:"texts_confirmed"`
-	OtherSideEffects   uint64                 `json:"other_side_effects"`
-	TurnsWithEffect    uint64                 `json:"turns_with_effect"`
-	TurnsWithoutEffect uint64                 `json:"turns_without_effect"`
-	TurnsFailed        uint64                 `json:"turns_failed"`
-	Failures           ExecutionFailureTotals `json:"failures"`
+	DispatchedReact    uint64 `json:"dispatched_react"`
+	DispatchedReply    uint64 `json:"dispatched_reply"`
+	ReactionsConfirmed uint64 `json:"reactions_confirmed"`
+	TextsConfirmed     uint64 `json:"texts_confirmed"`
+	OtherSideEffects   uint64 `json:"other_side_effects"`
+	TurnsWithEffect    uint64 `json:"turns_with_effect"`
+	TurnsWithoutEffect uint64 `json:"turns_without_effect"`
+	TurnsFailed        uint64 `json:"turns_failed"`
+	// TurnsInterrupted counts dispatched turns that never completed before
+	// the process stopped (reconciled once at restore). Not a failure class:
+	// no effect or outcome is invented for them. In-flight executions are
+	// Dispatched - Completed - TurnsInterrupted.
+	TurnsInterrupted uint64                 `json:"turns_interrupted"`
+	Failures         ExecutionFailureTotals `json:"failures"`
 }
 
 // ExecutionFailureTotals is the bounded execution-failure enum.
@@ -277,6 +296,7 @@ type ExecutionBucket struct {
 	ChatID                  *int64            `json:"chat_id"`
 	ChatOverflow            bool              `json:"chat_overflow"`
 	Profile                 string            `json:"profile"`
+	ProfileOverflow         bool              `json:"profile_overflow"`
 	DecisionModel           *string           `json:"decision_model"`
 	DecisionModelOverflow   bool              `json:"decision_model_overflow"`
 	GenerationModel         *string           `json:"generation_model"`
@@ -325,4 +345,6 @@ type InteractionSnapshot struct {
 	// truncation). It distinguishes size-driven folds from the
 	// cardinality-cap folds in the overflow disclosure.
 	OversizedIDFolds uint64 `json:"oversized_id_folds"`
+	// Persistence discloses whether and how this dataset is persisted.
+	Persistence PersistenceInfo `json:"persistence"`
 }

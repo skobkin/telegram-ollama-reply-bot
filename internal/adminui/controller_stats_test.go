@@ -549,3 +549,75 @@ func TestStatsExportRenderFailureKeepsJSON(t *testing.T) {
 		t.Fatalf("a failed render must notify the admin: %+v", outcome.Message)
 	}
 }
+
+// fakeStatsPersister scripts the durability outcome of a reset.
+type fakeStatsPersister struct {
+	outcome  statistics.DurableOutcome
+	datasets []string
+	gens     []uint64
+}
+
+func (f *fakeStatsPersister) EnsureDurable(_ context.Context, dataset string, generation uint64) statistics.DurableOutcome {
+	f.datasets = append(f.datasets, dataset)
+	f.gens = append(f.gens, generation)
+
+	return f.outcome
+}
+
+func TestInteractionResetNoticeReflectsDurability(t *testing.T) {
+	cases := []struct {
+		name    string
+		outcome statistics.DurableOutcome
+		want    []string
+		notWant []string
+	}{
+		{"durable", statistics.DurableOutcome{Durable: true, State: statistics.PersistEnabled},
+			[]string{"Reset saved."}, []string{"retried", "memory only"}},
+		{"temporary write failure promises a retry", statistics.DurableOutcome{State: statistics.PersistWriteFailing},
+			[]string{"saving it failed", "will be retried", "previous statistics come back"}, []string{"Reset saved."}},
+		{"disabled persistence promises no retry", statistics.DurableOutcome{State: statistics.PersistDisabledNewerFormat},
+			[]string{"in memory only", "newer format", "loaded again"}, []string{"retried", "Reset saved."}},
+		{"quarantine failure promises no retry", statistics.DurableOutcome{State: statistics.PersistDisabledQuarantineFailed},
+			[]string{"in memory only", "could not be set aside"}, []string{"retried"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			persister := &fakeStatsPersister{outcome: tc.outcome}
+			c, _ := newTestController(t, WithStatsPersistence(persister))
+			seedInteraction(t, c, testGroupID, "m1")
+			session, _ := openStats(t, c)
+
+			tap(t, c, session, VerbStatsResetI)
+			outcome := tap(t, c, session, VerbConfirmYes)
+
+			text := outcome.Render.Built.Text
+			for _, want := range tc.want {
+				if !strings.Contains(text, want) {
+					t.Fatalf("notice must contain %q:\n%s", want, text)
+				}
+			}
+			for _, bad := range tc.notWant {
+				if strings.Contains(text, bad) {
+					t.Fatalf("notice must not contain %q:\n%s", bad, text)
+				}
+			}
+			if len(persister.datasets) != 1 || persister.datasets[0] != statistics.InteractionDatasetName || persister.gens[0] != 1 {
+				t.Fatalf("the reset generation must be handed to the persister: %v %v", persister.datasets, persister.gens)
+			}
+		})
+	}
+}
+
+func TestGeneralResetDoesNotTouchPersistence(t *testing.T) {
+	persister := &fakeStatsPersister{outcome: statistics.DurableOutcome{Durable: true}}
+	c, _ := newTestController(t, WithStatsPersistence(persister))
+	c.stats.GroupRequest()
+	session, _ := openStats(t, c)
+
+	tap(t, c, session, VerbStatsResetG)
+	tap(t, c, session, VerbConfirmYes)
+
+	if len(persister.datasets) != 0 {
+		t.Fatalf("general statistics are ephemeral and must not be persisted: %v", persister.datasets)
+	}
+}
