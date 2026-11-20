@@ -1,12 +1,16 @@
 package app
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"telegram-ollama-reply-bot/internal/config"
 
@@ -356,7 +360,8 @@ func TestSentryBeforeSendDeepNestingAndCyclesNoPanic(t *testing.T) {
 	cyclic := map[string]any{}
 	cyclic["self"] = cyclic
 
-	// Content beyond the depth cap is left untouched rather than panicking.
+	// Content beyond the depth cap fails closed: it is replaced by the
+	// truncation marker, never allowed through unredacted.
 	deep := map[string]any{}
 	cursor := deep
 	for i := 0; i < 20; i++ {
@@ -375,26 +380,137 @@ func TestSentryBeforeSendDeepNestingAndCyclesNoPanic(t *testing.T) {
 
 	hook(event, nil) // must not panic or hang
 
-	// Content beyond the depth cap stays untouched (unscrubbed) rather than
-	// being lost; the walk gives up before reaching it.
-	cursorNext, ok := event.Extra["deep"].(map[string]any)
-	if !ok {
-		t.Fatal("deep extra map was replaced")
+	rendered := fmt.Sprintf("%v %v", event.Extra["cyclic"], event.Extra["deep"])
+	if strings.Contains(rendered, "LLMFIXTURE") {
+		t.Fatalf("content past the depth cap survived unredacted: %s", rendered)
 	}
 
+	if !strings.Contains(rendered, "[REDACTED:depth-limit]") {
+		t.Fatalf("truncated subtree lost its marker: %s", rendered)
+	}
+
+	if failures := collectLeakFailures(event); len(failures) > 0 {
+		t.Fatalf("event leaked secrets: %v", failures)
+	}
+}
+
+// payloadCapture is a sentry.Transport recording the serialized event body
+// the SDK produces — the same encoding/json marshaling of the event the
+// HTTP transport performs on send — so regressions are asserted against
+// what Sentry actually receives, not merely against selected Go fields.
+// The client drives custom transports through an async worker, so the flush
+// methods wait on the first recorded body instead of returning immediately.
+type payloadCapture struct {
+	once   sync.Once
+	signal chan struct{}
+
+	mu    sync.Mutex
+	body  string
+	count int
+}
+
+func (c *payloadCapture) SendEvent(event *sentry.Event) {
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+
+	c.mu.Lock()
+	c.body = string(raw)
+	c.count++
+	c.mu.Unlock()
+
+	c.once.Do(func() { close(c.signal) })
+}
+
+func (c *payloadCapture) Configure(sentry.ClientOptions) {
+	c.once = sync.Once{}
+	c.signal = make(chan struct{})
+}
+
+func (c *payloadCapture) Flush(timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	return c.FlushWithContext(ctx)
+}
+
+func (c *payloadCapture) FlushWithContext(ctx context.Context) bool {
+	if c.signal == nil {
+		return false
+	}
+
+	select {
+	case <-c.signal:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (c *payloadCapture) Close() {}
+
+func TestSentryBeforeSendSerializedPayloadFailClosed(t *testing.T) {
+	t.Parallel()
+
+	scrubber := newSecretScrubber(scrubTestConfig())
+	capture := &payloadCapture{}
+
+	client, err := sentry.NewClient(sentry.ClientOptions{
+		Dsn:        "https://publickey@sentry.example.com/1", //nolint:gosec // fake DSN fixture, not a credential
+		Transport:  capture,
+		BeforeSend: newSentryBeforeSend(scrubber),
+	})
+	if err != nil {
+		t.Fatalf("sentry client: %v", err)
+	}
+
+	hub := sentry.NewHub(client, sentry.NewScope())
+
+	// Content beyond the depth cap carries a secret the typed walk cannot
+	// reach; the payload must still arrive redacted.
+	deep := map[string]any{}
+	cursor := deep
 	for i := 0; i < 20; i++ {
-		next, ok := cursorNext["next"].(map[string]any)
-		if !ok {
-			t.Fatalf("deep chain broken at depth %d", i)
+		next := map[string]any{}
+		cursor["next"] = next
+		cursor = next
+	}
+	cursor["payload"] = "LLMFIXTURE"
 
-			return
-		}
-
-		cursorNext = next
+	event := sentry.NewEvent()
+	event.Message = "leaky payload"
+	event.Extra = map[string]any{
+		"deep": deep,
+		// A custom struct the typed walk cannot enter.
+		"opaque": struct{ Token string }{Token: "LLMFIXTURE"},
+		// A map key embedding the secret.
+		"note LLMFIXTURE": "value",
 	}
 
-	if got := cursorNext["payload"]; got != "LLMFIXTURE" {
-		t.Fatalf("content past the depth cap was altered: %v", got)
+	hub.CaptureEvent(event)
+	hub.Flush(time.Second)
+
+	capture.mu.Lock()
+	body := capture.body
+	capture.mu.Unlock()
+
+	if capture.count == 0 || body == "" {
+		t.Fatal("no event body was serialized")
+	}
+
+	if strings.Contains(body, "LLMFIXTURE") {
+		t.Fatalf("serialized payload leaked the secret: %s", body)
+	}
+
+	for _, marker := range []string{
+		"[REDACTED:llm-api-token]",
+		"[REDACTED:depth-limit]",
+		"note [REDACTED:llm-api-token]",
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("serialized payload lost marker %q: %s", marker, body)
+		}
 	}
 }
 
