@@ -1,7 +1,6 @@
 package app
 
 import (
-	"encoding/json"
 	"errors"
 	"net/url"
 	"os"
@@ -403,11 +402,10 @@ func newSentryBeforeSend(scrubber *secretscrub.Scrubber) func(*sentry.Event, *se
 	}
 }
 
-// maxScrubDepth bounds recursion into nested map/slice values; the cap also
-// terminates self-referencing maps. Real payloads sit far above it, and
-// content beyond it fails closed (see Scrubber.TruncatedMarker) rather than
-// surviving unredacted.
-const maxScrubDepth = 8
+// Arbitrary payload maps (mechanism data, breadcrumb data, extra, contexts)
+// are scrubbed through the shared serialization boundary of
+// secretscrub.Scrubber.ScrubMap, which copies them into event-owned storage
+// with depth-capped, fail-closed traversal.
 
 func scrubEvent(scrubber *secretscrub.Scrubber, event *sentry.Event) {
 	if scrubber == nil {
@@ -436,7 +434,7 @@ func scrubEvent(scrubber *secretscrub.Scrubber, event *sentry.Event) {
 
 		if mechanism := event.Exception[i].Mechanism; mechanism != nil {
 			mechanism.Description = scrubber.Scrub(mechanism.Description)
-			mechanism.Data = copyScrubAnyMap(scrubber, mechanism.Data, maxScrubDepth)
+			mechanism.Data = scrubber.ScrubMap(mechanism.Data)
 		}
 	}
 
@@ -449,7 +447,7 @@ func scrubEvent(scrubber *secretscrub.Scrubber, event *sentry.Event) {
 		owned.Message = scrubber.Scrub(crumb.Message)
 		owned.Category = scrubber.Scrub(crumb.Category)
 		owned.Type = scrubber.Scrub(crumb.Type)
-		owned.Data = copyScrubAnyMap(scrubber, crumb.Data, maxScrubDepth)
+		owned.Data = scrubber.ScrubMap(crumb.Data)
 		event.Breadcrumbs[i] = &owned
 	}
 
@@ -484,7 +482,7 @@ func scrubEvent(scrubber *secretscrub.Scrubber, event *sentry.Event) {
 	}
 
 	scrubStringMap(scrubber, event.Tags)
-	event.Extra = copyScrubAnyMap(scrubber, event.Extra, maxScrubDepth)
+	event.Extra = scrubber.ScrubMap(event.Extra)
 
 	// The contexts map is rebuilt so context names — caller-chosen strings
 	// that could embed secret material — are scrubbed alongside their data.
@@ -492,7 +490,7 @@ func scrubEvent(scrubber *secretscrub.Scrubber, event *sentry.Event) {
 		contexts := make(map[string]sentry.Context, len(event.Contexts))
 
 		for name, contextData := range event.Contexts {
-			contexts[scrubber.Scrub(name)] = copyScrubAnyMap(scrubber, contextData, maxScrubDepth)
+			contexts[scrubber.Scrub(name)] = scrubber.ScrubMap(contextData)
 		}
 
 		event.Contexts = contexts
@@ -514,111 +512,6 @@ func scrubStringMap(scrubber *secretscrub.Scrubber, values map[string]string) {
 	for _, pair := range updates {
 		values[pair[0]] = pair[1]
 	}
-}
-
-// copyScrubAnyMap returns an event-owned copy of an arbitrary payload map
-// with every key and text value scrubbed, replacing the shared original.
-// Subtrees beyond the depth cap collapse to the scrubber's truncation
-// marker.
-func copyScrubAnyMap(scrubber *secretscrub.Scrubber, values map[string]any, depth int) map[string]any {
-	if values == nil {
-		return nil
-	}
-
-	if depth <= 0 {
-		return map[string]any{"omitted": scrubber.TruncatedMarker()}
-	}
-
-	out := make(map[string]any, len(values))
-
-	for key, value := range values {
-		out[scrubber.Scrub(key)] = copyScrubAny(scrubber, value, depth-1)
-	}
-
-	return out
-}
-
-// copyScrubAny scrubs one arbitrary payload value into owned storage:
-// strings are immutable and scrub directly; maps and slices are copied and
-// walked (keys included). Content-free scalars serialize to their exact JSON
-// rendering and pass through unchanged. Everything else — custom structs,
-// SDK objects, exotic map types — goes through the serialization boundary
-// of scrubOpaque, so no value the SDK could render reaches serialization
-// uninspected.
-func copyScrubAny(scrubber *secretscrub.Scrubber, value any, depth int) any {
-	if depth <= 0 {
-		return scrubber.TruncatedMarker()
-	}
-
-	switch typed := value.(type) {
-	case string:
-		return scrubber.Scrub(typed)
-	case map[string]any:
-		return copyScrubAnyMap(scrubber, typed, depth)
-	case map[string]string:
-		out := make(map[string]string, len(typed))
-
-		for key, elem := range typed {
-			out[scrubber.Scrub(key)] = scrubber.Scrub(elem)
-		}
-
-		return out
-	case []any:
-		out := make([]any, len(typed))
-
-		for i, elem := range typed {
-			out[i] = copyScrubAny(scrubber, elem, depth-1)
-		}
-
-		return out
-	case []string:
-		out := make([]string, len(typed))
-
-		for i, elem := range typed {
-			out[i] = scrubber.Scrub(elem)
-		}
-
-		return out
-	case bool, int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64, float32, float64:
-		return value
-	default:
-		return scrubOpaque(scrubber, value)
-	}
-}
-
-// scrubOpaque scrubs composite values the typed walk cannot enter: the SDK
-// serializes them through encoding/json at send time, so their JSON is
-// produced here — the exact bytes the payload would carry — scrubbed, and
-// rebuilt into equivalent JSON values. Unserializable values collapse to the
-// scrubber's omission marker. encoding/json bounds the walk itself (it
-// errors on pointer cycles), so no unbounded reflective traversal is
-// introduced.
-func scrubOpaque(scrubber *secretscrub.Scrubber, value any) (out any) {
-	defer func() {
-		if r := recover(); r != nil {
-			out = scrubber.UnserializableMarker()
-		}
-	}()
-
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return scrubber.UnserializableMarker()
-	}
-
-	text := string(encoded)
-	scrubbed := scrubber.Scrub(text)
-
-	if scrubbed == text {
-		return value
-	}
-
-	var rebuilt any
-	if json.Unmarshal([]byte(scrubbed), &rebuilt) != nil {
-		return scrubbed
-	}
-
-	return rebuilt
 }
 
 // scrubFatalError scrubs the error returned by Run, which main prints to

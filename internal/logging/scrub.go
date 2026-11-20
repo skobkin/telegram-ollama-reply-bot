@@ -2,10 +2,7 @@ package logging
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"log/slog"
-	"reflect"
 
 	"telegram-ollama-reply-bot/internal/support/secretscrub"
 )
@@ -146,15 +143,18 @@ func (h *scrubHandler) WithGroup(name string) slog.Handler {
 // scrubAttr scrubs one attribute: its key (call sites have been known to
 // embed secret material in keys, and the JSON handler emits keys verbatim),
 // then its value. String values are scrubbed literally; group values
-// recursively; error values are replaced by their scrubbed rendering —
-// identical to what slog would print, but without retaining the original
-// error object whose text could leak through later rendering.
+// recursively; every KindAny value — structs, maps, slices, named string
+// types, errors, custom JSON marshalers — goes through the shared
+// serialization boundary of Scrubber.ScrubValue, so nothing the JSON handler
+// could render reaches it uninspected, and no inspected value is passed
+// through as the original object.
 //
 // Deferred LogValuer attributes are resolved here: the downstream handler
-// would resolve them itself, past this scrub. Every other KindAny value —
-// structs, maps, slices, named string types, custom JSON marshalers — goes
-// through the serialization boundary of scrubbedAnyValue, so nothing the
-// JSON handler could render reaches it uninspected.
+// would resolve them itself, past this scrub. Error attributes are rendered
+// through their Error() text by the shared boundary's error path — what the
+// delegate handler would print anyway — with the panic guard slog applies
+// (a typed-nil renders as "<nil>", a panicking Error() as a scrubbed panic
+// rendering).
 func (h *scrubHandler) scrubAttr(attr slog.Attr) slog.Attr {
 	attr.Key = h.scrubber.Scrub(attr.Key)
 	attr.Value = attr.Value.Resolve()
@@ -177,79 +177,8 @@ func (h *scrubHandler) scrubAttr(attr slog.Attr) slog.Attr {
 
 		attr.Value = slog.GroupValue(attrs...)
 	case slog.KindAny:
-		if err, ok := attr.Value.Any().(error); ok {
-			attr.Value = slog.StringValue(h.scrubbedErrorText(err))
-
-			return attr
-		}
-
-		attr.Value = slog.AnyValue(h.scrubbedAnyValue(attr.Value.Any()))
+		attr.Value = slog.AnyValue(h.scrubber.ScrubValue(attr.Value.Any()))
 	}
 
 	return attr
-}
-
-// scrubbedAnyValue applies the JSON serialization boundary to a KindAny
-// attribute value that is not an error: the JSON handler renders such values
-// through encoding/json, so the value is marshaled here — the exact bytes
-// the handler would emit — and either passed through untouched when no
-// registered secret appears in them (preserving the original value and its
-// rendering precisely), or scrubbed and rebuilt into equivalent JSON values
-// so nested objects stay objects in the emitted record. Values whose
-// marshaling fails keep passing through unchanged: the handler then renders
-// its own !ERROR for them, whose text names types, not content. A panicking
-// custom marshaler is caught and rendered the way slog renders panics, with
-// the panic value scrubbed.
-func (h *scrubHandler) scrubbedAnyValue(value any) (out any) {
-	// Named string types land in KindAny; plain strings are KindString and
-	// never reach this path.
-	if v := reflect.ValueOf(value); v.Kind() == reflect.String {
-		return h.scrubber.Scrub(v.String())
-	}
-
-	defer func() {
-		if r := recover(); r != nil {
-			out = h.scrubber.Scrub(fmt.Sprintf("!PANIC: %v", r))
-		}
-	}()
-
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return value
-	}
-
-	text := string(encoded)
-	if !h.scrubber.Contains(text) {
-		return value
-	}
-
-	scrubbed := h.scrubber.Scrub(text)
-
-	var rebuilt any
-	if json.Unmarshal([]byte(scrubbed), &rebuilt) != nil {
-		return scrubbed
-	}
-
-	return rebuilt
-}
-
-// scrubbedErrorText renders an error attribute the way the delegate handler
-// would and scrubs the rendering. slog's appendValue recovers from panics in
-// Error(), emitting "<nil>" for a nil pointer and "!PANIC: <panic>" otherwise;
-// without the same guard, a typed-nil error attribute would crash the process
-// where plain slog handling logs it harmlessly.
-func (h *scrubHandler) scrubbedErrorText(err error) (text string) {
-	defer func() {
-		if r := recover(); r != nil {
-			if v := reflect.ValueOf(err); v.Kind() == reflect.Pointer && v.IsNil() {
-				text = "<nil>"
-
-				return
-			}
-
-			text = h.scrubber.Scrub(fmt.Sprintf("!PANIC: %v", r))
-		}
-	}()
-
-	return h.scrubber.Scrub(err.Error())
 }

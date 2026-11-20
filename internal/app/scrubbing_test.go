@@ -538,6 +538,89 @@ func TestSentryBeforeSendSerializedPayloadFailClosed(t *testing.T) {
 	}
 }
 
+// statefulPayload renders clean JSON on its first marshaling and
+// secret-bearing JSON afterwards, mimicking a marshaler that behaves
+// differently between BeforeSend's serialization boundary and the SDK's
+// send-time serialization of the event.
+type statefulPayload struct{ calls int }
+
+func (p *statefulPayload) MarshalJSON() ([]byte, error) {
+	p.calls++
+
+	if p.calls == 1 {
+		return []byte(`{"note":"clean"}`), nil
+	}
+
+	return []byte(`{"note":"LLMFIXTURE"}`), nil
+}
+
+func TestSentryBeforeSendStatefulMarshalerPayload(t *testing.T) {
+	t.Parallel()
+
+	scrubber := newSecretScrubber(scrubTestConfig())
+	hook := newSentryBeforeSend(scrubber)
+
+	event := &sentry.Event{
+		Message: "stateful payload",
+		Extra: map[string]any{
+			"payload": &statefulPayload{},
+		},
+	}
+
+	hook(event, nil)
+
+	// Assert against the serialized payload the SDK would transmit: it must
+	// carry the boundary's first rendering only, never a second render of
+	// the original object.
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal scrubbed event: %v", err)
+	}
+
+	if strings.Contains(string(encoded), "LLMFIXTURE") {
+		t.Fatalf("stateful marshaler leaked into the serialized payload: %s", encoded)
+	}
+
+	if !strings.Contains(string(encoded), `"note":"clean"`) {
+		t.Fatalf("scrubbed payload lost its content: %s", encoded)
+	}
+}
+
+func TestSentryBeforeSendDecodesEscapedSecrets(t *testing.T) {
+	t.Parallel()
+
+	// The secret contains a character encoding/json escapes in its output,
+	// so the encoded payload never spells the secret verbatim: only decoding
+	// the representation before scrubbing finds it.
+	cfg := scrubTestConfig()
+	cfg.LLM.Backends.OpenAICompat.APIToken = "ESC&FIXTURE"
+
+	hook := newSentryBeforeSend(newSecretScrubber(cfg))
+
+	event := &sentry.Event{
+		Extra: map[string]any{
+			"payload": struct{ Tok string }{Tok: "ESC&FIXTURE"},
+		},
+	}
+
+	hook(event, nil)
+
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal scrubbed event: %v", err)
+	}
+
+	for _, form := range []string{"ESC&FIXTURE", "ESC\\u0026FIXTURE"} {
+		if strings.Contains(string(encoded), form) {
+			t.Fatalf("escaped secret rendering survived in the payload: %s", encoded)
+		}
+	}
+
+	if !strings.Contains(string(encoded), "[REDACTED:llm-api-token]") {
+		t.Fatalf("escaped secret not replaced by its marker: %s", encoded)
+	}
+}
+
 func TestSentryBeforeSendIdempotent(t *testing.T) {
 	t.Parallel()
 

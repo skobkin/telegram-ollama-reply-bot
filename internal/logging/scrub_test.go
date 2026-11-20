@@ -515,3 +515,122 @@ func TestScrubHandlerDoesNotMutateCallerGroupAttr(t *testing.T) {
 		t.Fatalf("caller's group attribute was mutated concurrently: %q", got)
 	}
 }
+
+// statefulFixture renders clean JSON on its first marshaling and
+// secret-bearing JSON afterwards, mimicking a marshaler whose output differs
+// between the scrub boundary's inspection and the delegate handler's
+// rendering.
+type statefulFixture struct{ calls int }
+
+func (f *statefulFixture) MarshalJSON() ([]byte, error) {
+	f.calls++
+
+	if f.calls == 1 {
+		return []byte(`{"note":"clean"}`), nil
+	}
+
+	return []byte(`{"note":"LOGFIXTURE"}`), nil
+}
+
+// erroringFixture refuses marshaling with a secret-bearing error — the text
+// the delegate handler would print for the failed marshal when the original
+// value is passed through.
+type erroringFixture struct{}
+
+func (erroringFixture) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("cannot serialize LOGFIXTURE")
+}
+
+// escapedFixture renders the secret behind encoding/json's HTML escaping
+// (& is emitted as a six-character escape), so the secret never appears
+// verbatim in the encoded form.
+type escapedFixture struct{}
+
+func (escapedFixture) MarshalJSON() ([]byte, error) {
+	return []byte(`{"tok":"ESC&FIXTURE"}`), nil
+}
+
+func TestScrubHandlerStatefulMarshalerNeverPassesThrough(t *testing.T) {
+	t.Parallel()
+
+	logger, buf := scrubTestLogger(t, scrubTestScrubber())
+
+	logger.Error("stateful payload", "data", &statefulFixture{})
+
+	// The assertion is against the final serialized record: the emitted JSON
+	// must come from the boundary's first serialization only, never from a
+	// second render of the original object.
+	if strings.Contains(buf.String(), "LOGFIXTURE") {
+		t.Fatalf("stateful marshaler leaked into the emitted record: %s", buf.String())
+	}
+
+	entry := decodeLastLine(t, buf)
+	data, ok := entry["data"].(map[string]any)
+	if !ok || data["note"] != "clean" {
+		t.Fatalf("rebuilt attribute lost its content: %v", entry["data"])
+	}
+}
+
+func TestScrubHandlerMarshalErrorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	logger, buf := scrubTestLogger(t, scrubTestScrubber())
+
+	logger.Error("failing payload", "data", erroringFixture{})
+
+	// A marshaling failure must never hand the original value to the
+	// delegate handler, whose own !ERROR rendering would echo the marshal
+	// error — secret-bearing here.
+	if strings.Contains(buf.String(), "LOGFIXTURE") || strings.Contains(buf.String(), "!ERROR") {
+		t.Fatalf("marshal failure leaked into the emitted record: %s", buf.String())
+	}
+
+	entry := decodeLastLine(t, buf)
+	if entry["data"] != scrubTestScrubber().UnserializableMarker() {
+		t.Fatalf("marshal failure not replaced by the omission marker: %v", entry["data"])
+	}
+}
+
+func TestScrubHandlerDecodesEscapedSecrets(t *testing.T) {
+	t.Parallel()
+
+	scrubber := secretscrub.New([]secretscrub.Secret{{Name: "escaped", Value: "ESC&FIXTURE"}})
+	logger, buf := scrubTestLogger(t, scrubber)
+
+	logger.Error("escaped payload", "data", escapedFixture{})
+
+	// The emitted record must carry neither the raw fixture nor its
+	// HTML-escaped rendering — a text-level search of the encoded bytes
+	// would miss the latter.
+	for _, form := range []string{"ESC&FIXTURE", "ESC\\u0026FIXTURE"} {
+		if strings.Contains(buf.String(), form) {
+			t.Fatalf("escaped secret rendering survived: %s", buf.String())
+		}
+	}
+
+	entry := decodeLastLine(t, buf)
+	data, ok := entry["data"].(map[string]any)
+	if !ok || data["tok"] != "[REDACTED:escaped]" {
+		t.Fatalf("escaped secret not scrubbed: %v", entry["data"])
+	}
+}
+
+func TestScrubHandlerPreservesNumericPrecision(t *testing.T) {
+	t.Parallel()
+
+	logger, buf := scrubTestLogger(t, secretscrub.New(nil))
+
+	// An opaque struct is rebuilt through the boundary; a decode without
+	// exact numbers would round 9007199254740993 to ...92.
+	logger.Error("precision", "data", struct {
+		Big int64 `json:"big"`
+	}{Big: 9007199254740993})
+
+	if !strings.Contains(buf.String(), "9007199254740993") {
+		t.Fatalf("numeric precision lost through the boundary: %s", buf.String())
+	}
+
+	if strings.Contains(buf.String(), "9007199254740992") {
+		t.Fatalf("number was rounded through float64: %s", buf.String())
+	}
+}
