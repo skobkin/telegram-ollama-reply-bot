@@ -69,9 +69,18 @@ type Definition struct {
 	ResultCharBudget int
 	SideEffecting    bool
 	Handler          Handler
+	// Resolve is a local, side-effect-free presentation/availability check.
+	// It runs before advertisement and again before dispatch. Parameters are
+	// copied before calling it, so a resolver cannot mutate the registry.
+	Resolve func(CallContext, Presentation) (Presentation, bool)
 	// Visibility is display metadata; an empty value resolves to
 	// VisibilityStandard (see EffectiveVisibility).
 	Visibility Visibility
+}
+
+type Presentation struct {
+	Description string
+	Parameters  json.RawMessage
 }
 
 // EffectiveVisibility resolves the display classification, defaulting to
@@ -88,6 +97,7 @@ func (d Definition) EffectiveVisibility() Visibility {
 // ReplyWithTools call and shared by that run's tool calls; handlers receive
 // it through CallContext and must treat a nil value as "state unavailable".
 type runState struct {
+	advertised map[string]Definition
 	// reactionAttempted claims the run's single outgoing set-reaction API
 	// attempt (invalid local arguments do not consume it).
 	reactionAttempted atomic.Bool

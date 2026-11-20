@@ -116,7 +116,7 @@ func TestRestrictedReactionDescriptionDoesNotChangeOrdinaryTurns(t *testing.T) {
 			if allowed != nil && !slices.Contains(allowed, "say_nothing") {
 				want = setReactionDescription(true)
 			}
-			if tool.Description != want || string(tool.Parameters) != string(ordinary.Parameters) || !strings.Contains(stub.lastBuildPolicy, want) {
+			if tool.Description != want || string(tool.Parameters) != string(ordinary.Parameters) || strings.Contains(stub.lastBuildPolicy, want) {
 				t.Fatalf("description/policy/schema mismatch for allowlist %v: %+v", allowed, tool)
 			}
 		}

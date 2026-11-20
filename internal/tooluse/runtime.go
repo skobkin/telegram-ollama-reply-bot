@@ -264,7 +264,7 @@ func (r *Runtime) AttachImageAnalyzer(a ImageAnalyzer) {
 	})
 	r.registry.Register(Definition{
 		Name:             "analyze_image",
-		Description:      "Re-analyze an image from a recent message under your own focused prompt when the cached baseline description is insufficient. Identify the message_id via list_recent_images or get_message_thread_context first. Each call is a paid recognition request; avoid casual or repeated use.",
+		Description:      "Re-analyze an image from a recent message under your own focused prompt when the cached baseline description is insufficient. Identify the message_id via list_recent_images or get_message_thread_context first. Each call makes a paid recognition request.",
 		Parameters:       json.RawMessage(`{"type":"object","properties":{"message_id":{"type":"integer","minimum":1,"description":"Telegram message_id of the image-bearing message, from tool results."},"prompt":{"type":"string","minLength":1,"maxLength":4000,"description":"Focused analysis prompt for this image, e.g. 'read the error text in the screenshot'."}},"required":["message_id","prompt"],"additionalProperties":false}`),
 		InvocationPolicy: InvocationPolicyDiscretionaryPaid,
 		ResultCharBudget: analyzeImageResultCharBudget,
@@ -330,18 +330,6 @@ func (r *Runtime) Close() {
 // delivery is best-effort: the returned outcome never depends on it.
 func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, error) {
 	logger := logging.FromContext(ctx, r.logger)
-	definitions := allowedDefinitions(r.turnDefinitions(req.TurnConfig.SystemOneModel), req.AllowedTools)
-	// Restricted React turns do not expose silence or publish text. Keep
-	// their reaction guidance local to this run, without changing the registry.
-	if req.AllowedTools != nil && !slices.Contains(req.AllowedTools, "say_nothing") {
-		for i := range definitions {
-			if definitions[i].Name == "set_reaction" {
-				definitions[i].Description = setReactionDescription(true)
-			}
-		}
-	}
-	modelTools := toLLMToolDefinitions(definitions)
-	toolPolicy := buildToolPolicy(definitions)
 
 	runID := req.RunID
 	if runID == "" {
@@ -393,6 +381,13 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 	}
 
 	for i := 0; i < r.config.MaxIterations; i++ {
+		definitions := r.resolveDefinitions(req, run)
+		run.advertised = make(map[string]Definition, len(definitions))
+		for _, definition := range definitions {
+			run.advertised[definition.Name] = definition
+		}
+		modelTools := toLLMToolDefinitions(definitions)
+		toolPolicy := buildToolPolicy(definitions)
 		genStart := time.Now()
 		emitter.publish(execution.GenerationStarted{RunContext: emitter.rc, At: genStart, Iteration: i})
 
@@ -496,19 +491,13 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 
 func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *runState, req ChatRequest, call llm.ToolCall) toolCallOutcome {
 	logger := logging.FromContext(ctx, r.logger)
-	definition, ok := r.registry.Lookup(call.Name)
-	if ok && req.AllowedTools != nil && !slices.Contains(req.AllowedTools, call.Name) {
-		// A registered tool outside this run's allowlist is rejected exactly
-		// like an unknown one: the model sees the error, nothing executes.
-		logger.Warn("tool call rejected by the run allowlist", "tool_name", call.Name, "tool_call_id", call.ID)
-		ok = false
-	}
-	if ok && isDecisionTool(call.Name) && run.systemOneModel == "" {
-		// Decision tools are only advertised with an effective System One
-		// model; a hallucinated call gets the same rejection treatment and
-		// never reaches inference.
-		logger.Warn("tool call rejected: decision backend unconfigured for the scope", "tool_name", call.Name, "tool_call_id", call.ID)
-		ok = false
+	definition, ok := run.advertised[call.Name]
+	if ok {
+		// Re-resolve the registered definition, never a previously transformed
+		// presentation. Earlier calls in this batch may have changed state.
+		base, registered := r.registry.Lookup(call.Name)
+		definition, ok = resolveDefinition(base, r.callContext(req, run))
+		ok = ok && registered
 	}
 	if !ok {
 		logger.Warn("tool call references unknown tool", "tool_name", call.Name, "tool_call_id", call.ID)
@@ -665,7 +654,7 @@ func buildToolPolicy(definitions []Definition) string {
 	explicitOnly := make([]string, 0, len(definitions))
 
 	for _, definition := range definitions {
-		line := fmt.Sprintf("- %s: %s", definition.Name, definition.Description)
+		line := "- " + definition.Name
 		switch definition.InvocationPolicy {
 		case InvocationPolicyDiscretionary:
 			discretionary = append(discretionary, line)
@@ -676,15 +665,15 @@ func buildToolPolicy(definitions []Definition) string {
 		}
 	}
 
-	var sections []string
+	sections := []string{"Use tools when they improve accuracy, provide missing information, or enable useful actions and interactions.\n\nIf a tool call fails, inspect the error and retry with corrected arguments when appropriate."}
 	if len(discretionary) > 0 {
-		sections = append(sections, "Discretionary tools: use these whenever they help you answer more accurately.\n"+strings.Join(discretionary, "\n"))
+		sections = append(sections, "Discretionary tools:\n"+strings.Join(discretionary, "\n"))
 	}
 	if len(discretionaryPaid) > 0 {
-		sections = append(sections, "Discretionary paid tools: use these when they are needed for accuracy or freshness, but avoid casual, speculative, or repeated use because they consume paid external resources.\n"+strings.Join(discretionaryPaid, "\n"))
+		sections = append(sections, "Discretionary paid tools (external requests may incur cost):\n"+strings.Join(discretionaryPaid, "\n"))
 	}
 	if len(explicitOnly) > 0 {
-		sections = append(sections, "Explicit-request-only tools: use these only when the user clearly asks for that action or lookup.\n"+strings.Join(explicitOnly, "\n"))
+		sections = append(sections, "Explicit-request-only tools:\n"+strings.Join(explicitOnly, "\n"))
 	}
 
 	return strings.Join(sections, "\n\n")
