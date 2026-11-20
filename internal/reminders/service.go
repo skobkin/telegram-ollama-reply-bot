@@ -366,6 +366,11 @@ func (s *Service) buildReminder(scope state.ConversationScope, creatorUserID int
 
 	schedule, nextDueAt, err := buildSchedule(now, req)
 	if err != nil {
+		var validation *ValidationError
+		if errors.As(err, &validation) {
+			return Reminder{}, validation
+		}
+
 		return Reminder{}, &ValidationError{Message: scheduleValidationHint(req.ScheduleType)}
 	}
 
@@ -394,25 +399,25 @@ func buildSchedule(now time.Time, req CreateRequest) (Schedule, time.Time, error
 	case ScheduleTypeOneShot:
 		runAt, err := time.Parse(time.RFC3339, strings.TrimSpace(req.RunAt))
 		if err != nil {
-			return Schedule{}, time.Time{}, errors.New("run_at must be RFC3339 with timezone offset")
+			return Schedule{}, time.Time{}, &ValidationError{Message: "run_at must be RFC3339 with timezone offset"}
 		}
 		if !runAt.After(now) {
-			return Schedule{}, time.Time{}, errors.New("run_at must be in the future")
+			return Schedule{}, time.Time{}, &ValidationError{Message: "run_at must be in the future"}
 		}
 
 		return schedule, runAt.UTC(), nil
 	case ScheduleTypeIntervalDays, ScheduleTypeIntervalWeeks:
 		if req.IntervalValue <= 0 {
-			return Schedule{}, time.Time{}, errors.New("interval_value must be positive")
+			return Schedule{}, time.Time{}, &ValidationError{Message: "interval_value must be positive"}
 		}
 		schedule.IntervalValue = req.IntervalValue
 
 		runAt, err := time.Parse(time.RFC3339, strings.TrimSpace(req.RunAt))
 		if err != nil {
-			return Schedule{}, time.Time{}, errors.New("run_at must be RFC3339 with timezone offset")
+			return Schedule{}, time.Time{}, &ValidationError{Message: "run_at must be RFC3339 with timezone offset"}
 		}
 		if !runAt.After(now) {
-			return Schedule{}, time.Time{}, errors.New("run_at must be in the future")
+			return Schedule{}, time.Time{}, &ValidationError{Message: "run_at must be in the future"}
 		}
 
 		return schedule, runAt.UTC(), nil
@@ -433,7 +438,7 @@ func buildSchedule(now time.Time, req CreateRequest) (Schedule, time.Time, error
 		return schedule, next.UTC(), nil
 	case ScheduleTypeMonthly:
 		if req.DayOfMonth < 1 || req.DayOfMonth > 31 {
-			return Schedule{}, time.Time{}, errors.New("day_of_month must be between 1 and 31")
+			return Schedule{}, time.Time{}, &ValidationError{Message: "day_of_month must be between 1 and 31"}
 		}
 		_, location, minutes, err := parseCalendarFields(req)
 		if err != nil {
@@ -456,11 +461,11 @@ func buildSchedule(now time.Time, req CreateRequest) (Schedule, time.Time, error
 
 func parseCalendarFields(req CreateRequest) (WeekdayMask, *time.Location, int, error) {
 	if strings.TrimSpace(req.Timezone) == "" {
-		return 0, nil, 0, errors.New("timezone is required for calendar schedules")
+		return 0, nil, 0, &ValidationError{Message: "timezone is required for calendar schedules"}
 	}
 	location, err := time.LoadLocation(strings.TrimSpace(req.Timezone))
 	if err != nil {
-		return 0, nil, 0, fmt.Errorf("load timezone: %w", err)
+		return 0, nil, 0, &ValidationError{Message: "timezone must be a valid IANA timezone"}
 	}
 	minutes, err := parseTimeOfDay(strings.TrimSpace(req.TimeOfDay))
 	if err != nil {
@@ -468,7 +473,7 @@ func parseCalendarFields(req CreateRequest) (WeekdayMask, *time.Location, int, e
 	}
 	mask, err := ParseWeekdays(req.Weekdays)
 	if err != nil && ScheduleType(strings.TrimSpace(req.ScheduleType)) == ScheduleTypeWeekdays {
-		return 0, nil, 0, err
+		return 0, nil, 0, &ValidationError{Message: "weekdays must contain valid weekday names"}
 	}
 
 	return mask, location, minutes, nil
@@ -477,7 +482,7 @@ func parseCalendarFields(req CreateRequest) (WeekdayMask, *time.Location, int, e
 func parseTimeOfDay(raw string) (int, error) {
 	parsed, err := time.Parse("15:04", raw)
 	if err != nil {
-		return 0, errors.New("time_of_day must use HH:MM 24h format")
+		return 0, &ValidationError{Message: "time_of_day must use HH:MM 24h format"}
 	}
 
 	return parsed.Hour()*60 + parsed.Minute(), nil

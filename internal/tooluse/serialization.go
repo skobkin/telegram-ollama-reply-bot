@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"sort"
+	"strings"
 	"unicode/utf8"
 
 	"telegram-ollama-reply-bot/internal/support/toolbudget"
@@ -21,7 +22,7 @@ func marshalResult(result toolResult, budget int) string {
 	result = normalizeResult(result)
 	encoded, err := json.Marshal(result)
 	if err != nil {
-		return resultDeliveryFailure(result, "result_serialization_failed")
+		return resultDeliveryFailure(result, "result_serialization_failed", budget)
 	}
 	if utf8.RuneCount(encoded) <= budget {
 		return string(encoded)
@@ -29,13 +30,13 @@ func marshalResult(result toolResult, budget int) string {
 	var data any
 	var tree map[string]json.RawMessage
 	if json.Unmarshal(encoded, &tree) != nil {
-		return resultDeliveryFailure(result, "result_serialization_failed")
+		return resultDeliveryFailure(result, "result_serialization_failed", budget)
 	}
 	if raw := tree["data"]; raw != nil {
 		decoder := json.NewDecoder(bytes.NewReader(raw))
 		decoder.UseNumber()
 		if decoder.Decode(&data) != nil {
-			return resultDeliveryFailure(result, "result_serialization_failed")
+			return resultDeliveryFailure(result, "result_serialization_failed", budget)
 		}
 	}
 	result.Data = data
@@ -44,7 +45,7 @@ func marshalResult(result toolResult, budget int) string {
 	for {
 		encoded, err = json.Marshal(result)
 		if err != nil {
-			return resultDeliveryFailure(result, "result_serialization_failed")
+			return resultDeliveryFailure(result, "result_serialization_failed", budget)
 		}
 		if utf8.RuneCount(encoded) <= budget {
 			return string(encoded)
@@ -52,6 +53,16 @@ func marshalResult(result toolResult, budget int) string {
 		candidate := findReduction(result.Data, "data", false)
 		if candidate.apply != nil {
 			candidate.apply()
+			if data, ok := result.Data.(map[string]any); ok {
+				if flags, ok := data["truncated"].(map[string]any); ok {
+					switch {
+					case candidate.path == "data.chain":
+						flags["chain_depth"] = true
+					case candidate.path == "data.adjacent_replies" || (strings.HasPrefix(candidate.path, "data.adjacent_replies[]") && strings.HasSuffix(candidate.path, ".replies")):
+						flags["adjacent_replies"] = true
+					}
+				}
+			}
 			// Bound the metadata too; truncated remains explicit if detailed paths
 			// no longer fit. Never insert markers into caller-owned opaque objects.
 			if len(result.Reductions) < 8 && len(candidate.path) <= 120 {
@@ -71,7 +82,7 @@ func marshalResult(result toolResult, budget int) string {
 			continue
 		}
 
-		return resultDeliveryFailure(result, "result_too_large")
+		return resultDeliveryFailure(result, "result_too_large", budget)
 	}
 }
 
@@ -83,7 +94,7 @@ type reduction struct {
 
 func reducibleText(key string) bool {
 	switch key {
-	case "text", "summary", "description", "snippet", "analysis", "title", "content", "text_snippet", "explanation", "note":
+	case "text", "summary", "description", "snippet", "analysis", "title", "content", "text_snippet", "text_preview", "description_preview", "explanation", "note":
 		return true
 	default:
 		return false
@@ -126,7 +137,14 @@ func findReduction(value any, path string, protected bool) reduction {
 			if text, ok := item.(string); ok && reducibleText(key) && utf8.RuneCountInString(text) > 32 {
 				runes := []rune(text)
 				keep := len(runes) / 2
-				candidate := reduction{size: len(runes) - keep, removed: len(runes) - keep - 1, path: nextPath, apply: func() { v[key] = string(runes[:keep]) + "…" }}
+				candidate := reduction{size: len(runes) - keep, removed: len(runes) - keep - 1, path: nextPath, apply: func() {
+					v[key] = string(runes[:keep]) + "…"
+					if key == "text_preview" {
+						if _, ok := v["text_truncated"]; ok {
+							v["text_truncated"] = true
+						}
+					}
+				}}
 				if candidate.size > best.size {
 					best = candidate
 				}
@@ -136,8 +154,40 @@ func findReduction(value any, path string, protected bool) reduction {
 				best = candidate
 			}
 			if list, ok := item.([]any); ok && len(list) > 0 && !semanticUnit(key) {
-				// Preserve every item's identifiers while reducing text first.
-				if best.apply == nil {
+				// Thread chains are oldest first. Retain the trigger and its immediate
+				// reply target, and shed older ancestors only after adjacent replies.
+				if nextPath == "data.chain" {
+					if len(list) > 2 && best.apply == nil {
+						best = reduction{size: 1, removed: 1, path: nextPath, apply: func() { v[key] = list[1:] }}
+					} else if len(list) <= 2 && best.apply == nil {
+						// If even the essential pair is too large, retain their identities
+						// and reply links while omitting optional presentation details.
+						for _, entry := range list {
+							message, ok := entry.(map[string]any)
+							if !ok {
+								continue
+							}
+							count := len(message)
+							if _, ok := message["message_id"]; ok {
+								count--
+							}
+							if _, ok := message["reply_to_message_id"]; ok {
+								count--
+							}
+							if count > 0 {
+								best = reduction{size: 1, removed: count, path: nextPath + "[].details", apply: func() {
+									for field := range message {
+										if field != "message_id" && field != "reply_to_message_id" {
+											delete(message, field)
+										}
+									}
+								}}
+
+								break
+							}
+						}
+					}
+				} else if best.apply == nil {
 					best = reduction{size: 1, removed: 1, path: nextPath, apply: func() { v[key] = list[:len(list)-1] }}
 				}
 			}
@@ -154,7 +204,36 @@ func findReduction(value any, path string, protected bool) reduction {
 	return best
 }
 
-func resultDeliveryFailure(result toolResult, code string) string {
+func resultDeliveryFailure(result toolResult, code string, budget int) string {
+	if result.Error != nil {
+		// Retain the original failure and retry semantics when optional data is
+		// oversized or unserializable. Escaped text may still exceed the budget.
+		result.Data = nil
+		result.Summary = ""
+		result.Reductions = nil
+		result.Truncated = true
+		for {
+			encoded, err := json.Marshal(result)
+			if err == nil && utf8.RuneCount(encoded) <= budget {
+				return string(encoded)
+			}
+			e := *result.Error
+			switch {
+			case len([]rune(e.Message)) >= len([]rune(e.RecoveryHint)) && len([]rune(e.Message)) > 32:
+				e.Message = truncateUTF8(e.Message, len([]rune(e.Message))/2)
+			case len([]rune(e.RecoveryHint)) > 32:
+				e.RecoveryHint = truncateUTF8(e.RecoveryHint, len([]rune(e.RecoveryHint))/2)
+			default:
+				return resultDeliveryFallback(result, code)
+			}
+			result.Error = &e
+		}
+	}
+
+	return resultDeliveryFallback(result, code)
+}
+
+func resultDeliveryFallback(result toolResult, code string) string {
 	failure := ErrorResult(NewToolError(code, ErrorPermanent, "The tool's result could not be delivered within its JSON budget.", false, "Do not repeat an action that already completed; its execution status is preserved."))
 	failure.ExecutionStatus = result.Status
 	failure.Truncated = true

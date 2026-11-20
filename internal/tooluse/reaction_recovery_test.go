@@ -97,3 +97,30 @@ func TestAmbiguousAndRateLimitedReactionsCannotRetry(tst *testing.T) {
 		}
 	}
 }
+
+type failingAvailabilityGetter struct {
+	calls int
+	err   error
+}
+
+func (g *failingAvailabilityGetter) GetChat(context.Context, *t.GetChatParams) (*t.ChatFullInfo, error) {
+	g.calls++
+
+	return nil, g.err
+}
+
+func TestReactionRejectionDoesNotBypassLookupBackoff(tst *testing.T) {
+	for _, err := range []error{errors.New("offline"), &telegoapi.Error{ErrorCode: 429, Parameters: &telegoapi.ResponseParameters{RetryAfter: 180}}} {
+		sender := &stubActionSender{reactionErr: &telegoapi.Error{ErrorCode: 400, Description: "REACTION_INVALID"}}
+		r, m := restrictedRuntime(tst, sender)
+		getter := &failingAvailabilityGetter{err: err}
+		r.AttachReactionAvailability(reactionavailability.New(getter, nil))
+		m.responses = []llm.Response{toolBatch(reactionCall("bad", "👍")), {Message: llm.TextMessage(llm.RoleAssistant, "done")}}
+		req := restrictedReactionRequest()
+		req.CompleteAfterSideEffect = false
+		result, callErr := r.ReplyWithTools(context.Background(), req)
+		if callErr != nil || sender.reactionCallCount() != 1 || getter.calls != 1 || len(result.ToolCalls) != 1 || !result.ToolCalls[0].Retryable {
+			tst.Fatalf("result=%+v err=%v sends=%d lookups=%d", result, callErr, sender.reactionCallCount(), getter.calls)
+		}
+	}
+}

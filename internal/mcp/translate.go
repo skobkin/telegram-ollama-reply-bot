@@ -158,25 +158,14 @@ func resolveInvocationPolicy(server config.MCPServerConfig, annotations *mcp.Too
 	return tooluse.InvocationPolicyExplicitRequestOnly
 }
 
-// resolveSideEffecting returns the operator override if set, otherwise derives
-// from the MCP tool's `readOnlyHint` and `destructiveHint` annotations.
-//
-//   - Read-only tools are always non-side-effecting (destructiveHint is only
-//     meaningful when ReadOnlyHint == false per the MCP spec).
-//   - Otherwise, a nil `destructiveHint` is treated conservatively as `true`,
-//     matching the MCP specification default.
+// resolveSideEffecting honors the operator override, otherwise only an explicit
+// read-only annotation rules out side effects. Non-destructive tools can write.
 func resolveSideEffecting(server config.MCPServerConfig, annotations *mcp.ToolAnnotations) bool {
 	if server.SideEffecting != nil {
 		return *server.SideEffecting
 	}
-	if annotations != nil && annotations.ReadOnlyHint {
-		return false
-	}
-	if annotations == nil || annotations.DestructiveHint == nil {
-		return true
-	}
 
-	return *annotations.DestructiveHint
+	return annotations == nil || !annotations.ReadOnlyHint
 }
 
 // resolveResultCharBudget returns the per-tool result character budget, using

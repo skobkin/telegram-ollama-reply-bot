@@ -92,7 +92,6 @@ func (p *Provider) Invalidate(chatID int64) {
 	defer p.mu.Unlock()
 	if e := p.entries[chatID]; e != nil {
 		e.expires = time.Time{}
-		e.retryAt = time.Time{}
 		e.generation++
 	}
 }
@@ -184,14 +183,18 @@ func (p *Provider) Lookup(ctx context.Context, chatID int64, title string) Snaps
 				} else {
 					e.warnedEmpty = false
 				}
-			} else if ctx.Err() == nil {
-				e.retryAt = now.Add(p.backoff)
-				class, code, delay := lookupFailure(err)
-				if retry := now.Add(delay); retry.After(e.retryAt) {
-					e.retryAt = retry
-				}
-				p.logger.Warn("reaction availability lookup failed", "chat_id", chatID, "error_class", class, "telegram_error_code", code)
 			}
+		}
+		class, code, delay := lookupFailure(err)
+		if err != nil && (ctx.Err() == nil || class == "rate_limited") {
+			retryAt := now.Add(p.backoff)
+			if retry := now.Add(delay); retry.After(retryAt) {
+				retryAt = retry
+			}
+			if retryAt.After(e.retryAt) {
+				e.retryAt = retryAt
+			}
+			p.logger.Warn("reaction availability lookup failed", "chat_id", chatID, "error_class", class, "telegram_error_code", code)
 		}
 		e.loading = nil
 		close(done)

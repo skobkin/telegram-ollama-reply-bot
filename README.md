@@ -84,7 +84,7 @@ The bot can be configured using the following environment variables:
 | `MCP__SERVERS__<NAME>__INSECURE`                   | Allow plain `http://` for this server. Required for local development.                                            | No       | `false`                  |
 | `MCP__SERVERS__<NAME>__TIMEOUT`                    | Per-tool-call timeout. Go duration string (e.g. `30s`); caps tool calls, not the standing connection.             | No       | `15s`                    |
 | `MCP__SERVERS__<NAME>__INVOCATION_POLICY`          | Default invocation policy for this server: `discretionary`, `discretionary_paid`, or `explicit_request_only`      | No       | derived from `readOnlyHint` |
-| `MCP__SERVERS__<NAME>__SIDE_EFFECTING`             | Force `true`/`false` for the side-effecting flag of every tool from this server                                   | No       | derived from `destructiveHint` |
+| `MCP__SERVERS__<NAME>__SIDE_EFFECTING`             | Force `true`/`false` for the side-effecting flag of every tool from this server                                   | No       | derived from `readOnlyHint` |
 | `MCP__SERVERS__<NAME>__RESULT_CHAR_BUDGET`         | Maximum characters of a tool result forwarded to the model. Must be at least 512 when set.                  | No       | `3500`                   |
 | `MCP__SERVERS__<NAME>__ALLOWED_TOOLS`              | Comma-separated whitelist of tool names to expose from this server. Misnamed entries fail at startup.             | No       | empty                    |
 | `MCP__SERVERS__<NAME>__RESTRICTED_TOOLS`           | Comma-separated deny-list of tool names to drop from this server. Misnamed entries fail at startup.               | No       | empty                    |
@@ -196,8 +196,8 @@ Startup behaviour:
 - Tool invocation policy defaults to `discretionary` when the server's tool annotation sets `readOnlyHint=true`,
   and `explicit_request_only` otherwise. `discretionary_paid` behaves like `discretionary` but tells the model to
   reserve the tool for calls that need accuracy or freshness, since each call consumes a paid external resource.
-  The default side-effecting flag is `destructiveHint` (treated as `true`
-  when the annotation is absent), and is forced to `false` whenever `readOnlyHint=true` per the MCP spec.
+  Tools are considered side-effecting unless `readOnlyHint=true` or the operator overrides the flag.
+  A non-destructive tool may still modify state.
 - `INSECURE=true` is required to use a `http://` URL. HTTPS is the default and is enforced per server.
 
 Reminder behavior in the first implementation slice:

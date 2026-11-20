@@ -86,3 +86,19 @@ func TestMCPShapedResultReductionPreservesStructuredScalars(t *testing.T) {
 		}
 	}
 }
+
+func TestOversizedFailurePreservesErrorContract(t *testing.T) {
+	for _, class := range []string{ErrorArguments, ErrorAmbiguous} {
+		err := NewToolError("mcp_failure", class, strings.Repeat("<\"\\", 60), class == ErrorArguments, strings.Repeat("\n&", 64))
+		result := ErrorResult(err)
+		result.Data = map[string]any{"id": strings.Repeat("x", 4000)}
+		wire := marshalResult(result, toolbudget.MinChars)
+		var got ToolResult
+		if e := json.Unmarshal([]byte(wire), &got); e != nil || utf8.RuneCountInString(wire) > toolbudget.MinChars {
+			t.Fatalf("%v %s", e, wire)
+		}
+		if got.Error == nil || got.Error.Code != err.Code || got.Error.Class != class || got.Error.Retryable != err.Retryable || got.Error.RecoveryHint == "" || got.Error.Message == "" || !got.Truncated {
+			t.Fatal(wire)
+		}
+	}
+}

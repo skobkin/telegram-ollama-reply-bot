@@ -1561,3 +1561,52 @@ func assertToolError(t *testing.T, result toolResult, wantCode, wantMessage stri
 		t.Fatalf("unexpected error payload: %+v", result.Error)
 	}
 }
+
+func TestThreadContextBudgetKeepsTriggerAndReplyTarget(t *testing.T) {
+	store := memory.New(memory.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Conversations()
+	scope := state.ConversationScope{ChatID: 1}
+	var previous *state.Message
+	for i := 1; i <= 8; i++ {
+		msg := state.Message{MessageID: i, FromID: int64(i), Text: strings.Repeat("long preview ", 30), ReplyTo: previous}
+		store.AppendMessage(scope, msg)
+		previous = &msg
+	}
+	for i := 9; i <= 11; i++ {
+		store.AppendMessage(scope, state.Message{MessageID: i, Text: strings.Repeat("adjacent ", 30), ReplyTo: previous.ReplyTo})
+	}
+	runtime := New(&stubLLM{}, store, &stubExtractor{}, nil, &stubActionSender{}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{MaxIterations: 6})
+	result, err := runtime.getMessageThreadContext(context.Background(), CallContext{Scope: scope, Requester: *previous}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := marshalResult(result, 1200)
+	var got struct {
+		Status     string
+		Truncated  bool
+		Reductions map[string]int
+		Data       struct {
+			Chain []struct {
+				MessageID     int  `json:"message_id"`
+				TextTruncated bool `json:"text_truncated"`
+			} `json:"chain"`
+			Adjacent []any `json:"adjacent_replies"`
+			Flags    struct {
+				Chain    bool `json:"chain_depth"`
+				Adjacent bool `json:"adjacent_replies"`
+			} `json:"truncated"`
+		}
+	}
+	if err := json.Unmarshal([]byte(wire), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "ok" || !got.Truncated || len(got.Data.Chain) < 2 || got.Data.Chain[len(got.Data.Chain)-1].MessageID != 8 || got.Data.Chain[len(got.Data.Chain)-2].MessageID != 7 {
+		t.Fatal(wire)
+	}
+	if got.Reductions["data.chain"] == 0 || len(got.Data.Adjacent) != 0 || !got.Data.Flags.Chain || !got.Data.Flags.Adjacent || !got.Data.Chain[len(got.Data.Chain)-1].TextTruncated {
+		t.Fatal(wire)
+	}
+	wire = marshalResult(result, 512)
+	if err := json.Unmarshal([]byte(wire), &got); err != nil || got.Status != "ok" || len(got.Data.Chain) != 2 || got.Data.Chain[0].MessageID != 7 || got.Data.Chain[1].MessageID != 8 {
+		t.Fatal(wire, err)
+	}
+}

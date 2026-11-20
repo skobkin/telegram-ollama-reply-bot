@@ -2,6 +2,12 @@
 
 ## 0.30.0 (unreleased) — changes since 0.29.1
 
+### MCP side-effect classification
+
+MCP tools without `readOnlyHint=true` are now treated as potentially side-effecting even when
+`destructiveHint=false`. Ambiguous failures will not recommend replay. Operators can explicitly
+set `MCP__SERVERS__<NAME>__SIDE_EFFECTING` when their server requires an override.
+
 ### Conversation metadata replaces redundant tools (breaking, #179)
 
 `get_conversation_summary`, `get_chat_activity_window`, and `get_history_bounds`
@@ -537,8 +543,8 @@ Notable behaviours:
 - The default invocation policy is `discretionary` for tools with `readOnlyHint=true`, and `explicit_request_only`
   otherwise. `discretionary_paid` behaves like `discretionary` but tells the model to reserve the tool for calls
   that need accuracy or freshness, since each call consumes a paid external resource.
-  The default side-effecting flag is `destructiveHint`, treated as `true` when the annotation is
-  absent; `readOnlyHint=true` always forces the side-effecting flag to `false` per the MCP spec.
+  Tools are considered side-effecting unless `readOnlyHint=true` or the operator overrides the flag;
+  `destructiveHint=false` does not imply that a tool is read-only.
 - A successful `MCP__SERVERS__*` config registers only the namespaced tools; the built-in toolset is untouched.
 - STDIO transport is intentionally not supported in this iteration; only Streamable HTTP is wired.
 

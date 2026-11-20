@@ -2,8 +2,10 @@ package reminders
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,5 +152,26 @@ func TestComputeDeliveryWindowKeepsOnlyLatestMissedRecurringOccurrence(t *testin
 	}
 	if next.Day() != 24 {
 		t.Fatalf("expected next occurrence on day 24, got %s", next)
+	}
+}
+
+func TestScheduleValidationReturnsSpecificSafeErrors(t *testing.T) {
+	svc := NewService(newStoreStub(), &senderStub{}, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc.now = func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
+	for _, tc := range []struct {
+		req  CreateRequest
+		want string
+	}{
+		{CreateRequest{Text: "x", ScheduleType: "one_shot", RunAt: "secret-invalid"}, "run_at must be RFC3339 with timezone offset"},
+		{CreateRequest{Text: "x", ScheduleType: "one_shot", RunAt: "2025-01-01T00:00:00Z"}, "run_at must be in the future"},
+		{CreateRequest{Text: "x", ScheduleType: "interval_days", IntervalValue: 0}, "interval_value must be positive"},
+		{CreateRequest{Text: "x", ScheduleType: "monthly", DayOfMonth: 3, Timezone: "secret-invalid"}, "timezone must be a valid IANA timezone"},
+		{CreateRequest{Text: "x", ScheduleType: "weekdays", Timezone: "UTC", TimeOfDay: "12:00", Weekdays: []string{"secret-invalid"}}, "weekdays must contain valid weekday names"},
+	} {
+		_, err := svc.AddReminder(context.Background(), state.ConversationScope{ChatID: 1}, 7, tc.req)
+		var validation *ValidationError
+		if !errors.As(err, &validation) || validation.Message != tc.want || strings.Contains(err.Error(), "secret") {
+			t.Fatalf("got %v; want %q", err, tc.want)
+		}
 	}
 }

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -308,5 +309,21 @@ func TestResolveSideEffectingDefaultsToTrueWhenAnnotationMissing(t *testing.T) {
 	got := resolveSideEffecting(config.MCPServerConfig{}, nil)
 	if !got {
 		t.Fatalf("expected side_effecting=true by default")
+	}
+}
+
+func TestNonDestructiveWriteIsSideEffectingUnlessOverridden(t *testing.T) {
+	no := false
+	yes := true
+	annotations := &mcp.ToolAnnotations{DestructiveHint: &no}
+	if !resolveSideEffecting(config.MCPServerConfig{}, annotations) {
+		t.Fatal("non-destructive does not mean read-only")
+	}
+	got := classifyCallError(errors.New("connection lost"), resolveSideEffecting(config.MCPServerConfig{}, annotations))
+	if got.Class != tooluse.ErrorAmbiguous || got.Retryable {
+		t.Fatalf("ambiguous write invited replay: %+v", got)
+	}
+	if resolveSideEffecting(config.MCPServerConfig{SideEffecting: &no}, annotations) || !resolveSideEffecting(config.MCPServerConfig{SideEffecting: &yes}, &mcp.ToolAnnotations{ReadOnlyHint: true}) {
+		t.Fatal("operator override ignored")
 	}
 }

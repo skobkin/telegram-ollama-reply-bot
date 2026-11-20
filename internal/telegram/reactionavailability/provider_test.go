@@ -262,3 +262,71 @@ func TestFailedRefreshPreservesKnownEmptyAvailability(tst *testing.T) {
 		tst.Fatal(got)
 	}
 }
+
+func TestInvalidationPreservesLookupFailureBackoff(tst *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		err   error
+		delay time.Duration
+		warm  bool
+	}{
+		{"cold transport", errors.New("offline"), time.Minute, false},
+		{"stale transport", errors.New("offline"), time.Minute, true},
+		{"stale rate limit", &telegoapi.Error{ErrorCode: 429, Parameters: &telegoapi.ResponseParameters{RetryAfter: 180}}, 3 * time.Minute, true},
+		{"cold rate limit", &telegoapi.Error{ErrorCode: 429, Parameters: &telegoapi.ResponseParameters{RetryAfter: 180}}, 3 * time.Minute, false},
+	} {
+		tst.Run(tc.name, func(tst *testing.T) {
+			now := time.Unix(100, 0)
+			calls := 0
+			fail := !tc.warm
+			p := New(getterFunc(func(context.Context, *t.GetChatParams) (*t.ChatFullInfo, error) {
+				calls++
+				if fail {
+					return nil, tc.err
+				}
+
+				return &t.ChatFullInfo{AvailableReactions: []t.ReactionType{&t.ReactionTypeEmoji{Emoji: "👍"}}}, nil
+			}), nil)
+			p.now = func() time.Time { return now }
+			if tc.warm {
+				p.Lookup(context.Background(), 1, "")
+				now = now.Add(DefaultTTL)
+				fail = true
+			}
+			before := calls
+			p.Lookup(context.Background(), 1, "")
+			p.Invalidate(1) // same path used after a Telegram reaction rejection
+			now = now.Add(tc.delay - time.Second)
+			got := p.Lookup(context.Background(), 1, "")
+			if calls != before+1 || got.Known != tc.warm || (tc.warm && (!got.Stale || !slices.Equal(got.Candidates, []string{"👍"}))) || (!tc.warm && !slices.Equal(got.Candidates, reactionemoji.ReactionCandidates())) {
+				tst.Fatal(got, calls)
+			}
+			now = now.Add(time.Second)
+			p.Lookup(context.Background(), 1, "")
+			if calls != before+2 {
+				tst.Fatal("backoff did not expire", calls)
+			}
+		})
+	}
+}
+
+func TestInflightRateLimitSurvivesInvalidation(tst *testing.T) {
+	started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	p := New(getterFunc(func(context.Context, *t.GetChatParams) (*t.ChatFullInfo, error) {
+		calls.Add(1)
+		close(started)
+		<-release
+
+		return nil, &telegoapi.Error{ErrorCode: 429, Parameters: &telegoapi.ResponseParameters{RetryAfter: 180}}
+	}), nil)
+	go func() { p.Lookup(context.Background(), 1, ""); close(done) }()
+	<-started
+	p.Invalidate(1)
+	close(release)
+	<-done
+	p.Lookup(context.Background(), 1, "")
+	if calls.Load() != 1 {
+		tst.Fatal("in-flight rate limit lost")
+	}
+}
