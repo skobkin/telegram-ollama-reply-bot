@@ -48,6 +48,7 @@ const (
 	listImagesResultCharBudget      = 1600
 	analyzeImageResultCharBudget    = 2600
 	setReactionResultCharBudget     = 600
+	calculateResultCharBudget       = 600
 )
 
 // ToolResult is the value a Handler returns to the runtime. It is exported
@@ -165,6 +166,15 @@ func newRegistry(runtime *Runtime) *Registry {
 			Visibility:       VisibilityStandard,
 			ResultCharBudget: currentTimeResultCharBudget,
 			Handler:          currentTimeHandler,
+		},
+		{
+			Name:             "calculate",
+			Description:      "Evaluate an arithmetic expression exactly instead of computing in your head. Supports + - * / ^ (or **), parentheses, constants pi and e, and functions sqrt cbrt abs exp ln log10 log2 sin cos tan asin acos atan sinh cosh tanh floor ceil round trunc (one argument), atan2 hypot pow mod (two), min max (two to four). Trigonometry uses radians. ^ is right-associative and binds tighter than unary minus: 2^3^2 = 512, -2^2 = -4. / is real division. Arithmetic is float64.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"expression":{"type":"string","minLength":1,"maxLength":256,"description":"Arithmetic expression, e.g. sqrt(2) * (3 + 4)^2."}},"required":["expression"],"additionalProperties":false}`),
+			InvocationPolicy: InvocationPolicyDiscretionary,
+			Visibility:       VisibilityStandard,
+			ResultCharBudget: calculateResultCharBudget,
+			Handler:          calculateHandler,
 		},
 		{
 			Name:             "set_reaction",

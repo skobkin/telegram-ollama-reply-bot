@@ -4,8 +4,11 @@ go 1.27.3
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
+	github.com/expr-lang/expr v1.17.8
 	github.com/getsentry/sentry-go v0.45.1
+	github.com/go-analyze/charts v0.6.4
 	github.com/go-viper/mapstructure/v2 v2.5.0
+	github.com/google/jsonschema-go v0.3.0
 	github.com/knadh/koanf/providers/env/v2 v2.0.0
 	github.com/knadh/koanf/v2 v2.3.5
 	github.com/markusmobius/go-domdistiller v1.0.0
@@ -33,12 +36,10 @@ require (
 	github.com/elliotchance/pie/v2 v2.9.0 // indirect
 	github.com/forPelevin/gomoji v1.2.0 // indirect
 	github.com/go-analyze/bulk v0.1.6 // indirect
-	github.com/go-analyze/charts v0.6.4 // indirect
 	github.com/go-shiori/dom v0.0.0-20230515143342-73569d674e1c // indirect
 	github.com/go-shiori/go-readability v0.0.0-20241012063810-92284fa8a71f // indirect
 	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
-	github.com/google/jsonschema-go v0.3.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grbit/go-json v0.11.0 // indirect
 	github.com/hablullah/go-hijri v1.0.2 // indirect
