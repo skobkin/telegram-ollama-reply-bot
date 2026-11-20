@@ -261,6 +261,9 @@ type Runtime struct {
 	randIntN func(n int) int
 	// chartRenderer overrides chart.Render in tests; nil uses it directly.
 	chartRenderer func(chart.Spec) ([]byte, error)
+	// stickers is the curated sticker catalog behind the sticker tools; nil
+	// until AttachStickerCatalog.
+	stickers StickerCatalog
 }
 
 type registeredCloser struct {

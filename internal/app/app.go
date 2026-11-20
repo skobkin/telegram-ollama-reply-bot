@@ -625,6 +625,7 @@ func Run(ctx context.Context) (runErr error) {
 		},
 	)
 	tools.AttachReactionAvailability(reactionavailability.New(telegramAPI, logManager.Logger("reactionavailability")))
+	tools.AttachStickerCatalog(stickerService)
 	tools.AttachMCP("mcp", mcpManager)
 	// Decision tools are registered statically when the System One backend
 	// is configured; their per-turn availability additionally requires an

@@ -52,6 +52,7 @@ const (
 	randomChoiceResultCharBudget    = 3000
 	messageContextResultCharBudget  = 5000
 	generateChartResultCharBudget   = 800
+	listStickersResultCharBudget    = 2400
 )
 
 // ToolResult is the value a Handler returns to the runtime. It is exported
