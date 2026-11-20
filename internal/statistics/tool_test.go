@@ -753,3 +753,80 @@ func TestToolConcurrentCollectionSnapshotsAndResets(t *testing.T) {
 		t.Fatalf("a concurrently collected dataset must restore cleanly: %v", err)
 	}
 }
+
+// ---- per-tool model attribution ----
+
+func TestToolSnapshotExposesPerToolModelAttributionInGlobalScopeOnly(t *testing.T) {
+	c := newToolCollector()
+	adv := []string{"set_reaction", "search_history"}
+	// m1 uses set_reaction cleanly; m2 sends invalid arguments, then recovers.
+	recordTurn(c, adv, []ToolCallObservation{okCall("set_reaction")}, withModel("m1"))
+	recordTurn(c, adv, nil, withModel("m1"))
+	recordTurn(c, adv, []ToolCallObservation{errCall("set_reaction", "bad_emoji", "invalid_arguments"), okCall("set_reaction")}, withModel("m2"))
+	recordTurn(c, adv, []ToolCallObservation{errCall("set_reaction", "bad_emoji", "invalid_arguments")}, withModel("m2"), proactive())
+
+	snap := c.ToolSnapshot(GlobalScope())
+	row := findTool(t, snap, "set_reaction")
+	if len(row.ByModel) != 3 {
+		t.Fatalf("m1/explicit, m2/explicit, m2/proactive expected, got %+v", row.ByModel)
+	}
+
+	type key struct{ model, mode string }
+	byKey := map[key]ToolModelRowView{}
+	var attempts, failed uint64
+	for _, m := range row.ByModel {
+		if m.Model == nil {
+			t.Fatalf("no overflow model expected: %+v", m)
+		}
+		byKey[key{*m.Model, m.Mode}] = m
+		attempts += m.Counters.Attempts
+		failed += m.Counters.Failed
+	}
+	if attempts != row.Counters.Attempts || failed != row.Counters.Failed {
+		t.Fatalf("model slices must sum to the tool row: %d/%d vs %+v", attempts, failed, row.Counters)
+	}
+
+	m1 := byKey[key{"m1", "explicit"}]
+	if m1.Counters.AdvertisedTurns != 2 || m1.Counters.Succeeded != 1 || m1.Rates.UtilizationRate == nil || *m1.Rates.UtilizationRate != 0.5 {
+		t.Fatalf("m1 utilization relative to advertisement: %+v", m1.Counters)
+	}
+	m2 := byKey[key{"m2", "explicit"}]
+	if m2.ErrorClasses.InvalidArguments != 1 || m2.Counters.RecoveredIdentityTurns != 1 || m2.Rates.RecoveryRate == nil || *m2.Rates.RecoveryRate != 1 {
+		t.Fatalf("m2 invalid arguments and recovery: %+v %+v", m2.ErrorClasses, m2.Counters)
+	}
+	if len(m2.ErrorCodes) != 1 || m2.ErrorCodes[0].Code == nil || *m2.ErrorCodes[0].Code != "bad_emoji" || len(m2.Latency.Counts) == 0 {
+		t.Fatalf("model slices carry error codes and latency: %+v", m2)
+	}
+	m2p := byKey[key{"m2", "proactive"}]
+	if m2p.Rates.RecoveryRate == nil || *m2p.Rates.RecoveryRate != 0 {
+		t.Fatalf("an unrecovered failure has recovery rate 0: %+v", m2p.Rates)
+	}
+
+	if row := findTool(t, snap, "search_history"); len(row.ByModel) != 3 || row.ByModel[0].Counters.Attempts != 0 {
+		t.Fatalf("advertised-only slices are kept: %+v", row.ByModel)
+	}
+
+	chat := findTool(t, c.ToolSnapshot(ChatScope(1)), "set_reaction")
+	if chat.ByModel != nil {
+		t.Fatalf("per-chat model attribution stays unavailable: %+v", chat.ByModel)
+	}
+	raw, err := json.Marshal(chat)
+	if err != nil || strings.Contains(string(raw), "by_model") {
+		t.Fatalf("the chat export must not carry by_model: %v %s", err, raw)
+	}
+}
+
+func TestToolModelAttributionIsBoundedAndTagsOverflowModel(t *testing.T) {
+	c := newToolCollector()
+	for i := 0; i < MaxTrackedModels+3; i++ {
+		recordTurn(c, []string{"t"}, []ToolCallObservation{okCall("t")}, withModel(fmt.Sprintf("model-%02d", i)))
+	}
+	row := findTool(t, c.ToolSnapshot(GlobalScope()), "t")
+	if len(row.ByModel) != MaxTrackedModels+1 {
+		t.Fatalf("tracked models plus one overflow slice, got %d", len(row.ByModel))
+	}
+	last := row.ByModel[len(row.ByModel)-1]
+	if !last.ModelOverflow || last.Model != nil || last.Counters.Attempts != 3 {
+		t.Fatalf("overflow models share one tagged slice: %+v", last)
+	}
+}

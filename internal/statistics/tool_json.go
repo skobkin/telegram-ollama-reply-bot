@@ -50,6 +50,7 @@ type toolExportNotes struct {
 	Recovery          string `json:"recovery"`
 	ResultPreparation string `json:"result_preparation"`
 	RunFailures       string `json:"run_failures"`
+	ModelAttribution  string `json:"model_attribution"`
 	Persistence       string `json:"persistence"`
 	Privacy           string `json:"privacy"`
 }
@@ -62,6 +63,7 @@ func toolNotes() toolExportNotes {
 		Recovery:          "recovery counts observable later calls of the same tool in the same turn after an error; it makes no claim about model reasoning; on overflow rows identity-turn counts can exceed unique turns",
 		ResultPreparation: "classifies preparing the model-facing result within its budget, not delivery; handler outcome and side effects are independent of it",
 		RunFailures:       "generation/runtime outcome observed before final Telegram text delivery",
+		ModelAttribution:  "tools[].by_model splits each tool by generation model and mode (global scope only; models beyond the tracked set share the overflow model); chat-scoped exports carry no model attribution",
 		Persistence:       "statistics are persistent aggregates; recently collected observations can be lost after an abrupt termination",
 		Privacy:           "aggregates only: no arguments, results, messages, user attribution, call IDs or timestamps",
 	}

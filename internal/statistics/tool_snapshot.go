@@ -131,6 +131,21 @@ type ToolRowView struct {
 	AdvertisedUnused bool `json:"advertised_unused"`
 	ToolStats
 	Modes ToolModes `json:"modes"`
+	// ByModel is the bounded model × mode attribution of this tool (global
+	// scope only; omitted under a chat scope, where no model dimension
+	// exists). One entry per tracked model, plus the tagged overflow model,
+	// per mode that has data.
+	ByModel []ToolModelRowView `json:"by_model,omitempty"`
+}
+
+// ToolModelRowView is one (model, mode) slice of a tool row with the full
+// statistics block, so per-model usage, invalid arguments and recovery can
+// be compared for one tool.
+type ToolModelRowView struct {
+	Model         *string `json:"model"`
+	ModelOverflow bool    `json:"model_overflow"`
+	Mode          string  `json:"mode"`
+	ToolStats
 }
 
 // ToolTurnView is the turn-level context of one mode.
@@ -313,8 +328,9 @@ func (c *Collector) ToolSnapshot(scope InteractionScope) ToolSnapshot {
 	// Select the projection rows: model projection for global scope (exact
 	// totals, model attribution), chat projection for a chat scope.
 	type selected struct {
-		row  *toolRow
-		mode ToolMode
+		row   *toolRow
+		mode  ToolMode
+		model modelKey
 	}
 	perTool := map[toolKey][]selected{}
 	total := newToolRow()
@@ -325,7 +341,7 @@ func (c *Collector) ToolSnapshot(scope InteractionScope) ToolSnapshot {
 			if key.chat.overflow || key.chat.id != scope.ChatID {
 				continue
 			}
-			perTool[key.tool] = append(perTool[key.tool], selected{row, key.mode})
+			perTool[key.tool] = append(perTool[key.tool], selected{row: row, mode: key.mode})
 			total.add(row)
 		}
 		for key, turns := range t.turnsByChat {
@@ -339,7 +355,7 @@ func (c *Collector) ToolSnapshot(scope InteractionScope) ToolSnapshot {
 		}
 	} else {
 		for key, row := range t.byModel {
-			perTool[key.tool] = append(perTool[key.tool], selected{row, key.mode})
+			perTool[key.tool] = append(perTool[key.tool], selected{row, key.mode, key.model})
 			total.add(row)
 			if key.model.overflow {
 				snap.ModelAttributionComplete = false
@@ -395,6 +411,15 @@ func (c *Collector) ToolSnapshot(scope InteractionScope) ToolSnapshot {
 				sel.row.c[tcRejectedNotAdvertised] + sel.row.c[tcRejectedUnavailable]
 		}
 		view := ToolRowView{ToolStats: toolStatsOf(row, t.codeNames), Modes: modes}
+		if !scope.ChatSpecified {
+			for _, sel := range perTool[key] {
+				view.ByModel = append(view.ByModel, ToolModelRowView{
+					Model: modelPointer(sel.model), ModelOverflow: sel.model.overflow, Mode: sel.mode.String(),
+					ToolStats: toolStatsOf(sel.row, t.codeNames),
+				})
+			}
+			sortToolModelRows(view.ByModel)
+		}
 		switch key.kind {
 		case toolTracked:
 			name := key.name
@@ -472,6 +497,20 @@ func (c *Collector) toolModelViewsLocked() []ToolModelView {
 	})
 
 	return views
+}
+
+func sortToolModelRows(rows []ToolModelRowView) {
+	sort.Slice(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if a.ModelOverflow != b.ModelOverflow {
+			return overflowRank(a.ModelOverflow) < overflowRank(b.ModelOverflow) // overflow last
+		}
+		if modelSortName(a.Model) != modelSortName(b.Model) {
+			return modelSortName(a.Model) < modelSortName(b.Model)
+		}
+
+		return a.Mode < b.Mode
+	})
 }
 
 // sortToolRows orders by attempts desc, advertised turns desc, then name
