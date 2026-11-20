@@ -182,21 +182,23 @@ func bootstrapEnvSecrets() []secretscrub.Secret {
 }
 
 // bootstrapEnvValues flattens the environment keyed by lowercased variable
-// name. The loader lowercases every variable name before mapping it onto
-// the config tree (config.Load's env transform), so a credential set in any
-// letter case must be found here the same way; an exact-case LookupEnv
-// would silently miss the value. Blank values are kept — the lookup sites
-// apply the loader's blank-means-unset rule themselves. The first
-// occurrence of a name wins.
+// name, selecting values exactly the way the loader's env provider builds
+// its map (config.Load): the transform lowercases names and drops blank
+// values, and later occurrences of a name overwrite earlier ones — so the
+// last nonblank occurrence of a variable wins, whatever its letter case. An
+// exact-case LookupEnv would silently miss values set in mixed case, and
+// keeping an earlier blank would shadow the populated variant the loader
+// actually accepts.
 func bootstrapEnvValues() map[string]string {
 	env := make(map[string]string)
 
 	for _, entry := range os.Environ() {
 		name, value, _ := strings.Cut(entry, "=")
-		key := strings.ToLower(name)
-		if _, seen := env[key]; !seen {
-			env[key] = value
+		if strings.TrimSpace(value) == "" {
+			continue
 		}
+
+		env[strings.ToLower(name)] = value
 	}
 
 	return env

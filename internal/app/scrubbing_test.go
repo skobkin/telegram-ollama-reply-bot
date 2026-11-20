@@ -1175,6 +1175,38 @@ func TestBootstrapEnvSecretsMatchesLoaderCaseInsensitivity(t *testing.T) {
 	}
 }
 
+// TestBootstrapEnvSecretsMatchesLoaderValueSelection pins the value
+// selection policy: the loader's env provider drops blank values and lets
+// the last nonblank occurrence of a variable name win, so an earlier blank
+// variant must not shadow the populated one the loader accepts, and two
+// populated variants must resolve to the same value Load uses. Not
+// parallel: t.Setenv.
+func TestBootstrapEnvSecretsMatchesLoaderValueSelection(t *testing.T) {
+	t.Setenv("LLM__BACKENDS__OPENAI_COMPAT__API_TOKEN", "")
+	t.Setenv("llm__backends__openai_compat__api_token", "SHADOWEDFIXTURE")
+
+	scrubber := secretscrub.New(bootstrapEnvSecrets())
+
+	if got := scrubber.Scrub("bootstrap diagnostic SHADOWEDFIXTURE"); strings.Contains(got, "SHADOWEDFIXTURE") {
+		t.Fatalf("populated variant shadowed by an earlier blank value: %q", got)
+	}
+
+	// Two populated variants must resolve to the value the loader uses —
+	// the last one.
+	t.Setenv("BOT__TELEGRAM__TOKEN", "FIRSTWINSFIXTURE")
+	t.Setenv("bot__telegram__token", "LASTWINSFIXTURE")
+
+	scrubber = secretscrub.New(bootstrapEnvSecrets())
+
+	if got := scrubber.Scrub("bootstrap diagnostic LASTWINSFIXTURE"); strings.Contains(got, "LASTWINSFIXTURE") {
+		t.Fatalf("the last populated variant must win: %q", got)
+	}
+
+	if scrubber.Contains("bootstrap diagnostic FIRSTWINSFIXTURE") {
+		t.Fatal("an overridden variant must not be registered")
+	}
+}
+
 // TestBootstrapEnvSecretsRegistersMCPEndpointAndHeaderForms pins the MCP
 // variable family the bootstrap registry covers: endpoint URL userinfo
 // passwords, and request headers in all their derived forms — including the
