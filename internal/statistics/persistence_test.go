@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -99,6 +100,7 @@ type fakeStore struct {
 	saveErr     error
 	quarErr     error
 	saveBlock   chan struct{} // when non-nil, SaveSnapshot parks on it or ctx
+	saveDeaf    bool          // SaveSnapshot ignores ctx while parked (a non-cooperative driver)
 	saveEntered chan struct{}
 	saves       int
 	applied     int
@@ -142,10 +144,14 @@ func (s *fakeStore) SaveSnapshot(ctx context.Context, row SnapshotRow) (bool, er
 	default:
 	}
 	if block != nil {
-		select {
-		case <-block:
-		case <-ctx.Done():
-			return false, ctx.Err()
+		if s.saveDeaf {
+			<-block
+		} else {
+			select {
+			case <-block:
+			case <-ctx.Done():
+				return false, ctx.Err()
+			}
 		}
 	}
 	if err != nil {
@@ -484,10 +490,12 @@ func TestWritesAfterStopAreRejectedWithoutTouchingTheStore(t *testing.T) {
 	}
 }
 
-func TestStopHonoursDeadlineWhenWriterIsBlockedAndWaitersSeeClosed(t *testing.T) {
+func TestStopWaitsForAdmittedWriterReportsOverrunAndWaitersSeeClosed(t *testing.T) {
 	store, ds := newFakeStore(), newFakeDataset("fake")
-	store.saveBlock = make(chan struct{}) // never released until the end
+	store.saveBlock = make(chan struct{}) // released only after the overrun is observed
 	p := testPersister(store, nil, ds)
+	overrun := make(chan struct{})
+	p.onShutdownOverrun = func() { close(overrun) }
 
 	ds.mutate("a")
 	first := make(chan error, 1)
@@ -497,15 +505,70 @@ func TestStopHonoursDeadlineWhenWriterIsBlockedAndWaitersSeeClosed(t *testing.T)
 	waiter := make(chan error, 1)
 	go func() { waiter <- p.FlushNow(context.Background(), "fake") }()
 
-	err := p.Stop() // the semaphore is held: the 200ms deadline must expire
-	if err == nil {
-		t.Fatal("Stop must report that it could not flush within its deadline")
+	stopped := make(chan error, 1)
+	go func() { stopped <- p.Stop() }()
+
+	// The shutdown budget expires while the admitted writer still owns the
+	// store: Stop must keep waiting instead of returning.
+	waitFor(t, overrun, "shutdown budget overrun")
+	select {
+	case err := <-stopped:
+		t.Fatalf("Stop returned while a writer was still active: %v", err)
+	default:
 	}
 
 	close(store.saveBlock) // the blocked write finally returns
-	<-first
+	if err := <-first; err != nil {
+		t.Fatalf("the admitted writer must complete: %v", err)
+	}
+	err := <-stopped
+	if err == nil || !strings.Contains(err.Error(), "did not finish within") {
+		t.Fatalf("Stop must report the deadline exhaustion accurately, got %v", err)
+	}
 	if err := <-waiter; !errors.Is(err, ErrPersisterClosed) {
 		t.Fatalf("a flush that was waiting for the writer must see the closed persister, got %v", err)
+	}
+	if row, ok := store.row("fake"); !ok || string(row.Payload) != "a" {
+		t.Fatalf("the admitted writer's data must be persisted, got %+v", row)
+	}
+	if err := p.Stop(); err == nil {
+		t.Fatal("a second Stop must return the same result")
+	}
+}
+
+func TestStopJoinsLoopStuckInWriteAndFlushesAfterwards(t *testing.T) {
+	store, ds := newFakeStore(), newFakeDataset("fake")
+	store.saveBlock = make(chan struct{})
+	store.saveDeaf = true // the loop's write does not react to cancellation
+	p := testPersister(store, nil, ds)
+	overrun := make(chan struct{})
+	p.onShutdownOverrun = func() { close(overrun) }
+	p.Start(context.Background())
+
+	ds.mutate("a")
+	p.Wake()
+	waitFor(t, store.saveEntered, "loop write")
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- p.Stop() }()
+	waitFor(t, overrun, "overrun while the loop is stuck")
+	select {
+	case <-stopped:
+		t.Fatal("Stop must not return before the loop is joined")
+	default:
+	}
+
+	close(store.saveBlock)
+	if err := <-stopped; err == nil {
+		t.Fatal("the overrun must be reported")
+	}
+	select {
+	case <-p.loopDone:
+	default:
+		t.Fatal("the loop must have been joined")
+	}
+	if ds.dirty() {
+		t.Fatal("the final flush must persist the data after the workers ended")
 	}
 }
 

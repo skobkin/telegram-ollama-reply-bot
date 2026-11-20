@@ -217,6 +217,10 @@ type Persister struct {
 
 	stopOnce sync.Once
 	stopErr  error
+
+	// onShutdownOverrun is a test hook: it runs when Stop's wait for a worker
+	// outlasts the shutdown budget.
+	onShutdownOverrun func()
 }
 
 // NewPersister builds a persister over the given datasets.
@@ -419,11 +423,21 @@ func (p *Persister) release() { <-p.sem }
 // semaphore; closed and ctx are rechecked here, AFTER acquisition.
 func (p *Persister) flushEntry(ctx context.Context, e *persistEntry) error {
 	p.mu.Lock()
-	closed, state := p.closed, e.state
+	closed := p.closed
 	p.mu.Unlock()
 	if closed {
 		return ErrPersisterClosed
 	}
+
+	return p.flushEntryFinal(ctx, e)
+}
+
+// flushEntryFinal is flushEntry without the admission check: Stop closes
+// admission first and then performs the final flush itself.
+func (p *Persister) flushEntryFinal(ctx context.Context, e *persistEntry) error {
+	p.mu.Lock()
+	state := e.state
+	p.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -570,39 +584,59 @@ func (p *Persister) EnsureDurable(ctx context.Context, name string, generation u
 	return out
 }
 
-// Stop flushes pending statistics and joins the loop. It is idempotent: the
-// explicit shutdown call and the defer guard may both run. One fresh
-// deadline covers the loop join, the semaphore wait and the final writes.
-// The deadline holds only as far as the driver honours context cancellation;
-// the persister prefers correct joining over detached goroutines.
+// Stop shuts persistence down. It is idempotent: the explicit shutdown call
+// and the defer guard may both run. Order:
+//
+//  1. close admission: every ordinary flush (FlushNow, the loop) now sees
+//     ErrPersisterClosed once it holds the writer;
+//  2. cancel and JOIN the periodic loop;
+//  3. wait until any writer admitted before step 1 has finished;
+//  4. run the final flush of every dirty dataset under ShutdownTimeout.
+//
+// Steps 2 and 3 are never abandoned: returning while a worker still owns the
+// store would let the caller close the database under it, so Stop waits for
+// them (it relies on the driver honouring context cancellation, and starts
+// no detached goroutine). ShutdownTimeout is the budget of the final flush
+// only; when joining the workers took longer than that, the overrun is
+// reported in the returned error rather than hidden.
 func (p *Persister) Stop() error {
 	p.stopOnce.Do(func() {
-		deadline, cancel := context.WithTimeout(context.Background(), p.cfg.ShutdownTimeout)
-		defer cancel()
+		p.markClosed()
 
 		var errs []error
+		overrun := time.NewTimer(p.cfg.ShutdownTimeout)
+		defer overrun.Stop()
+		overran := func(what string) {
+			if p.onShutdownOverrun != nil {
+				p.onShutdownOverrun()
+			}
+			errs = append(errs, fmt.Errorf("%s did not finish within the %s shutdown budget; waited for it to complete", what, p.cfg.ShutdownTimeout))
+		}
+
 		if p.loopCancel != nil {
 			p.loopCancel()
 			select {
 			case <-p.loopDone:
-			case <-deadline.Done():
-				errs = append(errs, fmt.Errorf("join statistics persistence loop: %w", deadline.Err()))
+			case <-overrun.C:
+				overran("statistics persistence loop")
+				<-p.loopDone
 			}
 		}
-
-		if err := p.acquire(deadline); err != nil {
-			errs = append(errs, fmt.Errorf("acquire statistics writer for the final flush: %w", err))
-			p.markClosed()
-			p.stopErr = errors.Join(errs...)
-
-			return
+		// Ownership of the writer semaphore: no earlier writer remains.
+		select {
+		case p.sem <- struct{}{}:
+		case <-overrun.C:
+			overran("in-flight statistics write")
+			p.sem <- struct{}{}
 		}
+
+		final, cancel := context.WithTimeout(context.Background(), p.cfg.ShutdownTimeout)
+		defer cancel()
 		for _, e := range p.entries {
-			if err := p.flushEntry(deadline, e); err != nil && !errors.Is(err, ErrPersistenceDisabled) {
+			if err := p.flushEntryFinal(final, e); err != nil && !errors.Is(err, ErrPersistenceDisabled) {
 				errs = append(errs, fmt.Errorf("final flush of %q: %w", e.ds.Name(), err))
 			}
 		}
-		p.markClosed()
 		p.release()
 
 		p.stopErr = errors.Join(errs...)
