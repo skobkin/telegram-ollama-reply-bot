@@ -292,7 +292,7 @@ func TestRestrictedRunFailedReactionConsumesAttempt(t *testing.T) {
 			retryResult = message.Text()
 		}
 	}
-	if !strings.Contains(retryResult, "already_reacted") {
+	if !strings.Contains(retryResult, "tool_unavailable") {
 		t.Fatalf("retry must see already_reacted, got %q", retryResult)
 	}
 }

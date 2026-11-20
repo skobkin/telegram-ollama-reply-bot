@@ -150,14 +150,10 @@ func TestSetReactionDescriptionAndEnumMatchWhitelist(t *testing.T) {
 		t.Fatal("set_reaction must be registered by default")
 	}
 
-	// The description enumerates exactly the sendable candidates of the
-	// shared whitelist, in order — every entry must be a reaction Telegram
-	// can actually apply.
-	whitelist := reactionemoji.ReactionCandidates()
-	joined := reactionemoji.CandidatesJoined()
-	if !strings.Contains(definition.Description, "Available emoji: "+joined) {
-		t.Fatalf("description must list the shared whitelist verbatim:\n%s", definition.Description)
+	if definition.Description != "React to the triggering message using one available emoji. You may reply afterwards or call say_nothing." {
+		t.Fatal(definition.Description)
 	}
+	whitelist := reactionemoji.ReactionCandidates()
 
 	// The schema enum is generated from the same source and in the same
 	// order; the only argument is the required emoji.

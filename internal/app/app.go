@@ -33,6 +33,7 @@ import (
 	"telegram-ollama-reply-bot/internal/systemone"
 	adminui "telegram-ollama-reply-bot/internal/telegram/adminui"
 	"telegram-ollama-reply-bot/internal/telegram/bot"
+	"telegram-ollama-reply-bot/internal/telegram/reactionavailability"
 	"telegram-ollama-reply-bot/internal/telegram/transport"
 	"telegram-ollama-reply-bot/internal/tooluse"
 	"telegram-ollama-reply-bot/internal/vision"
@@ -607,6 +608,7 @@ func Run(ctx context.Context) (runErr error) {
 			Dispatcher:         dispatcher,
 		},
 	)
+	tools.AttachReactionAvailability(reactionavailability.New(telegramAPI, logManager.Logger("reactionavailability")))
 	tools.AttachMCP("mcp", mcpManager)
 	// Decision tools are registered statically when the System One backend
 	// is configured; their per-turn availability additionally requires an

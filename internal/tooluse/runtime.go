@@ -77,6 +77,7 @@ type Config struct {
 }
 
 type ChatRequest struct {
+	ChatTitle      string
 	Scope          state.ConversationScope
 	PromptScope    llm.PromptScope
 	ReplyContext   llm.ChatReplyContext
@@ -202,7 +203,8 @@ type Runtime struct {
 	closers        []registeredCloser
 	// reactions coordinates outgoing set-reaction API calls across
 	// concurrent runs; see tool_set_reaction.go. Zero value ready to use.
-	reactions reactionLimiter
+	reactions            reactionLimiter
+	reactionAvailability reactionAvailability
 }
 
 type registeredCloser struct {
@@ -385,6 +387,7 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 	}
 
 	for i := 0; i < r.config.MaxIterations; i++ {
+		r.prepareReactionAvailability(ctx, req, run)
 		definitions := r.resolveDefinitions(req, run)
 		run.advertised = make(map[string]Definition, len(definitions))
 		for _, definition := range definitions {

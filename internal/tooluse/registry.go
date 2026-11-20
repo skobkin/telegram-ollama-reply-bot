@@ -97,7 +97,8 @@ func (d Definition) EffectiveVisibility() Visibility {
 // ReplyWithTools call and shared by that run's tool calls; handlers receive
 // it through CallContext and must treat a nil value as "state unavailable".
 type runState struct {
-	advertised map[string]Definition
+	advertised         map[string]Definition
+	reactionCandidates []string
 	// reactionAttempted claims the run's single outgoing set-reaction API
 	// attempt (invalid local arguments do not consume it).
 	reactionAttempted atomic.Bool
@@ -175,6 +176,7 @@ func newRegistry(runtime *Runtime) *Registry {
 			ResultCharBudget: setReactionResultCharBudget,
 			SideEffecting:    true,
 			Handler:          runtime.setReaction,
+			Resolve:          runtime.reactionPresentation,
 		},
 		{
 			Name:             "list_recent_links",

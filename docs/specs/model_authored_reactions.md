@@ -41,24 +41,27 @@ Do **not** inject message IDs into model-visible history, prompts, or tool respo
 
 **Telegram media-group edge case:** the Bot API can apply a reaction to the first non-deleted message of an album rather than the specified member. For v1, do not falsely attribute such a reaction in history. Carry a minimal request-scoped indication from the original Telegram `Message.MediaGroupID` and reject media-group triggers if the effective target cannot be determined reliably; do not expose album metadata to the model. Tests must cover this safety choice. Avoid expanding historical message schema merely for this request flag.
 
-## 3. Emoji policy: one canonical source, displayed to the model
+## 3. Emoji policy and cached chat availability (#177)
 
-Reuse **exactly** the current `trackedReactionEmojis` whitelist in `internal/telegram/bot/reactions.go` as the initial supported set. Extract it to a small dependency-neutral shared package (e.g. `internal/telegram/reactionemoji`) so inbound handling and `tooluse` refer to the **same** definition.
+The canonical outgoing subset comes from `reactionemoji.ReactionCandidates`; the
+inbound tracked whitelist remains unchanged. Obtain chat availability with getChat:
+omitted available_reactions allows the outgoing whitelist; an explicit list is
+intersected with ordinary supported emoji; an empty intersection disables the tool.
+Paid and custom emoji are excluded. The model's enum is generated dynamically in
+canonical order, without repeating the emoji list in the description or policy.
 
-Initial list, preserving exact Telegram Unicode forms:
+Cache availability in RAM by chat ID for 30 minutes, with at most 4096 entries
+including in-flight refreshes. Deduplicate concurrent refreshes and never evict an
+active one. Lookups respect the caller context and a five-second timeout. Failed
+lookups use the last successful set (including an empty set), or the unverified
+outgoing whitelist if none exists. Retry lookups after one minute, respecting a
+longer Telegram retry_after. Failure does not mean disabled reactions.
 
-`👍 👎 ❤ 😂 🤣 😭 😴 💯 🏆 ⚡ 🙏 🤝 👏 👌 🔥 🎉 🤔 👀 😐 🤨 😎 🥰 🤩 😍 🥳 🫡 🤯 😱 💔 😈 🤡 🤓 🥴 🥱 🤮 💩`
-
-In particular **`❤` is U+2764 without U+FE0F**; do not silently normalize or replace it with `❤️`.
-
-- Use a canonical, deterministic ordered list with a membership check.
-- Generate BOTH the complete, readable `Available emoji: ...` list in the model-visible tool `Description` and the JSON Schema `enum` from this source; never maintain a second hand-written list.
-- Local validation must accept only exact members of this list. Empty or unsupported values produce a normal tool error **before** any Telegram request.
-- Telegram's actual permitted emoji may be restricted per chat and message, regardless of local whitelist. Handle API rejection as a normal tool error; do not substitute another emoji or falsely report success.
-- Only ordinary `ReactionTypeEmoji` is supported. No custom emoji, paid reactions, removal API, or animated `is_big` option in v1.
-- The list and tool description should make this distinction clear: the listed emoji are the bot's supported candidates, not a guarantee Telegram accepts them in every chat.
-
-**Implementation note (2026-11-15):** of the tracked emoji, `😂` and `🥳` are not in Telegram's `ReactionTypeEmoji` emoji list at all — they can appear in incoming updates never, and sending one is rejected outright, which would burn a run's only reaction attempt. The shared package therefore exposes the tracked list (the inbound filter, unchanged from the list above) and a derived reaction-candidate subset (the tool's description, enum, and validation). If Telegram extends its reaction list, removing an entry from the package's exclusion map promotes it back to a candidate. `🤣`, which Telegram does offer as a reaction, is tracked and advertised as the laughter candidate in place of `😂`.
+An empty supported set from a successful lookup omits set_reaction and warns with
+chat ID/title once per unchanged empty state. Known unsuitable targets, including
+albums, omit the tool without a lookup. Argument validation uses local candidates
+and never calls getChat. Invalidation supersedes in-flight cache responses; cache
+eviction must not broaden an already advertised run's candidate set.
 
 ## 4. Prompt guidance and empty final response
 
@@ -66,7 +69,7 @@ Add concise instruction to the **effective tool policy/description delivered to 
 
 > React to the triggering message using one available emoji. You may reply afterwards or call say_nothing.
 
-Retain the target-binding clarification, shared candidate list, and necessary argument constraints. For restricted proactive React turns, omit the continuation sentence: those runs neither expose `say_nothing` nor publish text. Adapt only this reaction description for the run; no general dynamic tool framework is required.
+Retain immutable triggering-message binding in code and argument constraints in the native schema. For restricted proactive React turns, omit the continuation sentence: those runs neither expose `say_nothing` nor publish text. Adapt only this reaction description for the run; no general dynamic tool framework is required.
 
 The model should receive this instruction in the tool-enabled generation context even with custom chat templates. The tool description should remain compact beyond the explicit emoji list; do not repeat the entire list in multiple prompt sections unnecessarily.
 

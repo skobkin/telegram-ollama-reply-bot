@@ -52,7 +52,7 @@ func TestSayNothingRegistry(t *testing.T) {
 	if string(def.Parameters) != `{"type":"object","properties":{},"additionalProperties":false}` {
 		t.Fatalf("unexpected schema: %s", def.Parameters)
 	}
-	if !strings.HasPrefix(setReactionDescription(false), "React to the triggering message using one available emoji. You may reply afterwards or call say_nothing. ") {
+	if !strings.HasPrefix(setReactionDescription(false), "React to the triggering message using one available emoji. You may reply afterwards or call say_nothing.") {
 		t.Fatal("reaction description must offer both continuations")
 	}
 	if strings.Contains(setReactionDescription(false), "substantive") || strings.Contains(setReactionDescription(false), "unnecessarily") {

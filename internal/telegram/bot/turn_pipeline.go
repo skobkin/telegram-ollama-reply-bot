@@ -224,6 +224,7 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 		defer cancel()
 
 		result, runErr := b.tools.ReplyWithTools(llmCtx, tooluse.ChatRequest{
+			ChatTitle:      message.Chat.Title,
 			Scope:          scopeFromMessage(message),
 			PromptScope:    llm.PromptScope{ChatID: message.Chat.ID},
 			ReplyContext:   requestContext,

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
+	"slices"
 	"sync"
 	"time"
 
@@ -261,26 +261,24 @@ func (l *reactionLimiter) pruneCooldownsLocked() {
 // setReactionDescription builds the model-visible tool description from one
 // canonical source: the guidance is spec-mandated (it must reach the model
 // even when custom prompt templates drop the tool-policy section, because
-// tool definitions always travel with the request) and the emoji list is
-// generated from the shared whitelist.
+// tool definitions always travel with the request). The schema carries the
+// current candidates without duplicating them in the description.
 func setReactionDescription(reactionOnly bool) string {
-	var sb strings.Builder
-	sb.WriteString("React to the triggering message using one available emoji. ")
-	if !reactionOnly {
-		sb.WriteString("You may reply afterwards or call say_nothing. ")
+	if reactionOnly {
+		return "React to the triggering message using one available emoji."
 	}
-	sb.WriteString("The target is the user message that started the current run — never assume it is the latest message in the chat. ")
-	sb.WriteString("Available emoji: " + reactionemoji.CandidatesJoined() + ". ")
-	sb.WriteString("These are the bot's supported candidates, not a guarantee that Telegram accepts them in every chat.")
-
-	return sb.String()
+	return "React to the triggering message using one available emoji. You may reply afterwards or call say_nothing."
 }
 
 // setReactionParameters builds the JSON Schema from the shared whitelist's
 // reaction candidates so the enum can never drift from the validated set.
 func setReactionParameters() json.RawMessage {
 	// json.Marshal on a []string cannot fail.
-	enum, _ := json.Marshal(reactionemoji.ReactionCandidates())
+	return reactionParameters(reactionemoji.ReactionCandidates())
+}
+
+func reactionParameters(candidates []string) json.RawMessage {
+	enum, _ := json.Marshal(candidates)
 
 	return json.RawMessage(`{"type":"object","properties":{"emoji":{"type":"string","enum":` + string(enum) + `,"description":"Exactly one supported reaction emoji"}},"required":["emoji"],"additionalProperties":false}`)
 }
@@ -298,6 +296,10 @@ func (r *Runtime) setReaction(ctx context.Context, callCtx CallContext, args jso
 
 	if !reactionemoji.Candidate(payload.Emoji) {
 		return setReactionError("invalid_emoji", "Unsupported emoji: choose exactly one emoji from the listed available values."), nil
+	}
+
+	if !slices.Contains(r.currentReactionCandidates(callCtx), payload.Emoji) {
+		return setReactionError("emoji_unavailable", "Choose an emoji from the current available candidates."), nil
 	}
 
 	// The target is bound exclusively to this invocation's immutable request
