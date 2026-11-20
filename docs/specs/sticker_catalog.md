@@ -1,6 +1,6 @@
 # Sticker catalog and model-driven sticker sending (PR5)
 
-Status: proposed specification for implementation planning.
+Status: implemented in PR5. Section 9 records the decisions taken during implementation; where it is more specific than the sections above, it governs.
 
 ## 1. Goals and scope
 
@@ -111,3 +111,50 @@ stickers:
 3. Only then extract the completed conversation-history contract into local and ConnectRPC-backed implementations. The daemon should be restartable less frequently than the bot; avoid leaking changing bot-specific tool schemas into the daemon contract.
 
 Out of scope in PR5: generic non-text history, history daemon, vision tagging, sticker generation, custom emojis/masks, vector search, new web UI, model-authored catalog administration, and unrelated tool framework changes.
+
+## 9. Implementation resolutions (PR5)
+
+### Storage and startup
+
+- Schema version 14 adds `sticker_sets` and `sticker_entries`. A set row carries a `revision` (created at 1, incremented by every committed write) that guards each write against a stale read; a mismatch fails the operation without changing anything and asks the administrator to retry.
+- An unassigned semantic ID is stored as SQL `NULL`, never as an empty string. The unique index is partial (`WHERE semantic_id IS NOT NULL`) and a `CHECK` rejects empty strings, so any number of unannotated stickers coexist. Uniqueness is global across **all** stored annotated rows, including retained unavailable ones, so restoring a sticker can never collide with an ID in use.
+- Startup restore is all or nothing. The complete catalog (disabled, incomplete and unavailable rows included) is read and held in memory, so later imports always merge against everything stored. Every row is validated with the same rules as an import; any invalid row or database error aborts boot, with an error that names set and sticker identity and the violated rule, never annotation text. No partial or unvalidated catalog is ever advertised. Recovery: fix the row, or delete it (or the whole set) in SQLite if the data is to be discarded.
+- Every catalog change builds the full prospective state, validates it and builds its index **before** the transaction, commits in one transaction, and only then publishes state and index. A failed validation performs no database call; a failed commit leaves the old snapshot serving.
+
+### Formats and supported sets
+
+- The Bot API reports the format per sticker (`is_animated`, `is_video`), not per set, so a set may mix formats and each entry stores `static`, `animated` or `video`. `sendSticker` by `file_id` handles all three. Sets and stickers whose type is not `regular` (masks, custom emoji) are rejected.
+- There is no background synchronisation. `file_id` and availability are refreshed only by an import; a sticker removed from Telegram afterwards stays selectable until the next import and its send then fails with a definite Telegram error.
+
+### YAML template
+
+- Schema version 1: `schema_version`, `set`, `title` (informational), `stickers[]` and `missing[]`. A sticker entry is `file_unique_id` (identity), `position`, `emoji` and `format` (display aids, ignored on import), and the editable `id`, `description`, `tags`, `enabled` and `reset`. A `missing` entry is `file_unique_id`, its saved `id`, `description` and `tags` (informational) and `forget`.
+- Export is read-only and deterministic. Saved annotations (including `enabled`) are matched by `(set, file_unique_id)` regardless of order and prefilled; new stickers are blank with `enabled: true`; stickers Telegram no longer reports are listed under `missing`. `file_id` never appears in a template.
+- Import accepts at most 256 KiB, valid UTF-8, one document, no YAML anchors or aliases, no unknown fields and no duplicate keys.
+- Merge rules: a blank `id`, `description` or `tags` keeps the saved value; an omitted `enabled` keeps the saved flag (only an explicit `false` disables); a non-blank value replaces the saved one. `reset: true` overrides every editable field of its entry: it clears id, description and tags and restores `enabled: true`, ignoring (and not validating) whatever else the entry holds, so flipping that single flag works directly on a populated repeat-export template. `forget: true` in `missing` deletes that retained row and frees its ID. Edits to other `missing` fields are ignored and counted.
+- A stale template (a listed sticker that is no longer in the Telegram set, or `forget` on a sticker that is back) is rejected with the exact identities and the advice to re-export. Telegram stickers the file does not list are left untouched and reported.
+- Import is all or nothing: any problem rejects the whole file with up to 20 itemised issues. "Rejected" in the summary therefore means the file was rejected.
+- Inside the transaction SQLite checks the unique index per statement, so changed IDs are released first (forgotten rows deleted, surviving rows whose ID changes set to `NULL`), then every entry is upserted with its final values. Swaps, reuse of a reset ID and reuse of a forgotten ID therefore work while the final catalog is still validated as a whole.
+
+### Activation and caps
+
+- A sticker is active (searchable and sendable) when its set is enabled, it is available and enabled, and it has both a semantic ID and a description. Tags are optional. An entry with only an ID is incomplete: its ID is reserved but it cannot be selected.
+- Caps: 256 KiB upload; 32 sets; 200 available and 200 retained missing stickers per set; 5000 entries in total; semantic ID `^[a-z][a-z0-9_]{2,47}$`; description at most 240 characters on a single line; at most 16 tags of at most 32 characters (any language, case-insensitive duplicates rejected); set title at most 128 characters.
+
+### Search and `list_stickers`
+
+- Ranking (deterministic, no external service): exact id 100; exact tag 10 per query token; emoji equal to a query field 8; id token 6; description word 3. With a query only matches score above zero; the tag filter is a hard AND; ties break by set name, position, id. An empty query lists in that stable order.
+- The handler fits its result to the 2400-character budget itself, using the runtime serializer as the measure so JSON escaping is counted exactly. Each match is placed at the richest tier that fits: full (description capped at 160 characters, up to 8 tags, set title), reduced (description capped at 48) or id and emoji only. The semantic ID is never cut and at least the first match is always returned. `truncated`, `presentation_reduced` and `omitted` report what happened.
+
+### `send_sticker`, per-turn cap and cooldown
+
+- The runtime marks the turn's attempt immediately before the send, so a failed or ambiguous attempt also uses it up; a second call (same response or later) is refused with `sticker_limit_reached`, and the tool stops being advertised. Unknown or malformed IDs never consume the attempt but are bounded at three per turn.
+- A nil Telegram response or a message without an ID is never a confirmation: it is reported as an ambiguous outcome. `MessageSent` is published only for a confirmed send. Every dispatch error is non-retryable within the turn.
+- **Cooldown.** Proactive turns are serialized per chat but not otherwise rate-limited, so consecutive proactive replies could each attach a sticker; a cheap guard is worthwhile. A hard-coded 30-second per-chat window (`stickerProactiveCooldown`, no configuration) applies to proactive turns only. Whether a turn is proactive is derived from the trigger Telegram metadata gives the bot (mention, reply, private chat versus the participation engine), never from a model-supplied flag. An explicit request is never declined. Every admitted dispatch, explicit or proactive and including an ambiguous one, stamps the chat, so a proactive sticker cannot follow right behind an explicit one. Admission is an atomic check-and-reserve under one mutex and runs after every other pre-dispatch check, immediately before the send; declines, validation failures, cancellations and unknown IDs never stamp. A declined send returns `sticker_cooldown` (rate limited, not retryable). Proactive turns inside the window are not offered the sticker tools at all.
+- Reaction-only turns allow only `set_reaction`, so stickers are unavailable there without any extra rule.
+
+### Admin workflow
+
+- Dashboard → Stickers lists the cataloged sets with counts; a set card offers re-export, import, enable/disable and (confirmed) removal; "Export set…" asks for a set name or link and replies with the template as a document; "Import YAML" asks for the edited file as a correlated reply. The admin document download is bounded by the largest per-kind limit and each kind enforces its own limit on the bytes actually read; a document declared over the bound is refused without being fetched. Everything the admin sees is plain text.
+- Operations are serialized (a second concurrent import or change gets a "busy" answer), Telegram fetches time out after 15 seconds and concurrent exports are bounded to two.
+

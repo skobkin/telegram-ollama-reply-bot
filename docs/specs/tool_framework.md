@@ -17,6 +17,10 @@ returned records. Terminal say_nothing stops pending calls and generation;
 ordinary side effects remain non-terminal. Restricted React exposes only its
 allowed tool and completes on a confirmed reaction.
 
+Runs carry a `Proactive` flag set from the trigger the bot derived from Telegram
+metadata (never from model output). Tools use it for limits that must not get in
+the way of an explicit request, such as the proactive-only sticker cooldown.
+
 ## Errors, results and authoritative execution
 
 Model-facing errors use `code`, `class`, `message`, `retryable`, optional

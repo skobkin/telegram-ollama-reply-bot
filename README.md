@@ -9,6 +9,7 @@
 - Optional per-chat auto-summarizer mode: linked long-form articles in ordinary chat messages are summarized automatically
 - Reactions to the bot's messages are recorded in conversation history and shown to the model as per-user feedback
 - The model can react to a user's message with an emoji (`set_reaction` tool) instead of, or alongside, a text reply
+- An administrator-curated sticker catalog: the model searches it and sends stickers by semantic ID (`list_stickers`, `send_sticker`); the catalog is built from regular Telegram sticker sets through an admin YAML export/import and persists in SQLite
 - Optional live tool-execution previews while a reply is being generated (temporary message in groups, message draft in private chats), with a collapsible tool-history section appended to the final reply
 - Image recognition and description
 - Tool-assisted free-form chat with
@@ -149,10 +150,28 @@ Ordinary chat replies always use the tool-capable chat workflow. `LLM__FEATURES_
 - `calculate` for exact local arithmetic (float64; `^` is right-associative and binds tighter than unary minus)
 - `random_choice` for real random picks without replacement from a supplied list (zero-based indexes)
 - `generate_chart` for locally rendered PNG line, bar (vertical/horizontal/stacked) and pie charts sent to the chat
+- `list_stickers` and `send_sticker` for searching the curated sticker catalog and sending one sticker by its semantic ID (at most one send attempt per turn; unprompted sends are additionally spaced 30 seconds per chat)
 - `send_poll` for explicit vote/poll requests
 - `send_quiz` for explicit quiz and trivia requests
 - `send_dice` for explicit dice-roll and mini-game requests
 - `list_chat_schedule`, `add_schedule_item`, `remove_schedule_item` for durable chat reminders
+
+### Sticker catalog
+
+Stickers are curated by an administrator; the model never sees raw Telegram file identifiers and cannot edit the
+catalog. In the admin DM open **Stickers**, press **Export set…** and send a sticker set name or a
+`t.me/addstickers/<name>` link: the bot replies with a YAML template (regular sticker sets only — mask and custom emoji
+sets are rejected). Fill in an English `id` (for example `kitsu_happy`), a `description` and optional `tags` (any language) for
+the stickers you want available, then press **Import YAML** and reply with the edited file.
+
+- A sticker is selectable once it has both an `id` and a `description`; the rest of the set can stay blank and be annotated later.
+- Exporting a set again prefills every saved annotation by the sticker's Telegram identity (order does not matter) and
+  leaves only newly added stickers blank. Stickers Telegram no longer reports are listed under `missing` and keep their annotations.
+- A blank field keeps the saved value; `enabled: false` hides one sticker; `reset: true` clears one sticker's annotations
+  (it overrides the other fields of that entry); `forget: true` under `missing` deletes a retained entry for good.
+- An import is validated as a whole and applied atomically; a stale template is rejected with advice to export again.
+- The catalog lives in the SQLite database (schema migration 14 is applied automatically). A corrupt persisted catalog
+  stops the bot from starting instead of exposing a partial one.
 
 ### External MCP tools
 

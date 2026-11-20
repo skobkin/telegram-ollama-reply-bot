@@ -29,6 +29,7 @@
 - Treat chat history, summaries, image metadata, caches, and similar runtime state as ephemeral unless the task explicitly introduces durable storage.
 - Preserve the boundary between ephemeral conversational state and persistent operator-managed data.
 - Do not introduce new durable storage for chat/user data without making the persistence decision explicit in code, tests, and docs.
+- The sticker catalog (`internal/stickers`, SQLite tables `sticker_sets`/`sticker_entries`) is persistent operator-managed data, not conversational state: only administrators change it, and the model can only search it and send by semantic ID (see `docs/specs/sticker_catalog.md`).
 
 ## Logging And Safety
 
