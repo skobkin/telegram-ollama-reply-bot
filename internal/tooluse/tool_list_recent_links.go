@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+	"unicode/utf8"
 )
 
 func (r *Runtime) listRecentLinks(_ context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error) {
@@ -12,7 +13,7 @@ func (r *Runtime) listRecentLinks(_ context.Context, callCtx CallContext, args j
 		Limit int `json:"limit"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil && string(args) != "" && string(args) != "null" {
-		return toolResult{}, fmt.Errorf("parse arguments: %w", err)
+		return toolResult{}, invalidArguments("Provide a JSON object matching the tool schema.")
 	}
 	if payload.Limit <= 0 {
 		payload.Limit = defaultRecentLinksResultLimit
@@ -46,6 +47,7 @@ func (r *Runtime) listRecentLinks(_ context.Context, callCtx CallContext, args j
 				"from_id":      msg.FromID,
 				"created_at":   msg.CreatedAt.UTC().Format(time.RFC3339),
 				"text_snippet": truncateUTF8(normalizeWhitespace(msg.Text), recentLinksSnippetCharLimit),
+				"truncated":    utf8.RuneCountInString(normalizeWhitespace(msg.Text)) > recentLinksSnippetCharLimit,
 			})
 			if len(links) >= payload.Limit {
 				break

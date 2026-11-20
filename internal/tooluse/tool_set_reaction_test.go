@@ -80,7 +80,7 @@ func reactionErrorCode(t *testing.T, result toolResult) string {
 	if result.Status != execution.StatusError {
 		t.Fatalf("expected error result, got status %q (%+v)", result.Status, result.Data)
 	}
-	if result.Error != "" {
+	if result.Error != nil {
 		t.Fatalf("structured tool errors must not carry a raw Go error string, got %q", result.Error)
 	}
 

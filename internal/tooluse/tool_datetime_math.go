@@ -24,7 +24,7 @@ type datetimeMathInput struct {
 func datetimeMathHandler(_ context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error) {
 	var input datetimeMathInput
 	if !decodeToolJSON(args, &input) {
-		result := datetimeErrorResult("internal_error", "failed to parse arguments")
+		result := datetimeErrorResult("invalid_arguments", "Provide a JSON object matching the tool schema")
 		logToolResult(callCtx, result)
 
 		return result, nil

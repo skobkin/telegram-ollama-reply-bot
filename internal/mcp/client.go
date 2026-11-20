@@ -371,6 +371,7 @@ func (c *client) connect(ctx context.Context) error {
 			definition.Name,
 			callTimeout(c.config),
 			serverLogger(c.logger, c.name),
+			definition.SideEffecting,
 		)
 		definitions = append(definitions, definition)
 	}

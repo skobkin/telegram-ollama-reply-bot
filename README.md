@@ -85,7 +85,7 @@ The bot can be configured using the following environment variables:
 | `MCP__SERVERS__<NAME>__TIMEOUT`                    | Per-tool-call timeout. Go duration string (e.g. `30s`); caps tool calls, not the standing connection.             | No       | `15s`                    |
 | `MCP__SERVERS__<NAME>__INVOCATION_POLICY`          | Default invocation policy for this server: `discretionary`, `discretionary_paid`, or `explicit_request_only`      | No       | derived from `readOnlyHint` |
 | `MCP__SERVERS__<NAME>__SIDE_EFFECTING`             | Force `true`/`false` for the side-effecting flag of every tool from this server                                   | No       | derived from `destructiveHint` |
-| `MCP__SERVERS__<NAME>__RESULT_CHAR_BUDGET`         | Maximum characters of a tool result forwarded to the model. Must be a positive integer when set.                  | No       | `3500`                   |
+| `MCP__SERVERS__<NAME>__RESULT_CHAR_BUDGET`         | Maximum characters of a tool result forwarded to the model. Must be at least 512 when set.                  | No       | `3500`                   |
 | `MCP__SERVERS__<NAME>__ALLOWED_TOOLS`              | Comma-separated whitelist of tool names to expose from this server. Misnamed entries fail at startup.             | No       | empty                    |
 | `MCP__SERVERS__<NAME>__RESTRICTED_TOOLS`           | Comma-separated deny-list of tool names to drop from this server. Misnamed entries fail at startup.               | No       | empty                    |
 | `MCP__SERVERS__<NAME>__OPTIONAL`                   | When `true`, a connection failure on startup is logged and skipped instead of aborting the bot                    | No       | `false`                  |
@@ -192,7 +192,7 @@ Startup behaviour:
   for non-optional servers (catches typos early).
 - `TIMEOUT` caps each individual tool call (default `15s`, no upper limit; slow tools such as browser automation
   can use `120s` or more). It does not cap the standing connection to the server.
-- `RESULT_CHAR_BUDGET` caps how many characters of a tool result are forwarded to the model (default `3500`).
+- `RESULT_CHAR_BUDGET` caps the final serialized JSON characters forwarded to the model (default `3500`, minimum `512`). Results are reduced structurally with explicit truncation metadata; identifiers and actionable errors are retained.
   It must be a positive integer when set; values `<= 0` are a startup configuration error.
 - Tool invocation policy defaults to `discretionary` when the server's tool annotation sets `readOnlyHint=true`,
   and `explicit_request_only` otherwise. `discretionary_paid` behaves like `discretionary` but tells the model to

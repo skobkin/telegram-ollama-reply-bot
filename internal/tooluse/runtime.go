@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -130,7 +129,12 @@ type ToolCallRecord struct {
 	// callers classify a completed call as an actual side effect
 	// (SideEffecting && Status OK) instead of guessing from success alone:
 	// read-only tools succeed too.
-	SideEffecting bool
+	SideEffecting     bool
+	Executed          bool
+	ErrorCode         string
+	ErrorClass        ErrorClass
+	Retryable         bool
+	SideEffectOutcome string
 }
 
 // Result is the authoritative outcome of a tool-enabled reply: the final
@@ -515,12 +519,13 @@ func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *
 
 		return toolCallOutcome{message: toolResponseMessage(call.ID, marshalResult(toolResult{
 			Status: "error",
-			Error:  fmt.Sprintf("unknown tool %q", call.Name),
+			Error:  NewToolError("tool_unavailable", ErrorUnavailable, "Unknown tool or tool unavailable for this turn.", false, "Choose a tool from the current definitions."),
 		}, defaultToolResultCharBudget)), record: ToolCallRecord{
 			CallID:     call.ID,
 			Name:       call.Name,
 			Visibility: VisibilityStandard,
 			Status:     execution.StatusError,
+			ErrorCode:  "tool_unavailable", ErrorClass: ErrorUnavailable,
 		}}
 	}
 
@@ -551,10 +556,24 @@ func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *
 		run:                   run,
 	}, call.Arguments)
 	if err != nil {
-		logger.Warn("tool call failed", "tool_name", definition.Name, "tool_call_id", call.ID, "error", err)
-		result = toolResult{
-			Status: "error",
-			Error:  err.Error(),
+		result = ErrorResult(ClassifyError(err, definition.SideEffecting))
+	}
+	result = normalizeResult(result)
+	var errorCode, errorClass string
+	var retryable bool
+	if result.Error != nil {
+		errorCode, errorClass, retryable = result.Error.Code, result.Error.Class, result.Error.Retryable
+		logger.Warn("tool call failed", "tool_name", definition.Name, "tool_call_id", call.ID,
+			"error_code", errorCode, "error_class", errorClass, "retryable", retryable)
+	}
+	sideEffectOutcome := "none"
+	if definition.SideEffecting {
+		sideEffectOutcome = "not_applied"
+		if result.Status == execution.StatusOK {
+			sideEffectOutcome = "confirmed"
+		}
+		if errorClass == ErrorAmbiguous {
+			sideEffectOutcome = "unknown"
 		}
 	}
 
@@ -567,6 +586,7 @@ func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *
 		Internal:   internal,
 		Duration:   duration,
 		Status:     result.Status,
+		ErrorCode:  errorCode, ErrorClass: errorClass, Retryable: retryable,
 	})
 
 	return toolCallOutcome{
@@ -580,6 +600,7 @@ func (r *Runtime) executeToolCall(ctx context.Context, emitter runEmitter, run *
 			Status:        result.Status,
 			Duration:      duration,
 			SideEffecting: definition.SideEffecting,
+			Executed:      true, ErrorCode: errorCode, ErrorClass: errorClass, Retryable: retryable, SideEffectOutcome: sideEffectOutcome,
 		},
 	}
 }

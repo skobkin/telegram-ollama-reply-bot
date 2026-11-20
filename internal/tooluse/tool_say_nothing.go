@@ -15,7 +15,7 @@ func sayNothingHandler(ctx context.Context, callCtx CallContext, args json.RawMe
 		var fields map[string]json.RawMessage
 		valid := json.Unmarshal(args, &fields) == nil && fields != nil && len(fields) == 0
 		if !valid {
-			return toolResult{Status: execution.StatusError, Error: "say_nothing takes no arguments; provide an empty JSON object."}, nil
+			return ErrorResult(NewToolError("invalid_arguments", ErrorArguments, "say_nothing takes no arguments; provide an empty JSON object.", true, "Use {}.")), nil
 		}
 	}
 

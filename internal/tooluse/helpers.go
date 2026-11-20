@@ -1,7 +1,6 @@
 package tooluse
 
 import (
-	"encoding/json"
 	"net/url"
 	"strings"
 	"unicode/utf8"
@@ -20,19 +19,6 @@ const (
 	defaultRecentLinksResultLimit    = 5
 	maxRecentLinksResultLimit        = 10
 )
-
-func marshalResult(result toolResult, charBudget int) string {
-	if charBudget <= 0 {
-		charBudget = defaultToolResultCharBudget
-	}
-
-	data, err := json.Marshal(result)
-	if err != nil {
-		data = []byte(`{"status":"error","error":"failed to serialize tool result"}`)
-	}
-
-	return truncateUTF8(string(data), charBudget)
-}
 
 func truncateUTF8(text string, limit int) string {
 	if limit <= 0 || utf8.RuneCountInString(text) <= limit {
@@ -106,43 +92,13 @@ func logToolResult(callCtx CallContext, result toolResult, attrs ...any) {
 		"status", result.Status,
 		"topic_id", callCtx.Scope.TopicID,
 	)
-	if result.Summary != "" {
-		fields = append(fields, "summary", result.Summary)
+
+	result = normalizeResult(result)
+	if result.Error != nil {
+		fields = append(fields, "error_code", result.Error.Code, "error_class", result.Error.Class, "retryable", result.Error.Retryable)
 	}
-	if result.Error != "" {
-		fields = append(fields, "error", result.Error)
-	}
-	if errorCode, errorMessage, ok := toolErrorDetails(result); ok {
-		fields = append(fields, "error_code", errorCode, "error_message", errorMessage)
-	}
+
 	fields = append(fields, attrs...)
 
 	callCtx.Logger.Info("tool result", fields...)
-}
-
-func toolErrorDetails(result toolResult) (code, message string, ok bool) {
-	data, ok := result.Data.(map[string]any)
-	if !ok {
-		return "", "", false
-	}
-
-	rawError, ok := data["error"]
-	if !ok {
-		return "", "", false
-	}
-
-	switch value := rawError.(type) {
-	case toolErrorPayload:
-		return value.Code, value.Message, true
-	case map[string]any:
-		code, _ := value["code"].(string)
-		message, _ := value["message"].(string)
-		if code == "" && message == "" {
-			return "", "", false
-		}
-
-		return code, message, true
-	default:
-		return "", "", false
-	}
 }

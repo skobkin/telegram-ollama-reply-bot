@@ -3,8 +3,6 @@ package tooluse
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"strings"
 
 	t "github.com/mymmrac/telego"
@@ -19,7 +17,7 @@ func (r *Runtime) sendQuiz(ctx context.Context, callCtx CallContext, args json.R
 		Explanation        string   `json:"explanation"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return toolResult{}, fmt.Errorf("parse arguments: %w", err)
+		return toolResult{}, invalidArguments("Provide a JSON object matching the tool schema.")
 	}
 
 	options, err := validatePollPayload(payload.Question, payload.Options)
@@ -27,7 +25,7 @@ func (r *Runtime) sendQuiz(ctx context.Context, callCtx CallContext, args json.R
 		return toolResult{}, err
 	}
 	if payload.CorrectOptionIndex < 0 || payload.CorrectOptionIndex >= len(options) {
-		return toolResult{}, errors.New("correct_option_index must reference an existing option")
+		return toolResult{}, invalidArguments("correct_option_index must reference an existing option")
 	}
 
 	params := &t.SendPollParams{

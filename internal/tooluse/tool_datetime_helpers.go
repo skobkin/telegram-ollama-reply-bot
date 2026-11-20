@@ -4,19 +4,20 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 )
 
-type toolErrorPayload struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
+type toolErrorPayload = ToolError
 
 func decodeToolJSON[T any](args json.RawMessage, target *T) bool {
 	decoder := json.NewDecoder(bytes.NewReader(args))
 	decoder.DisallowUnknownFields()
 
-	return decoder.Decode(target) == nil
+	if decoder.Decode(target) != nil {
+		return false
+	}
+	return decoder.Decode(new(any)) == io.EOF
 }
 
 func datetimeErrorResult(code, message string) toolResult {

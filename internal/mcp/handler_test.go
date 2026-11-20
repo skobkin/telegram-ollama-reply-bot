@@ -140,7 +140,7 @@ func TestDecodeCallResultErrorSummaryCarriesServerMessage(t *testing.T) {
 	if result.Status != "error" {
 		t.Fatalf("expected status=error, got %q", result.Status)
 	}
-	if result.Summary != "disk full" {
+	if result.Error == nil || result.Error.Message != "disk full" {
 		t.Fatalf("expected server error message in summary, got %q", result.Summary)
 	}
 	if data := result.Data.(map[string]any); data["text"] != "disk full" {
@@ -166,7 +166,7 @@ func TestDecodeCallResultErrorSummaryJoinsTextBlocks(t *testing.T) {
 	if result.Status != "error" {
 		t.Fatalf("expected status=error, got %q", result.Status)
 	}
-	if result.Summary != "line 1\nline 2" {
+	if result.Error == nil || result.Error.Message != "line 1\nline 2" {
 		t.Fatalf("expected joined error summary, got %q", result.Summary)
 	}
 }
@@ -183,7 +183,7 @@ func TestDecodeCallResultErrorSummaryFallsBackWithoutText(t *testing.T) {
 	if result.Status != "error" {
 		t.Fatalf("expected status=error, got %q", result.Status)
 	}
-	if result.Summary != "tool returned an error" {
+	if result.Error == nil || result.Error.Code != "mcp_tool_error" {
 		t.Fatalf("expected fallback summary, got %q", result.Summary)
 	}
 }
@@ -399,7 +399,7 @@ func TestCallToolHandlerReturnsErrorWhenSessionIsNil(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for nil session")
 	}
-	if !strings.Contains(err.Error(), "mcp session is not connected") {
+	if !strings.Contains(err.Error(), "MCP session is not connected") {
 		t.Fatalf("unexpected error message: %v", err)
 	}
 }

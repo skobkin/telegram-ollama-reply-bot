@@ -3,7 +3,6 @@ package tooluse
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -12,7 +11,7 @@ import (
 
 func (r *Runtime) listChatSchedule(ctx context.Context, callCtx CallContext, _ json.RawMessage) (toolResult, error) {
 	if r.reminders == nil {
-		return toolResult{}, errors.New("reminder service is unavailable")
+		return toolResult{}, NewToolError("tool_unavailable", ErrorUnavailable, "The reminder service is unavailable.", false, "")
 	}
 
 	items, err := r.reminders.ListChatReminders(ctx, callCtx.Scope.ChatID)
@@ -49,12 +48,12 @@ func (r *Runtime) listChatSchedule(ctx context.Context, callCtx CallContext, _ j
 
 func (r *Runtime) addScheduleItem(ctx context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error) {
 	if r.reminders == nil {
-		return toolResult{}, errors.New("reminder service is unavailable")
+		return toolResult{}, NewToolError("tool_unavailable", ErrorUnavailable, "The reminder service is unavailable.", false, "")
 	}
 
 	var payload reminders.CreateRequest
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return toolResult{}, fmt.Errorf("parse arguments: %w", err)
+		return toolResult{}, invalidArguments("Provide a JSON object matching the tool schema.")
 	}
 
 	reminder, err := r.reminders.AddReminder(ctx, callCtx.Scope, callCtx.Requester.FromID, payload)
@@ -81,17 +80,17 @@ func (r *Runtime) addScheduleItem(ctx context.Context, callCtx CallContext, args
 
 func (r *Runtime) removeScheduleItem(ctx context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error) {
 	if r.reminders == nil {
-		return toolResult{}, errors.New("reminder service is unavailable")
+		return toolResult{}, NewToolError("tool_unavailable", ErrorUnavailable, "The reminder service is unavailable.", false, "")
 	}
 
 	var payload struct {
 		ReminderID string `json:"reminder_id"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return toolResult{}, fmt.Errorf("parse arguments: %w", err)
+		return toolResult{}, invalidArguments("Provide a JSON object matching the tool schema.")
 	}
 	if payload.ReminderID == "" {
-		return toolResult{}, errors.New("reminder_id is required")
+		return toolResult{}, invalidArguments("reminder_id is required")
 	}
 
 	reminder, err := r.reminders.RemoveReminder(ctx, callCtx.Requester.FromID, payload.ReminderID)

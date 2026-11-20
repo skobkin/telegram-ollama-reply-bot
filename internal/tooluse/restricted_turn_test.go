@@ -197,7 +197,7 @@ func TestRestrictedRunModelSeesRejection(t *testing.T) {
 			rejection = message.Text()
 		}
 	}
-	if !strings.Contains(rejection, "unknown tool") {
+	if !strings.Contains(rejection, "tool_unavailable") {
 		t.Fatalf("rejection must take the unknown-tool path, got %q", rejection)
 	}
 	if sender.lastDiceParams != nil {

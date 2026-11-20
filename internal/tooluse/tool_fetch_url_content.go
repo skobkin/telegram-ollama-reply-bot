@@ -3,9 +3,9 @@ package tooluse
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 func (r *Runtime) fetchURLContent(ctx context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error) {
@@ -13,10 +13,10 @@ func (r *Runtime) fetchURLContent(ctx context.Context, callCtx CallContext, args
 		URL string `json:"url"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return toolResult{}, fmt.Errorf("parse arguments: %w", err)
+		return toolResult{}, invalidArguments("Provide a JSON object matching the tool schema.")
 	}
 	if !isValidToolURL(payload.URL) {
-		return toolResult{}, fmt.Errorf("url must use http or https")
+		return toolResult{}, invalidArguments("url must use http or https")
 	}
 
 	article, err := r.extractor.GetArticleFromURL(ctx, payload.URL)
@@ -43,11 +43,11 @@ func (r *Runtime) fetchURLContent(ctx context.Context, callCtx CallContext, args
 			"title":       article.Title,
 			"text":        truncateUTF8(content, fetchURLContentTextCharLimit),
 			"extractedAt": time.Now().UTC().Format(time.RFC3339),
+			"truncated":   utf8.RuneCountInString(content) > fetchURLContentTextCharLimit,
 		},
 	}
 	logToolResult(callCtx, result,
 		"url", article.URL,
-		"title", article.Title,
 		"text_length", len(content),
 	)
 

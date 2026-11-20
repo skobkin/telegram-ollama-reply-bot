@@ -115,3 +115,8 @@ func parseWeekday(value string) (time.Weekday, error) {
 		return 0, fmt.Errorf("unsupported weekday %q", value)
 	}
 }
+
+// ValidationError identifies a pre-storage rejection with a safe recovery explanation.
+type ValidationError struct{ Message string }
+
+func (e *ValidationError) Error() string { return e.Message }

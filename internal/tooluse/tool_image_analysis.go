@@ -55,7 +55,7 @@ func (r *Runtime) listRecentImages(_ context.Context, callCtx CallContext, args 
 		Limit int `json:"limit"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil && string(args) != "" && string(args) != "null" {
-		return toolResult{}, fmt.Errorf("parse arguments: %w", err)
+		return toolResult{}, invalidArguments("Provide a JSON object matching the tool schema.")
 	}
 	if payload.Limit <= 0 {
 		payload.Limit = defaultRecentImagesResultLimit
@@ -214,10 +214,10 @@ func (r *Runtime) analyzeImage(ctx context.Context, callCtx CallContext, args js
 		Prompt    string `json:"prompt"`
 	}
 	if !decodeToolJSON(args, &payload) {
-		return toolResult{}, errors.New("invalid arguments")
+		return toolResult{}, invalidArguments("invalid arguments")
 	}
 	if payload.MessageID < 1 {
-		return toolResult{}, errors.New("message_id must be a positive integer")
+		return toolResult{}, invalidArguments("message_id must be a positive integer")
 	}
 
 	prompt := strings.TrimSpace(payload.Prompt)
@@ -254,7 +254,7 @@ func (r *Runtime) analyzeImage(ctx context.Context, callCtx CallContext, args js
 
 	rawAnalysis, err := r.imageAnalyzer.AnalyzeImage(ctx, *meta, prompt)
 	if err != nil {
-		result := imageAnalysisErrorResult(callCtx, analyzeErrorCode(err), err.Error(), payload.MessageID)
+		result := imageAnalysisErrorResult(callCtx, analyzeErrorCode(err), "Image analysis could not complete. Check the image type and size or try a different image.", payload.MessageID)
 		logToolResult(callCtx, result, "message_id", payload.MessageID, "analysis_length", 0)
 
 		return result, nil
@@ -303,8 +303,7 @@ func (r *Runtime) analyzeImage(ctx context.Context, callCtx CallContext, args js
 		if best > 0 {
 			current = truncateUTF8(rawAnalysis, best)
 		} else {
-			// Pathological budget; the common marshaler's hard cut is the
-			// last resort.
+			// The structured reducer handles a pathological remaining budget.
 			current = truncateUTF8(rawAnalysis, analyzeImageMinAnalysisChars)
 		}
 	}

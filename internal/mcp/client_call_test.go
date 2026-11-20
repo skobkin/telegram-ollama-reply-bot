@@ -114,7 +114,7 @@ func TestCallToolHandlerTimesOutSlowTool(t *testing.T) {
 
 	if _, err := handler(context.Background(), tooluse.CallContext{}, nil); err == nil {
 		t.Fatalf("expected timeout error for slow tool")
-	} else if !strings.Contains(err.Error(), "mcp_unreachable") {
+	} else if !strings.Contains(err.Error(), "may already have been applied") {
 		t.Fatalf("expected mcp_unreachable error, got: %v", err)
 	}
 

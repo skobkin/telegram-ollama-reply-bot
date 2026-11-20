@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"telegram-ollama-reply-bot/internal/state"
 )
@@ -16,7 +17,7 @@ func (r *Runtime) searchHistory(_ context.Context, callCtx CallContext, args jso
 		Limit     int      `json:"limit"`
 	}
 	if !decodeToolJSON(args, &payload) && string(args) != "" && string(args) != "null" {
-		return toolResult{}, fmt.Errorf("parse arguments: invalid search_history payload")
+		return toolResult{}, invalidArguments("Provide keywords, match_mode and limit according to the schema.")
 	}
 	if len(payload.Keywords) == 0 {
 		result := searchHistoryErrorResult("missing_required_field", "keywords must contain at least one search keyword")
@@ -54,6 +55,7 @@ func (r *Runtime) searchHistory(_ context.Context, callCtx CallContext, args jso
 			"name":             msg.Name,
 			"username":         msg.Username,
 			"text":             truncateUTF8(normalizeWhitespace(msg.Text), searchHistorySnippetCharLimit),
+			"truncated":        utf8.RuneCountInString(normalizeWhitespace(msg.Text)) > searchHistorySnippetCharLimit,
 			"message_id":       msg.MessageID,
 			"from_id":          msg.FromID,
 			"created_at":       msg.CreatedAt.UTC().Format(time.RFC3339),

@@ -3,8 +3,6 @@ package tooluse
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"strings"
 
 	t "github.com/mymmrac/telego"
@@ -18,7 +16,7 @@ func (r *Runtime) sendPoll(ctx context.Context, callCtx CallContext, args json.R
 		AllowsMultipleAnswers bool     `json:"allows_multiple_answers"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return toolResult{}, fmt.Errorf("parse arguments: %w", err)
+		return toolResult{}, invalidArguments("Provide a JSON object matching the tool schema.")
 	}
 	options, err := validatePollPayload(payload.Question, payload.Options)
 	if err != nil {
@@ -60,17 +58,17 @@ func (r *Runtime) sendPoll(ctx context.Context, callCtx CallContext, args json.R
 func validatePollPayload(question string, rawOptions []string) ([]t.InputPollOption, error) {
 	question = strings.TrimSpace(question)
 	if question == "" {
-		return nil, errors.New("question is required")
+		return nil, invalidArguments("question is required")
 	}
 	if len(rawOptions) < 2 || len(rawOptions) > 10 {
-		return nil, errors.New("options must contain 2 to 10 entries")
+		return nil, invalidArguments("options must contain 2 to 10 entries")
 	}
 
 	options := make([]t.InputPollOption, 0, len(rawOptions))
 	for _, option := range rawOptions {
 		option = strings.TrimSpace(option)
 		if option == "" {
-			return nil, errors.New("poll options must be non-empty")
+			return nil, invalidArguments("poll options must be non-empty")
 		}
 
 		options = append(options, t.InputPollOption{Text: option})

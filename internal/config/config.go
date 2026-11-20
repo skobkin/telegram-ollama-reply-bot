@@ -22,6 +22,7 @@ import (
 	"github.com/knadh/koanf/providers/env/v2"
 	"github.com/knadh/koanf/v2"
 
+	"telegram-ollama-reply-bot/internal/support/toolbudget"
 	"telegram-ollama-reply-bot/internal/support/urlredact"
 )
 
@@ -950,8 +951,8 @@ func (s MCPServerConfig) validate(name string) error {
 	}
 
 	// Zero means "unset": the per-tool budget falls back to the default.
-	if s.ResultCharBudget < 0 {
-		return fmt.Errorf("mcp.servers.%s.result_char_budget %d must be positive when set (omit it to use the default budget)", name, s.ResultCharBudget)
+	if s.ResultCharBudget < 0 || (s.ResultCharBudget > 0 && s.ResultCharBudget < toolbudget.MinChars) {
+		return fmt.Errorf("mcp.servers.%s.result_char_budget %d must be at least %d when set (omit it to use the default budget)", name, s.ResultCharBudget, toolbudget.MinChars)
 	}
 
 	for headerName := range s.Headers {

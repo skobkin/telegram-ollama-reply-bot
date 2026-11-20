@@ -3,8 +3,6 @@ package tooluse
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"strings"
 
 	t "github.com/mymmrac/telego"
@@ -25,7 +23,7 @@ func (r *Runtime) sendDice(ctx context.Context, callCtx CallContext, args json.R
 		Emoji string `json:"emoji"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return toolResult{}, fmt.Errorf("parse arguments: %w", err)
+		return toolResult{}, invalidArguments("Provide a JSON object matching the tool schema.")
 	}
 
 	params := &t.SendDiceParams{
@@ -33,7 +31,7 @@ func (r *Runtime) sendDice(ctx context.Context, callCtx CallContext, args json.R
 	}
 	if emoji := strings.TrimSpace(payload.Emoji); emoji != "" {
 		if _, ok := validDiceEmojis[emoji]; !ok {
-			return toolResult{}, errors.New("emoji must be one of 🎲, 🎯, 🏀, ⚽, 🎳, or 🎰")
+			return toolResult{}, invalidArguments("emoji must be one of 🎲, 🎯, 🏀, ⚽, 🎳, or 🎰")
 		}
 
 		params.Emoji = emoji

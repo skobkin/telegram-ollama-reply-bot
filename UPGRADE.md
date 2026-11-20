@@ -2,6 +2,17 @@
 
 ## 0.30.0 (unreleased) — changes since 0.29.1
 
+### Tool result and error contract (#176)
+
+Tool errors now carry stable codes, classifications, retryability and recovery hints.
+Oversized results are reduced structurally and remain valid JSON, with explicit
+truncation metadata. A result-delivery failure does not undo a confirmed action;
+models are told not to repeat it blindly. No database migration is needed.
+
+Explicit `MCP__SERVERS__<NAME>__RESULT_CHAR_BUDGET` values must now be at least
+`512`; smaller values fail startup validation. Increase them before upgrading,
+or omit the setting to retain the `3500` default.
+
 ### Intentional silent completion and failed-preview cleanup (#159, #156)
 
 The generation model gains a discretionary no-argument `say_nothing` tool that ends the current turn

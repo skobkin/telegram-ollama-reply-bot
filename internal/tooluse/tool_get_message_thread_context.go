@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"time"
 
 	"telegram-ollama-reply-bot/internal/state"
@@ -300,6 +301,7 @@ func threadMessageView(msg state.Message) map[string]any {
 		"is_user_request":     msg.IsUserRequest,
 		"has_image":           msg.HasImage,
 		"text_preview":        threadMessagePreview(msg),
+		"text_truncated":      strings.HasSuffix(threadMessagePreview(msg), "…"),
 	}
 }
 

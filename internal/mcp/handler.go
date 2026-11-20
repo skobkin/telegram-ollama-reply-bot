@@ -44,10 +44,11 @@ import (
 //   - non-text content (image, audio, embedded resources) -> collected under
 //     `Data["blocks"]` rather than silently dropped, so misbehaving servers
 //     are visible at the call site.
-func callToolHandler(session *mcp.ClientSession, originalName, namespacedName string, callTimeout time.Duration, logger *slog.Logger) tooluse.Handler {
+func callToolHandler(session *mcp.ClientSession, originalName, namespacedName string, callTimeout time.Duration, logger *slog.Logger, sideEffecting ...bool) tooluse.Handler {
+	action := len(sideEffecting) == 0 || sideEffecting[0]
 	return func(ctx context.Context, callCtx tooluse.CallContext, args json.RawMessage) (tooluse.ToolResult, error) {
 		if session == nil {
-			return tooluse.ToolResult{}, fmt.Errorf("mcp session is not connected")
+			return tooluse.ToolResult{}, tooluse.NewToolError("mcp_unavailable", tooluse.ErrorUnavailable, "The MCP session is not connected.", false, "")
 		}
 
 		perCall := logger
@@ -57,7 +58,7 @@ func callToolHandler(session *mcp.ClientSession, originalName, namespacedName st
 
 		parsed, err := parseToolArguments(args)
 		if err != nil {
-			return tooluse.ToolResult{}, fmt.Errorf("parse arguments: %w", err)
+			return tooluse.ToolResult{}, tooluse.NewToolError("invalid_arguments", tooluse.ErrorArguments, "MCP arguments must be valid JSON.", true, "Correct the JSON and try again.")
 		}
 
 		callCtxTimeout, cancel := context.WithTimeout(ctx, callTimeout)
@@ -71,17 +72,17 @@ func callToolHandler(session *mcp.ClientSession, originalName, namespacedName st
 			// Transport errors quote the full request URL, which may carry
 			// credentials as query parameters. Redact before logging and
 			// before the text is copied into the tool response the LLM sees.
-			sanitized := redactURLCredentials(callErr.Error())
-			perCall.Warn("mcp call failed", "error", sanitized)
+			classified := tooluse.ClassifyError(callErr, action)
+			perCall.Warn("mcp call failed", "error_code", classified.Code, "error_class", classified.Class)
 			logCallResult(perCall, namespacedName, originalName, callCtx.RequestID, true, 0, 0, 0)
 
-			return tooluse.ToolResult{}, fmt.Errorf("mcp_unreachable: %s", sanitized)
+			return tooluse.ToolResult{}, classified
 		}
 		if reply == nil {
 			perCall.Warn("mcp call returned no result")
 			logCallResult(perCall, namespacedName, originalName, callCtx.RequestID, true, 0, 0, 0)
 
-			return tooluse.ToolResult{}, fmt.Errorf("mcp_unreachable: empty response")
+			return tooluse.ToolResult{}, tooluse.ClassifyError(fmt.Errorf("empty response"), action)
 		}
 
 		result, decodeErr := decodeCallResult(reply)
@@ -92,6 +93,11 @@ func callToolHandler(session *mcp.ClientSession, originalName, namespacedName st
 			return tooluse.ToolResult{}, decodeErr
 		}
 
+		if action && result.Error != nil {
+			result.Error.Class = tooluse.ErrorAmbiguous
+			result.Error.Retryable = false
+			result.Error.RecoveryHint = "The server reported an error; partial effects may exist. Verify the outcome before repeating the action."
+		}
 		textLen, blockCount, unsupportedCount := summarizeForLog(reply)
 		logCallResult(perCall, namespacedName, originalName, callCtx.RequestID, reply.IsError, textLen, blockCount, unsupportedCount)
 
@@ -196,9 +202,9 @@ func decodeCallResult(reply *mcp.CallToolResult) (tooluse.ToolResult, error) { /
 	if reply.IsError {
 		result.Status = "error"
 		if summary := strings.Join(texts, "\n"); summary != "" {
-			result.Summary = summary
+			result.Error = tooluse.NewToolError("mcp_tool_error", tooluse.ErrorPermanent, summary, false, "Inspect the server explanation before deciding on a different call.")
 		} else {
-			result.Summary = "tool returned an error"
+			result.Error = tooluse.NewToolError("mcp_tool_error", tooluse.ErrorPermanent, "The MCP tool reported an error.", false, "")
 		}
 	} else {
 		result.Summary = "tool returned a result"

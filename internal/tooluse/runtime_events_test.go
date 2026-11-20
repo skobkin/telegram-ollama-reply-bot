@@ -210,7 +210,7 @@ func TestReplyWithToolsReportsStructuredFailureAsError(t *testing.T) {
 		ResultCharBudget: 600,
 		Visibility:       VisibilityInternal,
 		Handler: func(_ context.Context, _ CallContext, _ json.RawMessage) (toolResult, error) {
-			return toolResult{Status: "error", Error: "structured failure"}, nil
+			return toolResult{Status: "error", Error: NewToolError("structured_failure", ErrorPermanent, "structured failure", false, "")}, nil
 		},
 	})
 

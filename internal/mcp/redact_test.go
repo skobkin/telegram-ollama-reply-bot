@@ -77,7 +77,7 @@ func TestCallToolHandlerRedactsTransportError(t *testing.T) {
 	}
 
 	msg := callErr.Error()
-	if !strings.Contains(msg, "mcp_unreachable") {
+	if !strings.Contains(msg, "may already have been applied") {
 		t.Fatalf("expected mcp_unreachable error, got: %s", msg)
 	}
 	if strings.Contains(msg, querySecret) {

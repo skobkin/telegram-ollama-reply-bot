@@ -361,12 +361,12 @@ func (s *Service) buildReminder(scope state.ConversationScope, creatorUserID int
 	now := s.now()
 	req.Text = strings.TrimSpace(req.Text)
 	if req.Text == "" {
-		return Reminder{}, errors.New("text is required")
+		return Reminder{}, &ValidationError{Message: "text is required"}
 	}
 
 	schedule, nextDueAt, err := buildSchedule(now, req)
 	if err != nil {
-		return Reminder{}, err
+		return Reminder{}, &ValidationError{Message: "Invalid schedule: one_shot/interval schedules require a future RFC3339 run_at; interval_value must be positive. Calendar schedules require an IANA timezone, HH:MM time_of_day, and valid weekdays or day_of_month."}
 	}
 
 	id, err := newReminderID()

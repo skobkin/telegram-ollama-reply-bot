@@ -116,7 +116,7 @@ func TestNewManagerFailsForUnreachableRequiredServer(t *testing.T) {
 // TestManagerCloseLeavesToolHandlersFailingCleanly pins the shutdown contract
 // at the manager level: Close tears down the session, is safe to call twice,
 // empties Definitions, and any tool Handler captured before the close fails
-// cleanly and fast with the structured `mcp_unreachable` error the LLM can
+// cleanly and fast with the structured `outcome_unknown` error the LLM can
 // react to — no hang, no panic.
 func TestManagerCloseLeavesToolHandlersFailingCleanly(t *testing.T) {
 	manager, err := NewManager(context.Background(), config.MCPConfig{
@@ -160,8 +160,8 @@ func TestManagerCloseLeavesToolHandlersFailingCleanly(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected tool call to fail after Close")
 	}
-	if !strings.Contains(err.Error(), "mcp_unreachable") {
-		t.Fatalf("expected mcp_unreachable error after Close, got: %v", err)
+	if !strings.Contains(err.Error(), "may already have been applied") {
+		t.Fatalf("expected outcome_unknown error after Close, got: %v", err)
 	}
 }
 
@@ -232,7 +232,7 @@ func textResponse(text string) llm.Response {
 // (tools.AttachMCP("mcp", mcpManager) + defer tools.Close): while the runtime
 // is alive the attached manager's tools answer through the live session, and
 // once Runtime.Close has run the registered closer the same tool call fails
-// cleanly with `mcp_unreachable` instead of panicking or hanging.
+// cleanly with `outcome_unknown` instead of panicking or hanging.
 func TestRuntimeCloseClosesAttachedMCPManager(t *testing.T) {
 	manager, err := NewManager(context.Background(), config.MCPConfig{
 		Enabled: true,
@@ -270,7 +270,7 @@ func TestRuntimeCloseClosesAttachedMCPManager(t *testing.T) {
 	if reply != "first reply" {
 		t.Fatalf("unexpected first reply: %q", reply)
 	}
-	if msgs := stub.recordedToolMessages(); len(msgs) != 1 || strings.Contains(msgs[0], "mcp_unreachable") {
+	if msgs := stub.recordedToolMessages(); len(msgs) != 1 || strings.Contains(msgs[0], "outcome_unknown") {
 		t.Fatalf("expected one healthy tool result before Close, got %q", msgs)
 	}
 
@@ -296,8 +296,8 @@ func TestRuntimeCloseClosesAttachedMCPManager(t *testing.T) {
 	if len(msgs) != 2 {
 		t.Fatalf("expected two tool results in total, got %d: %q", len(msgs), msgs)
 	}
-	if !strings.Contains(msgs[1], "mcp_unreachable") {
-		t.Fatalf("expected post-close tool result to carry mcp_unreachable, got: %s", msgs[1])
+	if !strings.Contains(msgs[1], "outcome_unknown") {
+		t.Fatalf("expected post-close tool result to carry outcome_unknown, got: %s", msgs[1])
 	}
 
 	// Repeated shutdown must stay safe: manager Close is idempotent and the

@@ -130,10 +130,13 @@ type logger interface {
 }
 
 type toolResult struct {
-	Status  string `json:"status"`
-	Summary string `json:"summary,omitempty"`
-	Error   string `json:"error,omitempty"`
-	Data    any    `json:"data,omitempty"`
+	Status          string         `json:"status"`
+	Summary         string         `json:"summary,omitempty"`
+	Error           *ToolError     `json:"error,omitempty"`
+	Data            any            `json:"data,omitempty"`
+	Truncated       bool           `json:"truncated,omitempty"`
+	Reductions      map[string]int `json:"reductions,omitempty"`
+	ExecutionStatus string         `json:"execution_status,omitempty"`
 	// endTurn is runtime control flow, never a model-facing result field.
 	// Only a successful say_nothing handler sets it.
 	endTurn bool

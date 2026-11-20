@@ -3,7 +3,6 @@ package tooluse
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"telegram-ollama-reply-bot/internal/content/search"
@@ -11,7 +10,7 @@ import (
 
 func (r *Runtime) searchWeb(ctx context.Context, callCtx CallContext, args json.RawMessage) (toolResult, error) {
 	if r.searcher == nil {
-		return toolResult{}, fmt.Errorf("web search is unavailable")
+		return toolResult{}, NewToolError("tool_unavailable", ErrorUnavailable, "Web search is unavailable.", false, "")
 	}
 
 	var payload struct {
@@ -19,12 +18,12 @@ func (r *Runtime) searchWeb(ctx context.Context, callCtx CallContext, args json.
 		MaxResults int    `json:"max_results"`
 	}
 	if err := json.Unmarshal(args, &payload); err != nil {
-		return toolResult{}, fmt.Errorf("parse arguments: %w", err)
+		return toolResult{}, invalidArguments("Provide a JSON object matching the tool schema.")
 	}
 
 	payload.Query = strings.TrimSpace(payload.Query)
 	if payload.Query == "" {
-		return toolResult{}, fmt.Errorf("query is required")
+		return toolResult{}, invalidArguments("query is required")
 	}
 
 	searchResult, err := r.searcher.Search(ctx, search.Request{

@@ -1616,3 +1616,13 @@ func TestSystemOneConfigValidateRejectsKeyWithoutBaseURL(t *testing.T) {
 		t.Fatal("expected api key without base url to fail validation")
 	}
 }
+
+func TestMCPResultBudgetMinimum(t *testing.T) {
+	for _, budget := range []int{1, 511, 512, 0} {
+		cfg := MCPConfig{Enabled: true, Servers: map[string]MCPServerConfig{"test": {URL: "https://mcp.example.com", ResultCharBudget: budget}}}
+		err := cfg.Validate()
+		if (err != nil) != (budget > 0 && budget < 512) {
+			t.Fatalf("budget=%d err=%v", budget, err)
+		}
+	}
+}

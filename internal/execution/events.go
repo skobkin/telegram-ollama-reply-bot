@@ -148,6 +148,10 @@ type ToolCompleted struct {
 	Internal bool
 	Duration time.Duration
 	Status   string
+	// Safe classifications only; never explanations, arguments or raw causes.
+	ErrorCode  string
+	ErrorClass string
+	Retryable  bool
 }
 
 // TextDelta carries a fragment of streamed user-facing answer text. It is
