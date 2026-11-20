@@ -433,3 +433,42 @@ func mustBeginTx(t *testing.T, db *sql.DB) *sql.Tx {
 
 	return tx
 }
+
+func TestApplyCreatesStatisticsSnapshotsTable(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", "file::memory:?cache=shared&mode=memory")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if err := Apply(ctx, db, nil); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(statistics_snapshots)`)
+	if err != nil {
+		t.Fatalf("table_info: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		columns[name] = true
+	}
+	for _, want := range []string{"dataset", "format_version", "generation", "revision", "payload", "saved_at"} {
+		if !columns[want] {
+			t.Fatalf("statistics_snapshots is missing column %q (have %v)", want, columns)
+		}
+	}
+
+	var version int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil || version != 13 {
+		t.Fatalf("expected schema version 13, got %d (err %v)", version, err)
+	}
+}
