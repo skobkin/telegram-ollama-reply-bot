@@ -130,3 +130,35 @@ func TestInteractionWorstCasePayloadFitsTheWriteLimit(t *testing.T) {
 		t.Fatalf("derived bound %d does not fit the %d byte write limit", bound.payloadBytes, MaxSnapshotPayloadBytes)
 	}
 }
+
+type toolBound struct {
+	modelRows, chatRows int
+	rowCounters         int
+	payloadBytes        int
+	counterBytesRAM     int
+}
+
+// toolWorstCase derives the tool dataset's worst case from the real
+// constants: every row is the full row (counters, classes, latency bins and
+// up to MaxErrorCodesPerTool+1 code entries), in both projections.
+func toolWorstCase() toolBound {
+	chats := MaxTrackedChats + 1
+	models := MaxTrackedModels + 1
+	tools := MaxTrackedTools + 2 // tracked + other_registered + unregistered
+	modes := int(toolModeCount)
+
+	b := toolBound{
+		modelRows:   models * modes * tools,
+		chatRows:    chats * modes * tools,
+		rowCounters: int(toolCounterCount) + toolClassCount + len(toolLatencyEdges) + 1,
+	}
+	// A code entry is "[id,count]," : id <= 5 digits, count 20 digits.
+	const codeEntryBytes = 2 + 5 + 1 + boundCounterBytes
+	rowBytes := b.rowCounters*boundCounterBytes + (MaxErrorCodesPerTool+1)*codeEntryBytes + boundBucketMetaBytes
+	b.payloadBytes = (b.modelRows+b.chatRows)*rowBytes +
+		models*(maxModelIDBytes+4) + tools*(maxModelIDBytes+4) + MaxTrackedErrorCodes*(maxErrorCodeBytes+4) +
+		2*modes*(models+chats)*(3*boundCounterBytes+boundBucketMetaBytes) + boundSlackBytes
+	b.counterBytesRAM = (b.modelRows + b.chatRows) * b.rowCounters * 8
+
+	return b
+}

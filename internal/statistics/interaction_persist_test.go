@@ -536,3 +536,18 @@ func TestInteractionProfileOverflowIsBoundedAndFilterable(t *testing.T) {
 		t.Fatal("a filtered view under overflow folding is not exact")
 	}
 }
+
+// capturePayloadOf captures any dataset's dirty payload.
+func capturePayloadOf(t *testing.T, ds Dataset) (PersistPair, []byte) {
+	t.Helper()
+	pair, encode, dirty := ds.Capture()
+	if !dirty {
+		t.Fatal("expected a dirty dataset")
+	}
+	payload, err := encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return pair, payload
+}

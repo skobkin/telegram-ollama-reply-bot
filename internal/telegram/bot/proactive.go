@@ -58,7 +58,7 @@ func (b *Bot) SetProactiveDecisions(client interactivity.DecisionClient, persona
 		return nil
 	}
 
-	b.proactiveChatRouteModel = chatRouteModel
+	b.chatRouteModel = chatRouteModel
 
 	runner := newParticipationRunner(b.ctx, b.cfg.ProcessingTimeout, b.logger)
 	decisions := &proactiveDecisions{

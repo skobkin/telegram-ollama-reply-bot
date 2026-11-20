@@ -45,6 +45,13 @@ type Collector struct {
 	// for dirty tracking.
 	interactionPersist persistTracker
 	interactionResets  uint64
+
+	// The tool-usage dataset is persistent like the interaction one but has
+	// its own reset generation, so the resets stay independent.
+	tool        toolState
+	toolPersist persistTracker
+	toolResets  uint64
+	toolCatalog []string
 }
 
 // NewCollector constructs the collector. Both observation periods start at
@@ -63,5 +70,7 @@ func NewCollector(cfg Config) *Collector {
 		generalPeriodStartedAt: started,
 		interaction:            initInteraction(started),
 		interactionPersist:     newPersistTracker(),
+		tool:                   initTool(started),
+		toolPersist:            newPersistTracker(),
 	}
 }

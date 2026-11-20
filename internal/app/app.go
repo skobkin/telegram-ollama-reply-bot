@@ -630,7 +630,7 @@ func Run(ctx context.Context) (runErr error) {
 		Store:  statisticsSnapshotStore{store: persistentStore},
 		Logger: logManager.Logger("statistics/persistence"),
 		Report: func(err error) { sentry.CaptureException(err) },
-	}, statsCollector.InteractionDataset())
+	}, statsCollector.InteractionDataset(), statsCollector.ToolDataset())
 	if err := statsPersister.Restore(ctx); err != nil {
 		logger.Error("failed to restore persistent statistics", "error", err)
 		sentry.CaptureException(err)
@@ -711,6 +711,13 @@ func Run(ctx context.Context) (runErr error) {
 	}
 
 	attachImageTools(tools, botService, cfg.LLM.ImageRecognitionEnabled)
+
+	// Every tool is registered now (built-ins, MCP, decision and image
+	// tools) and the catalog is static from here on: it lets the tool
+	// statistics report registered tools with zero usage. Runs before the
+	// bot starts handling updates.
+	statsCollector.SetToolCatalog(tools.ToolNames())
+	botService.SetChatRouteModel(envChatRouteModel(cfg.LLM))
 
 	// Live previews subscribe to the execution events. At shutdown the
 	// preview workers must be joined before the dispatcher drains and both

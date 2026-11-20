@@ -38,7 +38,7 @@ func (b *Bot) effectiveGenerationModel(resolved adminconfig.ResolvedChatConfig) 
 		return resolved.ChatModel
 	}
 
-	return b.proactiveChatRouteModel
+	return b.chatRouteModel
 }
 
 // instrumentedDecisionClient wraps the shared System One client for one

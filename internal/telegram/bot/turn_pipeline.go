@@ -187,8 +187,13 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 	var llmReply string
 	var usage *llm.TokenUsage
 	var toolCalls []tooluse.ToolCallRecord
+	var advertisedTools []string
 	var intentionalSilence bool
 	var err error
+
+	// The tool statistics epoch is captured BEFORE the run: a reset while the
+	// turn is in flight drops the whole turn's tool observation.
+	toolEpoch := b.stats.ToolEpoch()
 
 	turnWork := func(ctx context.Context) error {
 		var userCtx llmcontext.UserContext
@@ -246,6 +251,7 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 		})
 		llmReply, usage, err = result.Reply, result.Usage, runErr
 		toolCalls = result.ToolCalls
+		advertisedTools = result.AdvertisedTools
 		intentionalSilence = result.IntentionalSilence
 
 		return runErr
@@ -262,6 +268,12 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 		defer cancel()
 		err = b.withinProcessingDeadline(deadlineCtx, turnWork, func() bool { return intentionalSilence })
 	}
+
+	// One authoritative tool-statistics observation per turn on every exit
+	// path (success, silence, failure, cancellation, timeout), recorded after
+	// the loop and before any final text delivery.
+	b.recordToolTurn(toolEpoch, message.Chat.ID, opts.trigger, b.effectiveGenerationModel(resolved), advertisedTools, toolCalls, err)
+
 	if err != nil {
 		effects := effectsFromCalls(toolCalls, false)
 		effects.Failure = turnFailureFromError(err)
