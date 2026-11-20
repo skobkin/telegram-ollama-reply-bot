@@ -14,28 +14,65 @@ import (
 	"golang.org/x/net/http/httpproxy"
 )
 
+// scalarSecretSpec pairs one registered scalar credential with the
+// environment variable the config loader reads it from and the accessor for
+// the loaded value. One table drives both registries — the runtime one
+// reads the loaded config, the bootstrap one (bootstrapEnvSecrets) reads
+// the environment directly, before Load can fail — so a new credential
+// cannot be added to one and forgotten in the other.
+//
+// The variable names are configuration metadata, not credentials.
+type scalarSecretSpec struct { //nolint:gosec // environment variable names and registry labels, not credentials
+	name    string
+	envName string
+	fromCfg func(*config.Config) string
+}
+
+var scalarSecretSpecs = []scalarSecretSpec{
+	{name: "telegram-token", envName: "BOT__TELEGRAM__TOKEN", fromCfg: func(cfg *config.Config) string { return cfg.Bot.Telegram.Token }},
+	{name: "llm-api-token", envName: "LLM__BACKENDS__OPENAI_COMPAT__API_TOKEN", fromCfg: func(cfg *config.Config) string { return cfg.LLM.Backends.OpenAICompat.APIToken }},
+	{name: "llm-image-api-token", envName: "LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__API_TOKEN", fromCfg: func(cfg *config.Config) string { return cfg.LLM.ImageRecognition.OpenAICompat.APIToken }},
+	{name: "llm-image-minimax-api-key", envName: "LLM__IMAGE_RECOGNITION__MINIMAX_VLM__API_KEY", fromCfg: func(cfg *config.Config) string { return cfg.LLM.ImageRecognition.MiniMaxVLM.APIKey }},
+	{name: "search-tavily-api-key", envName: "PROVIDERS__TAVILY__API_KEY", fromCfg: func(cfg *config.Config) string { return cfg.Providers.Tavily.APIKey }},
+	{name: "search-kagi-api-key", envName: "PROVIDERS__KAGI__API_KEY", fromCfg: func(cfg *config.Config) string { return cfg.Providers.Kagi.APIKey }},
+	{name: "systemone-api-key", envName: "SYSTEMONE__API_KEY", fromCfg: func(cfg *config.Config) string { return cfg.SystemOne.APIKey }},
+	{name: "sentry-dsn", envName: "SENTRY__DSN", fromCfg: func(cfg *config.Config) string { return cfg.Sentry.DSN }},
+}
+
+// endpointSecretSpec pairs one credential-bearing endpoint URL with its
+// environment variable and loaded accessor, like scalarSecretSpec. Only the
+// userinfo password of these URLs registers (see appendURLPassword);
+// startup diagnostics and validation errors quote them verbatim.
+//
+// The variable names are configuration metadata, not credentials.
+type endpointSecretSpec struct { //nolint:gosec // environment variable names and registry labels, not credentials
+	name    string
+	envName string
+	fromCfg func(*config.Config) string
+}
+
+var endpointSecretSpecs = []endpointSecretSpec{
+	{name: "llm-backend-url-password", envName: "LLM__BACKENDS__OPENAI_COMPAT__BASE_URL", fromCfg: func(cfg *config.Config) string { return cfg.LLM.Backends.OpenAICompat.BaseURL }},
+	{name: "llm-image-backend-url-password", envName: "LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__BASE_URL", fromCfg: func(cfg *config.Config) string { return cfg.LLM.ImageRecognition.OpenAICompat.BaseURL }},
+	{name: "llm-image-minimax-url-password", envName: "LLM__IMAGE_RECOGNITION__MINIMAX_VLM__BASE_URL", fromCfg: func(cfg *config.Config) string { return cfg.LLM.ImageRecognition.MiniMaxVLM.BaseURL }},
+	{name: "systemone-endpoint-url-password", envName: "SYSTEMONE__BASE_URL", fromCfg: func(cfg *config.Config) string { return cfg.SystemOne.BaseURL }},
+}
+
 // newSecretScrubber registers every secret the app is configured with, so a
 // single scrubber can clean Sentry events, log records, and HTTP client
 // errors. Every new secret-bearing configuration value (API tokens, keys,
-// credential header values, URL-embedded passwords) must be added here — a
-// secret missing from this registry can surface verbatim in error messages,
-// logs, and Sentry issue titles.
+// credential header values, URL-embedded passwords) must be added to the
+// spec tables above or the MCP/proxy sections here — a secret missing from
+// this registry can surface verbatim in error messages, logs, and Sentry
+// issue titles.
 func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 	var secrets []secretscrub.Secret
 
 	// Scalar secrets also register their derived renderings — trimmed and
 	// quoted — because those are the forms remote surfaces and error
 	// diagnostics actually carry.
-	for _, secret := range []secretscrub.Secret{
-		{Name: "telegram-token", Value: cfg.Bot.Telegram.Token},
-		{Name: "llm-api-token", Value: cfg.LLM.Backends.OpenAICompat.APIToken},
-		{Name: "llm-image-api-token", Value: cfg.LLM.ImageRecognition.OpenAICompat.APIToken},
-		{Name: "llm-image-minimax-api-key", Value: cfg.LLM.ImageRecognition.MiniMaxVLM.APIKey},
-		{Name: "search-tavily-api-key", Value: cfg.Providers.Tavily.APIKey},
-		{Name: "search-kagi-api-key", Value: cfg.Providers.Kagi.APIKey},
-		{Name: "systemone-api-key", Value: cfg.SystemOne.APIKey},
-		{Name: "sentry-dsn", Value: cfg.Sentry.DSN},
-	} {
+	for _, spec := range scalarSecretSpecs {
+		secret := secretscrub.Secret{Name: spec.name, Value: spec.fromCfg(cfg)}
 		secrets = append(secrets, secret)
 		secrets = withDerivedForms(secrets, secret)
 	}
@@ -47,48 +84,13 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 	// appear.
 	secrets = withURLCredentials(secrets, "sentry-dsn", cfg.Sentry.DSN)
 
-	// Backend endpoint URLs may carry basic-auth userinfo; only the password
-	// part is registered (see appendURLPassword). Startup diagnostics and
-	// validation errors quote these URLs verbatim.
-	for name, endpoint := range map[string]string{
-		"llm-backend-url-password":        cfg.LLM.Backends.OpenAICompat.BaseURL,
-		"llm-image-backend-url-password":  cfg.LLM.ImageRecognition.OpenAICompat.BaseURL,
-		"llm-image-minimax-url-password":  cfg.LLM.ImageRecognition.MiniMaxVLM.BaseURL,
-		"systemone-endpoint-url-password": cfg.SystemOne.BaseURL,
-	} {
-		secrets = appendURLPassword(secrets, name, endpoint)
+	for _, spec := range endpointSecretSpecs {
+		secrets = appendURLPassword(secrets, spec.name, spec.fromCfg(cfg))
 	}
 
 	for name, server := range cfg.MCP.Servers {
 		for header, value := range server.Headers {
-			headerName := "mcp-" + name + "-header-" + header
-
-			// Every form the value can take on a remote surface gets
-			// registered, each with its %q rendering alongside: diagnostics
-			// quote whichever form they carry.
-			forms := []secretscrub.Secret{
-				{Name: headerName, Value: value},
-			}
-
-			// HTTP transmission trims surrounding whitespace, so providers
-			// see and echo the trimmed form. This also covers bare
-			// (scheme-less) header values, which credentialFromHeader does
-			// not normalize.
-			if trimmed := strings.TrimSpace(value); trimmed != "" && trimmed != value {
-				forms = append(forms, secretscrub.Secret{Name: headerName + "-trimmed", Value: trimmed})
-			}
-
-			// Providers echo the bare credential in errors ("invalid api
-			// key X"), not the full header value, so the credential part of
-			// scheme-prefixed values is registered alongside the whole.
-			if credential, ok := credentialFromHeader(value); ok {
-				forms = append(forms, secretscrub.Secret{Name: headerName + "-credential", Value: credential})
-			}
-
-			for _, form := range forms {
-				secrets = append(secrets, form)
-				secrets = withQuoted(secrets, form.Name, form.Value)
-			}
+			secrets = appendHeaderCredentialForms(secrets, "mcp-"+name+"-header-"+header, value)
 		}
 
 		// Only the password part of an MCP endpoint URL is registered: a
@@ -119,58 +121,53 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 // process environment. A failed config.Load returns before newSecretScrubber
 // can run, and its error reaches main's plain stderr, so bootstrap failures
 // are scrubbed with the credential values Load would have registered: the
-// documented secret-bearing variables, endpoint URL userinfo passwords, the
-// MCP header variable family, and the proxy passwords. Names carry the
-// "bootstrap-" prefix where they cannot mirror the post-Load registry ones.
+// same spec tables drive both registries, the environment is matched the
+// way the loader matches it (variable names lowercased before mapping), and
+// the MCP endpoint-URL and request-header variable families are picked up
+// with the same shapes and derived names the loader produces.
 func bootstrapEnvSecrets() []secretscrub.Secret {
+	env := bootstrapEnvValues()
+
 	var secrets []secretscrub.Secret
 
-	// The keys are environment variable names and the values registry
-	// labels — configuration metadata, not credentials.
-	for envName, registryName := range map[string]string{ //nolint:gosec // environment variable names and registry labels, not credentials
-		"BOT__TELEGRAM__TOKEN":                             "telegram-token",
-		"LLM__BACKENDS__OPENAI_COMPAT__API_TOKEN":          "llm-api-token",
-		"LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__API_TOKEN": "llm-image-api-token",
-		"LLM__IMAGE_RECOGNITION__MINIMAX_VLM__API_KEY":     "llm-image-minimax-api-key",
-		"PROVIDERS__TAVILY__API_KEY":                       "search-tavily-api-key",
-		"PROVIDERS__KAGI__API_KEY":                         "search-kagi-api-key",
-		"SYSTEMONE__API_KEY":                               "systemone-api-key",
-		"SENTRY__DSN":                                      "sentry-dsn",
-	} {
-		value, ok := os.LookupEnv(envName)
-		if !ok || value == "" {
+	for _, spec := range scalarSecretSpecs {
+		value := env[strings.ToLower(spec.envName)]
+		if strings.TrimSpace(value) == "" {
 			continue
 		}
 
-		secret := secretscrub.Secret{Name: registryName, Value: value}
+		secret := secretscrub.Secret{Name: spec.name, Value: value}
 		secrets = append(secrets, secret)
 		secrets = withDerivedForms(secrets, secret)
 
-		if registryName == "sentry-dsn" {
-			secrets = withURLCredentials(secrets, registryName, value)
+		if spec.name == "sentry-dsn" {
+			secrets = withURLCredentials(secrets, spec.name, value)
 		}
 	}
 
-	for envName, registryName := range map[string]string{
-		"LLM__BACKENDS__OPENAI_COMPAT__BASE_URL":          "bootstrap-llm-backend-url-password",
-		"LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__BASE_URL": "bootstrap-llm-image-backend-url-password",
-		"LLM__IMAGE_RECOGNITION__MINIMAX_VLM__BASE_URL":   "bootstrap-llm-image-minimax-url-password",
-		"SYSTEMONE__BASE_URL":                             "bootstrap-systemone-endpoint-url-password",
-	} {
-		if value, ok := os.LookupEnv(envName); ok {
-			secrets = appendURLPassword(secrets, registryName, value)
+	for _, spec := range endpointSecretSpecs {
+		if value := env[strings.ToLower(spec.envName)]; strings.TrimSpace(value) != "" {
+			secrets = appendURLPassword(secrets, spec.name, value)
 		}
 	}
 
 	for _, entry := range os.Environ() {
 		name, value, _ := strings.Cut(entry, "=")
-		if value == "" || !isMCPHeaderEnvVar(name) {
+		if strings.TrimSpace(value) == "" {
 			continue
 		}
 
-		secret := secretscrub.Secret{Name: bootstrapMCPHeaderName(name), Value: value}
-		secrets = append(secrets, secret)
-		secrets = withDerivedForms(secrets, secret)
+		switch {
+		case isMCPHeaderEnvVar(name):
+			server, header, ok := mcpHeaderEnvNames(name)
+			if !ok {
+				continue
+			}
+
+			secrets = appendHeaderCredentialForms(secrets, "mcp-"+server+"-header-"+header, value)
+		case isMCPServerURLEnvVar(name):
+			secrets = appendURLPassword(secrets, "mcp-"+mcpServerEnvName(name)+"-url-password", value)
+		}
 	}
 
 	proxyConfig := httpproxy.FromEnvironment()
@@ -184,6 +181,27 @@ func bootstrapEnvSecrets() []secretscrub.Secret {
 	return secrets
 }
 
+// bootstrapEnvValues flattens the environment keyed by lowercased variable
+// name. The loader lowercases every variable name before mapping it onto
+// the config tree (config.Load's env transform), so a credential set in any
+// letter case must be found here the same way; an exact-case LookupEnv
+// would silently miss the value. Blank values are kept — the lookup sites
+// apply the loader's blank-means-unset rule themselves. The first
+// occurrence of a name wins.
+func bootstrapEnvValues() map[string]string {
+	env := make(map[string]string)
+
+	for _, entry := range os.Environ() {
+		name, value, _ := strings.Cut(entry, "=")
+		key := strings.ToLower(name)
+		if _, seen := env[key]; !seen {
+			env[key] = value
+		}
+	}
+
+	return env
+}
+
 // isMCPHeaderEnvVar mirrors the config package's isMCPHeaderVar: the shape
 // MCP__SERVERS__<SERVER>__HEADERS__<SEG>[__SEG...], case-insensitive.
 func isMCPHeaderEnvVar(key string) bool {
@@ -195,22 +213,39 @@ func isMCPHeaderEnvVar(key string) bool {
 		strings.EqualFold(parts[3], "HEADERS")
 }
 
-// bootstrapMCPHeaderName turns an MCP header variable name into a stable
-// registry label: MCP__SERVERS__DOCS__HEADERS__AUTH →
-// "bootstrap-mcp-docs-header-auth".
-func bootstrapMCPHeaderName(envName string) string {
-	parts := strings.Split(envName, "__")
-	labels := make([]string, 0, len(parts))
+// isMCPServerURLEnvVar reports whether an environment variable name is an
+// MCP endpoint URL: MCP__SERVERS__<SERVER>__URL, matched case-insensitively
+// like every variable name the loader maps onto the tree.
+func isMCPServerURLEnvVar(key string) bool {
+	parts := strings.Split(key, "__")
 
-	for i, part := range parts[2:] {
-		if i == 1 && strings.EqualFold(part, "HEADERS") {
-			continue
-		}
+	return len(parts) == 4 &&
+		strings.EqualFold(parts[0], "MCP") &&
+		strings.EqualFold(parts[1], "SERVERS") &&
+		strings.EqualFold(parts[3], "URL")
+}
 
-		labels = append(labels, strings.ToLower(part))
+// mcpServerEnvName lowercases the server segment of an
+// MCP__SERVERS__<SERVER>__* variable, producing the server name the loader
+// derives for the config map key — and the registry label mirrors.
+func mcpServerEnvName(key string) string {
+	parts := strings.Split(key, "__")
+
+	return strings.ToLower(parts[2])
+}
+
+// mcpHeaderEnvNames derives the server and header name parts of an
+// MCP__SERVERS__<SERVER>__HEADERS__<SEG>[__SEG...] variable exactly the way
+// the loader does (config.applyMCPHeaderEnv): the header name is the
+// remaining segments joined with "-" and lowercased, so the bootstrap
+// registry labels match the post-Load registry ones.
+func mcpHeaderEnvNames(key string) (server, header string, ok bool) {
+	parts := strings.Split(key, "__")
+	if len(parts) < 5 {
+		return "", "", false
 	}
 
-	return "bootstrap-mcp-" + strings.Join(labels, "-")
+	return strings.ToLower(parts[2]), strings.ToLower(strings.Join(parts[4:], "-")), true
 }
 
 // withDerivedForms registers derived renderings of a configured secret
@@ -282,6 +317,39 @@ func withQuoted(secrets []secretscrub.Secret, name, value string) []secretscrub.
 			Name:  name + "-quoted",
 			Value: inner,
 		})
+	}
+
+	return secrets
+}
+
+// appendHeaderCredentialForms registers every form an MCP header value can
+// take on a remote surface, each with its %q rendering alongside:
+//
+//   - the raw configured value;
+//   - the trimmed form: HTTP header transmission strips surrounding
+//     whitespace, so providers receive and echo the trimmed form (this also
+//     covers bare scheme-less values, which credentialFromHeader does not
+//     normalize);
+//   - the bare credential of scheme-prefixed values ("Bearer X", "Token X",
+//     …): providers echo the bare credential in errors ("invalid api key
+//     X"), not the full header value.
+//
+// The same helper serves both registries, so the two header paths cannot
+// drift.
+func appendHeaderCredentialForms(secrets []secretscrub.Secret, name, value string) []secretscrub.Secret {
+	forms := []secretscrub.Secret{{Name: name, Value: value}}
+
+	if trimmed := strings.TrimSpace(value); trimmed != "" && trimmed != value {
+		forms = append(forms, secretscrub.Secret{Name: name + "-trimmed", Value: trimmed})
+	}
+
+	if credential, ok := credentialFromHeader(value); ok {
+		forms = append(forms, secretscrub.Secret{Name: name + "-credential", Value: credential})
+	}
+
+	for _, form := range forms {
+		secrets = append(secrets, form)
+		secrets = withQuoted(secrets, form.Name, form.Value)
 	}
 
 	return secrets

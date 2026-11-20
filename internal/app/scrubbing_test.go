@@ -1157,6 +1157,55 @@ func TestBootstrapEnvSecretsRegistersEnvValues(t *testing.T) {
 	}
 }
 
+// TestBootstrapEnvSecretsMatchesLoaderCaseInsensitivity pins the loader's
+// variable-name semantics: config.Load lowercases every variable name
+// before mapping it onto the tree, so a credential set in mixed case is a
+// real, accepted configuration — and the bootstrap registry must find it
+// where an exact-case lookup would silently miss it. Not parallel: t.Setenv.
+func TestBootstrapEnvSecretsMatchesLoaderCaseInsensitivity(t *testing.T) {
+	t.Setenv("Bot__Telegram__Token", "MIXEDCASEBOOTFIXTURE")
+	t.Setenv("llm__backends__openai_compat__api_token", "LOWERCASEBOOTFIXTURE")
+
+	scrubber := secretscrub.New(bootstrapEnvSecrets())
+
+	for _, fixture := range []string{"MIXEDCASEBOOTFIXTURE", "LOWERCASEBOOTFIXTURE"} {
+		if got := scrubber.Scrub("bootstrap diagnostic " + fixture); strings.Contains(got, fixture) {
+			t.Fatalf("credential set in mixed-case variable name not registered: %q", got)
+		}
+	}
+}
+
+// TestBootstrapEnvSecretsRegistersMCPEndpointAndHeaderForms pins the MCP
+// variable family the bootstrap registry covers: endpoint URL userinfo
+// passwords, and request headers in all their derived forms — including the
+// bare credential of scheme-prefixed values and the loader's hyphenated
+// multi-segment header naming. Not parallel: t.Setenv.
+func TestBootstrapEnvSecretsRegistersMCPEndpointAndHeaderForms(t *testing.T) {
+	t.Setenv("MCP__SERVERS__DOCS__URL", "http://user:BOOTMCPPASSWORD@docs.internal")   //nolint:gosec // fake fixture, not a credential
+	t.Setenv("MCP__SERVERS__DOCS__HEADERS__AUTHORIZATION", "Bearer BOOTBEARERFIXTURE") //nolint:gosec // fake fixture, not a credential
+	t.Setenv("MCP__SERVERS__DOCS__HEADERS__X__API__KEY", " BOOTMULTISEGKEYFIXTURE ")   //nolint:gosec // fake fixture, not a credential
+
+	scrubber := secretscrub.New(bootstrapEnvSecrets())
+
+	for _, fixture := range []string{
+		"BOOTMCPPASSWORD",
+		"Bearer BOOTBEARERFIXTURE",
+		"invalid api key BOOTBEARERFIXTURE",
+		"  BOOTMULTISEGKEYFIXTURE  ",
+		"BOOTMULTISEGKEYFIXTURE",
+	} {
+		text := "bootstrap diagnostic " + fixture
+
+		if !scrubber.Contains(text) {
+			t.Fatalf("bootstrap MCP form missing from scrubber: %q", fixture)
+		}
+
+		if got := scrubber.Scrub(text); strings.Contains(got, fixture) {
+			t.Fatalf("bootstrap MCP form not scrubbed: %q", got)
+		}
+	}
+}
+
 // TestRunStartupFailureScrubbed asserts the actual startup-failure output
 // path: a credential mispasted into a numeric variable fails the boot before
 // the registry exists, and the error main prints carries neither the
@@ -1164,6 +1213,9 @@ func TestBootstrapEnvSecretsRegistersEnvValues(t *testing.T) {
 func TestRunStartupFailureScrubbed(t *testing.T) {
 	t.Setenv("LLM__BACKENDS__OPENAI_COMPAT__API_TOKEN", "BOOTFIXTURE")
 	t.Setenv("BOT__UNCOMPRESSED_HISTORY_LIMIT", "BOOTFIXTURE")
+	// The same credential in a mixed-case variable name: the loader accepts
+	// it, so the bootstrap registry must cover it here too.
+	t.Setenv("Bot__Telegram__Token", "BOOTFIXTURE")
 
 	err := Run(context.Background())
 	if err == nil {
