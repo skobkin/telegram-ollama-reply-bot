@@ -630,6 +630,31 @@ func TestInteractionExecutionEffectClasses(t *testing.T) {
 		}
 	})
 
+	t.Run("generated chart counts as an other side effect", func(t *testing.T) {
+		p := newReplyBot(t)
+		p.llm.mu.Lock()
+		p.llm.responses = []llm.Response{
+			{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{
+				{ID: "call-1", Name: "generate_chart", Arguments: []byte(`{"chart_type":"pie","categories":["a","b"],"series":[{"name":"s","values":[1,2]}]}`)},
+			}}},
+			{Message: llm.TextMessage(llm.RoleAssistant, "here is the chart")},
+		}
+		p.llm.mu.Unlock()
+
+		p.deliver(t, proactiveGroupUpdate("draw a chart"))
+		waitFor(t, func() bool { return p.deliveredCount() >= 1 })
+
+		snap := waitForInteraction(t, p.bot.stats, func(s statistics.InteractionSnapshot) bool {
+			return s.Execution.Totals.OtherSideEffects == 1
+		})
+		if exec := snap.Execution.Totals; exec.ReactionsConfirmed != 0 || exec.TextsConfirmed != 1 || exec.OtherSideEffects != 1 || exec.TurnsWithEffect != 1 {
+			t.Fatalf("chart effects wrong: %+v", exec.ExecutionCounters)
+		}
+		if p.api.callCount("sendPhoto") != 1 {
+			t.Fatalf("the chart tool must actually send a photo")
+		}
+	})
+
 	t.Run("successful reaction turn without effects", func(t *testing.T) {
 		// A reaction turn whose only tool call is refused (album target)
 		// completes successfully with its text suppressed: no confirmed

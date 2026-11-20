@@ -253,6 +253,10 @@ func (s apiActionSender) SendDice(ctx context.Context, params *tg.SendDiceParams
 	return s.api.SendDice(ctx, params)
 }
 
+func (s apiActionSender) SendPhoto(ctx context.Context, params *tg.SendPhotoParams) (*tg.Message, error) {
+	return s.api.SendPhoto(ctx, params)
+}
+
 func (s apiActionSender) SetMessageReaction(ctx context.Context, params *tg.SetMessageReactionParams) error {
 	return s.api.SetMessageReaction(ctx, params)
 }

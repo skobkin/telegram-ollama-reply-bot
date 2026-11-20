@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"telegram-ollama-reply-bot/internal/content/chart"
 	"telegram-ollama-reply-bot/internal/content/extractor"
 	"telegram-ollama-reply-bot/internal/content/search"
 	"telegram-ollama-reply-bot/internal/execution"
@@ -35,6 +36,7 @@ type llmService interface {
 type TelegramActionSender interface {
 	SendPoll(ctx context.Context, params *t.SendPollParams) (*t.Message, error)
 	SendDice(ctx context.Context, params *t.SendDiceParams) (*t.Message, error)
+	SendPhoto(ctx context.Context, params *t.SendPhotoParams) (*t.Message, error)
 	// SetMessageReaction sets exactly one ordinary emoji reaction on a
 	// Telegram message. Unlike the send actions it creates no message, so
 	// callers must not treat it as one and the wrapper publishes no
@@ -257,6 +259,8 @@ type Runtime struct {
 	reactionAvailability reactionAvailability
 	// randIntN overrides the random source in tests; nil uses math/rand/v2.
 	randIntN func(n int) int
+	// chartRenderer overrides chart.Render in tests; nil uses it directly.
+	chartRenderer func(chart.Spec) ([]byte, error)
 }
 
 type registeredCloser struct {

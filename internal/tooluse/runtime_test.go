@@ -89,11 +89,13 @@ func (s *stubExtractor) GetArticleFromURL(context.Context, string) (extractor.Ar
 }
 
 type stubActionSender struct {
-	lastPollParams *tg.SendPollParams
-	lastDiceParams *tg.SendDiceParams
-	message        *tg.Message
-	diceMessage    *tg.Message
-	err            error
+	lastPollParams  *tg.SendPollParams
+	lastDiceParams  *tg.SendDiceParams
+	lastPhotoParams *tg.SendPhotoParams
+	photoCalls      int
+	message         *tg.Message
+	diceMessage     *tg.Message
+	err             error
 
 	reactionMu            sync.Mutex
 	lastReactionParams    *tg.SetMessageReactionParams
@@ -116,6 +118,13 @@ func (s *stubActionSender) SendDice(_ context.Context, params *tg.SendDiceParams
 	if s.diceMessage != nil {
 		return s.diceMessage, s.err
 	}
+
+	return s.message, s.err
+}
+
+func (s *stubActionSender) SendPhoto(_ context.Context, params *tg.SendPhotoParams) (*tg.Message, error) {
+	s.photoCalls++
+	s.lastPhotoParams = params
 
 	return s.message, s.err
 }

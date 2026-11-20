@@ -51,6 +51,7 @@ const (
 	calculateResultCharBudget       = 600
 	randomChoiceResultCharBudget    = 3000
 	messageContextResultCharBudget  = 5000
+	generateChartResultCharBudget   = 800
 )
 
 // ToolResult is the value a Handler returns to the runtime. It is exported
@@ -260,6 +261,16 @@ func newRegistry(runtime *Runtime) *Registry {
 			Visibility:       VisibilityStandard,
 			ResultCharBudget: messageContextResultCharBudget,
 			Handler:          runtime.getMessageContext,
+		},
+		{
+			Name:             "generate_chart",
+			Description:      "Render a PNG chart from data you supply and send it to the current chat. Types: line, bar (vertical or horizontal, optionally stacked), pie (one series, up to 12 non-negative slices). Every series needs one number per category. Use when a chart or graph would clearly help. Limits: 50 categories, 8 series, 400 points, labels up to 32 characters. Long labels are shortened with an ellipsis in the image, and with many categories (over 20) the labels become small and rotated, so prefer at most 20.",
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"chart_type":{"type":"string","enum":["line","bar","pie"],"description":"Chart kind."},"title":{"type":"string","maxLength":60,"description":"Optional chart title."},"categories":{"type":"array","items":{"type":"string","minLength":1,"maxLength":32},"minItems":1,"maxItems":50,"description":"Category labels (x-axis for line and vertical bar, rows for horizontal bar, slice names for pie)."},"series":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"object","properties":{"name":{"type":"string","minLength":1,"maxLength":32,"description":"Series name shown in the legend."},"values":{"type":"array","items":{"type":"number"},"description":"One finite number per category, in category order."}},"required":["name","values"],"additionalProperties":false},"description":"Data series. Pie takes exactly one."},"orientation":{"type":"string","enum":["vertical","horizontal"],"description":"Bar charts only. Defaults to vertical."},"stacked":{"type":"boolean","description":"Bar charts only: stack the series (values must be non-negative)."},"x_label":{"type":"string","maxLength":32,"description":"Optional category axis title."},"y_label":{"type":"string","maxLength":32,"description":"Optional value axis title."},"width":{"type":"integer","minimum":600,"maximum":1600,"description":"Image width in pixels. Defaults to 1000."},"height":{"type":"integer","minimum":360,"maximum":1200,"description":"Image height in pixels. Defaults to 600."}},"required":["chart_type","categories","series"],"additionalProperties":false}`),
+			InvocationPolicy: InvocationPolicyDiscretionary,
+			Visibility:       VisibilityStandard,
+			ResultCharBudget: generateChartResultCharBudget,
+			SideEffecting:    true,
+			Handler:          runtime.generateChart,
 		},
 		{
 			Name:             "send_poll",

@@ -68,6 +68,16 @@ func (b *eventPublishingBot) SendDice(ctx context.Context, params *tg.SendDicePa
 	return message, nil
 }
 
+func (b *eventPublishingBot) SendPhoto(ctx context.Context, params *tg.SendPhotoParams) (*tg.Message, error) {
+	message, err := b.api.SendPhoto(ctx, params)
+	if err != nil {
+		return message, err
+	}
+	b.publish(params.ChatID.ID, message.MessageID)
+
+	return message, nil
+}
+
 // SetMessageReaction sets an outgoing bot reaction. It creates no message,
 // so no MessageSent is published here; the tool runtime publishes the
 // run-correlated BotReactionSet event itself after the reaction and the

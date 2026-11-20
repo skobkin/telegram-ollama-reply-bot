@@ -151,13 +151,19 @@ func TestEventPublishingBotPublishesOnSuccess(t *testing.T) {
 		t.Fatalf("SendDice: %v", err)
 	}
 
-	events := requireMessageSent(t, rec, 3)
+	photo, err := bot.SendPhoto(ctx, tu.Photo(tu.ID(100), tu.FileFromBytes([]byte("png"), "chart.png")))
+	if err != nil {
+		t.Fatalf("SendPhoto: %v", err)
+	}
+
+	events := requireMessageSent(t, rec, 4)
 	for i, want := range []struct {
 		messageID int
 	}{
 		{message.MessageID},
 		{poll.MessageID},
 		{dice.MessageID},
+		{photo.MessageID},
 	} {
 		if events[i].ChatID != 100 {
 			t.Fatalf("event %d: expected chat id 100, got %d", i, events[i].ChatID)
@@ -175,7 +181,7 @@ func TestEventPublishingBotPublishesOnSuccess(t *testing.T) {
 // nothing: the event must describe delivered messages only.
 func TestEventPublishingBotSilentOnFailure(t *testing.T) {
 	rec := &eventRecorder{}
-	fake := newEventsTestAPI(t, "sendMessage", "sendPoll", "sendDice")
+	fake := newEventsTestAPI(t, "sendMessage", "sendPoll", "sendDice", "sendPhoto")
 	bot := newEventsTestBot(t, fake, rec)
 	ctx := context.Background()
 
@@ -187,6 +193,9 @@ func TestEventPublishingBotSilentOnFailure(t *testing.T) {
 	}
 	if _, err := bot.SendDice(ctx, &tg.SendDiceParams{ChatID: tu.ID(100)}); err == nil {
 		t.Fatal("expected SendDice failure")
+	}
+	if _, err := bot.SendPhoto(ctx, tu.Photo(tu.ID(100), tu.FileFromBytes([]byte("png"), "chart.png"))); err == nil {
+		t.Fatal("expected SendPhoto failure")
 	}
 
 	requireMessageSent(t, rec, 0)
