@@ -576,9 +576,9 @@ func TestInteractionResetNoticeReflectsDurability(t *testing.T) {
 		{"temporary write failure promises a retry", statistics.DurableOutcome{State: statistics.PersistWriteFailing},
 			[]string{"saving it failed", "will be retried", "previous statistics come back"}, []string{"Reset saved."}},
 		{"disabled persistence promises no retry", statistics.DurableOutcome{State: statistics.PersistDisabledNewerFormat},
-			[]string{"in memory only", "newer format", "loaded again"}, []string{"retried", "Reset saved."}},
+			[]string{"in memory only", "newer format", "will not be saved", "Previously stored data remains unchanged"}, []string{"retried", "Reset saved.", "loaded again", "after a restart"}},
 		{"quarantine failure promises no retry", statistics.DurableOutcome{State: statistics.PersistDisabledQuarantineFailed},
-			[]string{"in memory only", "could not be set aside"}, []string{"retried"}},
+			[]string{"in memory only", "could not be set aside", "will not be saved"}, []string{"retried", "loaded again"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

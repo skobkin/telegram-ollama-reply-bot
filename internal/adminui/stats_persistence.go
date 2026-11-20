@@ -35,8 +35,7 @@ func (c *Controller) resetNotice(ctx context.Context, dataset string, generation
 		return base + " Reset saved."
 	case out.State.Disabled():
 		return base + " Applied in memory only: persistence for this dataset is disabled (" +
-			persistenceReason(out.State) + "), so the reset is not saved and the stored statistics stay unchanged — " +
-			"after a restart they are loaded again."
+			persistenceReason(out.State) + "). The reset will not be saved. Previously stored data remains unchanged."
 	default:
 		return base + " ⚠️ Applied, but saving it failed; it will be retried. If the bot stops abruptly " +
 			"before it is saved, the previous statistics come back."
