@@ -364,7 +364,7 @@ func TestWrapDoerCollapsingKeepsSentinelMatching(t *testing.T) {
 	}
 }
 
-func TestWrapDoerCollapsingKeepsTypedCause(t *testing.T) {
+func TestWrapDoerCollapsingHidesTypedCause(t *testing.T) {
 	t.Parallel()
 
 	cause := &typedLeakCause{flag: "trace-2"}
@@ -379,15 +379,17 @@ func TestWrapDoerCollapsingKeepsTypedCause(t *testing.T) {
 		t.Fatalf("secret survived the collapse: %v", err)
 	}
 
-	// Typed extraction survives through the collapsing wrapper's delegated
-	// As, even though the original chain is severed.
+	// Typed extraction must not recover the original cause: its Error()
+	// renders the secret, so handing out the instance would defeat the
+	// collapse. Is still matches the original instance through delegation —
+	// matching alone never hands out the object.
 	var typed *typedLeakCause
-	if !errors.As(err, &typed) {
-		t.Fatalf("errors.As lost the typed cause through delegation: %v", err)
+	if errors.As(err, &typed) {
+		t.Fatalf("errors.As recovered the secret-bearing cause: %+v", typed)
 	}
 
-	if typed != cause {
-		t.Fatalf("errors.As returned a different instance: got %+v, want %+v", typed, cause)
+	if !errors.Is(err, cause) {
+		t.Fatal("errors.Is must still match the cause through delegation")
 	}
 }
 

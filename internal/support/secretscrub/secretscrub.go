@@ -231,12 +231,14 @@ func (s *Scrubber) collapse(err error) error {
 }
 
 // scrubbedError replaces an error whose message or chain carries secret
-// material. It deliberately implements no Unwrap, Unwrap([]error), or Cause:
-// sentry-go's exception conversion walks all three and serializes every
-// reachable node's message verbatim, so retaining the original would re-leak
-// what was scrubbed (the same reasoning as safeerr discarding its cause).
-// Is and As delegate to the original error, keeping sentinel matching
-// (context.Canceled, package error kinds) and typed extraction working.
+// material. It deliberately implements no Unwrap, Unwrap([]error), Cause, or
+// As: sentry-go's exception conversion walks the first three and serializes
+// every reachable node's message verbatim, so retaining the original would
+// re-leak what was scrubbed (the same reasoning as safeerr discarding its
+// cause), and errors.As delegation would hand callers the original object
+// whose Error() renders the secret. Is still delegates to the original
+// error, keeping sentinel matching (context.Canceled, package error kinds)
+// without exposing any instance.
 type scrubbedError struct {
 	msg   string
 	cause error
@@ -245,5 +247,3 @@ type scrubbedError struct {
 func (e *scrubbedError) Error() string { return e.msg }
 
 func (e *scrubbedError) Is(target error) bool { return errors.Is(e.cause, target) }
-
-func (e *scrubbedError) As(target any) bool { return errors.As(e.cause, target) }
