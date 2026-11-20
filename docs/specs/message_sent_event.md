@@ -10,7 +10,7 @@ a record of guarantees, not a feature request.
 
 `MessageSent` (declared in `internal/execution/events.go`) reports that a message became visible
 in a chat the bot serves — a message the bot itself sent (ordinary and final LLM replies, command
-answers, error notices, reminder deliveries, tool-created polls and dice) or a message a user
+answers, error notices, reminder deliveries, tool-created polls, dice and charts) or a message a user
 sent (published at the update ingress). The current consumer is the admin UI: it re-creates a
 menu message buried under newer chat messages (issue #145).
 
@@ -28,7 +28,7 @@ Publication follows the send path, not the message kind:
   middleware publishes one event per incoming channel message — **commands included**, because
   `/admin` reopens a live menu by editing it in place, and only observing the command itself can
   surface a menu buried under newer messages.
-- **App wiring** (`internal/app`): reminder deliveries and model-authored poll/quiz/dice actions
+- **App wiring** (`internal/app`): reminder deliveries and model-authored poll/quiz/dice/chart actions
   go through an event-publishing sender wrapper.
 - **Excluded, by construction**: callback presses (not messages — an admin pressing a button
   proves the menu is visible, and re-creating it would be churn), rich-message **drafts**
