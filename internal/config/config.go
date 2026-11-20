@@ -248,9 +248,13 @@ func (c ContentConfig) Validate() error {
 
 	for _, raw := range c.Fetch.DenyCIDRs {
 		if _, _, err := net.ParseCIDR(strings.TrimSpace(raw)); err != nil {
+			// The failing value is never echoed: configuration errors reach
+			// plain stderr before the secret registry exists, and a
+			// mispasted credential into this variable must stay out of the
+			// output. The environment variable name keeps the failure
+			// actionable.
 			return fmt.Errorf(
-				"content.fetch.deny_cidrs entry %q is not a valid CIDR or address (env CONTENT__FETCH__DENY_CIDRS): %w",
-				raw, err,
+				"content.fetch.deny_cidrs contains an entry that is not a valid CIDR or address (env CONTENT__FETCH__DENY_CIDRS)",
 			)
 		}
 	}
@@ -266,8 +270,8 @@ func (c ContentConfig) Validate() error {
 			// Known backend.
 		default:
 			return fmt.Errorf(
-				"content.extract.backends entry %q is not a known backend (use %s, %s, or %s; env CONTENT__EXTRACT__BACKENDS)",
-				backend, ExtractionBackendReadability, ExtractionBackendTrafilatura, ExtractionBackendDomDistiller,
+				"content.extract.backends contains an entry that is not a known backend (use %s, %s, or %s; env CONTENT__EXTRACT__BACKENDS)",
+				ExtractionBackendReadability, ExtractionBackendTrafilatura, ExtractionBackendDomDistiller,
 			)
 		}
 	}
@@ -774,8 +778,8 @@ func (c LLMConfig) validateImageRecognition() error {
 		// Validated below.
 	default:
 		return fmt.Errorf(
-			"llm.image_recognition.recognizer %q is not a known recognizer (use %s or %s; env LLM__IMAGE_RECOGNITION__RECOGNIZER)",
-			ir.Recognizer, ImageRecognizerOpenAICompat, ImageRecognizerMiniMaxVLM,
+			"llm.image_recognition.recognizer contains an unknown recognizer (use %s or %s; env LLM__IMAGE_RECOGNITION__RECOGNIZER)",
+			ImageRecognizerOpenAICompat, ImageRecognizerMiniMaxVLM,
 		)
 	}
 
@@ -985,10 +989,26 @@ func decimalIntHook() mapstructure.DecodeHookFunc {
 		}
 		n, err := strconv.ParseInt(raw, 10, t.Bits())
 		if err != nil {
-			return nil, fmt.Errorf("parse %q as int: %w", raw, err)
+			return nil, cannotParseIntError(err)
 		}
 
 		return n, nil
+	}
+}
+
+// cannotParseIntError renders a numeric parse failure without echoing the
+// offending value: configuration errors reach plain stderr before the secret
+// registry exists, and a mispasted credential into a numeric variable must
+// not reappear in the startup output. mapstructure wraps the returned error
+// with the setting's name and path, so the failure stays attributable.
+func cannotParseIntError(err error) error {
+	switch {
+	case errors.Is(err, strconv.ErrSyntax):
+		return fmt.Errorf("cannot parse value as int: invalid syntax")
+	case errors.Is(err, strconv.ErrRange):
+		return fmt.Errorf("cannot parse value as int: value out of range")
+	default:
+		return fmt.Errorf("cannot parse value as int")
 	}
 }
 
@@ -1020,7 +1040,7 @@ func csvInt64SliceHook() mapstructure.DecodeHookFunc {
 			}
 			n, err := strconv.ParseInt(part, 10, 64)
 			if err != nil {
-				return nil, fmt.Errorf("parse %q as int64: %w", part, err)
+				return nil, cannotParseIntError(err)
 			}
 			out = append(out, n)
 		}

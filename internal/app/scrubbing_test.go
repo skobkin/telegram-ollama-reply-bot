@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"telegram-ollama-reply-bot/internal/config"
+	"telegram-ollama-reply-bot/internal/support/secretscrub"
 
 	"github.com/getsentry/sentry-go"
 )
@@ -1019,5 +1020,57 @@ func TestSentryBeforeSendDoesNotMutateSharedUserData(t *testing.T) {
 		if got := event.User.Data["token"]; got != "[REDACTED:llm-api-token]" {
 			t.Fatalf("event %d: user data not scrubbed: %q", i, got)
 		}
+	}
+}
+
+// TestBootstrapEnvSecretsRegistersEnvValues pins the pre-Load registry
+// subset: scalar secret variables, MCP header variables, endpoint URL
+// passwords, and proxy passwords from the environment are all scrubbed.
+// Not parallel: t.Setenv.
+func TestBootstrapEnvSecretsRegistersEnvValues(t *testing.T) {
+	t.Setenv("BOT__TELEGRAM__TOKEN", "BOOTFIXTURE")
+	t.Setenv("MCP__SERVERS__DOCS__HEADERS__AUTH", "BOOTHEADERFIXTURE")
+	t.Setenv("SYSTEMONE__BASE_URL", "https://user:BOOTURLPASSWORD@so.internal:8090") //nolint:gosec // fake fixture, not a credential
+	t.Setenv("https_proxy", "http://operator:BOOTPROXYFIXTURE@proxy.internal:8080")  //nolint:gosec // fake fixture, not a credential
+
+	scrubber := secretscrub.New(bootstrapEnvSecrets())
+
+	for _, fixture := range []string{
+		"BOOTFIXTURE",
+		"BOOTHEADERFIXTURE",
+		"BOOTURLPASSWORD",
+		"BOOTPROXYFIXTURE",
+	} {
+		text := "bootstrap diagnostic " + fixture + " tail"
+
+		if !scrubber.Contains(text) {
+			t.Fatalf("bootstrap secret missing from scrubber: %s", fixture)
+		}
+
+		if got := scrubber.Scrub(text); strings.Contains(got, fixture) {
+			t.Fatalf("bootstrap secret not scrubbed: %q", got)
+		}
+	}
+}
+
+// TestRunStartupFailureScrubbed asserts the actual startup-failure output
+// path: a credential mispasted into a numeric variable fails the boot before
+// the registry exists, and the error main prints carries neither the
+// mispasted value nor any configured secret value. Not parallel: t.Setenv.
+func TestRunStartupFailureScrubbed(t *testing.T) {
+	t.Setenv("LLM__BACKENDS__OPENAI_COMPAT__API_TOKEN", "BOOTFIXTURE")
+	t.Setenv("BOT__UNCOMPRESSED_HISTORY_LIMIT", "BOOTFIXTURE")
+
+	err := Run(context.Background())
+	if err == nil {
+		t.Fatal("expected the boot to fail on the malformed variable")
+	}
+
+	if !strings.Contains(err.Error(), "load config") {
+		t.Fatalf("expected a config loading failure, got: %v", err)
+	}
+
+	if strings.Contains(err.Error(), "BOOTFIXTURE") {
+		t.Fatalf("startup failure echoed configured values: %v", err)
 	}
 }

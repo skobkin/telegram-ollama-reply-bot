@@ -289,6 +289,16 @@ func attachImageTools(tools *tooluse.Runtime, analyzer tooluse.ImageAnalyzer, en
 }
 
 func Run(ctx context.Context) (runErr error) {
+	// Bootstrap scrubbing: a failed config.Load returns before the full
+	// registry exists, and main prints the escaping error to plain stderr.
+	// The environment-derived subset registers the credentials Load would
+	// have, so a failed boot cannot echo them either. Both deferred scrubs
+	// run on the way out (last installed first); scrubbing is idempotent.
+	bootstrapScrubber := secretscrub.New(bootstrapEnvSecrets())
+	defer func() {
+		runErr = scrubFatalError(bootstrapScrubber, runErr)
+	}()
+
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -300,9 +310,8 @@ func Run(ctx context.Context) (runErr error) {
 	scrubber := newSecretScrubber(cfg)
 
 	// The process-exit diagnostic is printed by main outside every scrubbed
-	// sink (plain stderr), so the error escaping Run is scrubbed here.
-	// Errors from before the scrubber exists — config loading — cannot name
-	// its secrets. Chain identity is irrelevant at the process boundary:
+	// sink (plain stderr), so the error escaping Run is scrubbed here before
+	// it gets there. Chain identity is irrelevant at the process boundary:
 	// main only prints the message and exits.
 	defer func() {
 		runErr = scrubFatalError(scrubber, runErr)

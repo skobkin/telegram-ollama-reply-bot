@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 
@@ -112,6 +113,104 @@ func newSecretScrubber(cfg *config.Config) *secretscrub.Scrubber {
 	}
 
 	return secretscrub.New(secrets)
+}
+
+// bootstrapEnvSecrets builds the pre-Load registry subset straight from the
+// process environment. A failed config.Load returns before newSecretScrubber
+// can run, and its error reaches main's plain stderr, so bootstrap failures
+// are scrubbed with the credential values Load would have registered: the
+// documented secret-bearing variables, endpoint URL userinfo passwords, the
+// MCP header variable family, and the proxy passwords. Names carry the
+// "bootstrap-" prefix where they cannot mirror the post-Load registry ones.
+func bootstrapEnvSecrets() []secretscrub.Secret {
+	var secrets []secretscrub.Secret
+
+	// The keys are environment variable names and the values registry
+	// labels — configuration metadata, not credentials.
+	for envName, registryName := range map[string]string{ //nolint:gosec // environment variable names and registry labels, not credentials
+		"BOT__TELEGRAM__TOKEN":                             "telegram-token",
+		"LLM__BACKENDS__OPENAI_COMPAT__API_TOKEN":          "llm-api-token",
+		"LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__API_TOKEN": "llm-image-api-token",
+		"LLM__IMAGE_RECOGNITION__MINIMAX_VLM__API_KEY":     "llm-image-minimax-api-key",
+		"PROVIDERS__TAVILY__API_KEY":                       "search-tavily-api-key",
+		"PROVIDERS__KAGI__API_KEY":                         "search-kagi-api-key",
+		"SYSTEMONE__API_KEY":                               "systemone-api-key",
+		"SENTRY__DSN":                                      "sentry-dsn",
+	} {
+		value, ok := os.LookupEnv(envName)
+		if !ok || value == "" {
+			continue
+		}
+
+		secret := secretscrub.Secret{Name: registryName, Value: value}
+		secrets = append(secrets, secret)
+		secrets = withDerivedForms(secrets, secret)
+
+		if registryName == "sentry-dsn" {
+			secrets = withURLCredentials(secrets, registryName, value)
+		}
+	}
+
+	for envName, registryName := range map[string]string{
+		"LLM__BACKENDS__OPENAI_COMPAT__BASE_URL":          "bootstrap-llm-backend-url-password",
+		"LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__BASE_URL": "bootstrap-llm-image-backend-url-password",
+		"LLM__IMAGE_RECOGNITION__MINIMAX_VLM__BASE_URL":   "bootstrap-llm-image-minimax-url-password",
+		"SYSTEMONE__BASE_URL":                             "bootstrap-systemone-endpoint-url-password",
+	} {
+		if value, ok := os.LookupEnv(envName); ok {
+			secrets = appendURLPassword(secrets, registryName, value)
+		}
+	}
+
+	for _, entry := range os.Environ() {
+		name, value, _ := strings.Cut(entry, "=")
+		if value == "" || !isMCPHeaderEnvVar(name) {
+			continue
+		}
+
+		secret := secretscrub.Secret{Name: bootstrapMCPHeaderName(name), Value: value}
+		secrets = append(secrets, secret)
+		secrets = withDerivedForms(secrets, secret)
+	}
+
+	proxyConfig := httpproxy.FromEnvironment()
+	for name, proxy := range map[string]string{
+		"http-proxy-url-password":  proxyConfig.HTTPProxy,
+		"https-proxy-url-password": proxyConfig.HTTPSProxy,
+	} {
+		secrets = appendURLPassword(secrets, name, proxy)
+	}
+
+	return secrets
+}
+
+// isMCPHeaderEnvVar mirrors the config package's isMCPHeaderVar: the shape
+// MCP__SERVERS__<SERVER>__HEADERS__<SEG>[__SEG...], case-insensitive.
+func isMCPHeaderEnvVar(key string) bool {
+	parts := strings.Split(key, "__")
+
+	return len(parts) >= 5 &&
+		strings.EqualFold(parts[0], "MCP") &&
+		strings.EqualFold(parts[1], "SERVERS") &&
+		strings.EqualFold(parts[3], "HEADERS")
+}
+
+// bootstrapMCPHeaderName turns an MCP header variable name into a stable
+// registry label: MCP__SERVERS__DOCS__HEADERS__AUTH →
+// "bootstrap-mcp-docs-header-auth".
+func bootstrapMCPHeaderName(envName string) string {
+	parts := strings.Split(envName, "__")
+	labels := make([]string, 0, len(parts))
+
+	for i, part := range parts[2:] {
+		if i == 1 && strings.EqualFold(part, "HEADERS") {
+			continue
+		}
+
+		labels = append(labels, strings.ToLower(part))
+	}
+
+	return "bootstrap-mcp-" + strings.Join(labels, "-")
 }
 
 // withDerivedForms registers derived renderings of a configured secret
