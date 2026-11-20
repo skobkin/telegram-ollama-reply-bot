@@ -234,6 +234,9 @@ type ControllerOptions struct {
 	// StatsPersistence acknowledges statistics resets durably. Nil keeps
 	// resets as plain in-memory notices.
 	StatsPersistence StatsPersister
+	// ToolStatsReport renders the PNG attached to the tool statistics
+	// export. Nil keeps that export JSON-only.
+	ToolStatsReport ToolReportRenderer
 }
 
 // ControllerOption mutates ControllerOptions at wiring time.
@@ -1030,6 +1033,30 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 	case VerbStatsExport:
 		return c.handleStatsExport(s, fx)
 
+	case VerbToolStats:
+		if c.stats == nil {
+			return errInvalidArg
+		}
+		switch s.Screen.Kind {
+		case ScreenToolStats:
+			return rerenderInPlace(s)
+		case ScreenStatistics:
+			// The tool screen inherits the chat scope of the statistics screen.
+			s.PushScreen(ScreenState{Kind: ScreenToolStats, ChatID: s.Screen.ChatID})
+			s.MarkRerender()
+
+			return nil
+		default:
+			return errInvalidArg
+		}
+
+	case VerbToolExport:
+		return c.handleToolStatsExport(ctx, s, fx)
+
+	case VerbStatsResetT:
+		return c.beginStatsReset(s, ConfirmStatsTools,
+			"Reset ALL tool usage statistics?\n\nThe reset is GLOBAL: advertisement, call, error, recovery and latency counters of every tool and chat restart (registered tools stay listed with zero counters). Turns that are in flight keep running; only completed turns after the reset are counted. General and interaction statistics are not touched. The saved copy in the database is replaced as well. This cannot be undone.")
+
 	case VerbStatsProfile:
 		if s.Screen.Kind != ScreenStatistics {
 			return errInvalidArg
@@ -1071,7 +1098,7 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 
 			return nil
 		}
-		if s.Screen.Kind != ScreenStatistics || len(action.Args) != 0 {
+		if (s.Screen.Kind != ScreenStatistics && s.Screen.Kind != ScreenToolStats) || len(action.Args) != 0 {
 			return errInvalidArg
 		}
 		s.PushScreen(ScreenState{Kind: ScreenStatsScope, ChatID: s.Screen.ChatID})
@@ -1429,6 +1456,13 @@ func (c *Controller) executeConfirm(ctx context.Context, adminID int64, s *Sessi
 		generation := c.stats.ResetInteraction()
 		notice = c.resetNotice(ctx, statistics.InteractionDatasetName, generation,
 			"Interaction statistics reset — the observation period restarted.")
+	case ConfirmStatsTools:
+		if c.stats == nil {
+			return errInvalidArg
+		}
+		generation := c.stats.ResetToolUsage()
+		notice = c.resetNotice(ctx, statistics.ToolDatasetName, generation,
+			"Tool statistics reset — the observation period restarted.")
 	case ConfirmStatsGeneral:
 		if c.stats == nil {
 			return errInvalidArg
@@ -1870,6 +1904,13 @@ func (c *Controller) buildScreen(ctx context.Context, seq uint32, state ScreenSt
 		}
 		screen = b.statistics(data)
 
+	case ScreenToolStats:
+		data := ToolStatsData{}
+		if c.stats != nil {
+			data.View = c.toolStatsData(ctx, state)
+		}
+		screen = b.toolStats(data)
+
 	case ScreenStatsScope:
 		chats, err := c.service.ChatList(ctx)
 		if err != nil {
@@ -2293,7 +2334,8 @@ func (c *Controller) handleStatsExport(s *Session, fx *fx) error {
 // beginStatsReset arms a confirmation-gated GLOBAL statistics reset; a
 // filtered view still resets the whole dataset and the description says so.
 func (c *Controller) beginStatsReset(s *Session, kind ConfirmKind, description string) error {
-	if s.Screen.Kind != ScreenStatistics || c.stats == nil {
+	allowed := s.Screen.Kind == ScreenStatistics || (kind == ConfirmStatsTools && s.Screen.Kind == ScreenToolStats)
+	if !allowed || c.stats == nil {
 		return errInvalidArg
 	}
 	s.PushScreen(confirmState(description, true, 0, ""))
@@ -2333,6 +2375,13 @@ func (c *Controller) interactionStatsData(state ScreenState, chatName string) *I
 	if snapshot.UntrackedSelection != "" {
 		warnings = append(warnings, snapshot.UntrackedSelection)
 	}
+	switch snapshot.Persistence.State {
+	case statistics.PersistWriteFailing:
+		warnings = append(warnings, "saving statistics is failing; recent data is held in memory and retried")
+	case statistics.PersistDisabledNewerFormat, statistics.PersistDisabledQuarantineFailed:
+		warnings = append(warnings, "persistence is disabled ("+persistenceReason(snapshot.Persistence.State)+"); statistics are memory-only")
+	case statistics.PersistEnabled, statistics.PersistNotConfigured:
+	}
 	view.Warning = strings.Join(warnings, "; ")
 
 	decision, execution := snapshot.Decision.Totals, snapshot.Execution.Totals
@@ -2369,6 +2418,14 @@ func (c *Controller) interactionStatsData(state ScreenState, chatName string) *I
 	view.Summary = append(view.Summary, fmt.Sprintf("Without effect %d · failed %d (timeout %d, cancelled %d, generation %d, delivery %d)",
 		execution.TurnsWithoutEffect, execution.TurnsFailed,
 		execution.Failures.Timeout, execution.Failures.Cancelled, execution.Failures.Generation, execution.Failures.Delivery))
+	// Operations open at a restart are reconciled, never invented as outcomes.
+	var interruptedSubmissions uint64
+	if snapshot.Submission != nil {
+		interruptedSubmissions = snapshot.Submission.InterruptedByRestart
+	}
+	if interruptedSubmissions > 0 || execution.TurnsInterrupted > 0 {
+		view.Summary = append(view.Summary, fmt.Sprintf("Interrupted by restart: %d decisions · %d turns", interruptedSubmissions, execution.TurnsInterrupted))
+	}
 
 	return view
 }

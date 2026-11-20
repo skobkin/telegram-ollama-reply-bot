@@ -931,10 +931,69 @@ func (b screenBuilder) statistics(data StatisticsData) *Screen {
 				b.danger("Reset interaction", VerbStatsResetI),
 				b.danger("Reset general", VerbStatsResetG),
 			},
+			ButtonRow{b.btn("🛠 Tool statistics", VerbToolStats)},
 		)
 	}
 
 	rows = append(rows, ButtonRow{b.btn("⌂ Home", VerbHome)})
+
+	return &Screen{Text: truncateRunes(text, 3800), Rows: rows}
+}
+
+// ToolStatsData feeds the tool statistics screen.
+type ToolStatsData struct {
+	View *ToolStatsView
+}
+
+// ToolStatsView is the rendered tool-usage section. The summary lines are
+// pre-formatted; the full per-tool detail lives in the JSON export and PNG.
+type ToolStatsView struct {
+	ScopeLabel      string
+	PeriodStartedAt time.Time
+	PeriodResets    uint64
+	Persistence     string
+	Summary         []string
+	Warning         string
+	HasData         bool
+	// Narrowed marks a chat-scoped view: its empty state says "no
+	// observations match" instead of claiming an empty dataset.
+	Narrowed bool
+}
+
+func (b screenBuilder) toolStats(data ToolStatsData) *Screen {
+	rows := []ButtonRow{{b.btn("Refresh", VerbToolStats), b.btn("‹ Back", VerbBack)}}
+	if data.View == nil {
+		rows = append(rows, ButtonRow{b.btn("⌂ Home", VerbHome)})
+
+		return &Screen{Text: "🛠 Tool statistics\n\nStatistics are not available.", Rows: rows}
+	}
+
+	v := data.View
+	text := "🛠 Tool statistics\n\n"
+	text += "Period since " + v.PeriodStartedAt.Format("2006-01-02 15:04") + " · resets: " + strconv.FormatUint(v.PeriodResets, 10) + "\n"
+	text += "Scope: " + v.ScopeLabel + "\n" + v.Persistence + "\n\n"
+	switch {
+	case v.HasData:
+		for _, line := range v.Summary {
+			text += line + "\n"
+		}
+	case v.Narrowed:
+		text += "No observations match this selection.\n"
+	default:
+		text += "No tool statistics yet.\n"
+	}
+	if v.Warning != "" {
+		text += "\n⚠️ " + v.Warning + "\n"
+	}
+
+	rows = append(rows,
+		ButtonRow{
+			b.btn("Scope ▸ "+truncateRunes(v.ScopeLabel, 16), VerbStatsScope),
+			b.btn("⬇ Export JSON + PNG", VerbToolExport),
+		},
+		ButtonRow{b.danger("Reset tool statistics", VerbStatsResetT)},
+		ButtonRow{b.btn("⌂ Home", VerbHome)},
+	)
 
 	return &Screen{Text: truncateRunes(text, 3800), Rows: rows}
 }
@@ -950,7 +1009,7 @@ type StatsScopeData struct {
 
 func (b screenBuilder) statsScope(data StatsScopeData) *Screen {
 	var text strings.Builder
-	text.WriteString("🎯 Statistics scope\n\nPick the chat whose interaction statistics to view, or stay global.\n")
+	text.WriteString("🎯 Statistics scope\n\nPick the chat whose interaction or tool statistics to view, or stay global.\n")
 	if data.Total > len(data.Chats) {
 		fmt.Fprintf(&text, "Showing %d of %d chats (page %d/%d)\n\n", len(data.Chats), data.Total, data.Page, data.Pages)
 	}

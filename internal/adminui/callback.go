@@ -62,6 +62,11 @@ const (
 	VerbStatsResetI   = "sri" // reset interaction statistics (confirm, global)
 	VerbStatsResetG   = "srg" // reset general statistics (confirm, global)
 
+	// Tool usage statistics (#178): own screen, export and reset.
+	VerbToolStats   = "tl"  // → tool statistics screen (scope from the statistics screen)
+	VerbToolExport  = "tx"  // export tool statistics (JSON + PNG)
+	VerbStatsResetT = "srt" // reset tool usage statistics (confirm, global)
+
 	// Model selection and interactivity (#128 / System One).
 	VerbInteractivity = "in" // → interactivity submenu (scope from screen)
 	VerbModelList     = "ml" // args: <code> → fetch and cache the backend model list
@@ -84,6 +89,7 @@ var knownVerbs = map[string]bool{
 	VerbStatsExport: true, VerbStatsProfile: true, VerbStatsModel: true,
 	VerbStatsScope: true, VerbStatsScopeSet: true,
 	VerbStatsResetI: true, VerbStatsResetG: true,
+	VerbToolStats: true, VerbToolExport: true, VerbStatsResetT: true,
 }
 
 // MaxCallbackBytes is the Telegram callback data limit.

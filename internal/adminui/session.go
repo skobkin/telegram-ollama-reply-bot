@@ -63,6 +63,7 @@ const (
 	ScreenAccess        ScreenKind = "access"
 	ScreenStatistics    ScreenKind = "statistics"
 	ScreenStatsScope    ScreenKind = "stats_scope"
+	ScreenToolStats     ScreenKind = "tool_stats"
 	ScreenInteractivity ScreenKind = "interactivity"
 	ScreenConfirm       ScreenKind = "confirm"
 )
@@ -152,6 +153,9 @@ const (
 	// dataset, and the confirm descriptions say so explicitly.
 	ConfirmStatsInteraction ConfirmKind = "stats_interaction_reset"
 	ConfirmStatsGeneral     ConfirmKind = "stats_general_reset"
+	// ConfirmStatsTools gates the dedicated tool statistics reset: global
+	// like the others, independent of general and interaction statistics.
+	ConfirmStatsTools ConfirmKind = "stats_tools_reset"
 )
 
 // PendingConfirm is a stored server-side confirmation. Re-validated at
