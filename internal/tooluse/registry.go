@@ -155,7 +155,7 @@ func newRegistry(runtime *Runtime) *Registry {
 		},
 		{
 			Name:             "set_reaction",
-			Description:      setReactionDescription(),
+			Description:      setReactionDescription(false),
 			Parameters:       setReactionParameters(),
 			InvocationPolicy: InvocationPolicyDiscretionary,
 			Visibility:       VisibilityStandard,

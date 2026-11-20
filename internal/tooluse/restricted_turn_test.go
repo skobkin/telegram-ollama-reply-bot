@@ -85,13 +85,45 @@ func TestRestrictedRunAdvertisesOnlyAllowedTools(t *testing.T) {
 	if len(names) != 1 || names[0] != "set_reaction" {
 		t.Fatalf("restricted run must advertise exactly set_reaction, got %v", names)
 	}
+	if strings.Contains(stub.lastBuildTools[0].Description, "say_nothing") || strings.Contains(stub.lastBuildTools[0].Description, "reply afterwards") {
+		t.Fatalf("restricted description must not offer continuations: %q", stub.lastBuildTools[0].Description)
+	}
 	if !strings.Contains(stub.lastBuildPolicy, "set_reaction") {
 		t.Fatalf("tool policy must list the allowed tool: %q", stub.lastBuildPolicy)
 	}
 	for _, forbidden := range []string{"send_dice", "search_history", "say_nothing"} {
-		if strings.Contains(stub.lastBuildPolicy, "- "+forbidden+": ") {
+		if strings.Contains(stub.lastBuildPolicy, forbidden) {
 			t.Fatalf("tool policy must not list %q: %q", forbidden, stub.lastBuildPolicy)
 		}
+	}
+}
+
+func TestRestrictedReactionDescriptionDoesNotChangeOrdinaryTurns(t *testing.T) {
+	runtime, stub := restrictedRuntime(t, &stubActionSender{})
+	ordinary, _ := runtime.registry.Lookup("set_reaction")
+	for _, allowed := range [][]string{{"set_reaction"}, nil, {"set_reaction", "say_nothing"}, nil} {
+		req := restrictedReactionRequest()
+		req.AllowedTools = allowed
+		stub.responses = []llm.Response{{Message: llm.TextMessage(llm.RoleAssistant, "done")}}
+		if _, err := runtime.ReplyWithTools(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+		for _, tool := range stub.lastBuildTools {
+			if tool.Name != "set_reaction" {
+				continue
+			}
+			want := ordinary.Description
+			if allowed != nil && !slices.Contains(allowed, "say_nothing") {
+				want = setReactionDescription(true)
+			}
+			if tool.Description != want || string(tool.Parameters) != string(ordinary.Parameters) || !strings.Contains(stub.lastBuildPolicy, want) {
+				t.Fatalf("description/policy/schema mismatch for allowlist %v: %+v", allowed, tool)
+			}
+		}
+	}
+	current, _ := runtime.registry.Lookup("set_reaction")
+	if current.Description != ordinary.Description {
+		t.Fatal("restricted turn changed the shared registry description")
 	}
 }
 

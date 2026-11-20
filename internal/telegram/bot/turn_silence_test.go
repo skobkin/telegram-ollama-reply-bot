@@ -61,6 +61,47 @@ type silenceEventHook func(execution.Event)
 
 func (f silenceEventHook) Publish(event execution.Event) { f(event) }
 
+func TestConversationTurnRestrictedReactionCancellation(t *testing.T) {
+	p := newProactiveTestBot(t, nil)
+	msg := *pipelineGroupUpdate(21, "hello").Message
+	user := state.Message{MessageID: msg.MessageID, ChatID: msg.Chat.ID, FromID: 21, Text: msg.Text}
+	p.history.AppendMessage(scopeFromMessage(msg), user)
+	p.llm.responses = []llm.Response{{
+		Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{
+			{ID: "reaction", Name: "set_reaction", Arguments: []byte(`{"emoji":"🎉"}`)},
+		}},
+		Usage: llm.TokenUsage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5, Cost: 0.25},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.bot.tools = tooluse.New(p.llm, p.history, nil, nil, apiActionSender{api: p.bot.api}, nil, p.bot.logger, tooluse.Config{
+		BotIdentity: tooluse.BotIdentity{UserID: testBotID.ID, Name: testBotID.FirstName},
+		Dispatcher: silenceEventHook(func(event execution.Event) {
+			if _, ok := event.(execution.BotReactionSet); ok {
+				cancel() // confirmed and recorded, before the handler returns
+			}
+		}),
+	})
+	effects := p.bot.runConversationTurn(ctx, msg, user, adminconfig.ResolvedChatConfig{}, turnOptions{
+		trigger: llmcontext.TriggerProactive, errorPolicy: silentErrors, delivery: discardText,
+		allowedTools: []string{"set_reaction"}, completeAfterSideEffect: true,
+	})
+	if effects != (turnEffects{ReactionConfirmed: true}) {
+		t.Fatalf("confirmed reaction reclassified after cancellation: %+v", effects)
+	}
+	if p.llm.buildCount() != 1 || p.api.callCount("setMessageReaction") != 1 || len(p.apiRequests()) != 1 {
+		t.Fatalf("unexpected followup or delivery: builds=%d requests=%v", p.llm.buildCount(), p.apiRequests())
+	}
+	snapshot := p.history.Snapshot(scopeFromMessage(msg))
+	if len(snapshot.Messages) != 1 || len(snapshot.Messages[0].Reactions) != 1 {
+		t.Fatalf("reaction history lost: %+v", snapshot.Messages)
+	}
+	usage := p.bot.stats.GeneralSnapshot()
+	if usage.PromptTokens != 3 || usage.CompletionTokens != 2 || usage.TotalTokens != 5 || usage.TotalCost != 0.25 || usage.LlmTimeouts != 0 {
+		t.Fatalf("confirmed reaction lost usage accounting: %+v", usage)
+	}
+}
+
 func TestConversationTurnIntentionalSilence(t *testing.T) {
 	for _, mode := range []string{"off", "group", "private"} {
 		for _, reaction := range []bool{false, true} {

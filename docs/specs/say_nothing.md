@@ -13,6 +13,8 @@ Independent of proactive interaction and System One. An authorized generation mo
 
 `set_reaction` remains non-terminal in normal turns. Models may react and reply, react and call `say_nothing`, or call `say_nothing` without a reaction. The existing successful-side-effect empty-reply behavior remains available independently. Restricted proactive React still permits exactly `set_reaction` and completes on a confirmed reaction; it does not advertise or execute `say_nothing`.
 
+Ordinary reaction guidance is: "React to the triggering message using one available emoji. You may reply afterwards or call say_nothing." Keep the candidate list and necessary argument constraints; omit that continuation sentence in restricted React descriptions. Do not discourage reaction-only responses. Cancellation immediately after a confirmed restricted reaction preserves successful completion; deadline expiry retains timeout handling. Neither rule changes `say_nothing`'s acceptance boundary.
+
 ## Presentation, history, and statistics
 
 Discard the preview through its existing finalization and bounded deletion mechanisms. Stop the worker and typing fallback, delete group previews best-effort, and send no final status/tool-history-only draft or message. Private drafts stop refreshing and expire naturally within Telegram's temporary 30-second draft lifetime; there is no immediate dismissal mechanism in the current integration. Cleanup errors cannot change accepted completion into a generation failure.

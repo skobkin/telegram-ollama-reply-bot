@@ -14,7 +14,7 @@ A model may call `set_reaction` to acknowledge the current user message with an 
 
 This is an ordinary discretionary, side-effecting tool. **It must not be terminal.** Reuse `ReplyWithTools()`'s existing successful-empty-completion path following successful side effects. The separate [terminal `say_nothing` tool (#159)](say_nothing.md) also lets the model end the turn intentionally after a reaction. Do not force a textual reply after a successful reaction.
 
-Examples: a joke may get 🤣 alone; a thank-you may get 🙏 alone; a useful answer may get 👍 plus text. Genuine questions and actionable requests generally deserve substantive responses.
+Examples: a joke may get 🤣 alone; a thank-you may get 🙏 alone; a useful answer may get 👍 plus text. Do not add guidance that discourages reaction-only responses or requires a substantive text answer.
 
 ## 2. Tool API and precise target binding
 
@@ -64,11 +64,15 @@ In particular **`❤` is U+2764 without U+FE0F**; do not silently normalize or r
 
 Add concise instruction to the **effective tool policy/description delivered to the model** (independent of operator-editable prompt templates):
 
-> `set_reaction` reacts to the user message that triggered this run, never the most recent chat message. Choose an emoji only from the listed supported values. You may provide a text reply afterwards or call `say_nothing` to end the turn without additional text. Do not replace a substantive answer to a genuine question or request with a reaction alone. Do not repeat or change reactions unnecessarily.
+> React to the triggering message using one available emoji. You may reply afterwards or call say_nothing.
+
+Retain the target-binding clarification, shared candidate list, and necessary argument constraints. For restricted proactive React turns, omit the continuation sentence: those runs neither expose `say_nothing` nor publish text. Adapt only this reaction description for the run; no general dynamic tool framework is required.
 
 The model should receive this instruction in the tool-enabled generation context even with custom chat templates. The tool description should remain compact beyond the explicit emoji list; do not repeat the entire list in multiple prompt sections unnecessarily.
 
 Issue #135 did not introduce a special completion protocol; #159 independently adds `say_nothing`. Preserve the existing `allowEmptyReplyCompletion` behavior in `internal/tooluse/runtime.go`: only successful side effects permit a subsequent empty reply; failed attempts alone cannot suppress an answer. Side-effecting tool usage must preserve ordinary text+reaction flows and existing error behavior.
+
+Restricted React completion remains successful if cancellation arrives immediately after a confirmed reaction. Stop without executing remaining pending calls or requesting another generation, retaining the successful call record, reaction history, and usage accounting. An elapsed processing deadline still fails the turn, preserving confirmed effects and returned usage; this cancellation rule does not relax the live-context acceptance boundary for `say_nothing`.
 
 ## 5. Telegram execution and rate-limit safety
 

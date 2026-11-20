@@ -331,6 +331,15 @@ func (r *Runtime) Close() {
 func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, error) {
 	logger := logging.FromContext(ctx, r.logger)
 	definitions := allowedDefinitions(r.turnDefinitions(req.TurnConfig.SystemOneModel), req.AllowedTools)
+	// Restricted React turns do not expose silence or publish text. Keep
+	// their reaction guidance local to this run, without changing the registry.
+	if req.AllowedTools != nil && !slices.Contains(req.AllowedTools, "say_nothing") {
+		for i := range definitions {
+			if definitions[i].Name == "set_reaction" {
+				definitions[i].Description = setReactionDescription(true)
+			}
+		}
+	}
 	modelTools := toLLMToolDefinitions(definitions)
 	toolPolicy := buildToolPolicy(definitions)
 
@@ -456,6 +465,17 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 				return succeeded("")
 			}
 			if err := toolContextError(ctx); err != nil {
+				if req.AllowedTools != nil && req.CompleteAfterSideEffect && outcome.allowsEmptyReply && errors.Is(err, context.Canceled) {
+					// A confirmed restricted side effect already completes
+					// the turn on cancellation. Deadlines still fail, including
+					// an elapsed deadline whose timer has not fired yet.
+					if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+						return fail(context.DeadlineExceeded, execution.ReasonBackend)
+					}
+
+					return succeeded("")
+				}
+
 				return fail(err, execution.ReasonBackend)
 			}
 			extraMessages = append(extraMessages, outcome.message)
