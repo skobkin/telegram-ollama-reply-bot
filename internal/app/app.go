@@ -395,6 +395,7 @@ func Run(ctx context.Context) (runErr error) {
 		stickerCatalogStore{store: persistentStore},
 		telegoStickerFetcher{api: telegramAPI},
 		logManager.Logger("stickers"),
+		stickers.WithFileDownloader(telegoStickerFiles{api: telegramAPI, client: newStickerFileClient()}),
 	)
 	if err := stickerService.Load(ctx); err != nil {
 		logger.Error("failed to restore sticker catalog", "error", err)
