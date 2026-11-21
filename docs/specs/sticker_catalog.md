@@ -211,16 +211,24 @@ TheKitsuStickers.zip
 | The finished archive | 45 MiB (Bot API `sendDocument` allows 50 MB) |
 | Per-file timeout | 20 s |
 | Whole operation (fetch, downloads, assembly) | 2 min |
-| ZIP exports running at once | 1 (a second gets "busy") |
+| ZIP exports running at once | 1, from the first download until the document upload has finished (a second gets "busy") |
 
 - The one overall deadline covers everything, and cancellation is honoured at every stage (in-flight downloads, before assembly, before each archive entry).
 - Per-file size is checked on the declared `getFile` size (no download starts above it) **and** on the bytes actually read. An empty file is a failure.
 - **All or nothing.** The first failing file cancels the remaining downloads and no archive is sent; the administrator gets a plain message naming the sticker's `file_unique_id` and the reason (too large, could not be downloaded, timed out) or the matching overall error, ending in "No archive was sent." Raw causes are never shown or logged.
 - Telegram file URLs embed the bot token: they are built only by the SDK from Telegram's own `file_path`, never from user or model input, never logged or put into errors (causes pass through `safeerr`), and redirects are not followed.
 
+### Delivery lifecycle and failure reporting
+
+- The service slot only covers building the archive, so the Telegram admin adapter holds a process-wide delivery gate (capacity 1) from the first download until the `sendDocument` call returns. A request that arrives meanwhile is refused immediately with "Another ZIP export is still being prepared or delivered" and starts no download; it is not queued. The gate is held outside every session lock and is not a job framework.
+- A failed `sendDocument` of an archive is reported with a separate plain message (other documents keep their log-only behavior):
+  - Telegram answered with a 4xx: "Telegram rejected the upload (error N). Nothing was sent; you can try again."
+  - Anything else (transport error, timeout, 5xx, cancellation) is ambiguous because the upload may have completed: "Delivery … could not be confirmed. Check this chat for the archive before retrying — it was not resent automatically."
+- The archive is never resent automatically, and neither message nor log carries the raw error, URL or token.
+
 ### Memory behavior (estimates, not guarantees)
 
-Allocations are bounded by the limits above and by the single-export slot, but peak memory is not capped by a hard figure. At the caps, the downloaded files (≤ 40 MiB), the archive buffer (allocated once at a computed upper bound, ≤ 45 MiB) and the transient copy the multipart upload makes while sending add up to roughly three times the archive size, on the order of 130 MiB, plus garbage-collector slack, released after the send. Sticker slices are dropped as soon as they are written into the archive. Typical sets (a few to a few tens of MB) use a fraction of that. Streaming through a temporary file was rejected: the runtime may not have writable storage.
+Allocations are bounded by the limits above and by the single-export slot, but peak memory is not capped by a hard figure. At the caps, while one export is building or uploading (the delivery gate admits only one), the downloaded files (≤ 40 MiB), the archive buffer (allocated once at a computed upper bound, ≤ 45 MiB) and the transient copy the multipart upload makes while sending add up to roughly three times the archive size, on the order of 130 MiB, plus garbage-collector slack, released after the send. Sticker slices are dropped as soon as they are written into the archive. Typical sets (a few to a few tens of MB) use a fraction of that. Streaming through a temporary file was rejected: the runtime may not have writable storage.
 
 ### Admin UI and locking
 

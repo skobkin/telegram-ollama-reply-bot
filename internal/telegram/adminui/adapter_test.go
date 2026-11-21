@@ -337,12 +337,16 @@ func (s *memStore) IsChatWhitelisted(_ context.Context, chatID int64) (bool, err
 type fakeAdminAPI struct {
 	server *httptest.Server
 
-	mu             sync.Mutex
-	requests       []fakeRequest
-	nextMessageID  atomic.Int64
-	files          map[string][]byte
-	chats          map[int64]*tg.ChatFullInfo
-	failMethods    map[string]error
+	mu            sync.Mutex
+	requests      []fakeRequest
+	nextMessageID atomic.Int64
+	files         map[string][]byte
+	chats         map[int64]*tg.ChatFullInfo
+	failMethods   map[string]error
+	// failCodes adds an error_code to a forced multipart failure; dropConn
+	// makes a multipart request die mid-flight (an ambiguous transport error).
+	failCodes      map[string]int
+	dropConn       map[string]bool
 	failChatScopes bool // setMyCommands fails only for per-chat scopes
 
 	// One-shot request gate: the first request of the armed method parks
@@ -402,9 +406,23 @@ func (f *fakeAdminAPI) serve(w http.ResponseWriter, r *http.Request) {
 			Body:   "document:" + document.filename + "\n" + document.content,
 		})
 		failure := f.failMethods[method]
+		code, drop := f.failCodes[method], f.dropConn[method]
 		f.mu.Unlock()
+		if drop {
+			if hijacker, ok := w.(http.Hijacker); ok {
+				if conn, _, err := hijacker.Hijack(); err == nil {
+					_ = conn.Close()
+				}
+			}
+
+			return
+		}
 		if failure != nil {
-			writeJSON(w, map[string]any{"ok": false, "description": failure.Error()})
+			response := map[string]any{"ok": false, "description": failure.Error()}
+			if code != 0 {
+				response["error_code"] = code
+			}
+			writeJSON(w, response)
 
 			return
 		}

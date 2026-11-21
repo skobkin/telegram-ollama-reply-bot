@@ -37,6 +37,12 @@ type Adapter struct {
 	api       *t.Bot
 	botUserID int64
 
+	// archiveGate admits one sticker ZIP export at a time across its whole
+	// lifecycle: building the archive AND delivering the document. The
+	// service limits construction only; this keeps an archive that is still
+	// being uploaded from overlapping the next export's allocations.
+	archiveGate chan struct{}
+
 	menuMu     sync.Mutex
 	menuFailed map[int64]bool // admins whose per-chat command menu sync failed
 
@@ -57,12 +63,13 @@ type Adapter struct {
 // still bound at RegisterRoutes time.
 func NewAdapter(controller *core.Controller, manager *core.Manager, adminIDs []int64, logger *slog.Logger, api *t.Bot) *Adapter {
 	return &Adapter{
-		controller: controller,
-		manager:    manager,
-		adminIDs:   adminIDs,
-		logger:     logger,
-		api:        api,
-		menuFailed: make(map[int64]bool),
+		controller:  controller,
+		manager:     manager,
+		adminIDs:    adminIDs,
+		logger:      logger,
+		api:         api,
+		menuFailed:  make(map[int64]bool),
+		archiveGate: make(chan struct{}, 1),
 	}
 }
 
@@ -366,7 +373,7 @@ func (a *Adapter) applyOutcome(ctx *th.Context, adminID int64, outcome core.Outc
 	// visible and with no session lock held; its own outcome (document or
 	// failure message) is applied like any other.
 	if outcome.Archive != nil {
-		a.applyOutcome(ctx, adminID, a.controller.RunStickerArchive(ctx, adminID, *outcome.Archive))
+		a.runStickerArchive(ctx, adminID, *outcome.Archive)
 	}
 }
 

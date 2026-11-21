@@ -128,11 +128,19 @@ func (a *Adapter) sendPlain(ctx *th.Context, adminID int64, text string) {
 // sendDocumentPayload delivers a screen payload as a document (large prompt
 // bodies, downloads).
 func (a *Adapter) sendDocumentPayload(ctx *th.Context, adminID int64, payload *core.DocumentPayload) {
-	params := tu.Document(tu.ID(adminID), tu.FileFromBytes(payload.Content, payload.Filename))
-	if _, err := a.api.SendDocument(ctx, params); err != nil {
+	if err := a.sendDocument(ctx, adminID, payload); err != nil {
 		a.logger.Warn("admin ui document send failed", "admin_id", adminID,
 			"error", safeerr.WrapTransport(errAdminDocumentSend, err))
 	}
+}
+
+// sendDocument uploads a document and returns the raw error for callers that
+// classify it; callers must never log or show it unsanitized.
+func (a *Adapter) sendDocument(ctx *th.Context, adminID int64, payload *core.DocumentPayload) error {
+	params := tu.Document(tu.ID(adminID), tu.FileFromBytes(payload.Content, payload.Filename))
+	_, err := a.api.SendDocument(ctx, params)
+
+	return err
 }
 
 // sendPhotoPayload delivers a payload as an inline photo (statistics PNG

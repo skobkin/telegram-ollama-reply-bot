@@ -2,6 +2,7 @@ package adminui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -225,5 +226,120 @@ func TestZipExportRequiresTheAdmin(t *testing.T) {
 
 	if len(admin.archives) != 0 || h.api.callCount("sendDocument") != 0 {
 		t.Fatal("a non-admin callback must never export")
+	}
+}
+
+func messagesAfter(h *harness, before int) []string {
+	var texts []string
+	for _, request := range h.api.requestsOf("sendMessage")[before:] {
+		texts = append(texts, request.Body)
+	}
+
+	return texts
+}
+
+func TestZipDeliverySuccessSendsNoFailureMessage(t *testing.T) {
+	h, admin := zipCard(t)
+	messages := h.api.callCount("sendMessage")
+
+	h.tap(t, core.VerbStickerZipCur)
+
+	if h.api.callCount("sendDocument") != 1 || len(admin.archives) != 1 {
+		t.Fatalf("one archive must be delivered once")
+	}
+	if extra := messagesAfter(h, messages); len(extra) != 0 {
+		t.Fatalf("a delivered archive must not trigger any message: %v", extra)
+	}
+}
+
+func TestZipDeliveryRejectedByTelegramIsReported(t *testing.T) {
+	h, _ := zipCard(t)
+	h.api.failMethods["sendDocument"] = errors.New("Request Entity Too Large https://api.telegram.org/botSECRET-TOKEN/sendDocument")
+	h.api.failCodes = map[string]int{"sendDocument": 413}
+	messages := h.api.callCount("sendMessage")
+
+	h.tap(t, core.VerbStickerZipCur)
+
+	extra := messagesAfter(h, messages)
+	if len(extra) != 1 || !strings.Contains(extra[0], "Telegram rejected the upload (error 413)") || !strings.Contains(extra[0], "Nothing was sent") {
+		t.Fatalf("a rejection must be reported as definite: %v", extra)
+	}
+	if strings.Contains(extra[0], "SECRET-TOKEN") || strings.Contains(h.logs.String(), "SECRET-TOKEN") {
+		t.Fatal("the token leaked into a message or the logs")
+	}
+	if h.api.callCount("sendDocument") != 1 {
+		t.Fatal("a rejected upload must not be retried")
+	}
+}
+
+func TestZipDeliveryTransportFailureIsReportedAsUnconfirmed(t *testing.T) {
+	h, _ := zipCard(t)
+	h.api.dropConn = map[string]bool{"sendDocument": true}
+	messages := h.api.callCount("sendMessage")
+
+	h.tap(t, core.VerbStickerZipCur)
+
+	extra := messagesAfter(h, messages)
+	if len(extra) != 1 || !strings.Contains(extra[0], "could not be confirmed") || !strings.Contains(extra[0], "Check this chat") || !strings.Contains(extra[0], "not resent") {
+		t.Fatalf("an ambiguous failure must say delivery is unconfirmed: %v", extra)
+	}
+	for _, banned := range []string{"http", "127.0.0.1", "EOF", "token"} {
+		if strings.Contains(extra[0], banned) {
+			t.Fatalf("raw transport detail %q leaked: %s", banned, extra[0])
+		}
+	}
+	if h.api.callCount("sendDocument") != 1 {
+		t.Fatal("an ambiguous upload must never be resent automatically")
+	}
+}
+
+func TestUnrelatedDocumentFailuresStayQuiet(t *testing.T) {
+	hs, _ := zipCard(t)
+	hs.api.failMethods["sendDocument"] = errors.New("boom")
+	messages := hs.api.callCount("sendMessage")
+
+	hs.tap(t, core.VerbStickerExportCur) // the YAML export: a plain document delivery
+
+	if extra := messagesAfter(hs, messages); len(extra) != 0 {
+		t.Fatalf("non-ZIP document failures keep their log-only behavior: %v", extra)
+	}
+	if !strings.Contains(hs.logs.String(), "admin ui document send failed") {
+		t.Fatal("the YAML delivery failure must still be logged")
+	}
+}
+
+func TestZipExportsDoNotOverlapAcrossDelivery(t *testing.T) {
+	h, admin := zipCard(t)
+	entered, release := h.api.armGate("sendDocument")
+	var releaseOnce sync.Once
+	unpark := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unpark) // a failing assertion must not leave the upload parked
+
+	first := make(chan struct{})
+	go func() {
+		h.tap(t, core.VerbStickerZipCur)
+		close(first)
+	}()
+	<-entered // the first archive is built and its upload is in flight
+
+	messages := h.api.callCount("sendMessage")
+	h.tap(t, core.VerbStickerZipCur) // a second request while the first is uploading
+	if got := len(admin.archives); got != 1 {
+		t.Fatalf("no second export may start while the first is delivering, builds = %d", got)
+	}
+	extra := messagesAfter(h, messages)
+	if len(extra) != 1 || !strings.Contains(extra[0], "Another ZIP export") {
+		t.Fatalf("the second request must be refused with a clear message: %v", extra)
+	}
+
+	unpark()
+	<-first
+	if h.api.callCount("sendDocument") != 1 {
+		t.Fatalf("exactly the first archive was delivered, got %d", h.api.callCount("sendDocument"))
+	}
+
+	h.tap(t, core.VerbStickerZipCur) // the gate is free again
+	if len(admin.archives) != 2 || h.api.callCount("sendDocument") != 2 {
+		t.Fatalf("a later export must run after delivery completes: builds %d sends %d", len(admin.archives), h.api.callCount("sendDocument"))
 	}
 }
