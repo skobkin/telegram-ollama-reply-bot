@@ -221,9 +221,11 @@ TheKitsuStickers.zip
 ### Delivery lifecycle and failure reporting
 
 - The service slot only covers building the archive, so the Telegram admin adapter holds a process-wide delivery gate (capacity 1) from the first download until the `sendDocument` call returns. A request that arrives meanwhile is refused immediately with "Another ZIP export is still being prepared or delivered" and starts no download; it is not queued. The gate is held outside every session lock and is not a job framework.
-- A failed `sendDocument` of an archive is reported with a separate plain message (other documents keep their log-only behavior):
+- The upload has its own **5-minute timeout**, separate from the 2-minute construction deadline (which ends before the upload starts). The timeout is derived from the update context, so shutdown cancels it too. Hitting it is an ambiguous outcome (below); the gate is released by a deferred release on every path, so a timed-out, failed or cancelled upload never leaves it held.
+- **Confirmation requires the sent message.** A `sendDocument` that returns no error but a nil message or one without a positive message ID is not a confirmation and is treated as ambiguous, the same safety contract as `send_sticker`.
+- A failed or unconfirmed `sendDocument` of an archive is reported with a separate plain message (other documents keep their log-only behavior):
   - Telegram answered with a 4xx: "Telegram rejected the upload (error N). Nothing was sent; you can try again."
-  - Anything else (transport error, timeout, 5xx, cancellation) is ambiguous because the upload may have completed: "Delivery … could not be confirmed. Check this chat for the archive before retrying — it was not resent automatically."
+  - Anything else (transport error, upload timeout, 5xx, cancellation, or a response without a confirming message) is ambiguous because the upload may have completed: "Delivery … could not be confirmed. Check this chat for the archive before retrying — it was not resent automatically."
 - The archive is never resent automatically, and neither message nor log carries the raw error, URL or token.
 
 ### Memory behavior (estimates, not guarantees)

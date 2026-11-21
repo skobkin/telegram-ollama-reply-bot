@@ -345,7 +345,10 @@ type fakeAdminAPI struct {
 	failMethods   map[string]error
 	// failCodes adds an error_code to a forced multipart failure; dropConn
 	// makes a multipart request die mid-flight (an ambiguous transport error).
-	failCodes      map[string]int
+	failCodes map[string]int
+	// okVariant makes a successful multipart call answer "zero" (a message
+	// without an ID) or "null" (no result) instead of a proper message.
+	okVariant      map[string]string
 	dropConn       map[string]bool
 	failChatScopes bool // setMyCommands fails only for per-chat scopes
 
@@ -426,13 +429,23 @@ func (f *fakeAdminAPI) serve(w http.ResponseWriter, r *http.Request) {
 
 			return
 		}
-		writeJSON(w, map[string]any{
-			"ok": true,
-			"result": map[string]any{
-				"message_id": f.nextMessageID.Add(1),
-				"chat":       map[string]any{"id": testAdmin, "type": "private"},
-			},
-		})
+		f.mu.Lock()
+		variant := f.okVariant[method]
+		f.mu.Unlock()
+		switch variant {
+		case "zero":
+			writeJSON(w, map[string]any{"ok": true, "result": map[string]any{"chat": map[string]any{"id": testAdmin, "type": "private"}}})
+		case "null":
+			writeJSON(w, map[string]any{"ok": true, "result": nil})
+		default:
+			writeJSON(w, map[string]any{
+				"ok": true,
+				"result": map[string]any{
+					"message_id": f.nextMessageID.Add(1),
+					"chat":       map[string]any{"id": testAdmin, "type": "private"},
+				},
+			})
+		}
 
 		return
 	}

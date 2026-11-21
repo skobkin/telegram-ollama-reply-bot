@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	core "telegram-ollama-reply-bot/internal/adminui"
 	"telegram-ollama-reply-bot/internal/stickers"
@@ -342,4 +343,64 @@ func TestZipExportsDoNotOverlapAcrossDelivery(t *testing.T) {
 	if len(admin.archives) != 2 || h.api.callCount("sendDocument") != 2 {
 		t.Fatalf("a later export must run after delivery completes: builds %d sends %d", len(admin.archives), h.api.callCount("sendDocument"))
 	}
+}
+
+func TestZipDeliveryWithoutAConfirmingMessageIsUnconfirmed(t *testing.T) {
+	for _, variant := range []string{"zero", "null"} {
+		t.Run(variant, func(t *testing.T) {
+			h, _ := zipCard(t)
+			h.api.okVariant = map[string]string{"sendDocument": variant}
+			messages := h.api.callCount("sendMessage")
+
+			h.tap(t, core.VerbStickerZipCur)
+
+			extra := messagesAfter(h, messages)
+			if len(extra) != 1 || !strings.Contains(extra[0], "could not be confirmed") || !strings.Contains(extra[0], "not resent") {
+				t.Fatalf("a response without a sent message is not a confirmation: %v", extra)
+			}
+			if h.api.callCount("sendDocument") != 1 {
+				t.Fatal("an unconfirmed upload must not be resent")
+			}
+		})
+	}
+}
+
+func TestZipUploadTimeoutIsAmbiguousAndReleasesTheGate(t *testing.T) {
+	old := archiveUploadTimeout
+	archiveUploadTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { archiveUploadTimeout = old })
+
+	h, admin := zipCard(t)
+	entered, release := h.api.armGate("sendDocument")
+	var once sync.Once
+	unpark := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unpark) // the parked fake handler must finish before the server closes
+	messages := h.api.callCount("sendMessage")
+
+	h.tap(t, core.VerbStickerZipCur) // returns once the upload deadline hits
+	<-entered
+
+	extra := messagesAfter(h, messages)
+	if len(extra) != 1 || !strings.Contains(extra[0], "could not be confirmed") || !strings.Contains(extra[0], "Check this chat") {
+		t.Fatalf("an upload timeout must be reported as unconfirmed: %v", extra)
+	}
+	if !strings.Contains(h.logs.String(), "timed_out=true") {
+		t.Fatalf("the timeout must be logged: %s", h.logs.String())
+	}
+	if len(admin.archives) != 1 {
+		t.Fatalf("a timed-out upload must not trigger another build, builds = %d", len(admin.archives))
+	}
+	unpark() // the fake handler (still holding the abandoned request) finishes
+
+	// The gate was released: the next export builds and delivers.
+	h.tap(t, core.VerbStickerZipCur)
+	if len(admin.archives) != 2 {
+		t.Fatalf("the gate must be free after an upload timeout, builds = %d", len(admin.archives))
+	}
+	if later := messagesAfter(h, messages); len(later) != 1 {
+		t.Fatalf("the later export must not be refused or fail: %v", later)
+	}
+	// Exactly the abandoned upload and the later one reached Telegram: the
+	// timed-out archive was never resent.
+	h.waitFor(t, "both uploads recorded", func() bool { return h.api.callCount("sendDocument") == 2 })
 }

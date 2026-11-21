@@ -1,8 +1,10 @@
 package adminui
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/mymmrac/telego/telegoapi"
 	th "github.com/mymmrac/telego/telegohandler"
@@ -10,6 +12,11 @@ import (
 	core "telegram-ollama-reply-bot/internal/adminui"
 	"telegram-ollama-reply-bot/internal/support/safeerr"
 )
+
+// archiveUploadTimeout bounds the sendDocument phase on its own; the archive
+// construction deadline (service) ends before the upload starts and does not
+// cover it. A variable so tests can shorten it.
+var archiveUploadTimeout = 5 * time.Minute
 
 const msgArchiveBusy = "Another ZIP export is still being prepared or delivered — try again once it has arrived."
 
@@ -43,11 +50,22 @@ func (a *Adapter) runStickerArchive(ctx *th.Context, adminID int64, job core.Sti
 // completed), so the admin is told to check the chat and the archive is
 // never resent automatically.
 func (a *Adapter) deliverArchive(ctx *th.Context, adminID int64, set string, payload *core.DocumentPayload) {
-	err := a.sendDocument(ctx, adminID, payload)
+	uploadCtx, cancel := context.WithTimeout(ctx, archiveUploadTimeout)
+	defer cancel()
+
+	message, err := a.sendDocument(uploadCtx, adminID, payload)
+	if err == nil && message != nil && message.MessageID > 0 {
+		return // confirmed: Telegram returned the sent message
+	}
 	if err == nil {
+		// No error but no sent message either: not a confirmation.
+		a.logger.Warn("admin ui archive send unconfirmed", "admin_id", adminID, "set", set)
+		a.sendPlain(ctx, adminID, unconfirmedArchiveText(set))
+
 		return
 	}
 	a.logger.Warn("admin ui archive send failed", "admin_id", adminID, "set", set,
+		"timed_out", errors.Is(uploadCtx.Err(), context.DeadlineExceeded),
 		"error", safeerr.WrapTransport(errAdminDocumentSend, err))
 
 	var apiErr *telegoapi.Error
@@ -58,6 +76,9 @@ func (a *Adapter) deliverArchive(ctx *th.Context, adminID int64, set string, pay
 
 		return
 	}
-	a.sendPlain(ctx, adminID, fmt.Sprintf(
-		"Delivery of the ZIP of %s could not be confirmed. Check this chat for the archive before retrying — it was not resent automatically.", set))
+	a.sendPlain(ctx, adminID, unconfirmedArchiveText(set))
+}
+
+func unconfirmedArchiveText(set string) string {
+	return fmt.Sprintf("Delivery of the ZIP of %s could not be confirmed. Check this chat for the archive before retrying — it was not resent automatically.", set)
 }
