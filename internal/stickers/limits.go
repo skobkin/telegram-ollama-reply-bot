@@ -11,6 +11,18 @@ const (
 	// puts that worst case near 3 MB; TestMaximalTemplateRoundTrips pins it.
 	MaxUploadBytes = 4 << 20
 
+	// MaxStickerFileBytes bounds one downloaded sticker file, measured on the
+	// actual bytes. Telegram allows 512 KB static, 64 KB animated and 256 KB
+	// video stickers; the rest is margin.
+	MaxStickerFileBytes = 1 << 20
+	// MaxArchiveDownloadBytes bounds the sum of all downloaded sticker files.
+	MaxArchiveDownloadBytes = 40 << 20
+	// MaxArchiveBytes bounds the ZIP document, safely below the Bot API's
+	// 50 MB upload limit.
+	MaxArchiveBytes = 45 << 20
+	// ArchiveConcurrency bounds simultaneous Telegram file downloads.
+	ArchiveConcurrency = 4
+
 	// MaxSets bounds the number of cataloged sticker sets.
 	MaxSets = 32
 	// MaxStickersPerSet bounds the available stickers of one set. Telegram

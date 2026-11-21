@@ -69,20 +69,35 @@ type Service struct {
 	opMu sync.Mutex
 	// exportSlots bounds concurrent export fetches.
 	exportSlots chan struct{}
+	// archiveSlots admits one ZIP export at a time (bounds memory).
+	archiveSlots chan struct{}
+	files        FileDownloader
 
 	mu    sync.RWMutex
 	state State // the complete catalog; immutable once published
 	index atomic.Pointer[Index]
 }
 
+// Option customizes a Service.
+type Option func(*Service)
+
+// WithFileDownloader enables ZIP export by providing the sticker file source.
+func WithFileDownloader(d FileDownloader) Option {
+	return func(s *Service) { s.files = d }
+}
+
 // NewService builds a service with an empty catalog. Call Load before use.
-func NewService(store Store, fetcher SetFetcher, logger *slog.Logger) *Service {
+func NewService(store Store, fetcher SetFetcher, logger *slog.Logger, opts ...Option) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	s := &Service{
 		store: store, fetcher: fetcher, logger: logger, now: time.Now,
-		exportSlots: make(chan struct{}, maxConcurrentExports),
+		exportSlots:  make(chan struct{}, maxConcurrentExports),
+		archiveSlots: make(chan struct{}, 1),
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 	s.index.Store(BuildIndex(State{}))
 
