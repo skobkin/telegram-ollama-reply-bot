@@ -159,6 +159,69 @@ Out of scope in PR5: generic non-text history, history daemon, vision tagging, s
 
 ### Admin workflow
 
-- Dashboard → Stickers lists the cataloged sets with counts; a set card offers re-export, import, enable/disable and (confirmed) removal; "Export set…" asks for a set name or link and replies with the template as a document; "Import YAML" asks for the edited file as a correlated reply. The admin document download is bounded by the largest per-kind limit and each kind enforces its own limit on the bytes actually read; a document declared over the bound is refused without being fetched. Everything the admin sees is plain text.
+- Dashboard → Stickers lists the cataloged sets with counts; a set card offers re-export, import, enable/disable and (confirmed) removal (see section 10 for the ZIP export added later); "Export YAML…" (formerly "Export set…") asks for a set name or link and replies with the template as a document; "Import YAML" asks for the edited file as a correlated reply. The admin document download is bounded by the largest per-kind limit and each kind enforces its own limit on the bytes actually read; a document declared over the bound is refused without being fetched. Everything the admin sees is plain text.
 - Operations are serialized (a second concurrent import or change gets a "busy" answer), Telegram fetches time out after 15 seconds and concurrent exports are bounded to two.
 
+
+## 10. ZIP export (extension of the admin workflow)
+
+The admin workflow in section 3 is unchanged. ZIP export is an additional, read-only way to *obtain* the template, meant for annotating with an external image-capable LLM.
+
+### Two export formats
+
+| Format | Button | Contents | Purpose |
+|---|---|---|---|
+| YAML | Export YAML… / Export YAML | the template only | edit by hand, or when the images are not needed |
+| ZIP | Export ZIP… / Export ZIP | the same template plus the sticker files | give an image-capable model the pictures together with the YAML to fill in |
+
+Both are available for cataloged sets (set card) and for new sets given by name or `t.me/addstickers/<name>` link (stickers screen). The YAML export is byte-for-byte what it was before.
+
+### Archive structure and naming
+
+```text
+TheKitsuStickers.zip
+├── stickers-TheKitsuStickers.yaml
+└── stickers/
+    ├── AgADGKsAAtQtAUs.webp
+    ├── AgADbbbAAtQtAUs.tgs
+    └── AgADcccAAtQtAUs.webm
+```
+
+- The first entry is the YAML template, then one file per sticker **currently available in Telegram**, in Telegram's set order. Entry metadata (timestamp, mode) is fixed, so equal input yields byte-identical archives.
+- A file is named `stickers/<file_unique_id>.<ext>`. **`file_unique_id` is the whole image-to-YAML mapping**: it is the identity the YAML already uses (`stickers[].file_unique_id`), so no manifest exists or is needed. The file's name stem equals exactly one `file_unique_id` in the YAML, and every non-missing YAML sticker has one file.
+- Extensions follow the sticker's format: static `.webp`, animated `.tgs`, video `.webm`. The Telegram `file_path`, the current `file_id`, the position and the emoji are never used in names.
+- The identity must match `^[A-Za-z0-9_-]{1,64}$` and the format must be known; otherwise the export fails (`ErrUnsafeFileName`) before anything is downloaded. Identities are never sanitized or renamed, because that would break the correspondence with the YAML. Colliding names are rejected.
+- Sticker files are stored byte for byte (no recompression, resizing or conversion); only the small YAML entry is deflated.
+- Retained `missing` entries stay in the YAML (`missing` section) but have no file and are not downloaded.
+- Repeat exports behave as in section 3: every saved annotation is prefilled by `(set, file_unique_id)`, new stickers are blank.
+
+### Consistency and read-only behavior
+
+- One `getStickerSet` call per export: the YAML and the downloads come from the same snapshot, never from two independent fetches.
+- The export performs no store call, no synchronization, no catalog change and no index replacement.
+- **Import still accepts YAML only.** ZIP import is out of scope: extract the archive, edit the YAML, and upload it through the existing Import YAML flow. Nothing about `catalog_version`, the schema or import semantics changed.
+
+### Limits, failure and concurrency
+
+| Limit | Value |
+|---|---|
+| Parallel Telegram file downloads | 4 |
+| One sticker file (actual bytes read) | 1 MiB |
+| All downloaded files together | 40 MiB |
+| The finished archive | 45 MiB (Bot API `sendDocument` allows 50 MB) |
+| Per-file timeout | 20 s |
+| Whole operation (fetch, downloads, assembly) | 2 min |
+| ZIP exports running at once | 1 (a second gets "busy") |
+
+- The one overall deadline covers everything, and cancellation is honoured at every stage (in-flight downloads, before assembly, before each archive entry).
+- Per-file size is checked on the declared `getFile` size (no download starts above it) **and** on the bytes actually read. An empty file is a failure.
+- **All or nothing.** The first failing file cancels the remaining downloads and no archive is sent; the administrator gets a plain message naming the sticker's `file_unique_id` and the reason (too large, could not be downloaded, timed out) or the matching overall error, ending in "No archive was sent." Raw causes are never shown or logged.
+- Telegram file URLs embed the bot token: they are built only by the SDK from Telegram's own `file_path`, never from user or model input, never logged or put into errors (causes pass through `safeerr`), and redirects are not followed.
+
+### Memory behavior (estimates, not guarantees)
+
+Allocations are bounded by the limits above and by the single-export slot, but peak memory is not capped by a hard figure. At the caps, the downloaded files (≤ 40 MiB), the archive buffer (allocated once at a computed upper bound, ≤ 45 MiB) and the transient copy the multipart upload makes while sending add up to roughly three times the archive size, on the order of 130 MiB, plus garbage-collector slack, released after the send. Sticker slices are dropped as soon as they are written into the archive. Typical sets (a few to a few tens of MB) use a fraction of that. Streaming through a temporary file was rejected: the runtime may not have writable storage.
+
+### Admin UI and locking
+
+The verb handler runs under the per-admin session lock, so it must not do the slow part. ZIP export is therefore two-phase: inside the commit it only validates the set reference, shows "Preparing the ZIP…" and requests a job; afterwards the adapter runs the job outside every session lock, then delivers the document (or the failure message). The job never touches the session, so the menu stays usable while the files download, there is no session race, and other administrators were never blocked. A set that Telegram does not know is therefore reported by a message after the fetch rather than by a retry prompt.

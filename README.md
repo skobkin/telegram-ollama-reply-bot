@@ -159,11 +159,14 @@ Ordinary chat replies always use the tool-capable chat workflow. `LLM__FEATURES_
 ### Sticker catalog
 
 Stickers are curated by an administrator; the model never sees raw Telegram file identifiers and cannot edit the
-catalog. In the admin DM open **Stickers**, press **Export set…** and send a sticker set name or a
+catalog. In the admin DM open **Stickers**, press **Export YAML…** and send a sticker set name or a
 `t.me/addstickers/<name>` link: the bot replies with a YAML template (regular sticker sets only — mask and custom emoji
 sets are rejected). Fill in an English `id` (for example `kitsu_happy`), a `description` and optional `tags` (any language) for
 the stickers you want available, then press **Import YAML** and reply with the edited file.
 
+- **Export ZIP…** (or **Export ZIP** on a set card) sends the same template together with the actual sticker files as
+  `stickers/<file_unique_id>.webp|.tgs|.webm`, so an image-capable LLM can fill in the YAML without guessing which picture
+  is which. It is read-only and all-or-nothing (a failed download sends no archive); import still takes the edited YAML only.
 - A sticker is selectable once it has both an `id` and a `description`; the rest of the set can stay blank and be annotated later.
 - Exporting a set again prefills every saved annotation by the sticker's Telegram identity (order does not matter) and
   leaves only newly added stickers blank. Stickers Telegram no longer reports are listed under `missing` and keep their annotations.
