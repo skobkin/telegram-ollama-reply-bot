@@ -114,6 +114,10 @@ type Outcome struct {
 	Message      *TextMessage
 	Verify       *VerifyChat
 	DeleteMsgIDs []int
+	// Archive requests a long-running sticker ZIP export. The adapter applies
+	// the rest of the outcome first, then runs Controller.RunStickerArchive
+	// outside every session lock and applies the outcome it returns.
+	Archive *StickerArchiveJob
 	// DropPicker removes the chat-picker reply keyboard, with the text as the
 	// acknowledgement line. Empty keeps the keyboard: in particular, a stale
 	// or mismatched chat selection must never dismiss a newer active picker.
@@ -138,6 +142,7 @@ type fx struct {
 	verify     *VerifyChat
 	deletes    []int
 	dropPicker string
+	archive    *StickerArchiveJob
 }
 
 func (f fx) outcome() Outcome {
@@ -150,6 +155,7 @@ func (f fx) outcome() Outcome {
 		Verify:       f.verify,
 		DeleteMsgIDs: f.deletes,
 		DropPicker:   f.dropPicker,
+		Archive:      f.archive,
 	}
 }
 
@@ -1020,7 +1026,7 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 		return nil
 
 	case VerbStickers, VerbStickerSet, VerbStickerExportNew, VerbStickerExportCur,
-		VerbStickerImport, VerbStickerToggle, VerbStickerRemove:
+		VerbStickerImport, VerbStickerToggle, VerbStickerRemove, VerbStickerZipNew, VerbStickerZipCur:
 		return c.handleStickerVerb(ctx, s, action, fx)
 
 	case VerbConfirmYes:
@@ -1700,6 +1706,26 @@ func (c *Controller) processReply(ctx context.Context, adminID int64, s *Session
 
 		return nil
 
+	case PendingStickerZipRef:
+		if c.opts.Stickers == nil {
+			return invalid(errors.New("the sticker catalog is not available"))
+		}
+		if in.Document != nil {
+			return invalid(errors.New("send the sticker set name or link as text"))
+		}
+		name, err := stickers.ParseSetReference(strings.TrimSpace(in.Text))
+		if err != nil {
+			return invalid(errors.New(stickerFailureText(err)))
+		}
+		s.dropPending()
+		c.refreshStickerSets(s)
+		s.Screen.Notice = stickerArchivePreparingNotice(name)
+		s.MarkRerender()
+		deletePromptAndReply()
+		fx.archive = &StickerArchiveJob{Set: name}
+
+		return nil
+
 	case PendingManualChatID:
 		if in.Document != nil {
 			return invalid(errors.New("send the numeric chat ID as text"))
@@ -1768,6 +1794,8 @@ func (c *Controller) retryPrompt(ctx context.Context, p *Pending, warning error)
 		text, placeholder = stickerSetRefPrompt(), "Sticker set name or link"
 	case PendingStickerDocument:
 		text = stickerUploadPrompt()
+	case PendingStickerZipRef:
+		text, placeholder = stickerZipRefPrompt(), "Sticker set name or link"
 	case PendingManualChatID:
 		text, placeholder = manualChatIDPrompt(), "Chat ID"
 	case PendingChatPicker:

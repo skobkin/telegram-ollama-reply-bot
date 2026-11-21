@@ -49,7 +49,7 @@ func (b screenBuilder) stickers(data StickersData) *Screen {
 	text.WriteString("Only active stickers are visible to the model.\n\n")
 
 	if len(data.Sets) == 0 {
-		text.WriteString("No sticker sets yet. Use Export set… to get a template, fill it in, then Import YAML.\n")
+		text.WriteString("No sticker sets yet. Use Export YAML… (or Export ZIP… for the images too) to get a template, fill it in, then Import YAML.\n")
 	}
 	rows := make([]ButtonRow, 0, len(data.Sets)+4)
 	for _, ref := range data.Sets {
@@ -76,7 +76,8 @@ func (b screenBuilder) stickers(data StickersData) *Screen {
 		rows = append(rows, nav)
 	}
 	rows = append(rows,
-		ButtonRow{b.btn("Export set…", VerbStickerExportNew), b.btn("Import YAML", VerbStickerImport)},
+		ButtonRow{b.btn("Export YAML…", VerbStickerExportNew), b.btn("Export ZIP…", VerbStickerZipNew)},
+		ButtonRow{b.btn("Import YAML", VerbStickerImport)},
 		b.footerRow(),
 	)
 
@@ -118,7 +119,8 @@ func (b screenBuilder) stickerSet(data StickerSetData) *Screen {
 	return &Screen{
 		Text: text.String(),
 		Rows: []ButtonRow{
-			{b.btn("Re-export", VerbStickerExportCur), b.btn("Import YAML", VerbStickerImport)},
+			{b.btn("Export YAML", VerbStickerExportCur), b.btn("Export ZIP", VerbStickerZipCur)},
+			{b.btn("Import YAML", VerbStickerImport)},
 			{b.btn(toggle, VerbStickerToggle), b.danger("Remove set", VerbStickerRemove)},
 			b.footerRow(),
 		},

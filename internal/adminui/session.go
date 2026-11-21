@@ -127,6 +127,8 @@ const (
 	PendingStickerSetRef PendingKind = "sticker_set_ref"
 	// PendingStickerDocument awaits an edited sticker template document.
 	PendingStickerDocument PendingKind = "sticker_document"
+	// PendingStickerZipRef awaits a sticker set name or link to export as ZIP.
+	PendingStickerZipRef PendingKind = "sticker_zip_ref"
 )
 
 // Pending is an awaited correlated input. ID identifies one pending within

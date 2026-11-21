@@ -19,6 +19,9 @@ type StickerAdmin interface {
 	Export(ctx context.Context, reference string) (filename string, data []byte, err error)
 	// Import validates and commits an edited template atomically.
 	Import(ctx context.Context, raw []byte) (stickers.ImportResult, error)
+	// ExportArchive builds a ZIP of the YAML template and the sticker files
+	// from one Telegram snapshot. Read-only and potentially slow.
+	ExportArchive(ctx context.Context, reference string) (filename string, data []byte, err error)
 	Sets() []stickers.SetSummary
 	Status() stickers.Status
 	SetEnabled(ctx context.Context, name string, enabled bool) error
@@ -42,7 +45,10 @@ const maxStickerFailureRunes = 2400
 // stickerFailureText turns a catalog error into an actionable admin message.
 // Messages name identities and rules, never annotation text.
 func stickerFailureText(err error) string {
-	var verr *stickers.ValidationError
+	var (
+		verr *stickers.ValidationError
+		derr *stickers.DownloadError
+	)
 	switch {
 	case errors.Is(err, stickers.ErrSetNotFound):
 		return "Telegram does not know this sticker set — check the name or link."
@@ -56,6 +62,18 @@ func stickerFailureText(err error) string {
 		return "The catalog changed while this was processed — export the set again and retry."
 	case errors.Is(err, stickers.ErrUnknownSet):
 		return "That set is no longer in the catalog."
+	case errors.Is(err, stickers.ErrArchiveUnavailable):
+		return "ZIP export is not available in this deployment."
+	case errors.Is(err, stickers.ErrArchiveTimeout):
+		return "The ZIP export took too long — try again in a moment."
+	case errors.Is(err, stickers.ErrArchiveTooLarge):
+		return "The sticker files are too large to fit into a ZIP archive."
+	case errors.Is(err, stickers.ErrUnsafeFileName):
+		return "A sticker has an identity that cannot be used as a file name; use the YAML export."
+	case errors.Is(err, context.Canceled):
+		return "The ZIP export was cancelled."
+	case errors.As(err, &derr):
+		return "Sticker " + truncateRunes(derr.FileUniqueID, 24) + ": its file " + derr.Reason + "."
 	case errors.As(err, &verr):
 		text := verr.Error()
 		if verr.Stale {
@@ -182,6 +200,28 @@ func (c *Controller) handleStickerVerb(ctx context.Context, s *Session, action A
 
 		return nil
 
+	case VerbStickerZipNew:
+		if s.Screen.Kind != ScreenStickers {
+			return errInvalidArg
+		}
+		s.orphanPickerKeyboard()
+		s.Pending = &Pending{ID: s.NextPendingID(), Kind: PendingStickerZipRef, ExpiresAt: now.Add(PendingTTL)}
+		fx.input = &InputRequest{PendingID: s.Pending.ID, Text: stickerZipRefPrompt(), Placeholder: "Sticker set name or link"}
+
+		return nil
+
+	case VerbStickerZipCur:
+		if s.Screen.Kind != ScreenStickerSet {
+			return errInvalidArg
+		}
+		// Only the quick part runs under the session lock: the download and
+		// packaging happen afterwards, in RunStickerArchive.
+		s.Screen.Notice = stickerArchivePreparingNotice(s.Screen.StickerSet)
+		s.MarkRerender()
+		fx.archive = &StickerArchiveJob{Set: s.Screen.StickerSet}
+
+		return nil
+
 	case VerbStickerImport:
 		if s.Screen.Kind != ScreenStickers && s.Screen.Kind != ScreenStickerSet {
 			return errInvalidArg
@@ -239,6 +279,30 @@ func (c *Controller) handleStickerVerb(ctx context.Context, s *Session, action A
 	}
 
 	return errInvalidArg
+}
+
+// StickerArchiveJob is a validated request for a sticker ZIP export.
+type StickerArchiveJob struct {
+	Set string
+}
+
+func stickerArchivePreparingNotice(set string) string {
+	return "Preparing the ZIP of " + set + " — it arrives as a separate message (or an error message) when ready."
+}
+
+// RunStickerArchive performs a requested ZIP export. It runs outside every
+// session lock and never touches the session, so the admin can keep using
+// the menu while the files download and no commit can race with it.
+func (c *Controller) RunStickerArchive(ctx context.Context, adminID int64, job StickerArchiveJob) Outcome {
+	if !c.IsAdmin(adminID) || c.opts.Stickers == nil {
+		return Outcome{}
+	}
+	filename, data, err := c.opts.Stickers.ExportArchive(ctx, job.Set)
+	if err != nil {
+		return Outcome{Message: &TextMessage{Text: fmt.Sprintf("ZIP export of %s failed: %s No archive was sent.", job.Set, stickerFailureText(err))}}
+	}
+
+	return Outcome{Document: &DocumentPayload{Filename: filename, Content: data}}
 }
 
 // processStickerReply handles a correlated reply to a sticker prompt. A
@@ -342,6 +406,12 @@ func stickerSetRefPrompt() string {
 	return AdminInputMarker + " — Export sticker set\n\n" +
 		"Reply with a sticker set name or a t.me/addstickers/<name> link. " +
 		"The bot sends back a YAML template: your saved annotations are prefilled and new stickers are blank."
+}
+
+func stickerZipRefPrompt() string {
+	return AdminInputMarker + " — Export sticker set as ZIP\n\n" +
+		"Reply with a sticker set name or a t.me/addstickers/<name> link. " +
+		"The bot sends back a ZIP with the YAML template and the sticker files named by file_unique_id."
 }
 
 func stickerUploadPrompt() string {

@@ -362,6 +362,12 @@ func (a *Adapter) applyOutcome(ctx *th.Context, adminID int64, outcome core.Outc
 	if outcome.Verify != nil {
 		a.verifyChat(ctx, adminID, outcome.Verify)
 	}
+	// A long export runs last, after the committed render ("Preparing…") is
+	// visible and with no session lock held; its own outcome (document or
+	// failure message) is applied like any other.
+	if outcome.Archive != nil {
+		a.applyOutcome(ctx, adminID, a.controller.RunStickerArchive(ctx, adminID, *outcome.Archive))
+	}
 }
 
 // commandName extracts the bare command name from "/admin@bot args".

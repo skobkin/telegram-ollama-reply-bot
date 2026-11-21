@@ -13,8 +13,21 @@ import (
 )
 
 type recordingStickerAdmin struct {
-	mu      sync.Mutex
-	imports [][]byte
+	mu         sync.Mutex
+	imports    [][]byte
+	archiveErr error
+	archives   []string
+}
+
+func (r *recordingStickerAdmin) ExportArchive(_ context.Context, ref string) (string, []byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.archives = append(r.archives, ref)
+	if r.archiveErr != nil {
+		return "", nil, r.archiveErr
+	}
+
+	return ref + ".zip", []byte("PK-zip"), nil
 }
 
 func (r *recordingStickerAdmin) Export(context.Context, string) (string, []byte, error) {
@@ -132,5 +145,85 @@ func TestStickerImportRequiresTheAdminAndTheCorrelatedPrompt(t *testing.T) {
 	h.deliver(t, yamlUpload(stickerImportPrompt(h), testAdmin, 0))
 	if admin.importCount() != 1 {
 		t.Fatalf("the correlated admin upload must import, got %d", admin.importCount())
+	}
+}
+
+func (h *harness) requestOrder() []string {
+	h.api.mu.Lock()
+	defer h.api.mu.Unlock()
+	var order []string
+	for _, request := range h.api.requests {
+		order = append(order, request.Method)
+	}
+
+	return order
+}
+
+func zipCard(t *testing.T) (*harness, *recordingStickerAdmin) {
+	t.Helper()
+	admin := &recordingStickerAdmin{}
+	h := newHarnessFull(t, []int64{testAdmin}, []core.ControllerOption{core.WithStickerAdmin(admin)})
+	h.open(t)
+	h.tap(t, core.VerbStickers)
+	h.tap(t, core.VerbStickerSet, "0")
+
+	return h, admin
+}
+
+func TestZipExportRendersProgressThenDeliversTheArchive(t *testing.T) {
+	h, admin := zipCard(t)
+	before := len(h.requestOrder())
+
+	h.tap(t, core.VerbStickerZipCur)
+
+	if len(admin.archives) != 1 || admin.archives[0] != "Alpha" {
+		t.Fatalf("the archive must be built for the card's set: %v", admin.archives)
+	}
+	order := h.requestOrder()[before:]
+	edit, doc := -1, -1
+	for i, m := range order {
+		switch m {
+		case "editMessageText":
+			if edit < 0 {
+				edit = i
+			}
+		case "sendDocument":
+			doc = i
+		}
+	}
+	if edit < 0 || doc < 0 || edit > doc {
+		t.Fatalf("the Preparing render must precede the document: %v", order)
+	}
+	if !strings.Contains(h.api.requestsOf("editMessageText")[len(h.api.requestsOf("editMessageText"))-1].Body, "Preparing the ZIP of Alpha") {
+		t.Fatalf("the screen must announce the ZIP")
+	}
+	if body := h.api.requestsOf("sendDocument")[0].Body; !strings.Contains(body, "Alpha.zip") {
+		t.Fatalf("the document must carry the archive name: %q", body)
+	}
+}
+
+func TestZipExportFailureSendsAMessageAndNoDocument(t *testing.T) {
+	h, admin := zipCard(t)
+	admin.archiveErr = &stickers.DownloadError{FileUniqueID: "AgADx", Reason: stickers.ReasonUnavailable}
+
+	h.tap(t, core.VerbStickerZipCur)
+
+	if h.api.callCount("sendDocument") != 0 {
+		t.Fatal("a failed export must not deliver any document")
+	}
+	if text := h.api.lastSentText("sendMessage"); !strings.Contains(text, "AgADx") || !strings.Contains(text, "No archive was sent") {
+		t.Fatalf("the admin must get an actionable failure, got %q", text)
+	}
+}
+
+func TestZipExportRequiresTheAdmin(t *testing.T) {
+	h, admin := zipCard(t)
+	session := h.manager.Session(testAdmin)
+	_, _, msgID, _ := session.DetachedSnapshot()
+
+	h.deliver(t, callbackUpdate(999, msgID, core.EncodeAction(core.VerbStickerZipCur, session.Seq)))
+
+	if len(admin.archives) != 0 || h.api.callCount("sendDocument") != 0 {
+		t.Fatal("a non-admin callback must never export")
 	}
 }

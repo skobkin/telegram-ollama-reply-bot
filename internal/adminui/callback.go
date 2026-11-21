@@ -82,6 +82,8 @@ const (
 	VerbStickerImport    = "sti" // → prompt for an edited template upload
 	VerbStickerToggle    = "stt" // → enable/disable the set card's set
 	VerbStickerRemove    = "sdl" // → remove the set card's set (confirm)
+	VerbStickerZipNew    = "stz" // → prompt for a set name or link to export as ZIP
+	VerbStickerZipCur    = "stc" // → export the set card's set as ZIP (YAML + sticker files)
 )
 
 // knownVerbs is the closed verb set accepted by Decode.
@@ -101,6 +103,7 @@ var knownVerbs = map[string]bool{
 	VerbToolStats: true, VerbToolExport: true, VerbStatsResetT: true,
 	VerbStickers: true, VerbStickerSet: true, VerbStickerExportNew: true, VerbStickerExportCur: true,
 	VerbStickerImport: true, VerbStickerToggle: true, VerbStickerRemove: true,
+	VerbStickerZipNew: true, VerbStickerZipCur: true,
 }
 
 // MaxCallbackBytes is the Telegram callback data limit.
