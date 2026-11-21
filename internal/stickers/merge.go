@@ -268,6 +268,19 @@ func PlanImport(stored State, tmpl *Template, remote RemoteSet, now time.Time) (
 	}
 	sort.Strings(release)
 
+	// Optimistic protection: a template carries the annotation version it was
+	// exported from. When the saved annotations moved on since (another
+	// import, or a second export edited in parallel), a file that would change
+	// annotations may be built on outdated values and is refused. A file that
+	// changes nothing (an idempotent re-import) is still accepted; the SQLite
+	// revision guard separately protects against concurrent writes.
+	curated := len(forgotten) > 0 || report.Reset > 0 || report.Updated > 0
+	if curated && tmpl.CatalogVersion != AnnotationVersion(stored, remote.Name) {
+		return nil, &ValidationError{Stale: true, Total: 1, Issues: []string{
+			"the saved annotations of this set changed after the template was exported (or the file has no valid catalog_version); export the set again and redo the edits",
+		}}
+	}
+
 	forgottenList := make([]string, 0, len(forgotten))
 	for unique := range forgotten {
 		forgottenList = append(forgottenList, unique)

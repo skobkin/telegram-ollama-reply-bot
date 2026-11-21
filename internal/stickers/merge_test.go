@@ -378,3 +378,131 @@ func TestFirstImportExpectsNoRevisionAndLaterImportsBumpIt(t *testing.T) {
 		t.Fatalf("second import must expect the stored revision: %+v / %d", second.Set, second.ExpectedRevision)
 	}
 }
+
+// exportTemplate renders and parses a real export of the given catalog.
+func exportTemplate(t *testing.T, stored State, remote RemoteSet) *Template {
+	t.Helper()
+	raw, err := BuildTemplate(stored, remote)
+	if err != nil {
+		t.Fatalf("BuildTemplate: %v", err)
+	}
+	tmpl, err := ParseTemplate(raw)
+	if err != nil {
+		t.Fatalf("ParseTemplate: %v", err)
+	}
+
+	return tmpl
+}
+
+func expectStale(t *testing.T, err error) {
+	t.Helper()
+	var verr *ValidationError
+	if !errors.As(err, &verr) || !verr.Stale {
+		t.Fatalf("expected a stale-template error, got %v", err)
+	}
+}
+
+func TestStaleTemplateCannotOverwriteLaterAnnotationChanges(t *testing.T) {
+	stored := baseCatalog(t)
+	remote := remoteSet("Kitsu", "a", "b", "c")
+
+	// Two curators export the same catalog.
+	first := exportTemplate(t, stored, remote)
+	second := exportTemplate(t, stored, remote)
+
+	first.Stickers[0].Description = "Fox A, edited by the first curator"
+	plan, err := PlanImport(stored, first, remote, testNow)
+	if err != nil {
+		t.Fatalf("the first import must succeed: %v", err)
+	}
+
+	// The second export predates that change: its conflicting edit is refused,
+	// whether it touches the same sticker or a different one.
+	second.Stickers[0].Description = "Fox A, edited by the second curator"
+	_, err = PlanImport(plan.Next, second, remote, testNow)
+	expectStale(t, err)
+
+	other := exportTemplate(t, stored, remote)
+	other.Stickers[2].ID, other.Stickers[2].Description = "id_c", "Fox C"
+	_, err = PlanImport(plan.Next, other, remote, testNow)
+	expectStale(t, err)
+
+	reset := exportTemplate(t, stored, remote)
+	reset.Stickers[1].Reset = boolp(true)
+	_, err = PlanImport(plan.Next, reset, remote, testNow)
+	expectStale(t, err)
+
+	// A fresh export of the current catalog works again.
+	fresh := exportTemplate(t, plan.Next, remote)
+	fresh.Stickers[0].Description = "Fox A, third edit"
+	if _, err := PlanImport(plan.Next, fresh, remote, testNow); err != nil {
+		t.Fatalf("a fresh export must be accepted: %v", err)
+	}
+}
+
+func TestStaleTemplateForgetIsRefused(t *testing.T) {
+	stored := stateFrom(t, annotated("a", "id_a", "Fox A"),
+		Entry{FileUniqueID: "gone", SemanticID: "id_gone", Description: "Gone", Available: false, Enabled: true})
+	remote := remoteSet("Kitsu", "a")
+
+	stale := exportTemplate(t, stored, remote)
+	edited := exportTemplate(t, stored, remote)
+	edited.Stickers[0].Description = "Fox A, edited"
+	plan := mustPlan(t, stored, edited, remote)
+
+	stale.Missing[0].Forget = boolp(true)
+	_, err := PlanImport(plan.Next, stale, remote, testNow)
+	expectStale(t, err)
+}
+
+func TestStaleTemplateThatChangesNothingStillImports(t *testing.T) {
+	stored := baseCatalog(t)
+	remote := remoteSet("Kitsu", "a", "b", "c")
+
+	tmpl := exportTemplate(t, stored, remote)
+	tmpl.Stickers[0].Description = "Fox A, edited"
+	plan, err := PlanImport(stored, tmpl, remote, testNow)
+	if err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+
+	// Re-importing the very same file after it was applied is idempotent even
+	// though the catalog moved on: it carries no change.
+	again, err := PlanImport(plan.Next, tmpl, remote, testNow)
+	if err != nil {
+		t.Fatalf("an idempotent re-import must not be refused: %v", err)
+	}
+	if again.Report.Updated != 0 || again.Report.Reset != 0 || again.Report.Unchanged != 3 {
+		t.Fatalf("expected no changes, got %+v", again.Report)
+	}
+
+	// An old export that only restates saved values or leaves fields blank
+	// is equally harmless.
+	old := exportTemplate(t, stored, remote)
+	old.Stickers[1].Description, old.Stickers[1].ID = "", ""
+	old.Stickers[0].Description = "Fox A, edited" // same as now saved
+	if _, err := PlanImport(plan.Next, old, remote, testNow); err != nil {
+		t.Fatalf("a no-change stale file must be accepted: %v", err)
+	}
+}
+
+func TestAnnotationVersionIgnoresTelegramDerivedFields(t *testing.T) {
+	stored := baseCatalog(t)
+	version := AnnotationVersion(stored, "Kitsu")
+
+	moved := stateFrom(t,
+		annotated("a", "id_a", "Fox A", "tag_a"),
+		annotated("b", "id_b", "Fox B", "tag_b"),
+		Entry{FileUniqueID: "c", Available: true, Enabled: true},
+		Entry{FileUniqueID: "d", Available: true, Enabled: true}, // new blank sticker
+	)
+	moved.Entries[0].FileID, moved.Entries[0].Position = "rotated-file-id", 9
+	if got := AnnotationVersion(moved, "Kitsu"); got != version {
+		t.Fatalf("file_id, position and blank rows must not change the version")
+	}
+
+	moved.Entries[1].Description = "Fox B!"
+	if got := AnnotationVersion(moved, "Kitsu"); got == version {
+		t.Fatalf("an annotation edit must change the version")
+	}
+}

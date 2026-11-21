@@ -121,6 +121,7 @@ func kitsuFetcher() *fakeFetcher {
 func importYAML(t *testing.T, mutate func(*Template)) []byte {
 	t.Helper()
 	tmpl := tmplOf("Kitsu", TemplateSticker{FileUniqueID: "a"}, TemplateSticker{FileUniqueID: "b"}, TemplateSticker{FileUniqueID: "c"})
+	tmpl.CatalogVersion = AnnotationVersion(baseCatalog(t), "Kitsu") // exported from baseCatalog
 	mutate(tmpl)
 	raw, err := marshalForTest(tmpl)
 	if err != nil {

@@ -317,3 +317,27 @@ func TestStickerLoadFailsOnCorruptRowWithoutLeakingAnnotations(t *testing.T) {
 		t.Fatalf("error must name the sticker identity only, got %q", msg)
 	}
 }
+
+func TestStickerLoadRejectsNonArrayStoredTags(t *testing.T) {
+	for _, raw := range []string{"null", " null ", "{}", `"fox"`, "7", "true", "[null]", `["ok", null]`, "[1]", `["a"] x`} {
+		t.Run(raw, func(t *testing.T) {
+			store := openTestStore(t)
+			mustReplace(t, store, StickerSetWrite{Set: stickerSet("alpha"), Entries: []StickerEntryRow{stickerEntry("alpha", "a", "id_a")}})
+			if _, err := store.db.ExecContext(context.Background(), `UPDATE sticker_entries SET tags = ?`, raw); err != nil {
+				t.Fatalf("corrupt row: %v", err)
+			}
+			if _, _, err := store.LoadStickerCatalog(context.Background()); err == nil || !strings.Contains(err.Error(), "alpha/a") {
+				t.Fatalf("tags %q must fail the load naming the sticker, got %v", raw, err)
+			}
+		})
+	}
+
+	// Valid arrays, including the empty one, still load.
+	store := openTestStore(t)
+	e := stickerEntry("alpha", "a", "id_a")
+	e.Tags = nil
+	mustReplace(t, store, StickerSetWrite{Set: stickerSet("alpha"), Entries: []StickerEntryRow{e}})
+	if _, entries, err := store.LoadStickerCatalog(context.Background()); err != nil || len(entries) != 1 || len(entries[0].Tags) != 0 {
+		t.Fatalf("an empty tag array must load: %v %v", entries, err)
+	}
+}

@@ -80,6 +80,11 @@ func TestAttachStickerCatalogRegistersListStickersOnlyForAUsableCatalog(t *testi
 	if _, ok := definition.Resolve(CallContext{}, Presentation{}); !ok {
 		t.Fatalf("a catalog with active stickers must be advertised")
 	}
+	for _, want := range []string{"mostly in English", "translate", "tags may be in other languages"} {
+		if !strings.Contains(definition.Description, want) {
+			t.Fatalf("the description must guide multilingual search (missing %q): %s", want, definition.Description)
+		}
+	}
 
 	empty := stickerRuntime(stickers.BuildIndex(stickers.State{}))
 	definition, _ = empty.registry.Lookup(listStickersToolName)

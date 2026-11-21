@@ -1,6 +1,7 @@
 package stickers
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -168,5 +169,78 @@ func TestBuildTemplateRejectsAmbiguousRemote(t *testing.T) {
 	}
 	if _, err := BuildTemplate(State{}, remoteSet("bad-name", "u1")); err == nil {
 		t.Fatalf("malformed set name must be rejected")
+	}
+}
+
+// maximalCatalog builds the largest valid catalog of one set: the maximum
+// number of available and retained entries, each with a full-length
+// description and the maximum number of full-length tags made of fill.
+func maximalCatalog(t *testing.T, fill string) (State, RemoteSet) {
+	t.Helper()
+	remote := RemoteSet{Name: "Kitsu", Title: "Kitsu"}
+	var entries []Entry
+	for i := 0; i < MaxStickersPerSet+MaxMissingPerSet; i++ {
+		tags := make([]string, MaxTags)
+		for j := range tags {
+			tags[j] = strings.Repeat(fill, MaxTagRunes-2) + fmt.Sprintf("%02d", j)
+		}
+		unique := fmt.Sprintf("u%04d", i)
+		e := annotated(unique, fmt.Sprintf("kitsu_%04d", i), strings.Repeat(fill, MaxDescriptionRunes), tags...)
+		e.Available = i < MaxStickersPerSet
+		entries = append(entries, e)
+		if e.Available {
+			remote.Stickers = append(remote.Stickers, RemoteSticker{FileUniqueID: unique, FileID: "file-" + unique, Emoji: "🦊", Format: FormatStatic})
+		}
+	}
+
+	return stateFrom(t, entries...), remote
+}
+
+// A maximally annotated catalog, retained entries included, must export to a
+// file the upload path accepts, and the parsed file must carry every
+// annotation back unchanged. Characters outside the BMP are the worst case:
+// the YAML encoder escapes each as \UXXXXXXXX.
+func TestMaximalTemplateRoundTrips(t *testing.T) {
+	for name, fill := range map[string]string{
+		"ascii": "a", "escapes": `"`, "backslash": `\`, "cjk": "狐", "astral": "😀",
+	} {
+		t.Run(name, func(t *testing.T) {
+			stored, remote := maximalCatalog(t, fill)
+			raw, err := BuildTemplate(stored, remote)
+			if err != nil {
+				t.Fatalf("BuildTemplate: %v", err)
+			}
+			if len(raw) > MaxUploadBytes {
+				t.Fatalf("export is %d bytes, over the %d upload limit", len(raw), MaxUploadBytes)
+			}
+			tmpl, err := ParseTemplate(raw)
+			if err != nil {
+				t.Fatalf("an exported template must be uploadable: %v", err)
+			}
+			if len(tmpl.Stickers) != MaxStickersPerSet || len(tmpl.Missing) != MaxMissingPerSet {
+				t.Fatalf("lost entries: %d stickers, %d missing", len(tmpl.Stickers), len(tmpl.Missing))
+			}
+			byID := map[string]Entry{}
+			for _, e := range stored.Entries {
+				byID[e.FileUniqueID] = e
+			}
+			for _, ts := range tmpl.Stickers {
+				want := byID[ts.FileUniqueID]
+				if ts.ID != want.SemanticID || ts.Description != want.Description || !sameTags(ts.Tags, want.Tags) {
+					t.Fatalf("sticker %s lost or altered annotations", ts.FileUniqueID)
+				}
+			}
+			for _, tm := range tmpl.Missing {
+				want := byID[tm.FileUniqueID]
+				if tm.ID != want.SemanticID || tm.Description != want.Description || !sameTags(tm.Tags, want.Tags) {
+					t.Fatalf("missing entry %s lost or altered annotations", tm.FileUniqueID)
+				}
+			}
+
+			plan := mustPlan(t, stored, tmpl, remote)
+			if plan.Report.Unchanged != MaxStickersPerSet || plan.Report.Updated != 0 {
+				t.Fatalf("re-importing the export must change nothing: %+v", plan.Report)
+			}
+		})
 	}
 }

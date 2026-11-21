@@ -139,7 +139,7 @@ Out of scope in PR5: generic non-text history, history daemon, vision tagging, s
 ### Activation and caps
 
 - A sticker is active (searchable and sendable) when its set is enabled, it is available and enabled, and it has both a semantic ID and a description. Tags are optional. An entry with only an ID is incomplete: its ID is reserved but it cannot be selected.
-- Caps: 256 KiB upload; 32 sets; 200 available and 200 retained missing stickers per set; 5000 entries in total; semantic ID `^[a-z][a-z0-9_]{2,47}$`; description at most 240 characters on a single line; at most 16 tags of at most 32 characters (any language, case-insensitive duplicates rejected); set title at most 128 characters.
+- Caps: 4 MiB upload (the exporter's worst case for a fully annotated set is about 3 MB; the original 256 KiB could not hold a maximal export); 32 sets; 200 available and 200 retained missing stickers per set; 5000 entries in total; semantic ID `^[a-z][a-z0-9_]{2,47}$`; description at most 240 characters on a single line; at most 16 tags of at most 32 characters (any language, case-insensitive duplicates rejected); set title at most 128 characters.
 
 ### Search and `list_stickers`
 
@@ -152,6 +152,10 @@ Out of scope in PR5: generic non-text history, history daemon, vision tagging, s
 - A nil Telegram response or a message without an ID is never a confirmation: it is reported as an ambiguous outcome. `MessageSent` is published only for a confirmed send. Every dispatch error is non-retryable within the turn.
 - **Cooldown.** Proactive turns are serialized per chat but not otherwise rate-limited, so consecutive proactive replies could each attach a sticker; a cheap guard is worthwhile. A hard-coded 30-second per-chat window (`stickerProactiveCooldown`, no configuration) applies to proactive turns only. Whether a turn is proactive is derived from the trigger Telegram metadata gives the bot (mention, reply, private chat versus the participation engine), never from a model-supplied flag. An explicit request is never declined. Every admitted dispatch, explicit or proactive and including an ambiguous one, stamps the chat, so a proactive sticker cannot follow right behind an explicit one. Admission is an atomic check-and-reserve under one mutex and runs after every other pre-dispatch check, immediately before the send; declines, validation failures, cancellations and unknown IDs never stamp. A declined send returns `sticker_cooldown` (rate limited, not retryable). Proactive turns inside the window are not offered the sticker tools at all.
 - Reaction-only turns allow only `set_reaction`, so stickers are unavailable there without any extra rule.
+
+- **Stale templates.** Every export carries `catalog_version`, a fingerprint of the set's saved annotations (identity, id, description, tags and enabled flag of every annotated or disabled entry, retained missing ones included; Telegram-derived fields such as `file_id` and position do not count). An import that would change annotations (update, reset or forget) is refused as out of date when the fingerprint no longer matches the saved catalog, so an old export cannot overwrite a curator's later edits; the administrator exports again and redoes the edits. A file that changes nothing, such as re-importing an already applied file, is still accepted. The per-set SQLite revision guard additionally protects against concurrent writes.
+- **Search language.** Descriptions are expected mostly in English; the `list_stickers` description tells the model to translate the user's intent into short English search terms, while tags may be in any language and match as written.
+- **Stored tags** must be a JSON array of strings; `null`, other JSON types and null elements fail the startup restore like any other corrupt row.
 
 ### Admin workflow
 

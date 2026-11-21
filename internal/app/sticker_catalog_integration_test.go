@@ -319,6 +319,10 @@ func corruptRow(t *testing.T, path, statement string) {
 func TestStickerCatalogRestoreFailsOnInvalidPersistedRows(t *testing.T) {
 	for name, statement := range map[string]string{
 		"bad tags json":    `UPDATE sticker_entries SET tags = 'not json'`,
+		"null tags":        `UPDATE sticker_entries SET tags = 'null'`,
+		"object tags":      `UPDATE sticker_entries SET tags = '{"a":1}'`,
+		"string tags":      `UPDATE sticker_entries SET tags = '"fox"'`,
+		"null tag element": `UPDATE sticker_entries SET tags = '[null]'`,
 		"invalid semantic": `UPDATE sticker_entries SET semantic_id = 'Bad ID' WHERE file_unique_id = 'a'`,
 		"oversized text":   `UPDATE sticker_entries SET description = replace(hex(zeroblob(200)), '0', 'я') WHERE file_unique_id = 'a'`,
 		"unknown format":   `PRAGMA ignore_check_constraints = ON; UPDATE sticker_entries SET format = 'gif'`,
@@ -383,5 +387,64 @@ func TestTelegoStickerFetcherMapsSetsAndErrors(t *testing.T) {
 	api.err = &telegoapi.Error{ErrorCode: 429, Description: "Too Many Requests"}
 	if _, err = fetcher.FetchSet(ctx, "Mixed"); !errors.Is(err, stickers.ErrFetchUnavailable) {
 		t.Fatalf("a rate limit is an unavailable fetch, got %v", err)
+	}
+}
+
+// Two curators export the same set; the second import is built on stale
+// values and must not overwrite what the first one saved.
+func TestStaleExportCannotOverwriteLaterImportOnRealSQLite(t *testing.T) {
+	h := newStickerHarness(t, &fakeStickerAPI{sets: map[string]*tg.StickerSet{"Alpha": tgSet("Alpha", "a", "b")}})
+	ctx := context.Background()
+
+	export := func() *stickers.Template {
+		_, raw, err := h.svc.Export(ctx, "Alpha")
+		if err != nil {
+			t.Fatalf("Export: %v", err)
+		}
+		tmpl, err := stickers.ParseTemplate(raw)
+		if err != nil {
+			t.Fatalf("ParseTemplate: %v", err)
+		}
+
+		return tmpl
+	}
+	importTemplate := func(tmpl *stickers.Template) error {
+		raw, err := yaml.Marshal(tmpl)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		_, err = h.svc.Import(ctx, raw)
+
+		return err
+	}
+
+	first, second := export(), export()
+	annotate(first, "a", "first_a")
+	if err := importTemplate(first); err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+
+	annotate(second, "a", "second_a")
+	var verr *stickers.ValidationError
+	if err := importTemplate(second); !errors.As(err, &verr) || !verr.Stale {
+		t.Fatalf("the stale export must be refused as out of date, got %v", err)
+	}
+	if got := h.ids("Alpha")["a"]; got != "first_a" {
+		t.Fatalf("the stale import must not overwrite saved annotations, got %q", got)
+	}
+
+	// Re-importing the already applied file changes nothing and is accepted.
+	if err := importTemplate(first); err != nil {
+		t.Fatalf("an idempotent re-import must be accepted: %v", err)
+	}
+
+	// A fresh export carries the new version and works.
+	third := export()
+	annotate(third, "b", "third_b")
+	if err := importTemplate(third); err != nil {
+		t.Fatalf("a fresh export must import: %v", err)
+	}
+	if got := h.ids("Alpha"); got["a"] != "first_a" || got["b"] != "third_b" {
+		t.Fatalf("unexpected ids %v", got)
 	}
 }

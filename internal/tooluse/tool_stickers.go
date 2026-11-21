@@ -28,7 +28,7 @@ func (r *Runtime) AttachStickerCatalog(catalog StickerCatalog) {
 
 	r.registry.Register(Definition{
 		Name:             listStickersToolName,
-		Description:      "Search the curated sticker catalog. Give a short query (any language) and/or tags; results are ranked deterministically and carry a stable sticker id, a description, emoji and tags. Only ids returned here exist: never invent one. Send a result with send_sticker.",
+		Description:      "Search the curated sticker catalog. Sticker descriptions are written mostly in English, so translate the user's intent (whatever language they use) into short English search terms for the query; tags may be in other languages, so a tag in the user's own language can also match. Results are ranked deterministically and carry a stable sticker id, a description, emoji and tags. Only ids returned here exist: never invent one. Send a result with send_sticker.",
 		Parameters:       json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","maxLength":200,"description":"Optional free-text query matched against ids, descriptions, tags and emoji. Empty lists the catalog in a stable order."},"tags":{"type":"array","maxItems":8,"items":{"type":"string","minLength":1,"maxLength":32},"description":"Optional tags; every given tag must match."},"limit":{"type":"integer","minimum":1,"maximum":20,"description":"Maximum stickers to return. Defaults to 10."}},"additionalProperties":false}`),
 		InvocationPolicy: InvocationPolicyDiscretionary,
 		Visibility:       VisibilityStandard,

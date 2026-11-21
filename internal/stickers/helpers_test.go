@@ -52,6 +52,10 @@ func annotated(unique, id, desc string, tags ...string) Entry {
 
 func mustPlan(t *testing.T, stored State, tmpl *Template, remote RemoteSet) *ImportPlan {
 	t.Helper()
+	// A hand-built template stands for one exported from the current state.
+	if tmpl.CatalogVersion == "" {
+		tmpl.CatalogVersion = AnnotationVersion(stored, tmpl.Set)
+	}
 	plan, err := PlanImport(stored, tmpl, remote, testNow.Add(time.Hour))
 	if err != nil {
 		t.Fatalf("PlanImport: %v", err)

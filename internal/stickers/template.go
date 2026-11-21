@@ -2,6 +2,9 @@ package stickers
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,11 +25,15 @@ const SchemaVersion = 1
 // aids and are ignored. file_id never appears: identity is the Telegram
 // file_unique_id and the send token always comes from Telegram.
 type Template struct {
-	SchemaVersion int               `yaml:"schema_version"`
-	Set           string            `yaml:"set"`
-	Title         string            `yaml:"title,omitempty"`
-	Stickers      []TemplateSticker `yaml:"stickers"`
-	Missing       []TemplateMissing `yaml:"missing,omitempty"`
+	SchemaVersion int    `yaml:"schema_version"`
+	Set           string `yaml:"set"`
+	Title         string `yaml:"title,omitempty"`
+	// CatalogVersion fingerprints the saved annotations of the set at export
+	// time (see AnnotationVersion). An import that would change annotations
+	// is rejected when the saved annotations moved on since the export.
+	CatalogVersion string            `yaml:"catalog_version"`
+	Stickers       []TemplateSticker `yaml:"stickers"`
+	Missing        []TemplateMissing `yaml:"missing,omitempty"`
 }
 
 // TemplateSticker is one sticker currently in the Telegram set.
@@ -80,7 +87,10 @@ func BuildTemplate(stored State, remote RemoteSet) ([]byte, error) {
 		savedByID[e.FileUniqueID] = e
 	}
 
-	doc := Template{SchemaVersion: SchemaVersion, Set: remote.Name, Title: SanitizeTitle(remote.Title)}
+	doc := Template{
+		SchemaVersion: SchemaVersion, Set: remote.Name, Title: SanitizeTitle(remote.Title),
+		CatalogVersion: AnnotationVersion(stored, remote.Name),
+	}
 	inRemote := make(map[string]struct{}, len(remote.Stickers))
 	for i, rs := range remote.Stickers {
 		if rs.FileUniqueID == "" {
@@ -131,6 +141,31 @@ func BuildTemplate(stored State, remote RemoteSet) ([]byte, error) {
 
 func boolPtr(b bool) *bool { return &b }
 
+// AnnotationVersion fingerprints the curated data of one set: for every saved
+// entry that carries annotations or a non-default enabled flag, its identity,
+// semantic id, description, tags and enabled flag. Telegram-derived fields
+// (file_id, position, availability) and blank enabled entries do not count,
+// so a sync that changes no annotation keeps the version. Retained missing
+// entries are included.
+func AnnotationVersion(stored State, set string) string {
+	var rows []Entry
+	for _, e := range stored.EntriesOf(set) {
+		if e.Annotated() || !e.Enabled {
+			rows = append(rows, e)
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].FileUniqueID < rows[j].FileUniqueID })
+
+	h := sha256.New()
+	for _, e := range rows {
+		encoded, _ := json.Marshal([]any{e.FileUniqueID, e.SemanticID, e.Description, append([]string{}, e.Tags...), e.Enabled})
+		h.Write(encoded)
+		h.Write([]byte{'\n'})
+	}
+
+	return hex.EncodeToString(h.Sum(nil))[:24]
+}
+
 func templateHeader(set string) string {
 	lines := []string{
 		fmt.Sprintf("Sticker catalog template for the set %q. Edit id, description and tags, then upload this file back.", set),
@@ -141,6 +176,8 @@ func templateHeader(set string) string {
 		"- enabled: false hides a sticker without erasing its annotations. Leaving the field out keeps the saved value.",
 		"- reset: true clears this sticker's id, description and tags and sets enabled back to true.",
 		"  It overrides every other field of the entry, so you only need to flip that one flag.",
+		"- catalog_version ties this file to the saved annotations it was exported from. If someone else changed them",
+		"  since, an import that would change annotations is refused: export the set again and redo your edits.",
 		"- Entries under \"missing\" are no longer in Telegram and are kept for restoration.",
 		"  Set forget: true on one to delete it for good and free its id.",
 	}

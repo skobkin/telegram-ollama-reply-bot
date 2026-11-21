@@ -3,8 +3,13 @@ package stickers
 // Hard caps for catalog data and inputs. Every value is exercised at its
 // boundary by tests.
 const (
-	// MaxUploadBytes bounds an uploaded YAML template.
-	MaxUploadBytes = 256 << 10
+	// MaxUploadBytes bounds an uploaded YAML template. It must admit every
+	// template the exporter can produce for a maximally annotated catalog:
+	// 400 entries (MaxStickersPerSet + MaxMissingPerSet) with a full-length
+	// description and 16 full-length tags each. The YAML encoder escapes
+	// characters outside the BMP as \UXXXXXXXX (10 bytes per rune), which
+	// puts that worst case near 3 MB; TestMaximalTemplateRoundTrips pins it.
+	MaxUploadBytes = 4 << 20
 
 	// MaxSets bounds the number of cataloged sticker sets.
 	MaxSets = 32

@@ -114,9 +114,11 @@ FROM sticker_entries ORDER BY set_name, position, file_unique_id`)
 			&row.Emoji, &row.Format, &row.Position, &available, &enable, &syncedAt, &updated); err != nil {
 			return nil, nil, fmt.Errorf("scan sticker entry: %w", err)
 		}
-		if err := json.Unmarshal([]byte(tags), &row.Tags); err != nil {
+		decoded, err := decodeStickerTags(tags)
+		if err != nil {
 			return nil, nil, fmt.Errorf("sticker %s/%s: tags are not a JSON string array", row.SetName, row.FileUniqueID)
 		}
+		row.Tags = decoded
 		row.SemanticID = semantic.String
 		row.Available, row.Enabled = available != 0, enable != 0
 		row.SyncedAt, row.UpdatedAt = parseSQLiteTime(syncedAt), parseSQLiteTime(updated)
@@ -127,6 +129,28 @@ FROM sticker_entries ORDER BY set_name, position, file_unique_id`)
 	}
 
 	return sets, entries, nil
+}
+
+// decodeStickerTags accepts only a JSON array of strings. JSON null (which
+// encoding/json would silently turn into a nil slice) and null elements
+// (which would become empty strings) are corrupt data, not "no tags".
+func decodeStickerTags(raw string) ([]string, error) {
+	var items []*string
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return nil, err
+	}
+	if items == nil {
+		return nil, errors.New("tags are JSON null, not an array")
+	}
+	tags := make([]string, 0, len(items))
+	for _, item := range items {
+		if item == nil {
+			return nil, errors.New("tags contain null")
+		}
+		tags = append(tags, *item)
+	}
+
+	return tags, nil
 }
 
 // ReplaceStickerSet applies one set update in a single transaction:
