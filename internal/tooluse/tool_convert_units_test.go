@@ -74,11 +74,18 @@ func TestConvertUnitsValues(t *testing.T) {
 		{8, "Mbit", "MB", 1},
 		{1, "celsius", "fahrenheit", 33.8},
 		{5, " km ", "m", 5000},
+		{32, "degF", "degC", 0},
+		{1, "TB", "B", 1e12},
+		{1, "TiB", "B", 1099511627776},
+		{1, "PB", "B", 1e15},
+		{1, "PiB", "B", 1125899906842624},
 	}
 
 	for _, tt := range tests {
 		got := convertOK(t, tt.value, tt.from, tt.to)
-		tolerance := 1e-9 * math.Max(1, math.Abs(tt.want))
+		// Relative only, no absolute floor: tiny wants (eV) stay checked and
+		// want == 0 must be exact.
+		tolerance := 1e-12 * math.Abs(tt.want)
 		if math.Abs(got-tt.want) > tolerance {
 			t.Errorf("%v %s -> %s = %v, want %v", tt.value, tt.from, tt.to, got, tt.want)
 		}
@@ -156,8 +163,17 @@ func TestConvertUnitsResultSizeStaysWithinBudget(t *testing.T) {
 	t.Parallel()
 
 	ok := convertUnits(1, "km", "mi")
-	if strings.Contains(marshalResult(ok, convertUnitsResultCharBudget), "\"1\"") {
-		t.Fatal("successful result must not echo the input value")
+	// A distinctive value proves that no result path echoes the input: a
+	// numeric echo would marshal as 12345.678.
+	for _, result := range []toolResult{
+		convertUnits(12345.678, "km", "mi"),
+		convertUnits(12345.678, "km", "kg"),
+		convertUnits(12345.678, "parsec", "m"),
+		convertUnits(-12345.678, "degC", "K"),
+	} {
+		if text := marshalResult(result, convertUnitsResultCharBudget); strings.Contains(text, "12345.678") {
+			t.Fatalf("result must not echo the input value: %s", text)
+		}
 	}
 	if _, prep := prepareResult(ok, convertUnitsResultCharBudget); prep != ResultPreparationComplete {
 		t.Fatalf("preparation = %s", prep)
@@ -255,14 +271,138 @@ func TestConvertUnitsDescriptionListsEveryUnit(t *testing.T) {
 	t.Parallel()
 
 	description := convertUnitsDescription()
-	for _, unit := range convertUnitsTable {
-		if !strings.Contains(description, " "+unit.id) && !strings.Contains(description, ": "+unit.id) {
-			t.Errorf("description does not list unit %q", unit.id)
+	// Parse "Units: dimension: id id; dimension: id id." and compare whole ids:
+	// a substring check matches longer ids (m in mm) and the prose before the
+	// listing (in, kB, KiB).
+	_, listing, ok := strings.Cut(description, " Units: ")
+	if !ok {
+		t.Fatalf("description has no unit listing: %q", description)
+	}
+	listed := map[string]string{}
+	for _, group := range strings.Split(strings.TrimSuffix(listing, "."), "; ") {
+		dimension, ids, _ := strings.Cut(group, ": ")
+		for _, id := range strings.Fields(ids) {
+			listed[id] = dimension
 		}
 	}
-	for _, want := range []string{"kB", "KiB", "case-sensitive", "ambiguous"} {
+	for _, unit := range convertUnitsTable {
+		if listed[unit.id] != unit.dimension {
+			t.Errorf("description lists unit %q under %q, want %q", unit.id, listed[unit.id], unit.dimension)
+		}
+	}
+	if len(listed) != len(convertUnitsTable) {
+		t.Errorf("description lists %d units, table has %d", len(listed), len(convertUnitsTable))
+	}
+	for _, want := range []string{"kB", "KiB", "case-sensitive", "ambiguous", "absolute readings, not differences"} {
 		if !strings.Contains(description, want) {
 			t.Errorf("description missing %q", want)
 		}
+	}
+}
+
+// Exact integer results must stay exact: 1 TiB is 1099511627776 B (13 digits),
+// which twelve-significant-digit rounding turned into 1099511627780. The
+// shared 1e-9 relative tolerance of TestConvertUnitsValues cannot see that, so
+// these compare exactly.
+func TestConvertUnitsKeepsLargeIntegersExact(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		value    float64
+		from, to string
+		want     float64
+		wantText string
+	}{
+		{1, "TiB", "B", 1099511627776, "1099511627776"},
+		{4, "TiB", "B", 4398046511104, "4398046511104"},
+		{1, "PiB", "B", 1125899906842624, "1125899906842624"},
+		{1, "PiB", "KiB", 1099511627776, "1099511627776"},
+		{1099511627777, "B", "B", 1099511627777, "1099511627777"},
+		{1, "GiB", "B", 1073741824, "1073741824"},
+		// Beyond 2^53 data sizes stay exact too: their factors lose nothing.
+		{2, "PiB", "bit", 18014398509481984, "18014398509481984"},
+		{10, "PiB", "B", 11258999068426240, "11258999068426240"},
+		// Decimal factors do leave noise there, which rounding still hides.
+		{1e10, "km", "mm", 1e16, "10000000000000000"},
+	}
+
+	for _, tt := range tests {
+		data := convertUnits(tt.value, tt.from, tt.to).Data.(map[string]any)
+		if got := data["value"].(float64); got != tt.want {
+			t.Errorf("%v %s -> %s = %v, want exactly %v", tt.value, tt.from, tt.to, got, tt.want)
+		}
+		if data["formatted"] != tt.wantText {
+			t.Errorf("%v %s -> %s formatted = %v, want %s", tt.value, tt.from, tt.to, data["formatted"], tt.wantText)
+		}
+	}
+}
+
+// An offset conversion subtracts terms as large as the offsets, so the float64
+// residue of an exact zero is absolute noise (5.68e-14 for 32 degF -> degC)
+// that significant-digit rounding cannot remove.
+func TestConvertUnitsSnapsCancellationResidueToZero(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		value    float64
+		from, to string
+		want     float64
+	}{
+		{32, "degF", "degC", 0},
+		{273.15, "K", "degC", 0},
+		{-459.67, "degF", "K", 0},
+		{-17.77777777777778, "degC", "degF", 0},
+		{0, "degC", "degF", 32},
+		{100, "degC", "degF", 212},
+	} {
+		if got := convertOK(t, tt.value, tt.from, tt.to); got != tt.want {
+			t.Errorf("%v %s -> %s = %v, want exactly %v", tt.value, tt.from, tt.to, got, tt.want)
+		}
+	}
+
+	// A real (if tiny) difference must survive: only noise is snapped.
+	if got := convertOK(t, 273.15+1e-9, "K", "degC"); got == 0 || math.Abs(got-1e-9) > 1e-12 {
+		t.Fatalf("a 1e-9 K difference must not be snapped away, got %v", got)
+	}
+}
+
+// The display string is plain decimal digits, never exponent notation.
+func TestConvertUnitsFormattedIsPlainDecimal(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		value    float64
+		from, to string
+		want     string
+	}{
+		{1500, "km", "m", "1500000"},
+		{1, "GiB", "B", "1073741824"},
+		{8, "GB", "bit", "64000000000"},
+		{1, "mm", "km", "0.000001"},
+		{1, "mi", "km", "1.609344"},
+		// Beyond the readable range the compact exponent form is kept.
+		{1, "eV", "J", "1.602176634e-19"},
+		{1e22, "m", "m", "1e+22"},
+	} {
+		data := convertUnits(tt.value, tt.from, tt.to).Data.(map[string]any)
+		if data["formatted"] != tt.want {
+			t.Errorf("%v %s -> %s formatted = %v, want %s", tt.value, tt.from, tt.to, data["formatted"], tt.want)
+		}
+	}
+}
+
+// A temperature within the absolute-zero tolerance is the noise of an input at
+// absolute zero: it is accepted, and reported as 0 K, never a negative kelvin.
+func TestConvertUnitsNeverReportsNegativeKelvin(t *testing.T) {
+	t.Parallel()
+
+	if got := convertOK(t, -273.15000000001, "degC", "K"); got != 0 {
+		t.Fatalf("-273.15000000001 degC in K = %v, want 0", got)
+	}
+	if got := convertOK(t, -273.15000000001, "degC", "degF"); math.Abs(got-(-459.67)) > 1e-9 {
+		t.Fatalf("-273.15000000001 degC in degF = %v, want -459.67", got)
+	}
+	if got := convertErrorCode(t, -273.151, "degC", "K"); got != "below_absolute_zero" {
+		t.Fatalf("a real temperature below absolute zero must still be rejected, got %q", got)
 	}
 }

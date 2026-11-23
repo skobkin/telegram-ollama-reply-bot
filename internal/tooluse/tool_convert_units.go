@@ -16,6 +16,23 @@ const convertUnitsMaxUnitRunes = 32
 // exactly on absolute zero (for example -273.15 degC).
 const absoluteZeroTolerance = 1e-9
 
+// convertUnitsSignificantDigits is the precision non-integer results are
+// rounded to. float64 carries about 15.95 decimal digits, but an offset
+// conversion cancels terms of the size of its offsets and leaves noise of up to
+// ~1e-13 relative (0 degC in degF is 31.99999999999999 before rounding), so 12
+// digits is what reliably hides it (-> 32).
+const convertUnitsSignificantDigits = 12
+
+// maxExactInteger is the largest magnitude below which every integer is
+// exactly representable in float64.
+const maxExactInteger = 1 << 53
+
+// zeroNoiseFactor bounds the cancellation residue of an offset conversion
+// relative to its largest operand: float64 rounding leaves a few ulps (about
+// 2e-16 each), so 1e-14 clears that residue with a wide margin while staying
+// far below any difference worth reporting.
+const zeroNoiseFactor = 1e-14
+
 const (
 	dimLength      = "length"
 	dimMass        = "mass"
@@ -160,7 +177,8 @@ func convertUnitsDescription() string {
 	var b strings.Builder
 	b.WriteString("Convert a number between physical units locally and exactly (float64), instead of converting in your head. " +
 		"Units must have the same dimension. Unit ids are case-sensitive. Data sizes: kB/MB/GB/TB/PB are decimal (1000 bytes), " +
-		"KiB/MiB/GiB/TiB/PiB are binary (1024 bytes); KB, Kb, mb and gb are rejected as ambiguous. Currencies are not supported. Units: ")
+		"KiB/MiB/GiB/TiB/PiB are binary (1024 bytes); KB, Kb, mb and gb are rejected as ambiguous. Currencies are not supported. " +
+		"Temperatures are absolute readings, not differences: a rise of 10 degC is a rise of 18 degF, not 50. Units: ")
 
 	for i, dimension := range convertUnitsDimensions {
 		if i > 0 {
@@ -232,23 +250,45 @@ func convertUnits(value float64, from, to string) toolResult {
 		return convertUnitsError("below_absolute_zero", "temperature is below absolute zero.", "Provide a temperature at or above absolute zero (0 K, -273.15 degC).")
 	}
 
+	if toUnit.dimension == dimTemperature && base < 0 {
+		// Within the tolerance of absolute zero: noise, never a negative kelvin.
+		base = 0
+	}
+
 	converted := (base - toUnit.offset) / toUnit.factor
 	if math.IsNaN(converted) || math.IsInf(converted, 0) {
 		return convertUnitsError("result_out_of_range", "result is outside the representable range.", "Use a smaller value or a coarser unit.")
 	}
-	converted = roundSignificant(converted, 12)
+	if toUnit.dimension == dimTemperature {
+		converted = snapNoiseToZero(converted, value, fromUnit, toUnit)
+	}
+	if !keepExactInteger(converted, toUnit.dimension) {
+		converted = roundSignificant(converted, convertUnitsSignificantDigits)
+	}
 
 	return toolResult{
 		Status:  "ok",
 		Summary: "Converted " + fromUnit.dimension,
 		Data: map[string]any{
 			"value":     converted,
-			"formatted": strconv.FormatFloat(converted, 'g', -1, 64),
+			"formatted": formatConverted(converted),
 			"from":      fromUnit.id,
 			"to":        toUnit.id,
 			"dimension": fromUnit.dimension,
 		},
 	}
+}
+
+// formatConverted renders a result for display: plain decimal digits wherever
+// that is readable (the range encoding/json also prints numbers in without an
+// exponent), and the compact exponent form only beyond it, so 1500 km is
+// "1500000" m rather than "1.5e+06" while 1 eV stays "1.602176634e-19" J.
+func formatConverted(value float64) string {
+	if magnitude := math.Abs(value); magnitude != 0 && (magnitude < 1e-6 || magnitude >= 1e21) {
+		return strconv.FormatFloat(value, 'g', -1, 64)
+	}
+
+	return strconv.FormatFloat(value, 'f', -1, 64)
 }
 
 func lookupConvertUnit(id string) (unitDef, bool) {
@@ -266,6 +306,36 @@ func unknownUnitResult(field, raw string) toolResult {
 	return convertUnitsError("unknown_unit",
 		fmt.Sprintf("%s unit %q is not supported.", field, shown),
 		"Use a unit id from the tool description. Unit ids are case-sensitive; use kB for 1000 bytes and KiB for 1024 bytes.")
+}
+
+// snapNoiseToZero reports 0 for a result that is only the cancellation residue
+// of an offset conversion. Temperature conversions subtract terms as large as
+// the offsets (32 degF is 273.15 K minus 273.15 K), so the float64 noise stays
+// absolute and survives significant-digit rounding when the exact result is 0
+// (32 degF -> degC would otherwise be 5.68e-14). Only temperature units have
+// offsets; every other dimension scales the result itself and needs no snap.
+func snapNoiseToZero(converted, value float64, from, to unitDef) float64 {
+	operands := math.Max(math.Abs(value*from.factor), math.Max(math.Abs(from.offset), math.Abs(to.offset)))
+	if math.Abs(converted) <= zeroNoiseFactor*operands/to.factor {
+		return 0
+	}
+
+	return converted
+}
+
+// keepExactInteger reports whether an integral result must be returned
+// unchanged: it carries no noise to hide, and rounding it would corrupt large
+// counts such as 1 TiB = 1099511627776 B (13 digits). Up to 2^53 every integer
+// is exactly representable; beyond it only data sizes stay exact, because
+// their factors (powers of two and 8x10^k) lose nothing, whereas the decimal
+// factors of the other dimensions leave noise in the low digits that rounding
+// should still hide.
+func keepExactInteger(value float64, dimension string) bool {
+	if value != math.Trunc(value) {
+		return false
+	}
+
+	return math.Abs(value) <= maxExactInteger || dimension == dimData
 }
 
 // roundSignificant trims float64 representation noise (for example
