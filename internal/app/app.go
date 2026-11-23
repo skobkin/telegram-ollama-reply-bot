@@ -770,8 +770,9 @@ func Run(ctx context.Context) (runErr error) {
 		sentry.CaptureException(err)
 	}
 	if runErr != nil {
+		// Bot.Run already reports the underlying failure to Sentry on every
+		// error path; a second generic event here carries no diagnostics.
 		logger.Error("bot exited with error", "error", runErr)
-		sentry.CaptureMessage("Bot start error")
 
 		return runErr
 	}
