@@ -16,12 +16,14 @@ func (s *Store) GetGlobalSettings(ctx context.Context) (adminconfig.GlobalSettin
 	var showReplyPreviews int
 	var keepToolHistory int
 	var webSearchEnabled int
+	var imageGenerationEnabled int
 	var updatedAt string
 
 	err := s.db.QueryRowContext(ctx, `
 SELECT character_name, language, gender, default_interactivity_mode, default_auto_summary_enabled,
        show_reply_previews, default_preview_mode, keep_tool_history, web_search_enabled, chat_model, summarize_model,
        image_recognition_model, systemone_model, default_interaction_profile, decision_instructions,
+       image_generation_enabled, image_generation_model,
        updated_at, updated_by
 FROM global_settings
 WHERE id = 1
@@ -41,6 +43,8 @@ WHERE id = 1
 		&settings.SystemOneModel,
 		&settings.DefaultInteractionProfile,
 		&settings.DecisionInstructions,
+		&imageGenerationEnabled,
+		&settings.ImageGenerationModel,
 		&updatedAt,
 		&settings.UpdatedBy,
 	)
@@ -52,6 +56,7 @@ WHERE id = 1
 	settings.ShowReplyPreviews = showReplyPreviews == 1
 	settings.KeepToolHistory = keepToolHistory == 1
 	settings.WebSearchEnabled = webSearchEnabled == 1
+	settings.ImageGenerationEnabled = imageGenerationEnabled == 1
 	settings.UpdatedAt = parseSQLiteTime(updatedAt)
 
 	return settings, nil
@@ -85,12 +90,13 @@ func (s *Store) GetChatSettings(ctx context.Context, chatID int64) (adminconfig.
 	var autoSummaryEnabled sql.NullInt64
 	var keepToolHistory sql.NullInt64
 	var webSearchEnabled sql.NullInt64
+	var imageGenerationEnabled sql.NullInt64
 	var updatedAt string
 
 	err := s.db.QueryRowContext(ctx, `
 SELECT chat_id, character_name, language, gender, interactivity_mode, auto_summary_enabled,
        preview_mode, keep_tool_history, web_search_enabled, chat_model, systemone_model, interaction_profile,
-       decision_instructions, updated_at, updated_by
+       decision_instructions, image_generation_enabled, updated_at, updated_by
 FROM chat_settings
 WHERE chat_id = ?
 `, chatID).Scan(
@@ -107,6 +113,7 @@ WHERE chat_id = ?
 		&settings.SystemOneModel,
 		&settings.InteractionProfile,
 		&settings.DecisionInstructions,
+		&imageGenerationEnabled,
 		&updatedAt,
 		&settings.UpdatedBy,
 	)
@@ -135,6 +142,10 @@ WHERE chat_id = ?
 	if webSearchEnabled.Valid {
 		v := webSearchEnabled.Int64 == 1
 		settings.WebSearchEnabled = &v
+	}
+	if imageGenerationEnabled.Valid {
+		v := imageGenerationEnabled.Int64 == 1
+		settings.ImageGenerationEnabled = &v
 	}
 	settings.UpdatedAt = parseSQLiteTime(updatedAt)
 

@@ -125,6 +125,10 @@ func (s *recordingStore) SetGlobalField(_ context.Context, field, value string, 
 		s.global.KeepToolHistory = value == "true"
 	case "web_search_enabled":
 		s.global.WebSearchEnabled = value == "true"
+	case "image_generation_enabled":
+		s.global.ImageGenerationEnabled = value == "true"
+	case "image_generation_model":
+		s.global.ImageGenerationModel = value
 	case "chat_model":
 		s.global.ChatModel = value
 	case "summarize_model":
@@ -175,6 +179,9 @@ func (s *recordingStore) GetChatSettings(_ context.Context, chatID int64) (admin
 	}
 	if value, ok := fields["web_search_enabled"]; ok {
 		settings.WebSearchEnabled = adminconfig.BoolPointer(value == "true")
+	}
+	if value, ok := fields["image_generation_enabled"]; ok {
+		settings.ImageGenerationEnabled = adminconfig.BoolPointer(value == "true")
 	}
 
 	return settings, true, nil

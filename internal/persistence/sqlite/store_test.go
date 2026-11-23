@@ -546,3 +546,101 @@ func TestStoreWebSearchSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("expected reset chat to have no settings row, ok=%v err=%v", ok, err)
 	}
 }
+
+// TestStoreImageGenerationSettingsRoundTrip covers the image generation
+// settings: the global permission defaults on and the model defaults empty on
+// a fresh store, the per-chat tri-state is stored as NULL (inherit) / 1 / 0,
+// the model is a global-only clearable string, and unrelated writes and
+// "reset overrides" leave things in the expected state.
+func TestStoreImageGenerationSettingsRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	global, err := store.GetGlobalSettings(ctx)
+	if err != nil {
+		t.Fatalf("get global settings: %v", err)
+	}
+	if !global.ImageGenerationEnabled {
+		t.Fatal("expected image generation on by default on a fresh store")
+	}
+	if global.ImageGenerationModel != "" {
+		t.Fatalf("expected an empty image generation model on a fresh store, got %q", global.ImageGenerationModel)
+	}
+
+	if err := store.SetGlobalField(ctx, "image_generation_enabled", "false", 42); err != nil {
+		t.Fatalf("set global image_generation_enabled: %v", err)
+	}
+	if err := store.SetGlobalField(ctx, "image_generation_model", "MiniMax-H3-Image", 42); err != nil {
+		t.Fatalf("set global image_generation_model: %v", err)
+	}
+	global, err = store.GetGlobalSettings(ctx)
+	if err != nil {
+		t.Fatalf("get updated global settings: %v", err)
+	}
+	if global.ImageGenerationEnabled || global.ImageGenerationModel != "MiniMax-H3-Image" {
+		t.Fatalf("unexpected global image generation settings: enabled=%v model=%q", global.ImageGenerationEnabled, global.ImageGenerationModel)
+	}
+	if err := store.SetGlobalField(ctx, "image_generation_enabled", "maybe", 42); err == nil {
+		t.Fatal("global image_generation_enabled must reject non-boolean values")
+	}
+
+	// Clearing the model is an explicit empty write.
+	if err := store.SetGlobalField(ctx, "image_generation_model", "", 42); err != nil {
+		t.Fatalf("clear global image_generation_model: %v", err)
+	}
+	global, _ = store.GetGlobalSettings(ctx)
+	if global.ImageGenerationModel != "" {
+		t.Fatalf("expected the model to be cleared, got %q", global.ImageGenerationModel)
+	}
+
+	// The model has no per-chat variant.
+	if err := store.SetChatField(ctx, 123, "image_generation_model", "x", 42); err == nil {
+		t.Fatal("image_generation_model must not be settable per chat")
+	}
+
+	if err := store.SetChatField(ctx, 123, "image_generation_enabled", "true", 42); err != nil {
+		t.Fatalf("set chat image_generation_enabled: %v", err)
+	}
+	chat, ok, err := store.GetChatSettings(ctx, 123)
+	if err != nil || !ok {
+		t.Fatalf("get chat settings: ok=%v err=%v", ok, err)
+	}
+	if chat.ImageGenerationEnabled == nil || !*chat.ImageGenerationEnabled {
+		t.Fatalf("expected explicit true override, got %+v", chat.ImageGenerationEnabled)
+	}
+
+	if err := store.SetChatField(ctx, 123, "image_generation_enabled", "false", 42); err != nil {
+		t.Fatalf("set chat image_generation_enabled false: %v", err)
+	}
+	if err := store.SetChatField(ctx, 123, "language", "English", 42); err != nil {
+		t.Fatalf("set chat language: %v", err)
+	}
+	chat, _, err = store.GetChatSettings(ctx, 123)
+	if err != nil {
+		t.Fatalf("get chat settings: %v", err)
+	}
+	if chat.ImageGenerationEnabled == nil || *chat.ImageGenerationEnabled {
+		t.Fatalf("override must survive unrelated writes as false, got %+v", chat.ImageGenerationEnabled)
+	}
+
+	if err := store.ClearChatField(ctx, 123, "image_generation_enabled", 42); err != nil {
+		t.Fatalf("clear chat image_generation_enabled: %v", err)
+	}
+	chat, _, err = store.GetChatSettings(ctx, 123)
+	if err != nil {
+		t.Fatalf("get cleared chat settings: %v", err)
+	}
+	if chat.ImageGenerationEnabled != nil {
+		t.Fatalf("expected NULL (inherit) after clear, got %+v", chat.ImageGenerationEnabled)
+	}
+
+	if err := store.SetChatField(ctx, 456, "image_generation_enabled", "true", 42); err != nil {
+		t.Fatalf("set second chat image_generation_enabled: %v", err)
+	}
+	if err := store.ClearChatField(ctx, 456, "all", 42); err != nil {
+		t.Fatalf("reset second chat overrides: %v", err)
+	}
+	if _, ok, err := store.GetChatSettings(ctx, 456); err != nil || ok {
+		t.Fatalf("expected reset chat to have no settings row, ok=%v err=%v", ok, err)
+	}
+}

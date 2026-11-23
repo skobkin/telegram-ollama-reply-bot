@@ -123,6 +123,11 @@ func effectiveChatField(spec FieldSpec, global GlobalSettings, chat ChatSettings
 		if found && chat.WebSearchEnabled != nil {
 			field.Effective, field.Source, field.Overridden = strconv.FormatBool(*chat.WebSearchEnabled), SourceChatOverride, true
 		}
+	case "image_generation_enabled":
+		field.GlobalValue = strconv.FormatBool(global.ImageGenerationEnabled)
+		if found && chat.ImageGenerationEnabled != nil {
+			field.Effective, field.Source, field.Overridden = strconv.FormatBool(*chat.ImageGenerationEnabled), SourceChatOverride, true
+		}
 	case "chat_model":
 		field.GlobalValue = global.ChatModel
 		if found && chat.ChatModel != "" {

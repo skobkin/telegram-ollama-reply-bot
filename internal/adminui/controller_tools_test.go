@@ -146,8 +146,10 @@ func TestToolsSubmenuKeepToolHistoryFollowsPreviewMasterSwitch(t *testing.T) {
 
 // With no search backend in the environment the setting is hidden everywhere
 // it would be offered; the screen never claims a capability that is absent.
+// Image generation is hidden too (no generation backend either), so the
+// "nothing left to configure" state is reachable.
 func TestToolsSubmenuHidesWebSearchWithoutBackend(t *testing.T) {
-	c, store := newTestController(t, WithHiddenWebSearch())
+	c, store := newTestController(t, WithHiddenWebSearch(), WithHiddenImageGeneration())
 	store.global.KeepToolHistory = true
 	session := mustOpen(t, c)
 

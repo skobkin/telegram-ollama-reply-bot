@@ -248,6 +248,10 @@ type ControllerOptions struct {
 	// capability, so offering it would be misleading. Hiding is render-time
 	// only: stored values stay untouched.
 	HideWebSearch bool
+	// HideImageGeneration hides the image generation settings (permission and
+	// model) while no generation backend is configured in the environment.
+	// Render-time only: stored values stay untouched.
+	HideImageGeneration bool
 	// StatsReport renders the PNG report attached to the statistics export.
 	// Nil keeps the export JSON-only.
 	StatsReport StatsReportRenderer
@@ -298,6 +302,14 @@ func WithHiddenImageModel() ControllerOption {
 func WithHiddenWebSearch() ControllerOption {
 	return func(o *ControllerOptions) {
 		o.HideWebSearch = true
+	}
+}
+
+// WithHiddenImageGeneration hides the image generation settings (no
+// generation backend is configured).
+func WithHiddenImageGeneration() ControllerOption {
+	return func(o *ControllerOptions) {
+		o.HideImageGeneration = true
 	}
 }
 
@@ -1866,12 +1878,13 @@ func (c *Controller) buildScreen(ctx context.Context, seq uint32, state ScreenSt
 		entry, found := c.catalogEntry(ctx, state.ChatID)
 
 		data := ChatCardData{
-			Info:              entry,
-			Found:             found,
-			View:              view,
-			AccessLine:        accessStatusLabel(policy, view.Allowlisted),
-			HidePreviewFields: !global.ShowReplyPreviews,
-			HideWebSearch:     c.opts.HideWebSearch,
+			Info:                entry,
+			Found:               found,
+			View:                view,
+			AccessLine:          accessStatusLabel(policy, view.Allowlisted),
+			HidePreviewFields:   !global.ShowReplyPreviews,
+			HideWebSearch:       c.opts.HideWebSearch,
+			HideImageGeneration: c.opts.HideImageGeneration,
 		}
 		for _, mode := range adminconfig.InteractivityModes() {
 			data.ModeValues = append(data.ModeValues, string(mode))
@@ -1890,7 +1903,13 @@ func (c *Controller) buildScreen(ctx context.Context, seq uint32, state ScreenSt
 		if err != nil {
 			return nil, err
 		}
-		screen = b.settings(SettingsData{Global: true, View: view, HideImageModel: c.opts.HideImageModel, HideWebSearch: c.opts.HideWebSearch})
+		screen = b.settings(SettingsData{
+			Global:              true,
+			View:                view,
+			HideImageModel:      c.opts.HideImageModel,
+			HideWebSearch:       c.opts.HideWebSearch,
+			HideImageGeneration: c.opts.HideImageGeneration,
+		})
 
 	case ScreenChatSet:
 		view, err := c.service.EffectiveChatConfig(ctx, state.ChatID)
@@ -1902,10 +1921,11 @@ func (c *Controller) buildScreen(ctx context.Context, seq uint32, state ScreenSt
 			return nil, err
 		}
 		screen = b.settings(SettingsData{
-			ChatView:          view,
-			ChatName:          c.chatDisplayName(ctx, state.ChatID),
-			HidePreviewFields: !global.ShowReplyPreviews,
-			HideWebSearch:     c.opts.HideWebSearch,
+			ChatView:            view,
+			ChatName:            c.chatDisplayName(ctx, state.ChatID),
+			HidePreviewFields:   !global.ShowReplyPreviews,
+			HideWebSearch:       c.opts.HideWebSearch,
+			HideImageGeneration: c.opts.HideImageGeneration,
 		})
 
 	case ScreenFieldEditor:
@@ -2174,6 +2194,9 @@ func (c *Controller) toolsData(ctx context.Context, state ScreenState) (ToolsDat
 		if !c.opts.HideWebSearch {
 			data.Fields = append(data.Fields, ToolsField{Name: "web_search_enabled", Value: strconv.FormatBool(global.WebSearchEnabled)})
 		}
+		if !c.opts.HideImageGeneration {
+			data.Fields = append(data.Fields, ToolsField{Name: "image_generation_enabled", Value: strconv.FormatBool(global.ImageGenerationEnabled)})
+		}
 
 		return data, nil
 	}
@@ -2185,6 +2208,7 @@ func (c *Controller) toolsData(ctx context.Context, state ScreenState) (ToolsDat
 	for _, field := range view.Fields {
 		switch {
 		case field.Spec.Name == "web_search_enabled" && !c.opts.HideWebSearch,
+			field.Spec.Name == "image_generation_enabled" && !c.opts.HideImageGeneration,
 			field.Spec.Name == "keep_tool_history" && global.ShowReplyPreviews:
 			data.Fields = append(data.Fields, ToolsField{
 				Name:        field.Spec.Name,

@@ -190,6 +190,9 @@ type ChatCardData struct {
 	// HideWebSearch hides the web search row while no search backend is
 	// configured. Render-time only: stored overrides stay untouched.
 	HideWebSearch bool
+	// HideImageGeneration hides the image generation row while no generation
+	// backend is configured. Render-time only: stored overrides stay untouched.
+	HideImageGeneration bool
 }
 
 // previewFieldNames lists the chat fields governed by the preview master
@@ -203,8 +206,9 @@ var previewFieldNames = map[string]bool{
 // of the settings screen button grid. They stay listed in the settings text so
 // the effective values remain visible at a glance.
 var toolsSubmenuFields = map[string]bool{
-	"keep_tool_history":  true,
-	"web_search_enabled": true,
+	"keep_tool_history":        true,
+	"web_search_enabled":       true,
+	"image_generation_enabled": true,
 }
 
 // filterPreviewFields drops the preview-governed specs from a chat spec list.
@@ -243,6 +247,9 @@ func (b screenBuilder) chatCard(data ChatCardData) *Screen {
 		}
 		if data.HideWebSearch && field.Spec.Name == "web_search_enabled" {
 			continue // no search backend is configured
+		}
+		if data.HideImageGeneration && field.Spec.Name == "image_generation_enabled" {
+			continue // no image generation backend is configured
 		}
 		fmt.Fprintf(&text, "• %s: %s%s\n", field.Spec.Label, displayFieldValue(field), sourceMark(field.Overridden))
 	}
@@ -306,6 +313,10 @@ type SettingsData struct {
 	// HideWebSearch hides the web search setting while no search backend is
 	// configured in the environment. Render-time only.
 	HideWebSearch bool
+	// HideImageGeneration hides the image generation settings (permission and
+	// model) while no generation backend is configured in the environment.
+	// Render-time only: stored values stay untouched.
+	HideImageGeneration bool
 }
 
 // interactivitySubmenuFields names the fields grouped into the interactivity
@@ -337,6 +348,9 @@ func (b screenBuilder) settings(data SettingsData) *Screen {
 			continue
 		}
 		if data.HideWebSearch && spec.Name == "web_search_enabled" {
+			continue
+		}
+		if data.HideImageGeneration && (spec.Name == "image_generation_enabled" || spec.Name == "image_generation_model") {
 			continue
 		}
 		visible = append(visible, spec)
@@ -422,6 +436,16 @@ func globalSettingsValue(settings adminconfig.GlobalSettings, spec adminconfig.F
 		return strconv.FormatBool(settings.KeepToolHistory)
 	case "web_search_enabled":
 		return strconv.FormatBool(settings.WebSearchEnabled)
+	case "image_generation_enabled":
+		return strconv.FormatBool(settings.ImageGenerationEnabled)
+	case "image_generation_model":
+		// No environment route exists for this model (#139): unset means the
+		// generate_image tool stays unavailable.
+		if settings.ImageGenerationModel == "" {
+			return unsetPlaceholder
+		}
+
+		return settings.ImageGenerationModel
 	case "chat_model", "summarize_model", "image_recognition_model":
 		if settings.ChatModel == "" && spec.Name == "chat_model" {
 			return envRoutePlaceholder
@@ -620,7 +644,7 @@ func (b screenBuilder) modelPickerRows(code string, models []string, page int) [
 
 func isClearableModelField(name string) bool {
 	switch name {
-	case "chat_model", "summarize_model", "image_recognition_model", "systemone_model":
+	case "chat_model", "summarize_model", "image_recognition_model", "image_generation_model", "systemone_model":
 		return true
 	default:
 		return false
@@ -647,8 +671,11 @@ func hasConcreteValue(value string) bool {
 // models fall back to their environment route, the System One model has no
 // environment fallback and per-chat overrides survive the clear.
 func clearGlobalModelLabel(name string) string {
-	if name == "systemone_model" {
+	switch name {
+	case "systemone_model":
 		return "Clear global default model"
+	case "image_generation_model":
+		return "Clear model"
 	}
 
 	return "Reset to ENV default"
@@ -764,8 +791,9 @@ type ToolsData struct {
 
 // toolsFieldNotes explains settings whose effect is not obvious from the label.
 var toolsFieldNotes = map[string]string{
-	"web_search_enabled": "External search can consume paid provider resources. It applies only while a search backend is configured on the server.",
-	"keep_tool_history":  "Appends completed tool calls to replies while live previews are enabled.",
+	"web_search_enabled":       "External search can consume paid provider resources. It applies only while a search backend is configured on the server.",
+	"image_generation_enabled": "Image generation is billed per image. It applies only while a generation backend and a generation model are configured.",
+	"keep_tool_history":        "Appends completed tool calls to replies while live previews are enabled.",
 }
 
 func onOffLabel(value string) string {

@@ -203,6 +203,11 @@ type GlobalSettings struct {
 	// external web search. It only matters when a search backend is configured
 	// in the environment; it can never create a search capability.
 	WebSearchEnabled bool
+	// ImageGenerationEnabled is the global default for whether the model may
+	// generate images. It only matters when a generation backend is
+	// configured in the environment (IMAGE_GENERATION__BACKEND); it can never
+	// create a generation capability.
+	ImageGenerationEnabled bool
 	// ChatModel is the global default generation model override. "" means
 	// unset: the model routes configured in the environment stay in effect.
 	ChatModel string
@@ -213,6 +218,12 @@ type GlobalSettings struct {
 	// override. "" means unset (environment route). It has no effect while
 	// the active recognizer is MiniMax, which takes no model selection.
 	ImageRecognitionModel string
+	// ImageGenerationModel is the global image-generation model name passed to
+	// the generation backend. There is no environment fallback (#139): ""
+	// means no model is selected, and the generate_image tool stays
+	// unavailable until an operator sets one. Global-only, like
+	// ImageRecognitionModel.
+	ImageGenerationModel string
 	// SystemOneModel is the global default decision model used by the
 	// interaction engine and the decision tools. Unlike the generation
 	// models there is no environment fallback: "" means the decision backend
@@ -248,6 +259,9 @@ type ChatSettings struct {
 	// WebSearchEnabled overrides the global web search permission. nil means
 	// inherit the global default.
 	WebSearchEnabled *bool
+	// ImageGenerationEnabled overrides the global image generation
+	// permission. nil means inherit the global default.
+	ImageGenerationEnabled *bool
 	// ChatModel overrides the generation model. "" means inherit the global
 	// default (which may itself be unset — the environment route applies).
 	ChatModel string
@@ -301,6 +315,9 @@ type ResolvedChatConfig struct {
 	// WebSearchEnabled is the effective web search permission: the chat
 	// override, else the global default.
 	WebSearchEnabled bool
+	// ImageGenerationEnabled is the effective image generation permission:
+	// the chat override, else the global default.
+	ImageGenerationEnabled bool
 	// ChatModel is the effective generation model override chain result:
 	// the chat override, else the global default. "" means the environment
 	// model routes stay in effect.
@@ -313,6 +330,9 @@ type ResolvedChatConfig struct {
 	// global-only setting like SummarizeModel. It has no effect while the
 	// active recognizer is MiniMax, which takes no model selection.
 	ImageRecognitionModel string
+	// ImageGenerationModel is the effective image-generation model, a
+	// global-only setting. "" means none is selected.
+	ImageGenerationModel string
 	// SystemOneModel is the effective decision model: the chat override,
 	// else the global default. "" means the decision backend is
 	// unconfigured for this chat.

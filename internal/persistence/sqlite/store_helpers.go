@@ -47,7 +47,11 @@ func globalFieldAssignment(field, value string) (string, any, error) {
 		parsed, err := parseBoolValue(value)
 
 		return "web_search_enabled", boolToSQLite(parsed), err
-	case "chat_model", "summarize_model", "image_recognition_model", "systemone_model", "decision_instructions":
+	case "image_generation_enabled":
+		parsed, err := parseBoolValue(value)
+
+		return "image_generation_enabled", boolToSQLite(parsed), err
+	case "chat_model", "summarize_model", "image_recognition_model", "image_generation_model", "systemone_model", "decision_instructions":
 		// Plain string fields, including the explicit empty value written by
 		// ClearGlobalSetting: unset semantics live in the caller, the column
 		// stores '' verbatim.
@@ -98,6 +102,10 @@ func chatFieldAssignment(field, value string) (string, any, error) {
 		parsed, err := parseBoolValue(value)
 
 		return "web_search_enabled", boolToSQLite(parsed), err
+	case "image_generation_enabled":
+		parsed, err := parseBoolValue(value)
+
+		return "image_generation_enabled", boolToSQLite(parsed), err
 	case "chat_model", "systemone_model", "decision_instructions":
 		return field, value, nil
 	case "interaction_profile":
@@ -130,6 +138,8 @@ func chatFieldClearValue(field string) (string, any, error) {
 		return "keep_tool_history", nil, nil
 	case "web_search_enabled":
 		return "web_search_enabled", nil, nil
+	case "image_generation_enabled":
+		return "image_generation_enabled", nil, nil
 	case "chat_model", "systemone_model", "interaction_profile", "decision_instructions":
 		return field, "", nil
 	default:
@@ -231,6 +241,10 @@ func globalFieldUpdateQuery(column string) (string, error) {
 		return `UPDATE global_settings SET keep_tool_history = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
 	case "web_search_enabled":
 		return `UPDATE global_settings SET web_search_enabled = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
+	case "image_generation_enabled":
+		return `UPDATE global_settings SET image_generation_enabled = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
+	case "image_generation_model":
+		return `UPDATE global_settings SET image_generation_model = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
 	case "chat_model":
 		return `UPDATE global_settings SET chat_model = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = 1`, nil
 	case "summarize_model":
@@ -266,6 +280,8 @@ func chatFieldUpdateQuery(column string) (string, error) {
 		return `UPDATE chat_settings SET keep_tool_history = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
 	case "web_search_enabled":
 		return `UPDATE chat_settings SET web_search_enabled = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
+	case "image_generation_enabled":
+		return `UPDATE chat_settings SET image_generation_enabled = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
 	case "chat_model":
 		return `UPDATE chat_settings SET chat_model = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE chat_id = ?`, nil
 	case "systemone_model":
