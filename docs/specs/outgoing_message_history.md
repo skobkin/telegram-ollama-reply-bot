@@ -25,7 +25,9 @@ the tool.
 
 Labels are built by `internal/telegram/msgdesc` and are privacy-conservative: contacts and locations are
 described only as `[Contact]` / `[Location]` (no phone numbers, names or coordinates); quiz answers and
-explanations are never part of a label; charts are described from their spec (`bar: Votes`), never from pixels.
+explanations are never part of a label; charts are described from their spec (`bar: Votes`), never from pixels;
+generated images (`generated_image`, #189) are described by the caption the bot sent, else a short prompt excerpt
+(≤ 80 characters), and narrated as `(sent a generated image via generate_image: …)`.
 
 ## Recording
 
@@ -38,7 +40,8 @@ tool sends and delivered reminders all use it.
   chat/topic scope and bot authorship; its text is empty.
 - No reply relationship is stored: these sends carry no reply parameters.
 - Recording does not depend on execution events or tool history, so a send is recorded exactly once.
-- Charts and stickers carry no image metadata, so the vision model is never asked to describe the bot's own output.
+- Charts, generated images and stickers carry no image metadata, so the vision model is never asked to describe the
+  bot's own output.
 - Reminders: `reminders.Service` records the delivered `Reminder: …` text after a confirmed send only. The
   scheduler starts, and may deliver an overdue reminder, before `Bot.Run` has resolved the bot's identity, so app
   wiring seeds it (`Bot.SetIdentity`, guarded by a lock) before attaching the recorder: the entry always carries the

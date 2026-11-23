@@ -1,7 +1,8 @@
 # General-purpose utility tools (#180)
 
 Built-in tools: `calculate`, `random_choice`, `get_message_context`, `generate_chart` and (#181)
-`convert_units`. All follow the
+`convert_units`. The optional `generate_image` (#189, registered only with a configured backend) shares the chart's
+photo delivery and is specified in `image_generation.md`. All follow the
 tool framework contract (`tool_framework.md`): native schema, structured errors, result budgets,
 authoritative records and automatic tool statistics (`tool_statistics.md`).
 
@@ -88,4 +89,5 @@ before dispatch is `cancelled` with side effect `not_applied`; a failure after d
 by `ClassifyError` (definitive Telegram 4xx/429 → not applied, otherwise `outcome_unknown`). Like
 polls and dice, the sent chart publishes `MessageSent` and, once Telegram confirms the send, is recorded in retained
 history (#187) as a text description of its spec (`bar: Votes`), never of the image; see
-`outgoing_message_history.md`.
+`outgoing_message_history.md`. The photo upload itself is the shared `Runtime.sendPhotoToScope` (chat, topic and
+optional plain-text caption), also used by `generate_image`.

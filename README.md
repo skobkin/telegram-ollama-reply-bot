@@ -10,6 +10,7 @@
 - Reactions to the bot's messages are recorded in conversation history and shown to the model as per-user feedback
 - The model can react to a user's message with an emoji (`set_reaction` tool) instead of, or alongside, a text reply
 - An administrator-curated sticker catalog: the model searches it and sends stickers by semantic ID (`list_stickers`, `send_sticker`); the catalog is built from regular Telegram sticker sets through an admin YAML export/import and persists in SQLite
+- Optional image generation: the model can create a picture on an explicit request and send it to the chat (`generate_image`); the first backend is OpenAI-compatible (for example MiniMax `MiniMax-H3-Image`) and more can be added behind the same interface
 - Optional live tool-execution previews while a reply is being generated (temporary message in groups, message draft in private chats), with a collapsible tool-history section appended to the final reply
 - Image recognition and description
 - Tool-assisted free-form chat with
@@ -74,6 +75,13 @@ The bot can be configured using the following environment variables:
 | `SYSTEMONE__TIMEOUT`                                | Per-request timeout for decision requests. Go duration string.                                                     | No       | `60s`                    |
 | `SYSTEMONE__MAX_RESPONSE_BYTES`                     | Maximum decision response body size the client is willing to read.                                                 | No       | `4194304`                |
 | `SYSTEMONE__INPUT_BUDGET_BYTES`                     | Composition limit for the entire serialized decision request (state + questions + overhead). Fitting the decision model's context window stays the operator's responsibility. | No | `98304` |
+| `IMAGE_GENERATION__BACKEND`                         | Image generation backend: `openai_compat`, or empty to disable the feature (no tool, no admin settings). See "Image generation". | No | empty |
+| `IMAGE_GENERATION__OPENAI_COMPAT__BASE_URL`         | OpenAI-style base URL **including the version segment** (MiniMax: `https://api.minimax.io/v1`); `/images/generations` is appended. Required with the backend; never inherited from `LLM__BACKENDS__*`. | Cond. | empty |
+| `IMAGE_GENERATION__OPENAI_COMPAT__API_TOKEN`        | Bearer token for the generation endpoint. Required with the backend; scrubbed from logs and errors.               | Cond.    | empty                    |
+| `IMAGE_GENERATION__TIMEOUT`                         | Upper bound for one generation request. Go duration string. Also set `BOT__PROCESSING_TIMEOUT` to at least this plus `30s`. | No | `60s` |
+| `IMAGE_GENERATION__MAX_IMAGE_BYTES`                 | Largest accepted generated image (decimal bytes; Telegram photos are limited to 10 MB).                            | No       | `10000000`               |
+| `IMAGE_GENERATION__MAX_CONCURRENT`                  | Simultaneous generation requests across all chats; a full cap fails fast instead of queueing.                      | No       | `2`                      |
+| `IMAGE_GENERATION__CHAT_COOLDOWN`                   | Spacing between generation attempts per chat (failed attempts count, they may be billed). `0s` disables it.        | No       | `60s`                    |
 | `LOG__LEVEL`                                        | Structured log verbosity: `debug`, `info`, `warn`, or `error`                                                     | No       | `info`                   |
 | `SENTRY__DSN`                                       | Sentry DSN for error tracking                                                                                     | No       | empty                    |
 | `PERSISTENT__STORE_PATH`                            | Path to the SQLite database used for durable bot data                                                             | No       | `/data/db.sqlite`        |
@@ -111,8 +119,8 @@ Stored prompt templates use Go's [`text/template`](https://pkg.go.dev/text/templ
 - `summarize` – `{{.Language}}`, `{{.MaxLength}}`
 - `image_recognition` – `{{.Language}}`
 
-Global fields: `character_name`, `language`, `gender`, `default_interactivity_mode`, `default_auto_summary_enabled`, `show_reply_previews`, `default_preview_mode`, `keep_tool_history`, `web_search_enabled`, `chat_model`, `summarize_model`, `image_recognition_model`, `systemone_model`, `default_interaction_profile`, `decision_instructions`.
-Per-chat fields: `character_name`, `language`, `gender`, `interactivity_mode`, `auto_summary_enabled`, `preview_mode`, `keep_tool_history`, `web_search_enabled`, `chat_model`, `systemone_model`, `interaction_profile`, `decision_instructions`.
+Global fields: `character_name`, `language`, `gender`, `default_interactivity_mode`, `default_auto_summary_enabled`, `show_reply_previews`, `default_preview_mode`, `keep_tool_history`, `web_search_enabled`, `image_generation_enabled`, `chat_model`, `summarize_model`, `image_recognition_model`, `image_generation_model`, `systemone_model`, `default_interaction_profile`, `decision_instructions`.
+Per-chat fields: `character_name`, `language`, `gender`, `interactivity_mode`, `auto_summary_enabled`, `preview_mode`, `keep_tool_history`, `web_search_enabled`, `image_generation_enabled`, `chat_model`, `systemone_model`, `interaction_profile`, `decision_instructions`.
 
 ## Usage
 
@@ -151,6 +159,7 @@ Ordinary chat replies always use the tool-capable chat workflow. `LLM__FEATURES_
 - `convert_units` for local unit conversion across length, mass, volume, temperature, speed, pressure, energy and data sizes (decimal `kB` vs binary `KiB`; no currencies)
 - `random_choice` for real random picks without replacement from a supplied list (zero-based indexes)
 - `generate_chart` for locally rendered PNG line, bar (vertical/horizontal/stacked) and pie charts sent to the chat
+- `generate_image` for an explicitly requested generated picture sent to the chat, when `IMAGE_GENERATION__BACKEND` is configured, a generation model is selected and image generation is permitted for the chat (see "Image generation"); one billed attempt per turn, spaced per chat
 - `list_stickers` and `send_sticker` for searching the curated sticker catalog and sending one sticker by its semantic ID (at most one send attempt per turn; unprompted sends are additionally spaced 30 seconds per chat)
 - `send_poll` for explicit vote/poll requests
 - `send_quiz` for explicit quiz and trivia requests
@@ -256,6 +265,30 @@ in the admin UI (`🛠 Tools` submenu):
   it (`tool_unavailable`) without contacting the search provider.
 - The permission can only narrow an existing capability: without a configured `SEARCH__BACKEND` the tool is never
   registered, and the setting is hidden from the admin UI.
+
+### Image generation
+
+The model can generate a picture when a user explicitly asks for one. Generation is billed and slow, so it is opt-in
+at three levels and spend-bounded:
+
+- **Deployment (ENV):** `IMAGE_GENERATION__BACKEND=openai_compat` with its own endpoint and token (see the table
+  above). Without a backend the tool is never registered and the admin settings are hidden. Any OpenAI-compatible
+  `POST {base}/images/generations` endpoint works, not only OpenAI models; for MiniMax use
+  `IMAGE_GENERATION__OPENAI_COMPAT__BASE_URL=https://api.minimax.io/v1`.
+- **Runtime (admin UI):** a global `Image generation model` (manual entry, **no environment default** — until one is set
+  the tool stays unavailable) and an `Image generation` permission in the `🛠 Tools` submenu: global default **on** plus a
+  per-chat override (inherit / on / off).
+- **Per turn:** at most one billed attempt per turn (a failed attempt counts), a per-chat cooldown
+  (`IMAGE_GENERATION__CHAT_COOLDOWN`), and a global concurrency cap.
+
+**Raise `BOT__PROCESSING_TIMEOUT` when enabling it.** The default `30s` bounds the whole turn (model call, generation
+and reply) and cannot fit a generation that takes up to a minute. Set it to at least
+`IMAGE_GENERATION__TIMEOUT + 30s` (`90s` with the defaults); the bot warns at boot when it is shorter. The tool never
+starts a billed request it cannot finish in the remaining turn time. The default is not raised globally because it
+applies to every turn, including text-only replies.
+
+Generated images are never stored; history keeps only a short text description. See
+[`docs/specs/image_generation.md`](docs/specs/image_generation.md) for the full contract and how to add a backend.
 
 ### DM restrictions
 
@@ -467,16 +500,18 @@ dismisses a pending input and reopens the panel. Sessions are ephemeral and expi
 - **Preview settings** — global (`Show reply previews` master switch, `Default preview mode`, `Keep tool history`)
   and per-chat (`Preview mode` enum with explicit inherit while overridden, `Keep tool history` tri-state). While
   the master switch is off, chat screens hide the preview rows — stored overrides stay untouched.
-- **Tools** — `Web search` permission and `Keep tool history` (global value and per-chat tri-state each) live in one
+- **Tools** — `Web search` and `Image generation` permissions and `Keep tool history` (global value and per-chat tri-state each) live in one
   `🛠 Tools` submenu reachable from the chat card and both settings screens; the settings text still lists their
   effective values. The submenu shows whether a chat inherits or overrides a value and the global value it would
-  inherit. `Keep tool history` follows the preview master switch, and `Web search` is hidden without a configured
-  search backend.
+  inherit. `Keep tool history` follows the preview master switch, and `Web search` and `Image generation` are hidden
+  without a configured search or generation backend.
 - **Models** — global defaults and per-chat overrides for generation, summarize, image-recognition, and System One
   decision models. Each model field opens a picker fed by the backend that serves that feature (the list shows
   availability, not capability — a listed model is not guaranteed to fit the role) plus an `✏️ Enter model ID…`
   ForceReply input. Generation models also offer `Reset to ENV default` (returns to the `LLM__FEATURES__*` route);
-  the System One model instead offers `Clear global default model` — per-chat overrides survive the clear.
+  the System One model instead offers `Clear global default model` — per-chat overrides survive the clear. The global-only
+  `Image generation model` is manual entry (no backend list, no environment route) with a `Clear model` button, and is
+  hidden without a configured generation backend.
 - **Interactivity** — global (`Default interaction profile`, `Decision instructions`) and per-chat
   (`Interaction profile`, `Decision instructions`) settings in one `🧠 Interactivity` submenu; leaving the global
   default profile `non_interactive` asks for a scope confirmation that shows how many chats inherit it.

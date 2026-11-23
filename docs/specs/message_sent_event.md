@@ -10,7 +10,7 @@ a record of guarantees, not a feature request.
 
 `MessageSent` (declared in `internal/execution/events.go`) reports that a message became visible
 in a chat the bot serves — a message the bot itself sent (ordinary and final LLM replies, command
-answers, error notices, reminder deliveries, tool-created polls, dice, charts and stickers) or a message a user
+answers, error notices, reminder deliveries, tool-created polls, dice, charts, generated images and stickers) or a message a user
 sent (published at the update ingress). The current consumer is the admin UI: it re-creates a
 menu message buried under newer chat messages (issue #145).
 
