@@ -53,6 +53,7 @@ const (
 	randomChoiceResultCharBudget    = 3000
 	messageContextResultCharBudget  = 5000
 	generateChartResultCharBudget   = 800
+	generateImageResultCharBudget   = 900
 	listStickersResultCharBudget    = 2400
 	sendStickerResultCharBudget     = 600
 )
@@ -116,6 +117,15 @@ type runState struct {
 	// snapshot. Pinned for the whole run: a settings change mid-run only
 	// affects runs that start later.
 	webSearchEnabled bool
+	// imageGenerationEnabled and imageGenerationModel are the run's image
+	// generation permission and model from the operation snapshot, pinned
+	// like webSearchEnabled ("" model = generate_image unavailable).
+	// imageGenerationAttempted is set once a generation is dispatched, so a
+	// failed attempt also uses up the turn's single billed request. Only the
+	// runtime's sequential calls mutate it.
+	imageGenerationEnabled   bool
+	imageGenerationModel     string
+	imageGenerationAttempted bool
 	// proactive mirrors ChatRequest.Proactive for this run.
 	proactive bool
 	// stickerAttempted is set immediately before a sticker send is

@@ -16,6 +16,7 @@ func TestAttachmentPlaceholder(t *testing.T) {
 		{"no label", &Attachment{Kind: AttachmentPoll}, "[Poll]"},
 		{"multi-word kind", &Attachment{Kind: AttachmentVideoNote, Label: "0:12"}, "[Video note: 0:12]"},
 		{"quiz", &Attachment{Kind: AttachmentQuiz, Label: `"2+2?"`}, `[Quiz: "2+2?"]`},
+		{"generated image uses a spaced display name", &Attachment{Kind: AttachmentGeneratedImage, Label: "a cat"}, "[Generated image: a cat]"},
 	}
 
 	for _, tt := range tests {
@@ -44,6 +45,7 @@ func TestAttachmentSentNarration(t *testing.T) {
 		{"quiz", &Attachment{Kind: AttachmentQuiz, Label: `"2+2?"`}, `(sent a quiz via send_quiz: "2+2?")`},
 		{"dice", &Attachment{Kind: AttachmentDice, Label: "🎲 4"}, "(sent a dice roll via send_dice: 🎲 4)"},
 		{"chart", &Attachment{Kind: AttachmentChart, Label: "bar: Votes"}, "(sent a chart via generate_chart: bar: Votes)"},
+		{"generated image", &Attachment{Kind: AttachmentGeneratedImage, Label: "a cat in a hat"}, "(sent a generated image via generate_image: a cat in a hat)"},
 		{"kind the bot cannot send falls back", &Attachment{Kind: AttachmentVoice, Label: "0:12"}, "[Voice: 0:12]"},
 	}
 
@@ -63,7 +65,7 @@ func TestAttachmentPlaceholderCoversAllKinds(t *testing.T) {
 	t.Parallel()
 
 	kinds := []AttachmentKind{
-		AttachmentSticker, AttachmentPoll, AttachmentQuiz, AttachmentDice, AttachmentChart,
+		AttachmentSticker, AttachmentPoll, AttachmentQuiz, AttachmentDice, AttachmentChart, AttachmentGeneratedImage,
 		AttachmentAnimation, AttachmentVideo, AttachmentVideoNote, AttachmentVoice,
 		AttachmentAudio, AttachmentDocument, AttachmentLocation, AttachmentContact,
 	}

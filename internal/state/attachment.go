@@ -8,19 +8,23 @@ import "strings"
 type AttachmentKind string
 
 const (
-	AttachmentSticker   AttachmentKind = "sticker"
-	AttachmentPoll      AttachmentKind = "poll"
-	AttachmentQuiz      AttachmentKind = "quiz"
-	AttachmentDice      AttachmentKind = "dice"
-	AttachmentChart     AttachmentKind = "chart"
-	AttachmentAnimation AttachmentKind = "animation"
-	AttachmentVideo     AttachmentKind = "video"
-	AttachmentVideoNote AttachmentKind = "video_note"
-	AttachmentVoice     AttachmentKind = "voice"
-	AttachmentAudio     AttachmentKind = "audio"
-	AttachmentDocument  AttachmentKind = "document"
-	AttachmentLocation  AttachmentKind = "location"
-	AttachmentContact   AttachmentKind = "contact"
+	AttachmentSticker AttachmentKind = "sticker"
+	AttachmentPoll    AttachmentKind = "poll"
+	AttachmentQuiz    AttachmentKind = "quiz"
+	AttachmentDice    AttachmentKind = "dice"
+	AttachmentChart   AttachmentKind = "chart"
+	// AttachmentGeneratedImage is a picture the bot generated from a text
+	// prompt (generate_image). It is distinct from a user photo, which keeps
+	// the HasImage/ImageMeta representation.
+	AttachmentGeneratedImage AttachmentKind = "generated_image"
+	AttachmentAnimation      AttachmentKind = "animation"
+	AttachmentVideo          AttachmentKind = "video"
+	AttachmentVideoNote      AttachmentKind = "video_note"
+	AttachmentVoice          AttachmentKind = "voice"
+	AttachmentAudio          AttachmentKind = "audio"
+	AttachmentDocument       AttachmentKind = "document"
+	AttachmentLocation       AttachmentKind = "location"
+	AttachmentContact        AttachmentKind = "contact"
 )
 
 // Attachment is a concise, text-only description of the non-text content of a
@@ -62,6 +66,8 @@ var sendTools = map[AttachmentKind]struct{ noun, tool string }{
 	AttachmentQuiz:    {"quiz", "send_quiz"},
 	AttachmentDice:    {"dice roll", "send_dice"},
 	AttachmentChart:   {"chart", "generate_chart"},
+
+	AttachmentGeneratedImage: {"generated image", "generate_image"},
 }
 
 // SentNarration renders a bot-authored attachment as an action the bot took:
@@ -91,6 +97,8 @@ func attachmentDisplayName(kind AttachmentKind) string {
 	switch kind {
 	case AttachmentVideoNote:
 		return "Video note"
+	case AttachmentGeneratedImage:
+		return "Generated image"
 	default:
 		name := string(kind)
 

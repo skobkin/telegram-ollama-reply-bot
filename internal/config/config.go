@@ -504,7 +504,8 @@ type ImageGenerationConfig struct {
 	// generation spec for sizing guidance.
 	Timeout time.Duration `koanf:"timeout"`
 	// MaxImageBytes bounds the decoded image. The default is Telegram's
-	// sendPhoto limit (10 MB).
+	// sendPhoto limit ("10 MB"), read as the decimal 10,000,000 bytes so an
+	// accepted image can never sit just above the limit.
 	MaxImageBytes int64 `koanf:"max_image_bytes"`
 	// MaxConcurrent caps simultaneous generation requests across all chats.
 	MaxConcurrent int `koanf:"max_concurrent"`
@@ -772,7 +773,7 @@ func applyDefaults(k *koanf.Koanf) error {
 		"systemone.max_response_bytes":               int64(4 << 20),
 		"systemone.input_budget_bytes":               int64(96 << 10),
 		"image_generation.timeout":                   "60s",
-		"image_generation.max_image_bytes":           int64(10 << 20),
+		"image_generation.max_image_bytes":           int64(10_000_000),
 		"image_generation.max_concurrent":            2,
 		"image_generation.chat_cooldown":             "60s",
 	}

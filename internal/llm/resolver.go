@@ -31,4 +31,14 @@ type TurnConfig struct {
 	// search_web even when a search backend is configured, so a caller that
 	// forgets to set it can never spend paid search quota unintentionally.
 	WebSearchEnabled bool
+	// ImageGenerationEnabled is the effective image generation permission
+	// for this operation. Like WebSearchEnabled it is fail-closed: the zero
+	// value hides and rejects generate_image even when a generation backend
+	// is configured, so a caller that forgets to set it can never spend paid
+	// generation quota unintentionally.
+	ImageGenerationEnabled bool
+	// ImageGenerationModel is the effective generation model name for this
+	// operation. Empty means none is selected and generate_image stays
+	// unavailable: there is no environment fallback for it.
+	ImageGenerationModel string
 }

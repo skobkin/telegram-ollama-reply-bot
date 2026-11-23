@@ -277,6 +277,14 @@ type Runtime struct {
 	// overrides the clock in tests. Zero values are ready to use.
 	stickerCooldown chatCooldown
 	stickerNow      func() time.Time
+	// imageGenerator is the generation backend behind generate_image; nil
+	// until AttachImageGenerator. imageCooldown spaces generation attempts per
+	// chat by imageCooldownWindow (zero disables it); imageNow overrides the
+	// clock in tests.
+	imageGenerator      ImageGenerator
+	imageCooldown       chatCooldown
+	imageCooldownWindow time.Duration
+	imageNow            func() time.Time
 }
 
 type registeredCloser struct {
@@ -445,9 +453,11 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 	// leaks across runs — even for concurrent runs in the same chat. The
 	// decision model is pinned from the turn's operation snapshot.
 	run := &runState{
-		systemOneModel:   req.TurnConfig.SystemOneModel,
-		webSearchEnabled: req.TurnConfig.WebSearchEnabled,
-		proactive:        req.Proactive,
+		systemOneModel:         req.TurnConfig.SystemOneModel,
+		webSearchEnabled:       req.TurnConfig.WebSearchEnabled,
+		imageGenerationEnabled: req.TurnConfig.ImageGenerationEnabled,
+		imageGenerationModel:   req.TurnConfig.ImageGenerationModel,
+		proactive:              req.Proactive,
 	}
 
 	var (

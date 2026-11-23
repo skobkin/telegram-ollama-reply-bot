@@ -1642,7 +1642,7 @@ func TestLoadImageGenerationDefaults(t *testing.T) {
 	if ig.Timeout != 60*time.Second {
 		t.Fatalf("unexpected timeout default: %s", ig.Timeout)
 	}
-	if ig.MaxImageBytes != 10<<20 {
+	if ig.MaxImageBytes != 10_000_000 {
 		t.Fatalf("unexpected max image bytes default: %d", ig.MaxImageBytes)
 	}
 	if ig.MaxConcurrent != 2 {

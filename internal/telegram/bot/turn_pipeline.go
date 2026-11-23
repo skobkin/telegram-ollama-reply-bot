@@ -238,9 +238,11 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 			// The model selection comes from the chat config resolved when
 			// this message was accepted; it stays fixed for the whole turn.
 			TurnConfig: llm.TurnConfig{
-				GenerationModel:  resolved.ChatModel,
-				SystemOneModel:   resolved.SystemOneModel,
-				WebSearchEnabled: resolved.WebSearchEnabled,
+				GenerationModel:        resolved.ChatModel,
+				SystemOneModel:         resolved.SystemOneModel,
+				WebSearchEnabled:       resolved.WebSearchEnabled,
+				ImageGenerationEnabled: resolved.ImageGenerationEnabled,
+				ImageGenerationModel:   resolved.ImageGenerationModel,
 			},
 			RequesterMediaGroupID:   message.MediaGroupID,
 			AllowedTools:            opts.allowedTools,

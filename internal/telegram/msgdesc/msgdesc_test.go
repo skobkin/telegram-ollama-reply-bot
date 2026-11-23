@@ -144,6 +144,29 @@ func TestChartAndDiceLabels(t *testing.T) {
 	}
 }
 
+func TestGeneratedImageLabel(t *testing.T) {
+	t.Parallel()
+
+	if got := GeneratedImage("", "a cat in a hat"); got.Kind != state.AttachmentGeneratedImage || got.Label != "a cat in a hat" {
+		t.Fatalf("prompt fallback = %+v", got)
+	}
+	if got := GeneratedImage("Meet Whiskers", "a cat in a hat"); got.Label != "Meet Whiskers" {
+		t.Fatalf("a caption must win over the prompt: %+v", got)
+	}
+	if got := GeneratedImage("  \n ", "  sunset\nover  the sea "); got.Label != "sunset over the sea" {
+		t.Fatalf("whitespace must be normalized and a blank caption ignored: %+v", got)
+	}
+	if got := GeneratedImage("", strings.Repeat("p", 500)); utf8.RuneCountInString(got.Label) > maxGeneratedImageRunes {
+		t.Fatalf("prompt excerpt unbounded: %d runes", utf8.RuneCountInString(got.Label))
+	}
+	if got := GeneratedImage(strings.Repeat("c", 500), "p"); utf8.RuneCountInString(got.Label) > maxGeneratedImageRunes {
+		t.Fatalf("caption excerpt unbounded: %d runes", utf8.RuneCountInString(got.Label))
+	}
+	if got := GeneratedImage("", ""); got.Label != "" || got.Placeholder() != "[Generated image]" {
+		t.Fatalf("an empty description must still render a placeholder: %+v", got)
+	}
+}
+
 func TestStickerLabelUsesCatalogDescription(t *testing.T) {
 	t.Parallel()
 

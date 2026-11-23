@@ -34,6 +34,9 @@ const (
 	maxTitleRunes        = 48
 	// maxEmojiRunes leaves room for multi-codepoint emoji sequences.
 	maxEmojiRunes = 12
+	// maxGeneratedImageRunes bounds the caption or prompt excerpt that
+	// describes a generated image.
+	maxGeneratedImageRunes = 80
 )
 
 // Describe describes the non-text content of msg, or returns nil when it has
@@ -129,6 +132,19 @@ func Dice(emoji string, value int) *state.Attachment {
 	}
 
 	return &state.Attachment{Kind: state.AttachmentDice, Label: join(" ", truncate(clean(emoji), maxEmojiRunes), outcome)}
+}
+
+// GeneratedImage describes a picture the bot generated from a prompt. The
+// label is the caption the bot sent with it, else an excerpt of the prompt,
+// so the model can refer back to "the image of a cat in a hat". The image
+// itself is never described from its pixels and nothing about it is stored.
+func GeneratedImage(caption, prompt string) *state.Attachment {
+	label := truncate(clean(caption), maxGeneratedImageRunes)
+	if label == "" {
+		label = truncate(clean(prompt), maxGeneratedImageRunes)
+	}
+
+	return &state.Attachment{Kind: state.AttachmentGeneratedImage, Label: label}
 }
 
 // Chart describes a generated chart by its type and title.
