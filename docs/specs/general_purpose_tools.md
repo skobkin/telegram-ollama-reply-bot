@@ -1,6 +1,7 @@
 # General-purpose utility tools (#180)
 
-Four built-in tools: `calculate`, `random_choice`, `get_message_context`, `generate_chart`. All follow the
+Built-in tools: `calculate`, `random_choice`, `get_message_context`, `generate_chart` and (#181)
+`convert_units`. All follow the
 tool framework contract (`tool_framework.md`): native schema, structured errors, result budgets,
 authoritative records and automatic tool statistics (`tool_statistics.md`).
 
@@ -18,6 +19,26 @@ function table with exact arity. Everything else is `unsupported_operation`.
 - The expression is never echoed, so the result size is constant.
 - Error codes (class `invalid_arguments`, retryable): `invalid_expression`, `unsupported_operation`,
   `wrong_arity`, `expression_too_complex`, `non_finite_result`.
+
+## convert_units (#181)
+
+Local, deterministic unit conversion with no external service. Arguments: `value` (finite number),
+`from` and `to` (unit ids, at most 32 characters).
+
+- Dimensions: length, mass, volume, temperature, speed, pressure, energy, data. Each unit is defined by a
+  factor (and, for temperature, an offset) relative to the dimension's base unit; the table in
+  `tool_convert_units.go` is the single source of truth and also generates the model-facing description.
+- Unit ids are case-sensitive. A few unambiguous aliases are accepted (`celsius`, `liter`, `kph`, `feet`, ...).
+  Ambiguous spellings (`KB`, `Kb`, `mb`, `gb`, `C`, `F`) are rejected so the caller must choose.
+- Data sizes keep decimal (`kB`, `MB`, `GB`, ... = 1000-based) and binary (`KiB`, `MiB`, `GiB`, ... =
+  1024-based) units apart; `bit` and `B` (byte) are distinct.
+- Results are rounded to 12 significant digits to hide float64 noise (`0 degC -> 32 degF`, not
+  `31.999999999999996`). The input value is never echoed; the result carries the canonical `from`, `to` and
+  `dimension`.
+- Error codes (class `invalid_arguments`, retryable): `unknown_unit`, `incompatible_units`,
+  `below_absolute_zero`, `invalid_value`, `result_out_of_range`. Echoed unit strings are truncated and quoted.
+- Out of scope: currency conversion and live exchange rates, calendar and time units (use the datetime
+  tools).
 
 ## random_choice
 

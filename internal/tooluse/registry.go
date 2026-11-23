@@ -49,6 +49,7 @@ const (
 	analyzeImageResultCharBudget    = 2600
 	setReactionResultCharBudget     = 600
 	calculateResultCharBudget       = 600
+	convertUnitsResultCharBudget    = 700
 	randomChoiceResultCharBudget    = 3000
 	messageContextResultCharBudget  = 5000
 	generateChartResultCharBudget   = 800
@@ -189,6 +190,15 @@ func newRegistry(runtime *Runtime) *Registry {
 			Visibility:       VisibilityStandard,
 			ResultCharBudget: calculateResultCharBudget,
 			Handler:          calculateHandler,
+		},
+		{
+			Name:             "convert_units",
+			Description:      convertUnitsDescription(),
+			Parameters:       json.RawMessage(`{"type":"object","properties":{"value":{"type":"number","description":"Number to convert."},"from":{"type":"string","minLength":1,"maxLength":32,"description":"Source unit id, e.g. km."},"to":{"type":"string","minLength":1,"maxLength":32,"description":"Target unit id, e.g. mi."}},"required":["value","from","to"],"additionalProperties":false}`),
+			InvocationPolicy: InvocationPolicyDiscretionary,
+			Visibility:       VisibilityStandard,
+			ResultCharBudget: convertUnitsResultCharBudget,
+			Handler:          convertUnitsHandler,
 		},
 		{
 			Name:             "random_choice",

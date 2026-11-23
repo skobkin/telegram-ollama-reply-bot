@@ -148,6 +148,7 @@ Ordinary chat replies always use the tool-capable chat workflow. `LLM__FEATURES_
 - `get_message_thread_context` for compact reply-chain reconstruction when an older replied-to message has scrolled out of the recent verbatim context
 - `get_message_context` for a retained message with nearest-first neighbours before and after it (retained history only)
 - `calculate` for exact local arithmetic (float64; `^` is right-associative and binds tighter than unary minus)
+- `convert_units` for local unit conversion across length, mass, volume, temperature, speed, pressure, energy and data sizes (decimal `kB` vs binary `KiB`; no currencies)
 - `random_choice` for real random picks without replacement from a supplied list (zero-based indexes)
 - `generate_chart` for locally rendered PNG line, bar (vertical/horizontal/stacked) and pie charts sent to the chat
 - `list_stickers` and `send_sticker` for searching the curated sticker catalog and sending one sticker by its semantic ID (at most one send attempt per turn; unprompted sends are additionally spaced 30 seconds per chat)
