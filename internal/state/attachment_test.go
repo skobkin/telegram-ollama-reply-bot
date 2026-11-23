@@ -29,6 +29,35 @@ func TestAttachmentPlaceholder(t *testing.T) {
 	}
 }
 
+func TestAttachmentSentNarration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		attachment *Attachment
+		want       string
+	}{
+		{"nil", nil, ""},
+		{"empty kind", &Attachment{Label: "x"}, ""},
+		{"sticker", &Attachment{Kind: AttachmentSticker, Label: "😀 cat waving"}, "(sent a sticker via send_sticker: 😀 cat waving)"},
+		{"no label", &Attachment{Kind: AttachmentPoll}, "(sent a poll via send_poll)"},
+		{"quiz", &Attachment{Kind: AttachmentQuiz, Label: `"2+2?"`}, `(sent a quiz via send_quiz: "2+2?")`},
+		{"dice", &Attachment{Kind: AttachmentDice, Label: "🎲 4"}, "(sent a dice roll via send_dice: 🎲 4)"},
+		{"chart", &Attachment{Kind: AttachmentChart, Label: "bar: Votes"}, "(sent a chart via generate_chart: bar: Votes)"},
+		{"kind the bot cannot send falls back", &Attachment{Kind: AttachmentVoice, Label: "0:12"}, "[Voice: 0:12]"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := tt.attachment.SentNarration(); got != tt.want {
+				t.Fatalf("SentNarration() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // Every declared kind must have a readable display name.
 func TestAttachmentPlaceholderCoversAllKinds(t *testing.T) {
 	t.Parallel()

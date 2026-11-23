@@ -23,8 +23,26 @@ func TestAssistantAttachmentMessageIsNeverEmpty(t *testing.T) {
 	if message.Role != llm.RoleAssistant {
 		t.Fatalf("role = %s", message.Role)
 	}
-	if got := message.Text(); !strings.Contains(got, `[Poll: "Dinner?" — Pizza / Sushi]`) {
+	if got := message.Text(); !strings.Contains(got, `(sent a poll via send_poll: "Dinner?" — Pizza / Sushi)`) {
 		t.Fatalf("assistant message = %q", got)
+	}
+}
+
+// The bot's own media must not appear in assistant turns as a bracketed
+// placeholder: the model copies the format of its earlier turns and would write
+// `[Sticker: …]` as text instead of calling send_sticker.
+func TestAssistantMediaIsNarratedNotBracketed(t *testing.T) {
+	t.Parallel()
+
+	got := renderAssistantMessage(state.Message{
+		IsMe: true, Name: "Bot", Text: "enjoy",
+		Attachment: &state.Attachment{Kind: state.AttachmentSticker, Label: "😀 (cat waving)"},
+	})
+	if got != "(sent a sticker via send_sticker: 😀 (cat waving)) enjoy" {
+		t.Fatalf("assistant = %q", got)
+	}
+	if strings.Contains(got, "[Sticker") {
+		t.Fatalf("assistant turn must not contain a sticker placeholder: %q", got)
 	}
 }
 

@@ -258,7 +258,14 @@ func renderAssistantMessage(message state.Message) string {
 			sb.WriteString("[Image] ")
 		}
 	}
-	writeAttachment(&sb, message)
+	// The bot's own media is narrated as an action, not shown as a bracketed
+	// placeholder: in an assistant turn the placeholder reads as something the
+	// model wrote, and it learns to type `[Sticker: …]` instead of calling
+	// send_sticker.
+	if narration := message.Attachment.SentNarration(); narration != "" {
+		sb.WriteString(narration)
+		sb.WriteString(" ")
+	}
 
 	sb.WriteString(message.Text)
 	sb.WriteString(renderReactionsSuffix(message.Reactions))

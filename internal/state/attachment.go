@@ -55,6 +55,38 @@ func (a *Attachment) Placeholder() string {
 	return "[" + name + ": " + a.Label + "]"
 }
 
+// sendTools maps the kinds the bot can send itself to the tool that sends them.
+var sendTools = map[AttachmentKind]struct{ noun, tool string }{
+	AttachmentSticker: {"sticker", "send_sticker"},
+	AttachmentPoll:    {"poll", "send_poll"},
+	AttachmentQuiz:    {"quiz", "send_quiz"},
+	AttachmentDice:    {"dice roll", "send_dice"},
+	AttachmentChart:   {"chart", "generate_chart"},
+}
+
+// SentNarration renders a bot-authored attachment as an action the bot took:
+// `(sent a sticker via send_sticker: 😀 cat waving)`. Unlike Placeholder it
+// never looks like message content. In the assistant turns of a prompt a
+// bracketed placeholder is something the model "said", and models copy the
+// format of their own earlier turns, writing `[Sticker: …]` as text instead of
+// calling the tool. Kinds the bot cannot send itself fall back to Placeholder.
+func (a *Attachment) SentNarration() string {
+	if a == nil || a.Kind == "" {
+		return ""
+	}
+	tool, ok := sendTools[a.Kind]
+	if !ok {
+		return a.Placeholder()
+	}
+
+	narration := "(sent a " + tool.noun + " via " + tool.tool
+	if a.Label != "" {
+		narration += ": " + a.Label
+	}
+
+	return narration + ")"
+}
+
 func attachmentDisplayName(kind AttachmentKind) string {
 	switch kind {
 	case AttachmentVideoNote:
