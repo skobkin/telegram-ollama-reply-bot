@@ -36,6 +36,9 @@ func NewFromConfig(cfg config.ImageGenerationConfig, client Doer, logger *slog.L
 		if err != nil {
 			return nil, err
 		}
+		if cfg.OpenAICompat.OmitResponseFormat {
+			openAI.OmitResponseFormat()
+		}
 		backend = openAI
 	default:
 		return nil, fmt.Errorf("%w: unknown backend %q", ErrMisconfigured, cfg.Backend)

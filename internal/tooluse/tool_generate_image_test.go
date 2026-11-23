@@ -848,3 +848,21 @@ func TestGenerateImageIsHiddenFromTheNextTurnInACoolingChat(t *testing.T) {
 		t.Fatalf("a cooling chat must not be offered the tool: schemas=%v advertised=%v", schemas, advertised)
 	}
 }
+
+func TestGenerateImageLocalBusyRefusalRefundsTheCooldown(t *testing.T) {
+	h := newImageHarness(t, time.Minute)
+	h.gen.err = errors.Join(imagegen.ErrBusy, provider.NewError("stub", provider.ErrorKindRateLimited))
+
+	result := h.call(context.Background(), imageCall(5, 0, imageRun()), `{"prompt":"a cat"}`)
+	if result.Status == "ok" {
+		t.Fatal("a busy refusal must not succeed")
+	}
+	if h.runtime.imageCooldown.cooling(5, h.clock, time.Minute) {
+		t.Fatal("nothing was dispatched, so the chat must not be left cooling")
+	}
+
+	h.gen.err = nil
+	if again := h.call(context.Background(), imageCall(5, 0, imageRun()), `{"prompt":"a cat"}`); again.Status != "ok" {
+		t.Fatalf("the next turn must be admitted: %+v", again.Error)
+	}
+}

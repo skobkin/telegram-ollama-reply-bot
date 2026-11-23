@@ -49,6 +49,15 @@ func (l *chatCooldown) cooling(chatID int64, now time.Time, cooldown time.Durati
 	return ok && now.Sub(at) < cooldown
 }
 
+// release undoes an admit that was followed by no real send. admit only
+// succeeds outside the window, so dropping the entry restores the prior state.
+func (l *chatCooldown) release(chatID int64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	delete(l.last, chatID)
+}
+
 func (l *chatCooldown) stamp(chatID int64, now time.Time, cooldown time.Duration) {
 	if l.last == nil {
 		l.last = make(map[int64]time.Time)

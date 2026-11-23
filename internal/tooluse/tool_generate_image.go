@@ -202,6 +202,14 @@ func (r *Runtime) generateImage(ctx context.Context, callCtx CallContext, args j
 	}
 	image, err := r.imageGenerator.Generate(genCtx, imagegen.Request{Model: run.imageGenerationModel, Prompt: prompt, Aspect: aspect})
 	if err != nil {
+		if errors.Is(err, imagegen.ErrBusy) {
+			// Refused locally before any backend call: nothing was billed, so
+			// the cooldown slot is refunded. The turn's attempt stays spent so
+			// the model cannot loop on a busy service.
+			if r.imageCooldownWindow > 0 {
+				r.imageCooldown.release(callCtx.Scope.ChatID)
+			}
+		}
 		result := imageGenerationFailure(ctx, err)
 		logToolResult(callCtx, result, "backend", r.imageGenerator.Name(), "aspect", string(aspect))
 

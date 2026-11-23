@@ -522,6 +522,9 @@ type ImageGenerationConfig struct {
 type ImageGenerationOpenAICompatConfig struct {
 	BaseURL  string `koanf:"base_url"`
 	APIToken string `koanf:"api_token"`
+	// OmitResponseFormat stops sending response_format. Set it for OpenAI's
+	// gpt-image models, which reject the parameter and always return base64.
+	OmitResponseFormat bool `koanf:"omit_response_format"`
 }
 
 // Enabled reports whether a generation backend is selected.

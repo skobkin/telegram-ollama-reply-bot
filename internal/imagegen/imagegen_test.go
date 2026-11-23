@@ -164,6 +164,9 @@ func TestServiceConcurrencyCapFailsFastWithoutQueueing(t *testing.T) {
 	if got := provider.KindOf(err); got != provider.ErrorKindRateLimited {
 		t.Fatalf("expected rate_limited while the cap is reached, got %v", err)
 	}
+	if !errors.Is(err, ErrBusy) {
+		t.Fatalf("a local cap refusal must be identifiable as ErrBusy, got %v", err)
+	}
 	if elapsed := time.Since(begin); elapsed > time.Second {
 		t.Fatalf("the capped call must fail fast, took %s", elapsed)
 	}

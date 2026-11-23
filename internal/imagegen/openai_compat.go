@@ -79,6 +79,19 @@ type OpenAICompat struct {
 	client       Doer
 	maxBodyBytes int64
 	logger       *slog.Logger
+	// omitResponseFormat leaves response_format out of the request, for
+	// providers (OpenAI's gpt-image models) that reject it and always return
+	// base64.
+	omitResponseFormat bool
+}
+
+// OmitResponseFormat stops the backend from sending response_format. The
+// default stays on because providers such as MiniMax answer with a url unless
+// b64_json is requested, and url-only responses are not supported.
+func (b *OpenAICompat) OmitResponseFormat() *OpenAICompat {
+	b.omitResponseFormat = true
+
+	return b
 }
 
 // NewOpenAICompat builds the backend. baseURL is the OpenAI-style base
@@ -137,13 +150,16 @@ func (b *OpenAICompat) Generate(ctx context.Context, req Request) (Image, error)
 		Prompt         string `json:"prompt"`
 		N              int    `json:"n"`
 		Size           string `json:"size"`
-		ResponseFormat string `json:"response_format"`
+		ResponseFormat string `json:"response_format,omitempty"`
 	}{
 		Model:          req.Model,
 		Prompt:         req.Prompt,
 		N:              1,
 		Size:           size,
 		ResponseFormat: "b64_json",
+	}
+	if b.omitResponseFormat {
+		payload.ResponseFormat = ""
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

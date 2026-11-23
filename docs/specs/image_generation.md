@@ -42,7 +42,7 @@ authoritative records and automatic tool statistics (`tool_statistics.md`).
   (for MiniMax: `https://api.minimax.io/v1`).
 - Aspect to `size`: `square` → `1024x1024`, `landscape` → `1536x1024`, `portrait` → `1024x1536`. These are accepted by
   OpenAI's gpt-image models and by MiniMax-H3-Image (area 655,360–20,000,000 px, ratio 1:3–3:1).
-- `response_format` is always `b64_json`. MiniMax defaults to `url`, which is why it is sent explicitly. A response
+- `response_format` is `b64_json` unless `IMAGE_GENERATION__OPENAI_COMPAT__OMIT_RESPONSE_FORMAT=true` (needed for OpenAI's gpt-image models, which reject it and always return base64). MiniMax defaults to `url`, which is why it is sent explicitly. A response
   that carries only a `url` is treated as malformed: fetching provider-chosen URLs would need the SSRF-hardened content
   fetcher and is out of scope for v1.
 - HTTP 200 does not imply success: the first `data` item is checked for a per-image `error` before its payload is used.
@@ -71,6 +71,7 @@ Deployment configuration (environment): endpoints, credentials and budgets.
 | `IMAGE_GENERATION__BACKEND` | `openai_compat`, or empty to disable the whole feature | empty |
 | `IMAGE_GENERATION__OPENAI_COMPAT__BASE_URL` | Endpoint base including the version segment. Required with the backend. Never inherited from `LLM__BACKENDS__*`. | empty |
 | `IMAGE_GENERATION__OPENAI_COMPAT__API_TOKEN` | Bearer token. Required with the backend. Registered in the secret scrubber. | empty |
+| `IMAGE_GENERATION__OPENAI_COMPAT__OMIT_RESPONSE_FORMAT` | Do not send `response_format`. Set for OpenAI gpt-image models. | `false` |
 | `IMAGE_GENERATION__TIMEOUT` | Upper bound for one generation request | `60s` |
 | `IMAGE_GENERATION__MAX_IMAGE_BYTES` | Largest accepted decoded image. The default is Telegram's "10 MB" photo limit read as decimal bytes. | `10000000` |
 | `IMAGE_GENERATION__MAX_CONCURRENT` | Simultaneous generation requests across all chats | `2` |

@@ -444,3 +444,17 @@ func TestNewOpenAICompatRedactsURLCredentialsInErrors(t *testing.T) {
 		t.Fatalf("configuration error leaked URL credentials: %v", err)
 	}
 }
+
+func TestOpenAICompatOmitResponseFormat(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeImagesServer(t, http.StatusOK, successBody(t, pngBytes(t), ""))
+	backend := newBackend(t, fake.server.URL+"/v1", 0).OmitResponseFormat()
+
+	if _, err := backend.Generate(context.Background(), Request{Model: "gpt-image-1", Prompt: "a cat", Aspect: AspectSquare}); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if _, present := fake.only(t).body["response_format"]; present {
+		t.Fatal("response_format must not be sent when omitted by configuration")
+	}
+}

@@ -29,6 +29,9 @@ import (
 // are *provider.Error values; messages carry only kinds, sizes and numeric
 // statuses — never prompts, provider text, image bytes or URLs.
 var (
+	// ErrBusy reports a request refused locally because MaxConcurrent
+	// generations are already running. No backend call was made.
+	ErrBusy = errors.New("image generation concurrency limit reached")
 	// ErrPromptEmpty reports a blank generation prompt.
 	ErrPromptEmpty = errors.New("image generation prompt is empty")
 	// ErrModelEmpty reports that no generation model is configured.
@@ -162,7 +165,7 @@ func (s *Service) Generate(ctx context.Context, req Request) (Image, error) {
 	default:
 		logger.Warn("image generation concurrency cap reached", "backend", s.backend.Name(), "max_concurrent", s.opts.MaxConcurrent)
 
-		return Image{}, provider.NewError(s.backend.Name(), provider.ErrorKindRateLimited)
+		return Image{}, errors.Join(ErrBusy, provider.NewError(s.backend.Name(), provider.ErrorKindRateLimited))
 	}
 
 	if s.opts.Timeout > 0 {

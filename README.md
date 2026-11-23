@@ -78,6 +78,7 @@ The bot can be configured using the following environment variables:
 | `IMAGE_GENERATION__BACKEND`                         | Image generation backend: `openai_compat`, or empty to disable the feature (no tool, no admin settings). See "Image generation". | No | empty |
 | `IMAGE_GENERATION__OPENAI_COMPAT__BASE_URL`         | OpenAI-style base URL **including the version segment** (MiniMax: `https://api.minimax.io/v1`); `/images/generations` is appended. Required with the backend; never inherited from `LLM__BACKENDS__*`. | Cond. | empty |
 | `IMAGE_GENERATION__OPENAI_COMPAT__API_TOKEN`        | Bearer token for the generation endpoint. Required with the backend; scrubbed from logs and errors.               | Cond.    | empty                    |
+| `IMAGE_GENERATION__OPENAI_COMPAT__OMIT_RESPONSE_FORMAT` | Do not send `response_format` (required for OpenAI gpt-image models). | No | `false` |
 | `IMAGE_GENERATION__TIMEOUT`                         | Upper bound for one generation request. Go duration string. Also set `BOT__PROCESSING_TIMEOUT` to at least this plus `30s`. | No | `60s` |
 | `IMAGE_GENERATION__MAX_IMAGE_BYTES`                 | Largest accepted generated image (decimal bytes; Telegram photos are limited to 10 MB).                            | No       | `10000000`               |
 | `IMAGE_GENERATION__MAX_CONCURRENT`                  | Simultaneous generation requests across all chats; a full cap fails fast instead of queueing.                      | No       | `2`                      |
