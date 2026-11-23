@@ -739,6 +739,9 @@ func Run(ctx context.Context) (runErr error) {
 	// history through the bot, which also applies reactions that arrived
 	// while the message was still being sent.
 	tools.AttachOutgoingRecorder(botService)
+	// Delivered reminders are bot messages too; the scheduler is already
+	// running, so the attachment is synchronized inside the service.
+	reminderService.AttachDeliveryRecorder(botService)
 
 	// Every tool is registered now (built-ins, MCP, decision and image
 	// tools) and the catalog is static from here on: it lets the tool

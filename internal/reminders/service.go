@@ -27,6 +27,14 @@ type Sender interface {
 	SendMessage(ctx context.Context, params *t.SendMessageParams) (*t.Message, error)
 }
 
+// DeliveryRecorder appends a reminder message that Telegram confirmed to the
+// retained conversation history of its chat, so the model can see what the bot
+// said unprompted. The bot implements it (the same method serves tool sends);
+// history stays in memory only.
+type DeliveryRecorder interface {
+	RecordBotMessage(ctx context.Context, scope state.ConversationScope, msg state.Message)
+}
+
 // CanDeliverFunc decides whether a reminder may be delivered to a chat right
 // now. A nil function allows delivery unconditionally. An error is a
 // transient lookup failure: delivery fails closed for now and the occurrence
@@ -51,6 +59,42 @@ type Service struct {
 	reminders   map[string]Reminder
 	nextAttempt map[string]time.Time
 	wake        chan struct{}
+	// recorder is attached after the scheduler is already running (the bot is
+	// built later), so it is read and written under mu.
+	recorder DeliveryRecorder
+}
+
+// AttachDeliveryRecorder wires the history recorder for delivered reminders.
+// It is safe to call while the scheduler is running; nil detaches it.
+func (s *Service) AttachDeliveryRecorder(recorder DeliveryRecorder) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recorder = recorder
+}
+
+// recordDelivered adds a confirmed reminder message to history. Unconfirmed
+// sends (no message or a non-positive message ID) record nothing.
+func (s *Service) recordDelivered(ctx context.Context, reminder Reminder, sent *t.Message, text string) {
+	if sent == nil || sent.MessageID <= 0 {
+		return
+	}
+
+	s.mu.Lock()
+	recorder := s.recorder
+	s.mu.Unlock()
+	if recorder == nil {
+		return
+	}
+
+	createdAt := s.now()
+	if sent.Date > 0 {
+		createdAt = time.Unix(sent.Date, 0).UTC()
+	}
+	recorder.RecordBotMessage(ctx, reminder.Scope, state.Message{
+		Text:      text,
+		MessageID: sent.MessageID,
+		CreatedAt: createdAt,
+	})
 }
 
 func NewService(store Store, sender Sender, adminIDs []int64, canDeliver CanDeliverFunc, logger *slog.Logger) *Service {
@@ -271,9 +315,11 @@ func (s *Service) deliverReminder(ctx context.Context, reminder Reminder) error 
 	if reminder.Scope.TopicID != 0 {
 		params.MessageThreadID = reminder.Scope.TopicID
 	}
-	if _, err := s.sender.SendMessage(ctx, params); err != nil {
+	sent, err := s.sender.SendMessage(ctx, params)
+	if err != nil {
 		return err
 	}
+	s.recordDelivered(ctx, reminder, sent, params.Text)
 
 	return s.recordDelivery(ctx, reminder, s.now(), nextDue, active)
 }

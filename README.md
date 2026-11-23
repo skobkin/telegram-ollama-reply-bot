@@ -323,6 +323,15 @@ The model can call the no-argument `say_nothing` tool to intentionally end its t
 with or without a prior reaction. This stops the tool loop immediately: earlier actions remain applied, later
 pending calls are skipped, and unsent response text is discarded. Ordinary reaction-plus-text replies still work.
 
+### Non-text messages in history
+
+Stickers, polls, voice notes, documents and similar user messages, and the polls, quizzes, dice, charts and stickers
+the bot sends through tools (plus delivered reminders), are kept in the in-memory conversation history as short text
+descriptions such as `[Poll: "Dinner?" — Pizza / Sushi]`, so the model can read and refer to them. They appear in
+prompt context, summaries, history search and the message-context tools. Only confirmed sends are recorded; no media,
+file identifiers, quiz answers, phone numbers or coordinates are retained, and nothing is stored durably. See
+`docs/specs/outgoing_message_history.md`.
+
 ### Live reply previews
 
 While the bot works on a reply, chats can show a live progress preview: a neutral indicator plus the list of tool
