@@ -16,6 +16,7 @@ import (
 	"telegram-ollama-reply-bot/internal/content/fetch"
 	"telegram-ollama-reply-bot/internal/content/search"
 	"telegram-ollama-reply-bot/internal/execution"
+	"telegram-ollama-reply-bot/internal/imagegen"
 	"telegram-ollama-reply-bot/internal/interactivity"
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/logging"
@@ -627,6 +628,22 @@ func Run(ctx context.Context) (runErr error) {
 	)
 	tools.AttachReactionAvailability(reactionavailability.New(telegramAPI, logManager.Logger("reactionavailability")))
 	tools.AttachStickerCatalog(stickerService)
+	// Image generation gets its own HTTP client (separate connection pool)
+	// behind the secret-scrubbing transport; a disabled feature yields a nil
+	// service and the tool stays unregistered.
+	imageGenerator, err := imagegen.NewFromConfig(
+		cfg.ImageGeneration,
+		secretscrub.WrapDoer(scrubber, httpclient.New()),
+		logManager.Logger("imagegen"),
+	)
+	if err != nil {
+		logger.Error("failed to initialize image generation", "error", err)
+		sentry.CaptureException(err)
+
+		return err
+	}
+	attachImageGeneration(tools, imageGenerator, cfg.ImageGeneration.ChatCooldown)
+	logImageGenerationConfig(logger, cfg)
 	tools.AttachMCP("mcp", mcpManager)
 	// Decision tools are registered statically when the System One backend
 	// is configured; their per-turn availability additionally requires an
@@ -712,6 +729,11 @@ func Run(ctx context.Context) (runErr error) {
 		// The web search permission only narrows a configured backend; with
 		// none, the setting would be a no-op that suggests otherwise.
 		controllerOpts = append(controllerOpts, core.WithHiddenWebSearch())
+	}
+	if imageGenerator == nil {
+		// Same for image generation: the permission and the model only
+		// narrow a configured backend.
+		controllerOpts = append(controllerOpts, core.WithHiddenImageGeneration())
 	}
 	adminUIManager := core.NewManager(nil)
 	adminUIController := core.NewController(adminUIManager, adminService, cfg.Bot.AdminIDs, statsCollector, controllerOpts...)
