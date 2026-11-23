@@ -51,8 +51,8 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 
 	article, err := b.extractor.GetArticleFromURL(ctx.Context(), url)
 	if err != nil {
-		logger.Error("cannot retrieve article using extractor", "error", err, "url", url)
-		sentry.CaptureException(err)
+		// The extractor pipeline already reported the root cause.
+		logger.Error("cannot retrieve article using extractor", "error", err, "url_host", autoSummaryURLHost(url))
 		_, _ = b.sendMessage(ctx.Context(), b.reply(message, tu.Message(chatID, "Failed to extract article content. Please check if the URL is correct.")))
 
 		return nil

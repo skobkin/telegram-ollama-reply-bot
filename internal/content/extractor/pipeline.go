@@ -88,7 +88,13 @@ func (p *Pipeline) GetArticleFromURL(ctx context.Context, url string) (Article, 
 	page, err := p.fetcher.Fetch(ctx, url)
 	if err != nil {
 		logger.Warn("page fetch failed", "url", url, "error", err)
-		errreport.Capture(err)
+		// The pipeline is the single layer that reports extraction failures
+		// to Sentry; callers log ErrExtractFailed but do not capture it
+		// again. A URL refused by the fetch policy is expected behavior,
+		// not a defect.
+		if !errors.Is(err, fetch.ErrBlocked) {
+			errreport.Capture(err)
+		}
 
 		return Article{}, ErrExtractFailed
 	}

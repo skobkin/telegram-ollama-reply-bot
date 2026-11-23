@@ -14,7 +14,6 @@ import (
 	"telegram-ollama-reply-bot/internal/support/errreport"
 	"telegram-ollama-reply-bot/internal/tooluse"
 
-	"github.com/getsentry/sentry-go"
 	t "github.com/mymmrac/telego"
 	th "github.com/mymmrac/telego/telegohandler"
 	tu "github.com/mymmrac/telego/telegoutil"
@@ -243,8 +242,8 @@ func (b *Bot) autoSummarizeLink(baseCtx context.Context, logger *slog.Logger, me
 	err := b.runWithTimeout(baseCtx, tu.ID(chatID), func(ctx context.Context) error {
 		article, err := b.extractor.GetArticleFromURL(ctx, url)
 		if err != nil {
+			// The extractor pipeline already reported the root cause.
 			logger.Warn("auto-summary extraction failed", "chat_id", chatID, "error", err, "url_host", autoSummaryURLHost(url))
-			sentry.CaptureException(err)
 
 			return nil
 		}
