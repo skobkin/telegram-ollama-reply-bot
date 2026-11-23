@@ -382,15 +382,15 @@ func TestStickerToolsAreHiddenWhenTheyCannotSucceed(tst *testing.T) {
 }
 
 func TestStickerLimiterIsBounded(tst *testing.T) {
-	var l stickerLimiter
+	var l chatCooldown
 	now := stickerTestNow
-	for chat := int64(0); chat < stickerCooldownMaxEntries+500; chat++ {
+	for chat := int64(0); chat < chatCooldownMaxEntries+500; chat++ {
 		l.admit(chat, false, now, stickerProactiveCooldown)
 	}
-	if len(l.last) > stickerCooldownMaxEntries {
+	if len(l.last) > chatCooldownMaxEntries {
 		tst.Fatalf("the cooldown map must stay bounded, has %d entries", len(l.last))
 	}
-	if !l.cooling(stickerCooldownMaxEntries+499, now, stickerProactiveCooldown) {
+	if !l.cooling(chatCooldownMaxEntries+499, now, stickerProactiveCooldown) {
 		tst.Fatalf("the most recent chat must still be stamped")
 	}
 

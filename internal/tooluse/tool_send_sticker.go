@@ -3,7 +3,6 @@ package tooluse
 import (
 	"context"
 	"encoding/json"
-	"sync"
 	"time"
 
 	"telegram-ollama-reply-bot/internal/stickers"
@@ -23,76 +22,7 @@ const (
 	// stickerMissLimit bounds unknown or malformed sticker ids per turn;
 	// they never consume the send attempt, but guessing is not unlimited.
 	stickerMissLimit = 3
-
-	// stickerCooldownMaxEntries soft-caps the cooldown map.
-	stickerCooldownMaxEntries = 4096
 )
-
-// stickerLimiter spaces proactive sticker sends per chat. It is deliberately
-// not a general rate limiter: one map of last-dispatch times, one mutex.
-// Admission is an atomic check-and-reserve, so concurrent turns in one chat
-// cannot both pass.
-type stickerLimiter struct {
-	mu   sync.Mutex
-	last map[int64]time.Time
-}
-
-// admit checks and, when admitted, reserves the chat's slot. A proactive send
-// inside the window is declined (nothing is stamped); an explicit send always
-// passes. Every admitted send stamps the chat, so a proactive sticker cannot
-// follow right behind an explicit one.
-func (l *stickerLimiter) admit(chatID int64, proactive bool, now time.Time, cooldown time.Duration) (bool, time.Duration) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if proactive {
-		if at, ok := l.last[chatID]; ok {
-			if wait := cooldown - now.Sub(at); wait > 0 {
-				return false, wait
-			}
-		}
-	}
-	l.stamp(chatID, now, cooldown)
-
-	return true, 0
-}
-
-// cooling reports, without reserving, whether a proactive send in the chat
-// would currently be declined. It only decides advertisement; the dispatch
-// check in admit stays authoritative.
-func (l *stickerLimiter) cooling(chatID int64, now time.Time, cooldown time.Duration) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	at, ok := l.last[chatID]
-
-	return ok && now.Sub(at) < cooldown
-}
-
-func (l *stickerLimiter) stamp(chatID int64, now time.Time, cooldown time.Duration) {
-	if l.last == nil {
-		l.last = make(map[int64]time.Time)
-	}
-	if _, known := l.last[chatID]; !known && len(l.last) >= stickerCooldownMaxEntries {
-		var oldestChat int64
-		var oldest time.Time
-		first := true
-		for chat, at := range l.last {
-			if now.Sub(at) >= cooldown {
-				delete(l.last, chat) // expired entries carry no information
-
-				continue
-			}
-			if first || at.Before(oldest) {
-				oldestChat, oldest, first = chat, at, false
-			}
-		}
-		if len(l.last) >= stickerCooldownMaxEntries && !first {
-			delete(l.last, oldestChat)
-		}
-	}
-	l.last[chatID] = now
-}
 
 func (r *Runtime) stickerClock() time.Time {
 	if r.stickerNow != nil {

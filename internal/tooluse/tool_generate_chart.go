@@ -7,8 +7,6 @@ import (
 
 	"telegram-ollama-reply-bot/internal/content/chart"
 	"telegram-ollama-reply-bot/internal/telegram/msgdesc"
-
-	tu "github.com/mymmrac/telego/telegoutil"
 )
 
 type chartSeriesArgs struct {
@@ -105,11 +103,7 @@ func (r *Runtime) generateChart(ctx context.Context, callCtx CallContext, args j
 		return chartCancelledResult(), nil
 	}
 
-	params := tu.Photo(tu.ID(callCtx.Scope.ChatID), tu.FileFromBytes(png, "chart.png"))
-	if callCtx.Scope.TopicID != 0 {
-		params.MessageThreadID = callCtx.Scope.TopicID
-	}
-	message, err := r.actions.SendPhoto(ctx, params)
+	message, err := r.sendPhotoToScope(ctx, callCtx, png, "chart.png", "")
 	if err != nil {
 		return toolResult{}, err
 	}

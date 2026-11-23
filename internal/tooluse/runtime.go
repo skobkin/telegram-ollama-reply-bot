@@ -275,7 +275,7 @@ type Runtime struct {
 	stickers StickerCatalog
 	// stickerCooldown spaces proactive sticker sends per chat; stickerNow
 	// overrides the clock in tests. Zero values are ready to use.
-	stickerCooldown stickerLimiter
+	stickerCooldown chatCooldown
 	stickerNow      func() time.Time
 }
 
