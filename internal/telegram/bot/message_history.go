@@ -9,6 +9,7 @@ import (
 	"telegram-ollama-reply-bot/internal/llmcontext"
 	"telegram-ollama-reply-bot/internal/state"
 	"telegram-ollama-reply-bot/internal/support/errreport"
+	"telegram-ollama-reply-bot/internal/telegram/msgdesc"
 
 	t "github.com/mymmrac/telego"
 )
@@ -31,20 +32,9 @@ func (b *Bot) saveBotReplyToHistory(ctx context.Context, replyTo t.Message, text
 	scope := scopeFromMessage(replyTo)
 	b.loggerFromContext(ctx).Debug("saving bot reply to history", "chat_id", scope.ChatID, "topic_id", scope.TopicID, "reply_length", len(text))
 
-	botName := strings.TrimSpace(b.me.FirstName + " " + b.me.LastName)
-	if botName == "" {
-		botName = b.me.Username
-	}
-
 	msg := state.Message{
-		Name:      botName,
-		Username:  b.me.Username,
 		Text:      text,
-		IsMe:      true,
-		ChatID:    scope.ChatID,
-		TopicID:   scope.TopicID,
 		MessageID: messageID,
-		CreatedAt: time.Now().UTC(),
 	}
 
 	if replyTo.ReplyToMessage != nil {
@@ -53,13 +43,38 @@ func (b *Bot) saveBotReplyToHistory(ctx context.Context, replyTo t.Message, text
 		}
 	}
 
+	b.RecordBotMessage(ctx, scope, msg)
+}
+
+// RecordBotMessage appends one message authored by the bot to the retained
+// history of scope and is the single path for doing so: text replies and
+// confirmed non-text sends (polls, stickers, charts, delivered reminders) both
+// come through here. It stamps bot authorship and the scope, defaults the
+// timestamp, and — for a message with a real Telegram ID — applies the
+// reactions that arrived during the send window. Callers pass only content
+// that Telegram confirmed; it implements tooluse.OutgoingRecorder.
+func (b *Bot) RecordBotMessage(ctx context.Context, scope state.ConversationScope, msg state.Message) {
+	botName := strings.TrimSpace(b.me.FirstName + " " + b.me.LastName)
+	if botName == "" {
+		botName = b.me.Username
+	}
+
+	msg.Name = botName
+	msg.Username = b.me.Username
+	msg.IsMe = true
+	msg.ChatID = scope.ChatID
+	msg.TopicID = scope.TopicID
+	if msg.CreatedAt.IsZero() {
+		msg.CreatedAt = time.Now().UTC()
+	}
+
 	b.history.AppendMessage(scope, msg)
 
-	if messageID > 0 {
-		// Telegram delivers reactions as soon as the sent reply becomes
+	if msg.MessageID > 0 {
+		// Telegram delivers reactions as soon as the sent message becomes
 		// visible, potentially before this insertion: apply anything held
 		// during the send window, in update order.
-		b.replayPendingReactions(ctx, scope.ChatID, messageID)
+		b.replayPendingReactions(ctx, scope.ChatID, msg.MessageID)
 	}
 }
 
@@ -76,6 +91,10 @@ func (b *Bot) tgUserMessageToMessageData(message t.Message, isUserRequest bool) 
 	if message.Date != 0 {
 		msg.CreatedAt = time.Unix(message.Date, 0).UTC()
 	}
+	// Non-photo, non-text content (stickers, polls, voice notes, ...) is kept
+	// as a short text description so it is not an empty, unreferenceable
+	// entry. Photos keep their dedicated image path below.
+	msg.Attachment = msgdesc.Describe(&message)
 	if message.From != nil {
 		msg.Name = message.From.FirstName
 		msg.Username = message.From.Username
@@ -125,7 +144,9 @@ func (b *Bot) quotedMessageData(quoted t.Message) *state.Message {
 
 		data := b.tgUserMessageToMessageData(quoted, false)
 		cleaned := stripToolHistoryPresentation(data.Text)
-		if strings.TrimSpace(cleaned) == "" || isPreviewPresentation(cleaned) {
+		// A quoted bot poll, sticker or chart has no text but is a real
+		// answer to refer to: its attachment keeps the quote alive.
+		if (strings.TrimSpace(cleaned) == "" && data.Attachment == nil) || isPreviewPresentation(cleaned) {
 			// Preview-shaped text — a snapshot of a preview whose registry
 			// identity was long evicted — is presentation, not an answer.
 			return nil

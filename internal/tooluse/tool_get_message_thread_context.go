@@ -210,6 +210,10 @@ func mergeThreadMessage(primary, secondary state.Message) state.Message {
 	if result.Image == "" {
 		result.Image = secondary.Image
 	}
+	if result.Attachment == nil && secondary.Attachment != nil {
+		attachment := *secondary.Attachment
+		result.Attachment = &attachment
+	}
 	if result.MessageID == 0 {
 		result.MessageID = secondary.MessageID
 	}
@@ -256,6 +260,10 @@ func cloneThreadMessage(msg state.Message) state.Message {
 		meta := *msg.ImageMeta
 		cloned.ImageMeta = &meta
 	}
+	if msg.Attachment != nil {
+		attachment := *msg.Attachment
+		cloned.Attachment = &attachment
+	}
 
 	return cloned
 }
@@ -268,7 +276,8 @@ func isEmptyThreadMessage(msg state.Message) bool {
 		msg.Text == "" &&
 		msg.ReplyTo == nil &&
 		msg.CreatedAt.IsZero() &&
-		!msg.HasImage
+		!msg.HasImage &&
+		msg.Attachment == nil
 }
 
 func threadAnchorMessageID(chain []state.Message) int {
@@ -294,7 +303,7 @@ func threadMessagesView(messages []state.Message) []map[string]any {
 func threadMessageView(msg state.Message) map[string]any {
 	preview, shortened := threadMessagePreview(msg)
 
-	return map[string]any{
+	view := map[string]any{
 		"message_id":          msg.MessageID,
 		"reply_to_message_id": replyToMessageID(msg),
 		"from_id":             msg.FromID,
@@ -307,6 +316,11 @@ func threadMessageView(msg state.Message) map[string]any {
 		"text_preview":        preview,
 		"text_truncated":      shortened,
 	}
+	if msg.Attachment != nil {
+		view["attachment_kind"] = string(msg.Attachment.Kind)
+	}
+
+	return view
 }
 
 func replyToMessageID(msg state.Message) int {
@@ -339,6 +353,24 @@ func threadMessagePreview(msg state.Message) (string, bool) {
 	case msg.HasImage:
 		text = "[Image]"
 	}
+	text = withAttachmentPlaceholder(msg, text)
 
 	return truncateUTF8(text, messageThreadSnippetCharLimit), utf8.RuneCountInString(text) > messageThreadSnippetCharLimit
+}
+
+// withAttachmentPlaceholder prefixes text with the message's attachment
+// placeholder (`[Poll: ...]`), so attachment-only messages — a bot-sent poll, a
+// user's sticker — are never empty in tool results. It shares the renderer
+// the prompt context uses, keeping both views identical.
+func withAttachmentPlaceholder(msg state.Message, text string) string {
+	placeholder := msg.Attachment.Placeholder()
+
+	switch {
+	case placeholder == "":
+		return text
+	case text == "":
+		return placeholder
+	default:
+		return placeholder + " " + text
+	}
 }

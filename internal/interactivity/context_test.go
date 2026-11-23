@@ -236,6 +236,32 @@ func TestHistoryEntryFor(t *testing.T) {
 	}
 }
 
+// TestHistoryEntryRendersAttachments pins that non-text messages are visible
+// to the decision engine: attachment-only entries are not blank, captions stay,
+// and a reply to an attachment message names what was replied to.
+func TestHistoryEntryRendersAttachments(t *testing.T) {
+	poll := state.Message{Name: "Ada", IsMe: true, Attachment: &state.Attachment{Kind: state.AttachmentPoll, Label: `"Dinner?" — Pizza / Sushi`}}
+
+	entry := historyEntryFor(poll, 999)
+	if entry.Text != `[Poll: "Dinner?" — Pizza / Sushi]` || !entry.FromBot {
+		t.Fatalf("attachment-only bot entry wrong: %+v", entry)
+	}
+
+	captioned := state.Message{Name: "Dana", Text: "listen", Attachment: &state.Attachment{Kind: state.AttachmentVoice, Label: "0:12"}}
+	if entry := historyEntryFor(captioned, 999); entry.Text != "[Voice: 0:12] listen" {
+		t.Fatalf("captioned entry wrong: %q", entry.Text)
+	}
+
+	reply := state.Message{Name: "Dana", Text: "pizza!", ReplyTo: &poll}
+	if entry := historyEntryFor(reply, 999); entry.ReplyingTo != `Ada (the bot): [Poll: "Dinner?" — Pizza / Sushi]` {
+		t.Fatalf("reply to an attachment must name it: %q", entry.ReplyingTo)
+	}
+
+	if entry := historyEntryFor(state.Message{Name: "Dana", Text: "plain"}, 999); entry.Text != "plain" {
+		t.Fatalf("plain text must be unchanged: %q", entry.Text)
+	}
+}
+
 // TestHistoryEntryRendersReactions pins reaction rendering with actor
 // attribution: bot-authored reactions are marked, other participants' are
 // not, and the target entry renders them identically.

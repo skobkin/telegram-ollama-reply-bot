@@ -258,6 +258,7 @@ func renderAssistantMessage(message state.Message) string {
 			sb.WriteString("[Image] ")
 		}
 	}
+	writeAttachment(&sb, message)
 
 	sb.WriteString(message.Text)
 	sb.WriteString(renderReactionsSuffix(message.Reactions))
@@ -328,11 +329,23 @@ func presentMessage(message state.Message) string {
 			sb.WriteString("[Image] ")
 		}
 	}
+	writeAttachment(&sb, message)
 
 	sb.WriteString(message.Text)
 	sb.WriteString(renderReactionsSuffix(message.Reactions))
 
 	return sb.String()
+}
+
+// writeAttachment renders the non-text content of a message inline, in the
+// same place and style as the image placeholder: `[Poll: "Dinner?" — Pizza /
+// Sushi] `. Attachment-only messages (a bot-sent poll, a user's sticker) are
+// thereby never empty in the prompt.
+func writeAttachment(sb *strings.Builder, message state.Message) {
+	if placeholder := message.Attachment.Placeholder(); placeholder != "" {
+		sb.WriteString(placeholder)
+		sb.WriteString(" ")
+	}
 }
 
 func quoteValue(value string) string {

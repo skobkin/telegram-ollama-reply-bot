@@ -51,18 +51,24 @@ func (r *Runtime) searchHistory(_ context.Context, callCtx CallContext, args jso
 	matches := make([]map[string]any, 0, len(searchMatches))
 	for _, match := range searchMatches {
 		msg := match.Message
-		matches = append(matches, map[string]any{
+		text := withAttachmentPlaceholder(msg, normalizeWhitespace(msg.Text))
+		item := map[string]any{
 			"name":             msg.Name,
 			"username":         msg.Username,
-			"text":             truncateUTF8(normalizeWhitespace(msg.Text), searchHistorySnippetCharLimit),
-			"truncated":        utf8.RuneCountInString(normalizeWhitespace(msg.Text)) > searchHistorySnippetCharLimit,
+			"text":             truncateUTF8(text, searchHistorySnippetCharLimit),
+			"truncated":        utf8.RuneCountInString(text) > searchHistorySnippetCharLimit,
 			"message_id":       msg.MessageID,
 			"from_id":          msg.FromID,
+			"is_me":            msg.IsMe,
 			"created_at":       msg.CreatedAt.UTC().Format(time.RFC3339),
 			"score":            match.Score,
 			"match_kind":       match.MatchKind,
 			"matched_keywords": match.MatchedKeywords,
-		})
+		}
+		if msg.Attachment != nil {
+			item["attachment_kind"] = string(msg.Attachment.Kind)
+		}
+		matches = append(matches, item)
 	}
 
 	result := toolResult{

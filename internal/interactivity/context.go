@@ -240,14 +240,14 @@ func historyEntryFor(message state.Message, botUserID int64) historyEntry {
 	entry := historyEntry{
 		Sender:  senderName(message),
 		FromBot: message.IsMe,
-		Text:    message.Text,
+		Text:    textWithAttachment(message),
 		Image:   message.Image,
 	}
 	if message.HasImage && message.Image == "" {
 		entry.Image = "[image attached]"
 	}
 	if message.ReplyTo != nil {
-		entry.ReplyingTo = fmt.Sprintf("%s: %s", senderName(*message.ReplyTo), message.ReplyTo.Text)
+		entry.ReplyingTo = fmt.Sprintf("%s: %s", senderName(*message.ReplyTo), textWithAttachment(*message.ReplyTo))
 	}
 	for _, reaction := range message.Reactions {
 		byBot := botUserID != 0 && reaction.UserID == botUserID
@@ -259,6 +259,13 @@ func historyEntryFor(message state.Message, botUserID int64) historyEntry {
 	}
 
 	return entry
+}
+
+// textWithAttachment returns the message text prefixed with its non-text
+// content placeholder (`[Sticker: 😀]`), so attachment-only messages are never
+// empty entries — and a bot-sent poll or sticker counts as what it was.
+func textWithAttachment(message state.Message) string {
+	return strings.TrimSpace(message.Attachment.Placeholder() + " " + message.Text)
 }
 
 // actorName resolves the display identity of a reaction's actor.
