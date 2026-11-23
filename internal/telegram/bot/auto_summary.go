@@ -242,7 +242,8 @@ func (b *Bot) autoSummarizeLink(baseCtx context.Context, logger *slog.Logger, me
 	err := b.runWithTimeout(baseCtx, tu.ID(chatID), func(ctx context.Context) error {
 		article, err := b.extractor.GetArticleFromURL(ctx, url)
 		if err != nil {
-			// The extractor pipeline already reported the root cause.
+			// The extractor stack reports real defects itself; routine outcomes
+			// (policy block, nothing extractable) stay log-only.
 			logger.Warn("auto-summary extraction failed", "chat_id", chatID, "error", err, "url_host", autoSummaryURLHost(url))
 
 			return nil

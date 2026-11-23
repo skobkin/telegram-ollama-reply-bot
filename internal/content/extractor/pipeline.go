@@ -88,10 +88,11 @@ func (p *Pipeline) GetArticleFromURL(ctx context.Context, url string) (Article, 
 	page, err := p.fetcher.Fetch(ctx, url)
 	if err != nil {
 		logger.Warn("page fetch failed", "url", url, "error", err)
-		// The pipeline is the single layer that reports extraction failures
-		// to Sentry; callers log ErrExtractFailed but do not capture it
-		// again. A URL refused by the fetch policy is expected behavior,
-		// not a defect.
+		// A fetch failure is reported once, here, where its cause is known;
+		// backends report their own parse errors, and callers log
+		// ErrExtractFailed without capturing it again. Routine outcomes stay
+		// log-only: a URL refused by the fetch policy (here) and a page every
+		// backend abstains from (below) are expected behavior, not defects.
 		if !errors.Is(err, fetch.ErrBlocked) {
 			errreport.Capture(err)
 		}
@@ -162,6 +163,9 @@ func (p *Pipeline) GetArticleFromURL(ctx context.Context, url string) (Article, 
 		return p.buildArticle(best, page.URL, bestName, logger)
 	}
 
+	// Every backend failed or abstained. A failure with a cause was already
+	// reported by its backend; an abstention is routine for unextractable
+	// pages, so this outcome is logged but deliberately not captured.
 	logger.Error("all extractors failed", "url", url)
 
 	return Article{}, ErrExtractFailed

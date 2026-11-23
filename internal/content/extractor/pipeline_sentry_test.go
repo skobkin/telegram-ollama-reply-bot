@@ -80,3 +80,27 @@ func TestPipelineFetchFailureSentryReporting(t *testing.T) {
 		})
 	}
 }
+
+// Routine outcomes stay log-only: when every backend abstains (empty content)
+// or fails without a captured cause of its own, the pipeline returns
+// ErrExtractFailed but reports nothing — the comment on the all-failed return
+// documents this as deliberate.
+func TestPipelineAllBackendsAbstainingIsNotReported(t *testing.T) {
+	counter := bindEventCounter(t)
+	pipeline := NewPipeline(
+		stubFetcher{},
+		[]Backend{
+			stubBackend{name: "first", content: Content{Empty: true}},
+			stubBackend{name: "second", content: Content{Empty: true}},
+		},
+		testLogger(),
+	)
+
+	_, err := pipeline.GetArticleFromURL(context.Background(), "https://example.com/js-only")
+	if !errors.Is(err, ErrExtractFailed) {
+		t.Fatalf("expected ErrExtractFailed, got %v", err)
+	}
+	if got := counter.events.Load(); got != 0 {
+		t.Fatalf("sentry events = %d, want 0 for an all-abstain page", got)
+	}
+}
