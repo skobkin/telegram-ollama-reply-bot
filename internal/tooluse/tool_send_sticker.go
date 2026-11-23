@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"telegram-ollama-reply-bot/internal/stickers"
+	"telegram-ollama-reply-bot/internal/telegram/msgdesc"
 
 	tu "github.com/mymmrac/telego/telegoutil"
 )
@@ -208,6 +209,8 @@ func (r *Runtime) sendSticker(ctx context.Context, callCtx CallContext, args jso
 
 		return result, nil
 	}
+
+	r.recordSent(ctx, callCtx, message, msgdesc.Sticker(entry.Emoji, entry.Description))
 
 	result := toolResult{
 		Status:  "ok",

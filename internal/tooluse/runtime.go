@@ -263,6 +263,9 @@ type Runtime struct {
 	// concurrent runs; see tool_set_reaction.go. Zero value ready to use.
 	reactions            reactionLimiter
 	reactionAvailability reactionAvailability
+	// recorder appends confirmed non-text sends to history; nil falls back to
+	// the history store. See outgoing_history.go.
+	recorder OutgoingRecorder
 	// randIntN overrides the random source in tests; nil uses math/rand/v2.
 	randIntN func(n int) int
 	// chartRenderer overrides chart.Render in tests; nil uses it directly.

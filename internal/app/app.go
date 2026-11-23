@@ -735,6 +735,10 @@ func Run(ctx context.Context) (runErr error) {
 	}
 
 	attachImageTools(tools, botService, cfg.LLM.ImageRecognitionEnabled)
+	// Confirmed non-text sends (polls, stickers, charts, ...) enter retained
+	// history through the bot, which also applies reactions that arrived
+	// while the message was still being sent.
+	tools.AttachOutgoingRecorder(botService)
 
 	// Every tool is registered now (built-ins, MCP, decision and image
 	// tools) and the catalog is static from here on: it lets the tool

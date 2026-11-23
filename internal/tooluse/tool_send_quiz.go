@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 
+	"telegram-ollama-reply-bot/internal/telegram/msgdesc"
+
 	t "github.com/mymmrac/telego"
 	tu "github.com/mymmrac/telego/telegoutil"
 )
@@ -46,6 +48,9 @@ func (r *Runtime) sendQuiz(ctx context.Context, callCtx CallContext, args json.R
 	if err != nil {
 		return toolResult{}, err
 	}
+	// The correct answer is part of the tool result for this turn only; it is
+	// never retained in history.
+	r.recordSent(ctx, callCtx, message, msgdesc.Poll(params.Question, trimmedOptionTexts(options), true))
 
 	data := map[string]any{
 		"chat_id":              callCtx.Scope.ChatID,

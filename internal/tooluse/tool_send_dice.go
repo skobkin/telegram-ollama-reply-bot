@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 
+	"telegram-ollama-reply-bot/internal/telegram/msgdesc"
+
 	t "github.com/mymmrac/telego"
 	tu "github.com/mymmrac/telego/telegoutil"
 )
@@ -51,10 +53,14 @@ func (r *Runtime) sendDice(ctx context.Context, callCtx CallContext, args json.R
 		"message_id": message.MessageID,
 		"emoji":      params.Emoji,
 	}
+	diceValue := 0
 	if message.Dice != nil {
 		data["emoji"] = message.Dice.Emoji
 		data["value"] = message.Dice.Value
+		diceValue = message.Dice.Value
 	}
+	diceEmoji, _ := data["emoji"].(string)
+	r.recordSent(ctx, callCtx, message, msgdesc.Dice(diceEmoji, diceValue))
 
 	result := toolResult{
 		Status:  "ok",

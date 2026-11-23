@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 
+	"telegram-ollama-reply-bot/internal/telegram/msgdesc"
+
 	t "github.com/mymmrac/telego"
 	tu "github.com/mymmrac/telego/telegoutil"
 )
@@ -38,6 +40,7 @@ func (r *Runtime) sendPoll(ctx context.Context, callCtx CallContext, args json.R
 	if err != nil {
 		return toolResult{}, err
 	}
+	r.recordSent(ctx, callCtx, message, msgdesc.Poll(params.Question, trimmedOptionTexts(options), false))
 
 	result := toolResult{
 		Status:  "ok",

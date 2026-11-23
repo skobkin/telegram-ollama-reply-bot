@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"telegram-ollama-reply-bot/internal/content/chart"
+	"telegram-ollama-reply-bot/internal/telegram/msgdesc"
 
 	tu "github.com/mymmrac/telego/telegoutil"
 )
@@ -117,6 +118,9 @@ func (r *Runtime) generateChart(ctx context.Context, callCtx CallContext, args j
 	if message != nil {
 		messageID = message.MessageID
 	}
+	// Described from the spec, not the PNG: no image metadata is stored, so
+	// the vision model is never asked to describe the bot's own chart.
+	r.recordSent(ctx, callCtx, message, msgdesc.Chart(payload.ChartType, payload.Title))
 	points := len(spec.Categories) * len(spec.Series)
 	result := toolResult{
 		Status:  "ok",
