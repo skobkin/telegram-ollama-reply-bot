@@ -51,7 +51,8 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 
 	article, err := b.extractor.GetArticleFromURL(ctx.Context(), url)
 	if err != nil {
-		// The extractor pipeline already reported the root cause.
+		// The extractor stack reports real defects itself; routine outcomes
+		// (policy block, nothing extractable) stay log-only.
 		logger.Error("cannot retrieve article using extractor", "error", err, "url_host", autoSummaryURLHost(url))
 		_, _ = b.sendMessage(ctx.Context(), b.reply(message, tu.Message(chatID, "Failed to extract article content. Please check if the URL is correct.")))
 
@@ -96,7 +97,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 		}
 
 		logger.Error("cannot get summarize reply from llm connector", "error", err)
-		sentry.CaptureException(err)
+		errreport.Capture(err)
 		_, _ = b.sendMessage(ctx.Context(), b.reply(message, tu.Message(chatID, "LLM request error. Try again later.")))
 
 		return nil
@@ -152,7 +153,7 @@ Mention the bot, reply to it to chat; text and photos are supported.
 	)))
 	if err != nil {
 		logger.Error("cannot send help message", "error", err)
-		sentry.CaptureException(err)
+		errreport.Capture(err)
 		b.trySendReplyError(ctx.Context(), message)
 	}
 
@@ -172,7 +173,7 @@ func (b *Bot) startHandler(ctx *th.Context, message t.Message) error {
 	)))
 	if err != nil {
 		logger.Error("cannot send start message", "error", err)
-		sentry.CaptureException(err)
+		errreport.Capture(err)
 		b.trySendReplyError(ctx.Context(), message)
 	}
 
@@ -197,7 +198,7 @@ func (b *Bot) statsHandler(ctx *th.Context, message t.Message) error {
 	_, err := b.sendRichMarkdownReply(ctx.Context(), message, "Current bot stats:\n"+statsJSON)
 	if err != nil {
 		logger.Error("cannot send stats message", "error", err)
-		sentry.CaptureException(err)
+		errreport.Capture(err)
 		b.trySendReplyError(ctx.Context(), message)
 	}
 
@@ -224,7 +225,7 @@ func (b *Bot) resetHandler(ctx *th.Context, message t.Message) error {
 	_, err := b.sendMessage(ctx.Context(), b.reply(message, tu.Message(tu.ID(chatID), "Okay, let's start fresh.")))
 	if err != nil {
 		logger.Error("cannot send reset confirmation", "error", err)
-		sentry.CaptureException(err)
+		errreport.Capture(err)
 		b.trySendReplyError(ctx.Context(), message)
 	}
 

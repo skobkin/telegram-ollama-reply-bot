@@ -161,6 +161,20 @@ func (s *Service) SummarizeSilent(ctx context.Context, scope PromptScope, text s
 	return s.summarize(ctx, scope, text, instructions, true)
 }
 
+// templateFailure is the error a prompt-rendering failure returns: the stable
+// ErrTemplateProcessing kind, so raw template text never reaches callers' logs
+// or Sentry. When the render failed because the request ended (deadline or
+// cancellation while reading settings), the context sentinel stays matchable so
+// the capture sites downstream can tell an expired request from a defective
+// template instead of reporting the bare kind.
+func templateFailure(err error) error {
+	if errreport.IsContextError(err) {
+		return safeerr.WrapTransport(ErrTemplateProcessing, err)
+	}
+
+	return ErrTemplateProcessing
+}
+
 func (s *Service) summarize(ctx context.Context, scope PromptScope, text string, instructions string, silent bool) (string, *TokenUsage, error) {
 	logger := logging.FromContext(ctx, s.logger)
 
@@ -169,14 +183,15 @@ func (s *Service) summarize(ctx context.Context, scope PromptScope, text string,
 		// Silent runs sanitize construction diagnostics: template errors can
 		// quote operator template text, so only the stable kind reaches the
 		// log and Sentry on unsolicited proactive turns.
+		failure := templateFailure(err)
 		diagnostic := err
 		if silent {
-			diagnostic = ErrTemplateProcessing
+			diagnostic = failure
 		}
 		logger.Error("summarize template processing failed", "error", diagnostic)
 		errreport.Capture(diagnostic)
 
-		return "", nil, ErrTemplateProcessing
+		return "", nil, failure
 	}
 
 	if instructions != "" {
@@ -262,7 +277,11 @@ func (s *Service) HasModelsFor(ctx context.Context, features ...Feature) (bool, 
 			}
 
 			logger.Error("model list request failed", "backend", s.backend.Name(), "feature", feature, "error", logErr)
-			errreport.Capture(logErr)
+			// Startup only, outside any request: a transport timeout here
+			// (the backend does not answer) is a real problem even though
+			// net timeouts match context.DeadlineExceeded, so it bypasses
+			// errreport's request-deadline filter.
+			sentry.CaptureException(logErr)
 			result[string(feature)] = false
 
 			continue
@@ -275,7 +294,7 @@ func (s *Service) HasModelsFor(ctx context.Context, features ...Feature) (bool, 
 			override, err = s.resolver.ResolveModel(ctx, feature, 0)
 			if err != nil {
 				logger.Error("runtime model resolution failed", "feature", feature, "error", err)
-				errreport.Capture(err)
+				sentry.CaptureException(err)
 				result[string(feature)] = false
 
 				continue
@@ -346,14 +365,15 @@ func (s *Service) buildConversationMessages(ctx context.Context, scope PromptSco
 		// errors can quote operator template text and renderer internals,
 		// so only the stable kind reaches the log and Sentry. Explicit
 		// turns keep the raw error for operators.
+		failure := templateFailure(err)
 		diagnostic := err
 		if silent {
-			diagnostic = ErrTemplateProcessing
+			diagnostic = failure
 		}
 		logger.Error("chat template processing failed", "error", diagnostic)
 		errreport.Capture(diagnostic)
 
-		return nil, ErrTemplateProcessing
+		return nil, failure
 	}
 
 	systemPrompt += "\n\n" + renderConversationMetadata(requestContext, time.Now())

@@ -289,7 +289,11 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 			// indicator must not outlive an unsolicited turn.
 			run.Fail()
 			logger.Error("proactive turn failed", "error", err)
-			errreport.Capture(err)
+			// A timeout is already counted in the LLM timeout statistics and
+			// is not reported as a defect, as on the explicit path below.
+			if !errors.Is(err, ErrRequestTimeout) {
+				errreport.Capture(err)
+			}
 
 			return effects
 		}
