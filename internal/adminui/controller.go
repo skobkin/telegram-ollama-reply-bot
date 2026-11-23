@@ -2169,10 +2169,11 @@ func (c *Controller) toolsData(ctx context.Context, state ScreenState) (ToolsDat
 	}
 
 	if data.Global {
+		// Same order as the chat scope below, which follows ChatFieldSpecs.
+		data.Fields = append(data.Fields, ToolsField{Name: "keep_tool_history", Value: strconv.FormatBool(global.KeepToolHistory)})
 		if !c.opts.HideWebSearch {
 			data.Fields = append(data.Fields, ToolsField{Name: "web_search_enabled", Value: strconv.FormatBool(global.WebSearchEnabled)})
 		}
-		data.Fields = append(data.Fields, ToolsField{Name: "keep_tool_history", Value: strconv.FormatBool(global.KeepToolHistory)})
 
 		return data, nil
 	}

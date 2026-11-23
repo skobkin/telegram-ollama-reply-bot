@@ -183,3 +183,31 @@ func TestToolsSubmenuHidesWebSearchWithoutBackend(t *testing.T) {
 		t.Fatalf("an empty tools screen must offer no editors: %q", screenButtons(empty))
 	}
 }
+
+// Both scopes list the Tools settings in the same order, so the editor buttons
+// do not swap rows between the global and the chat screen.
+func TestToolsSubmenuListsSettingsInTheSameOrderInBothScopes(t *testing.T) {
+	c, store := newTestController(t)
+	store.global.ShowReplyPreviews = true
+	session := mustOpen(t, c)
+
+	positions := func(screen *Screen) (web, keep int) {
+		buttons := screenButtons(screen)
+
+		return strings.Index(buttons, "✎ Web search"), strings.Index(buttons, "✎ Keep tool")
+	}
+
+	tap(t, c, session, VerbGlobalSet)
+	globalWeb, globalKeep := positions(requireToolsScreen(t, tap(t, c, session, VerbTools)))
+
+	tap(t, c, session, VerbHome)
+	toChatCard(t, c, session)
+	chatWeb, chatKeep := positions(requireToolsScreen(t, tap(t, c, session, VerbTools)))
+
+	if globalWeb < 0 || globalKeep < 0 || chatWeb < 0 || chatKeep < 0 {
+		t.Fatalf("both screens must offer both editors: global=%d/%d chat=%d/%d", globalWeb, globalKeep, chatWeb, chatKeep)
+	}
+	if (globalWeb < globalKeep) != (chatWeb < chatKeep) {
+		t.Fatalf("the global and chat Tools screens list the settings in a different order")
+	}
+}
