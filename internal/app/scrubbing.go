@@ -33,6 +33,7 @@ var scalarSecretSpecs = []scalarSecretSpec{
 	{name: "llm-api-token", envName: "LLM__BACKENDS__OPENAI_COMPAT__API_TOKEN", fromCfg: func(cfg *config.Config) string { return cfg.LLM.Backends.OpenAICompat.APIToken }},
 	{name: "llm-image-api-token", envName: "LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__API_TOKEN", fromCfg: func(cfg *config.Config) string { return cfg.LLM.ImageRecognition.OpenAICompat.APIToken }},
 	{name: "llm-image-minimax-api-key", envName: "LLM__IMAGE_RECOGNITION__MINIMAX_VLM__API_KEY", fromCfg: func(cfg *config.Config) string { return cfg.LLM.ImageRecognition.MiniMaxVLM.APIKey }},
+	{name: "image-generation-api-token", envName: "IMAGE_GENERATION__OPENAI_COMPAT__API_TOKEN", fromCfg: func(cfg *config.Config) string { return cfg.ImageGeneration.OpenAICompat.APIToken }},
 	{name: "search-tavily-api-key", envName: "PROVIDERS__TAVILY__API_KEY", fromCfg: func(cfg *config.Config) string { return cfg.Providers.Tavily.APIKey }},
 	{name: "search-kagi-api-key", envName: "PROVIDERS__KAGI__API_KEY", fromCfg: func(cfg *config.Config) string { return cfg.Providers.Kagi.APIKey }},
 	{name: "systemone-api-key", envName: "SYSTEMONE__API_KEY", fromCfg: func(cfg *config.Config) string { return cfg.SystemOne.APIKey }},
@@ -55,6 +56,7 @@ var endpointSecretSpecs = []endpointSecretSpec{
 	{name: "llm-backend-url-password", envName: "LLM__BACKENDS__OPENAI_COMPAT__BASE_URL", fromCfg: func(cfg *config.Config) string { return cfg.LLM.Backends.OpenAICompat.BaseURL }},
 	{name: "llm-image-backend-url-password", envName: "LLM__IMAGE_RECOGNITION__OPENAI_COMPAT__BASE_URL", fromCfg: func(cfg *config.Config) string { return cfg.LLM.ImageRecognition.OpenAICompat.BaseURL }},
 	{name: "llm-image-minimax-url-password", envName: "LLM__IMAGE_RECOGNITION__MINIMAX_VLM__BASE_URL", fromCfg: func(cfg *config.Config) string { return cfg.LLM.ImageRecognition.MiniMaxVLM.BaseURL }},
+	{name: "image-generation-url-password", envName: "IMAGE_GENERATION__OPENAI_COMPAT__BASE_URL", fromCfg: func(cfg *config.Config) string { return cfg.ImageGeneration.OpenAICompat.BaseURL }},
 	{name: "systemone-endpoint-url-password", envName: "SYSTEMONE__BASE_URL", fromCfg: func(cfg *config.Config) string { return cfg.SystemOne.BaseURL }},
 }
 

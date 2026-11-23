@@ -31,6 +31,7 @@ func scrubTestConfig() *config.Config {
 	cfg.Providers.Tavily.APIKey = "TAVILYFIXTURE"
 	cfg.Providers.Kagi.APIKey = "KAGIFIXTURE"
 	cfg.SystemOne.APIKey = "SYSTEMONEFIXTURE"
+	cfg.ImageGeneration.OpenAICompat.APIToken = "IMAGEGENFIXTURE"
 	cfg.Sentry.DSN = "SENTRYDSNFIXTURE"
 
 	cfg.MCP.Servers = map[string]config.MCPServerConfig{
@@ -59,6 +60,7 @@ func TestNewSecretScrubberRegistersAllSecrets(t *testing.T) {
 		"TAVILYFIXTURE",
 		"KAGIFIXTURE",
 		"SYSTEMONEFIXTURE",
+		"IMAGEGENFIXTURE",
 		"SENTRYDSNFIXTURE",
 		"DOCSURLPASSWORD",
 		"DOCSHEADERFIXTURE",
@@ -902,10 +904,11 @@ func TestNewSecretScrubberRegistersEndpointURLPasswords(t *testing.T) {
 	cfg := scrubTestConfig()
 	cfg.LLM.Backends.OpenAICompat.BaseURL = "https://ops:LLMURLPASSFIXTURE@llm.internal/v1"
 	cfg.SystemOne.BaseURL = "https://ops:S1URLPASSFIXTURE@decision.internal/v1"
+	cfg.ImageGeneration.OpenAICompat.BaseURL = "https://ops:IMGGENURLPASSFIXTURE@images.internal/v1"
 
 	scrubber := newSecretScrubber(cfg)
 
-	for _, fixture := range []string{"LLMURLPASSFIXTURE", "S1URLPASSFIXTURE"} {
+	for _, fixture := range []string{"LLMURLPASSFIXTURE", "S1URLPASSFIXTURE", "IMGGENURLPASSFIXTURE"} {
 		text := "dial https://ops:" + fixture + "@host failed"
 
 		if got := scrubber.Scrub(text); got == text {
