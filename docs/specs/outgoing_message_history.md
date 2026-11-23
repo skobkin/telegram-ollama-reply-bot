@@ -18,6 +18,11 @@ dedicated `HasImage`/`ImageMeta` representation. One renderer, `Attachment.Place
 proactive decision history, the history search index, `search_history`, `get_message_thread_context` and
 `get_message_context`. Tool results additionally expose `attachment_kind` (and `search_history` exposes `is_me`).
 
+The one exception is the bot's own assistant turns in the prompt, rendered by `Attachment.SentNarration()` as an
+action: `(sent a sticker via send_sticker: 😀 cat waving)`. A bracketed placeholder there reads as something the model
+itself wrote, and models copy the format of their own earlier turns, typing `[Sticker: …]` as text instead of calling
+the tool.
+
 Labels are built by `internal/telegram/msgdesc` and are privacy-conservative: contacts and locations are
 described only as `[Contact]` / `[Location]` (no phone numbers, names or coordinates); quiz answers and
 explanations are never part of a label; charts are described from their spec (`bar: Votes`), never from pixels.

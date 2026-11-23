@@ -38,7 +38,7 @@ func (r *Runtime) AttachStickerCatalog(catalog StickerCatalog) {
 	})
 	r.registry.Register(Definition{
 		Name:             sendStickerToolName,
-		Description:      "Send one sticker from the curated catalog into the current conversation, by the id returned from list_stickers. A turn gets a single send attempt, and a sticker can be the whole reply (follow it with say_nothing instead of extra text). Use it sparingly, only when it genuinely fits the moment.",
+		Description:      "Send one sticker from the curated catalog into the current conversation, by the id returned from list_stickers. Use it when a sticker suits the moment. The sticker goes out as its own message, before your text reply; it cannot be placed inside the text, and writing or describing a sticker in text (for example \"[Sticker: …]\") sends nothing. A turn gets a single send attempt, and a sticker can be the whole reply (follow it with say_nothing instead of extra text).",
 		Parameters:       json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","minLength":3,"maxLength":48,"description":"Sticker id exactly as returned by list_stickers."}},"required":["id"],"additionalProperties":false}`),
 		InvocationPolicy: InvocationPolicyDiscretionary,
 		Visibility:       VisibilityStandard,

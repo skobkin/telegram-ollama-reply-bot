@@ -814,6 +814,9 @@ func buildToolPolicy(definitions []Definition) string {
 	if len(explicitOnly) > 0 {
 		sections = append(sections, "Explicit-request-only tools:\n"+strings.Join(explicitOnly, "\n"))
 	}
+	if slices.ContainsFunc(definitions, func(d Definition) bool { return d.Name == sendStickerToolName }) {
+		sections = append(sections, "To send a sticker, call send_sticker. Never describe a sticker or write it in brackets in your text: that sends nothing.")
+	}
 
 	return strings.Join(sections, "\n\n")
 }

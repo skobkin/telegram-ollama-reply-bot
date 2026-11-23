@@ -60,6 +60,19 @@ func TestPolicyUsesNamesAndAdvisoryCategories(t *testing.T) {
 	}
 }
 
+// The sticker sentence is paid for only in turns that can actually send one.
+func TestPolicyMentionsStickersOnlyWhenSendStickerIsAdvertised(t *testing.T) {
+	with := buildToolPolicy([]Definition{{Name: sendStickerToolName, InvocationPolicy: InvocationPolicyDiscretionary}})
+	if !strings.Contains(with, "call send_sticker") {
+		t.Fatalf("policy lacks the sticker sentence: %s", with)
+	}
+
+	without := buildToolPolicy([]Definition{{Name: "probe", InvocationPolicy: InvocationPolicyDiscretionary}})
+	if strings.Contains(without, "sticker") {
+		t.Fatalf("policy mentions stickers without the tool: %s", without)
+	}
+}
+
 func TestAvailabilityRevokedDuringGenerationRejectsDispatch(t *testing.T) {
 	r, m := restrictedRuntime(t, &stubActionSender{})
 	available := true
