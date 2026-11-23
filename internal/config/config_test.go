@@ -1626,3 +1626,143 @@ func TestMCPResultBudgetMinimum(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadImageGenerationDefaults(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	ig := cfg.ImageGeneration
+	if ig.Enabled() || ig.Backend != "" {
+		t.Fatalf("expected image generation disabled by default, got backend %q", ig.Backend)
+	}
+	if ig.Timeout != 60*time.Second {
+		t.Fatalf("unexpected timeout default: %s", ig.Timeout)
+	}
+	if ig.MaxImageBytes != 10<<20 {
+		t.Fatalf("unexpected max image bytes default: %d", ig.MaxImageBytes)
+	}
+	if ig.MaxConcurrent != 2 {
+		t.Fatalf("unexpected max concurrent default: %d", ig.MaxConcurrent)
+	}
+	if ig.ChatCooldown != 60*time.Second {
+		t.Fatalf("unexpected chat cooldown default: %s", ig.ChatCooldown)
+	}
+}
+
+func TestLoadUsesExplicitImageGenerationConfig(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("IMAGE_GENERATION__BACKEND", "openai_compat")
+	t.Setenv("IMAGE_GENERATION__OPENAI_COMPAT__BASE_URL", "https://api.minimax.io/v1")
+	t.Setenv("IMAGE_GENERATION__OPENAI_COMPAT__API_TOKEN", "image-token")
+	t.Setenv("IMAGE_GENERATION__TIMEOUT", "90s")
+	t.Setenv("IMAGE_GENERATION__MAX_IMAGE_BYTES", "5242880")
+	t.Setenv("IMAGE_GENERATION__MAX_CONCURRENT", "4")
+	t.Setenv("IMAGE_GENERATION__CHAT_COOLDOWN", "0s")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	ig := cfg.ImageGeneration
+	if !ig.Enabled() || ig.Backend != ImageGenerationBackendOpenAICompat {
+		t.Fatalf("unexpected backend: %q", ig.Backend)
+	}
+	if ig.OpenAICompat.BaseURL != "https://api.minimax.io/v1" || ig.OpenAICompat.APIToken != "image-token" {
+		t.Fatalf("unexpected endpoint: %+v", ig.OpenAICompat)
+	}
+	if ig.Timeout != 90*time.Second || ig.MaxImageBytes != 5<<20 || ig.MaxConcurrent != 4 || ig.ChatCooldown != 0 {
+		t.Fatalf("unexpected limits: %+v", ig)
+	}
+}
+
+func TestLoadNormalizesImageGenerationBackendAndURL(t *testing.T) {
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("IMAGE_GENERATION__BACKEND", "  OpenAI_Compat ")
+	t.Setenv("IMAGE_GENERATION__OPENAI_COMPAT__BASE_URL", "  https://images.example/v1  ")
+	t.Setenv("IMAGE_GENERATION__OPENAI_COMPAT__API_TOKEN", "image-token")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.ImageGeneration.Backend != ImageGenerationBackendOpenAICompat {
+		t.Fatalf("expected normalized backend, got %q", cfg.ImageGeneration.Backend)
+	}
+	if cfg.ImageGeneration.OpenAICompat.BaseURL != "https://images.example/v1" {
+		t.Fatalf("expected trimmed base url, got %q", cfg.ImageGeneration.OpenAICompat.BaseURL)
+	}
+}
+
+func TestLoadRejectsInvalidImageGenerationConfig(t *testing.T) {
+	valid := map[string]string{
+		"IMAGE_GENERATION__BACKEND":                  "openai_compat",
+		"IMAGE_GENERATION__OPENAI_COMPAT__BASE_URL":  "https://images.example/v1",
+		"IMAGE_GENERATION__OPENAI_COMPAT__API_TOKEN": "image-token",
+	}
+	with := func(overrides map[string]string) map[string]string {
+		env := map[string]string{}
+		for k, v := range valid {
+			env[k] = v
+		}
+		for k, v := range overrides {
+			env[k] = v
+		}
+
+		return env
+	}
+
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{name: "unknown backend", env: with(map[string]string{"IMAGE_GENERATION__BACKEND": "dalle9"})},
+		{name: "missing base url", env: with(map[string]string{"IMAGE_GENERATION__OPENAI_COMPAT__BASE_URL": " "})},
+		{name: "missing api token", env: with(map[string]string{"IMAGE_GENERATION__OPENAI_COMPAT__API_TOKEN": ""})},
+		{name: "unsupported scheme", env: with(map[string]string{"IMAGE_GENERATION__OPENAI_COMPAT__BASE_URL": "ftp://images.example"})},
+		{name: "zero timeout", env: map[string]string{"IMAGE_GENERATION__TIMEOUT": "0s"}},
+		{name: "zero max image bytes", env: map[string]string{"IMAGE_GENERATION__MAX_IMAGE_BYTES": "0"}},
+		{name: "zero max concurrent", env: map[string]string{"IMAGE_GENERATION__MAX_CONCURRENT": "0"}},
+		{name: "negative chat cooldown", env: map[string]string{"IMAGE_GENERATION__CHAT_COOLDOWN": "-1s"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected load to fail for %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), "IMAGE_GENERATION__") && !strings.Contains(err.Error(), "image_generation.") {
+				t.Fatalf("error should point at the image generation section, got: %v", err)
+			}
+			if strings.Contains(err.Error(), "image-token") {
+				t.Fatalf("error leaked the api token: %v", err)
+			}
+		})
+	}
+}
+
+func TestImageGenerationDisabledIgnoresUnusedEndpointSettings(t *testing.T) {
+	// A disabled feature demands nothing: leftover endpoint values without a
+	// selected backend must not refuse the boot.
+	t.Setenv("LLM__FEATURES__CHAT__MODEL", "gemma4:e4b")
+	t.Setenv("IMAGE_GENERATION__OPENAI_COMPAT__API_TOKEN", "orphan-token")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.ImageGeneration.Enabled() {
+		t.Fatal("expected image generation to stay disabled without a backend")
+	}
+}

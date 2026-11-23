@@ -8,10 +8,14 @@ import (
 type ErrorKind string
 
 const (
-	ErrorKindAuthFailed          ErrorKind = "auth_failed"
-	ErrorKindCreditsExhausted    ErrorKind = "credits_exhausted"
-	ErrorKindRateLimited         ErrorKind = "rate_limited"
-	ErrorKindBadRequest          ErrorKind = "bad_request"
+	ErrorKindAuthFailed       ErrorKind = "auth_failed"
+	ErrorKindCreditsExhausted ErrorKind = "credits_exhausted"
+	ErrorKindRateLimited      ErrorKind = "rate_limited"
+	ErrorKindBadRequest       ErrorKind = "bad_request"
+	// ErrorKindContentRejected means the provider refused the request on
+	// content-safety grounds (a prompt or a generated result). Retrying the
+	// same input cannot succeed, so it is permanent for that input.
+	ErrorKindContentRejected     ErrorKind = "content_rejected"
 	ErrorKindUpstreamUnavailable ErrorKind = "upstream_unavailable"
 	ErrorKindUnsupported         ErrorKind = "unsupported"
 	ErrorKindMisconfigured       ErrorKind = "misconfigured"

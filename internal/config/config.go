@@ -39,6 +39,8 @@ type Config struct {
 	Content     ContentConfig     `koanf:"content"`
 	MCP         MCPConfig         `koanf:"mcp"`
 	SystemOne   SystemOneConfig   `koanf:"systemone"`
+
+	ImageGeneration ImageGenerationConfig `koanf:"image_generation"`
 }
 
 const (
@@ -479,6 +481,112 @@ func (c SystemOneConfig) Validate() error {
 	return validateHTTPSEndpoint("systemone.base_url", c.BaseURL)
 }
 
+// ImageGenerationBackendOpenAICompat selects the OpenAI-compatible images
+// backend (IMAGE_GENERATION__BACKEND).
+const ImageGenerationBackendOpenAICompat = "openai_compat"
+
+// ImageGenerationConfig is the IMAGE_GENERATION__* section: deployment
+// configuration for the generate_image tool. An empty Backend means the whole
+// feature is off — the tool is never advertised and nothing is ever sent. The
+// generation model and the per-chat switch are runtime settings in SQLite
+// (admin UI), not environment variables; endpoints, credentials and budgets
+// stay here.
+//
+// Image generation is deliberately not an LLM feature route: it has its own
+// endpoint and credentials, never inherited from LLM__BACKENDS__*, and future
+// backends need not be LLMs at all.
+type ImageGenerationConfig struct {
+	// Backend selects the implementation: "" (disabled) or "openai_compat".
+	Backend      string                            `koanf:"backend"`
+	OpenAICompat ImageGenerationOpenAICompatConfig `koanf:"openai_compat"`
+	// Timeout caps one generation request. The turn deadline
+	// (BOT__PROCESSING_TIMEOUT) still applies on top; see the image
+	// generation spec for sizing guidance.
+	Timeout time.Duration `koanf:"timeout"`
+	// MaxImageBytes bounds the decoded image. The default is Telegram's
+	// sendPhoto limit (10 MB).
+	MaxImageBytes int64 `koanf:"max_image_bytes"`
+	// MaxConcurrent caps simultaneous generation requests across all chats.
+	MaxConcurrent int `koanf:"max_concurrent"`
+	// ChatCooldown spaces generation attempts per chat. Zero disables it.
+	// It is a spend budget, so it lives here and not in the database.
+	ChatCooldown time.Duration `koanf:"chat_cooldown"`
+}
+
+// ImageGenerationOpenAICompatConfig is the dedicated OpenAI-compatible
+// images endpoint. BaseURL is the OpenAI-style base including the version
+// segment (for example https://api.minimax.io/v1). Both fields are required
+// once the backend is selected: credentials are never inherited from the
+// conversational backend, so they cannot reach an unspecified destination.
+type ImageGenerationOpenAICompatConfig struct {
+	BaseURL  string `koanf:"base_url"`
+	APIToken string `koanf:"api_token"`
+}
+
+// Enabled reports whether a generation backend is selected.
+func (c ImageGenerationConfig) Enabled() bool { return c.Backend != "" }
+
+// Validate checks the image generation section so a mistyped value refuses
+// the boot instead of misbehaving at request time. Limits are always checked;
+// connection settings only while a backend is selected, so an unconfigured
+// feature never demands anything.
+func (c ImageGenerationConfig) Validate() error {
+	if c.Timeout <= 0 {
+		return fmt.Errorf(
+			"image_generation.timeout must be positive (env IMAGE_GENERATION__TIMEOUT), got %s",
+			c.Timeout,
+		)
+	}
+
+	if c.MaxImageBytes <= 0 {
+		return fmt.Errorf(
+			"image_generation.max_image_bytes must be positive (env IMAGE_GENERATION__MAX_IMAGE_BYTES), got %d",
+			c.MaxImageBytes,
+		)
+	}
+
+	if c.MaxConcurrent < 1 {
+		return fmt.Errorf(
+			"image_generation.max_concurrent must be at least 1 (env IMAGE_GENERATION__MAX_CONCURRENT), got %d",
+			c.MaxConcurrent,
+		)
+	}
+
+	if c.ChatCooldown < 0 {
+		return fmt.Errorf(
+			"image_generation.chat_cooldown must not be negative (env IMAGE_GENERATION__CHAT_COOLDOWN), got %s",
+			c.ChatCooldown,
+		)
+	}
+
+	switch c.Backend {
+	case "":
+		return nil
+	case ImageGenerationBackendOpenAICompat:
+	default:
+		return fmt.Errorf(
+			"image_generation.backend contains an unknown backend (use %s or leave empty; env IMAGE_GENERATION__BACKEND)",
+			ImageGenerationBackendOpenAICompat,
+		)
+	}
+
+	if c.OpenAICompat.BaseURL == "" {
+		return fmt.Errorf(
+			"image_generation.openai_compat.base_url is required when the backend is %s (env IMAGE_GENERATION__OPENAI_COMPAT__BASE_URL); it is not inherited from llm.backends.openai_compat",
+			ImageGenerationBackendOpenAICompat,
+		)
+	}
+
+	if c.OpenAICompat.APIToken == "" {
+		return fmt.Errorf(
+			"image_generation.openai_compat.api_token is required when the backend is %s (env IMAGE_GENERATION__OPENAI_COMPAT__API_TOKEN); it is not inherited from llm.backends.openai_compat.api_token",
+			ImageGenerationBackendOpenAICompat,
+		)
+	}
+
+	return validateHTTPSEndpoint("image_generation.openai_compat.base_url", c.OpenAICompat.BaseURL)
+}
+
 // Load reads configuration from environment variables, applies defaults,
 // and returns a populated *Config. An error is returned when a value is
 // present but cannot be parsed (e.g. an integer that fails to convert).
@@ -581,6 +689,11 @@ func Load() (*Config, error) {
 	// The System One endpoint follows the same rule.
 	cfg.SystemOne.BaseURL = strings.TrimSpace(cfg.SystemOne.BaseURL)
 
+	// So does the image generation endpoint; the backend name is a
+	// case-insensitive enum.
+	cfg.ImageGeneration.OpenAICompat.BaseURL = strings.TrimSpace(cfg.ImageGeneration.OpenAICompat.BaseURL)
+	cfg.ImageGeneration.Backend = strings.ToLower(strings.TrimSpace(cfg.ImageGeneration.Backend))
+
 	// Per-feature model fallback: summarize and image_recognition inherit the
 	// chat model when not explicitly set. This keeps the existing operator
 	// experience of "set CHAT and you're done" while still allowing overrides.
@@ -615,6 +728,10 @@ func Load() (*Config, error) {
 	}
 
 	if err := cfg.SystemOne.Validate(); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+
+	if err := cfg.ImageGeneration.Validate(); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 
@@ -654,6 +771,10 @@ func applyDefaults(k *koanf.Koanf) error {
 		"systemone.timeout":                          "60s",
 		"systemone.max_response_bytes":               int64(4 << 20),
 		"systemone.input_budget_bytes":               int64(96 << 10),
+		"image_generation.timeout":                   "60s",
+		"image_generation.max_image_bytes":           int64(10 << 20),
+		"image_generation.max_concurrent":            2,
+		"image_generation.chat_cooldown":             "60s",
 	}
 	for key, value := range defaults {
 		if err := k.Set(key, value); err != nil {
