@@ -15,11 +15,12 @@ func (s *Store) GetGlobalSettings(ctx context.Context) (adminconfig.GlobalSettin
 	var defaultAutoSummaryEnabled int
 	var showReplyPreviews int
 	var keepToolHistory int
+	var webSearchEnabled int
 	var updatedAt string
 
 	err := s.db.QueryRowContext(ctx, `
 SELECT character_name, language, gender, default_interactivity_mode, default_auto_summary_enabled,
-       show_reply_previews, default_preview_mode, keep_tool_history, chat_model, summarize_model,
+       show_reply_previews, default_preview_mode, keep_tool_history, web_search_enabled, chat_model, summarize_model,
        image_recognition_model, systemone_model, default_interaction_profile, decision_instructions,
        updated_at, updated_by
 FROM global_settings
@@ -33,6 +34,7 @@ WHERE id = 1
 		&showReplyPreviews,
 		&settings.DefaultPreviewMode,
 		&keepToolHistory,
+		&webSearchEnabled,
 		&settings.ChatModel,
 		&settings.SummarizeModel,
 		&settings.ImageRecognitionModel,
@@ -49,6 +51,7 @@ WHERE id = 1
 	settings.DefaultAutoSummaryEnabled = defaultAutoSummaryEnabled == 1
 	settings.ShowReplyPreviews = showReplyPreviews == 1
 	settings.KeepToolHistory = keepToolHistory == 1
+	settings.WebSearchEnabled = webSearchEnabled == 1
 	settings.UpdatedAt = parseSQLiteTime(updatedAt)
 
 	return settings, nil
@@ -81,11 +84,12 @@ func (s *Store) GetChatSettings(ctx context.Context, chatID int64) (adminconfig.
 	var interactivity string
 	var autoSummaryEnabled sql.NullInt64
 	var keepToolHistory sql.NullInt64
+	var webSearchEnabled sql.NullInt64
 	var updatedAt string
 
 	err := s.db.QueryRowContext(ctx, `
 SELECT chat_id, character_name, language, gender, interactivity_mode, auto_summary_enabled,
-       preview_mode, keep_tool_history, chat_model, systemone_model, interaction_profile,
+       preview_mode, keep_tool_history, web_search_enabled, chat_model, systemone_model, interaction_profile,
        decision_instructions, updated_at, updated_by
 FROM chat_settings
 WHERE chat_id = ?
@@ -98,6 +102,7 @@ WHERE chat_id = ?
 		&autoSummaryEnabled,
 		&settings.PreviewMode,
 		&keepToolHistory,
+		&webSearchEnabled,
 		&settings.ChatModel,
 		&settings.SystemOneModel,
 		&settings.InteractionProfile,
@@ -126,6 +131,10 @@ WHERE chat_id = ?
 	if keepToolHistory.Valid {
 		v := keepToolHistory.Int64 == 1
 		settings.KeepToolHistory = &v
+	}
+	if webSearchEnabled.Valid {
+		v := webSearchEnabled.Int64 == 1
+		settings.WebSearchEnabled = &v
 	}
 	settings.UpdatedAt = parseSQLiteTime(updatedAt)
 

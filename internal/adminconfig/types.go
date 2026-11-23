@@ -199,6 +199,10 @@ type GlobalSettings struct {
 	// KeepToolHistory controls whether completed tool calls are appended as
 	// a collapsible section to final replies when previews are enabled.
 	KeepToolHistory bool
+	// WebSearchEnabled is the global default for whether the model may use
+	// external web search. It only matters when a search backend is configured
+	// in the environment; it can never create a search capability.
+	WebSearchEnabled bool
 	// ChatModel is the global default generation model override. "" means
 	// unset: the model routes configured in the environment stay in effect.
 	ChatModel string
@@ -241,6 +245,9 @@ type ChatSettings struct {
 	// KeepToolHistory overrides the global tool-history retention. nil means
 	// inherit the global default.
 	KeepToolHistory *bool
+	// WebSearchEnabled overrides the global web search permission. nil means
+	// inherit the global default.
+	WebSearchEnabled *bool
 	// ChatModel overrides the generation model. "" means inherit the global
 	// default (which may itself be unset — the environment route applies).
 	ChatModel string
@@ -291,6 +298,9 @@ type ResolvedChatConfig struct {
 	PreviewMode PreviewMode
 	// KeepToolHistory is the effective tool-history retention switch.
 	KeepToolHistory bool
+	// WebSearchEnabled is the effective web search permission: the chat
+	// override, else the global default.
+	WebSearchEnabled bool
 	// ChatModel is the effective generation model override chain result:
 	// the chat override, else the global default. "" means the environment
 	// model routes stay in effect.

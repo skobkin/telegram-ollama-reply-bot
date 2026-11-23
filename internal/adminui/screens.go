@@ -389,6 +389,8 @@ func globalSettingsValue(settings adminconfig.GlobalSettings, spec adminconfig.F
 		return string(settings.DefaultPreviewMode)
 	case "keep_tool_history":
 		return strconv.FormatBool(settings.KeepToolHistory)
+	case "web_search_enabled":
+		return strconv.FormatBool(settings.WebSearchEnabled)
 	case "chat_model", "summarize_model", "image_recognition_model":
 		if settings.ChatModel == "" && spec.Name == "chat_model" {
 			return envRoutePlaceholder

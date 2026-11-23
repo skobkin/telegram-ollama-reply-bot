@@ -35,7 +35,7 @@ func (s *Service) GlobalFields() []string {
 	return []string{
 		"character_name", "language", "gender", "default_interactivity_mode",
 		"default_auto_summary_enabled", "show_reply_previews", "default_preview_mode",
-		"keep_tool_history", "chat_model", "summarize_model", "image_recognition_model",
+		"keep_tool_history", "web_search_enabled", "chat_model", "summarize_model", "image_recognition_model",
 		"systemone_model", "default_interaction_profile", "decision_instructions",
 	}
 }
@@ -43,7 +43,7 @@ func (s *Service) GlobalFields() []string {
 func (s *Service) ChatFields() []string {
 	return []string{
 		"character_name", "language", "gender", "interactivity_mode",
-		"auto_summary_enabled", "preview_mode", "keep_tool_history",
+		"auto_summary_enabled", "preview_mode", "keep_tool_history", "web_search_enabled",
 		"chat_model", "systemone_model", "interaction_profile", "decision_instructions",
 	}
 }
@@ -109,6 +109,7 @@ func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (Resolved
 		AutoSummaryEnabled:    global.DefaultAutoSummaryEnabled,
 		PreviewMode:           previewMode,
 		KeepToolHistory:       global.KeepToolHistory,
+		WebSearchEnabled:      global.WebSearchEnabled,
 		ChatModel:             global.ChatModel,
 		SummarizeModel:        global.SummarizeModel,
 		ImageRecognitionModel: global.ImageRecognitionModel,
@@ -152,6 +153,9 @@ func (s *Service) ResolveChatConfig(ctx context.Context, chatID int64) (Resolved
 	}
 	if chat.KeepToolHistory != nil {
 		resolved.KeepToolHistory = *chat.KeepToolHistory
+	}
+	if chat.WebSearchEnabled != nil {
+		resolved.WebSearchEnabled = *chat.WebSearchEnabled
 	}
 	if chat.ChatModel != "" {
 		resolved.ChatModel = chat.ChatModel

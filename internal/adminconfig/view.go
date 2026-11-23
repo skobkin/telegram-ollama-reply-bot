@@ -118,6 +118,11 @@ func effectiveChatField(spec FieldSpec, global GlobalSettings, chat ChatSettings
 		if found && chat.KeepToolHistory != nil {
 			field.Effective, field.Source, field.Overridden = strconv.FormatBool(*chat.KeepToolHistory), SourceChatOverride, true
 		}
+	case "web_search_enabled":
+		field.GlobalValue = strconv.FormatBool(global.WebSearchEnabled)
+		if found && chat.WebSearchEnabled != nil {
+			field.Effective, field.Source, field.Overridden = strconv.FormatBool(*chat.WebSearchEnabled), SourceChatOverride, true
+		}
 	case "chat_model":
 		field.GlobalValue = global.ChatModel
 		if found && chat.ChatModel != "" {

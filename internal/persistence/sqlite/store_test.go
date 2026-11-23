@@ -458,3 +458,91 @@ func TestStorePreviewSettingsRoundTrip(t *testing.T) {
 		t.Fatal("chat preview_mode must reject unsupported values")
 	}
 }
+
+// TestStoreWebSearchSettingsRoundTrip covers the web search permission: the
+// global default is on for a fresh store, the per-chat tri-state is stored as
+// NULL (inherit) / 1 / 0, and unrelated writes and "reset overrides" leave it
+// in the expected state.
+func TestStoreWebSearchSettingsRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	global, err := store.GetGlobalSettings(ctx)
+	if err != nil {
+		t.Fatalf("get global settings: %v", err)
+	}
+	if !global.WebSearchEnabled {
+		t.Fatal("expected web search on by default on a fresh store")
+	}
+
+	if err := store.SetGlobalField(ctx, "web_search_enabled", "false", 42); err != nil {
+		t.Fatalf("set global web_search_enabled: %v", err)
+	}
+	global, err = store.GetGlobalSettings(ctx)
+	if err != nil {
+		t.Fatalf("get updated global settings: %v", err)
+	}
+	if global.WebSearchEnabled {
+		t.Fatal("expected global web search off after update")
+	}
+	if err := store.SetGlobalField(ctx, "web_search_enabled", "maybe", 42); err == nil {
+		t.Fatal("global web_search_enabled must reject non-boolean values")
+	}
+
+	if err := store.SetChatField(ctx, 123, "web_search_enabled", "true", 42); err != nil {
+		t.Fatalf("set chat web_search_enabled: %v", err)
+	}
+	chat, ok, err := store.GetChatSettings(ctx, 123)
+	if err != nil || !ok {
+		t.Fatalf("get chat settings: ok=%v err=%v", ok, err)
+	}
+	if chat.WebSearchEnabled == nil || !*chat.WebSearchEnabled {
+		t.Fatalf("expected explicit true override, got %+v", chat.WebSearchEnabled)
+	}
+
+	if err := store.SetChatField(ctx, 123, "web_search_enabled", "false", 42); err != nil {
+		t.Fatalf("set chat web_search_enabled false: %v", err)
+	}
+	chat, _, err = store.GetChatSettings(ctx, 123)
+	if err != nil {
+		t.Fatalf("get chat settings: %v", err)
+	}
+	if chat.WebSearchEnabled == nil || *chat.WebSearchEnabled {
+		t.Fatalf("expected explicit false override, got %+v", chat.WebSearchEnabled)
+	}
+
+	// An unrelated write must not disturb the override.
+	if err := store.SetChatField(ctx, 123, "language", "English", 42); err != nil {
+		t.Fatalf("set chat language: %v", err)
+	}
+	chat, _, err = store.GetChatSettings(ctx, 123)
+	if err != nil {
+		t.Fatalf("get chat settings: %v", err)
+	}
+	if chat.WebSearchEnabled == nil || *chat.WebSearchEnabled {
+		t.Fatalf("override must survive unrelated writes, got %+v", chat.WebSearchEnabled)
+	}
+
+	if err := store.ClearChatField(ctx, 123, "web_search_enabled", 42); err != nil {
+		t.Fatalf("clear chat web_search_enabled: %v", err)
+	}
+	chat, _, err = store.GetChatSettings(ctx, 123)
+	if err != nil {
+		t.Fatalf("get cleared chat settings: %v", err)
+	}
+	if chat.WebSearchEnabled != nil {
+		t.Fatalf("expected NULL (inherit) after clear, got %+v", chat.WebSearchEnabled)
+	}
+
+	// Enabling a chat override on a fresh chat row and then resetting all
+	// overrides returns the chat to inheritance.
+	if err := store.SetChatField(ctx, 456, "web_search_enabled", "true", 42); err != nil {
+		t.Fatalf("set second chat web_search_enabled: %v", err)
+	}
+	if err := store.ClearChatField(ctx, 456, "all", 42); err != nil {
+		t.Fatalf("reset second chat overrides: %v", err)
+	}
+	if _, ok, err := store.GetChatSettings(ctx, 456); err != nil || ok {
+		t.Fatalf("expected reset chat to have no settings row, ok=%v err=%v", ok, err)
+	}
+}

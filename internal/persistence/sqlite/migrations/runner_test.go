@@ -469,8 +469,8 @@ func TestApplyCreatesStatisticsSnapshotsTable(t *testing.T) {
 	}
 
 	var version int
-	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil || version != 14 {
-		t.Fatalf("expected schema version 14, got %d (err %v)", version, err)
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil || version != targetSchemaVersion {
+		t.Fatalf("expected schema version %d, got %d (err %v)", targetSchemaVersion, version, err)
 	}
 }
 
