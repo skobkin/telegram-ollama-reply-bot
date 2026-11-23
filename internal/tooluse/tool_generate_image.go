@@ -91,9 +91,11 @@ func (r *Runtime) generateImagePresentation(call CallContext, p Presentation) (P
 }
 
 // canGenerateImage reports whether the run may still start a generation: the
-// permission is on, a model is selected, and the turn's attempt is unused.
+// permission is on, a model is selected, the turn's attempt is unused, and the
+// turn answers a user. Proactive turns never generate: nobody asked for the
+// image and every call is billed.
 func (s *runState) canGenerateImage() bool {
-	return s != nil && s.imageGenerationEnabled && s.imageGenerationModel != "" && !s.imageGenerationAttempted
+	return s != nil && !s.proactive && s.imageGenerationEnabled && s.imageGenerationModel != "" && !s.imageGenerationAttempted
 }
 
 // imageToolError builds a model-facing failure. Nothing here is retryable:
@@ -160,7 +162,7 @@ func (r *Runtime) generateImage(ctx context.Context, callCtx CallContext, args j
 	}
 
 	run := callCtx.run
-	if r.imageGenerator == nil || r.actions == nil || run == nil || !run.imageGenerationEnabled || run.imageGenerationModel == "" {
+	if r.imageGenerator == nil || r.actions == nil || run == nil || run.proactive || !run.imageGenerationEnabled || run.imageGenerationModel == "" {
 		return imageToolError("tool_unavailable", "Image generation is unavailable for this chat.", "", ErrorUnavailable), nil
 	}
 	// The turn's single attempt is checked first: a blocked turn must not be

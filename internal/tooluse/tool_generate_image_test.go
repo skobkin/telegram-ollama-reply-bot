@@ -270,6 +270,12 @@ func TestGenerateImageUnavailableStatesNeverGenerate(t *testing.T) {
 
 			return imageCall(5, 0, run)
 		},
+		"proactive turn": func(*imageHarness) CallContext {
+			run := imageRun()
+			run.proactive = true
+
+			return imageCall(5, 0, run)
+		},
 		"no run state": func(*imageHarness) CallContext { return imageCall(5, 0, nil) },
 		"no generator": func(h *imageHarness) CallContext {
 			h.runtime.imageGenerator = nil
