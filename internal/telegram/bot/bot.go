@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strconv"
+	"sync"
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/config"
@@ -104,6 +105,10 @@ type Bot struct {
 	// empty. It is wired unconditionally (SetChatRouteModel) so explicit
 	// turns attribute correctly even when proactive participation is off.
 	chatRouteModel string
+	// meMu guards me for the history recorders (reminder delivery), which run
+	// on goroutines that start before Run has resolved the identity. Handlers
+	// start after Run assigned it and read me directly.
+	meMu sync.RWMutex
 }
 
 func NewBot(
@@ -168,6 +173,26 @@ func (b *Bot) SetAdminUI(ui AdminUI) {
 	b.adminUI = ui
 }
 
+// SetIdentity records the bot's own Telegram identity. App wiring seeds it
+// from the identity verified at startup before any history recorder is
+// attached, and Run refreshes it after its own GetMe: a reminder delivered
+// while Run is still starting must stamp the real bot name, not an empty one.
+func (b *Bot) SetIdentity(user *t.User) {
+	b.meMu.Lock()
+	defer b.meMu.Unlock()
+
+	b.me = botInfoFromUser(user)
+}
+
+// identity returns the bot's identity for goroutines that may run before Run
+// has assigned it.
+func (b *Bot) identity() botInfo {
+	b.meMu.RLock()
+	defer b.meMu.RUnlock()
+
+	return b.me
+}
+
 // executionEventBus is the dispatcher contract the bot wiring needs:
 // subscribing the live preview manager and publishing execution events
 // from the reaction ingress. The concrete dispatcher from
@@ -208,7 +233,7 @@ func (b *Bot) Run() error {
 		return ErrGetMe
 	}
 
-	b.me = botInfoFromUser(botUser)
+	b.SetIdentity(botUser)
 
 	logger.Info("telegram api connected",
 		"id", b.me.ID,

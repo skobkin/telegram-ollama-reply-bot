@@ -677,6 +677,10 @@ func Run(ctx context.Context) (runErr error) {
 		},
 	)
 
+	// The scheduler and tools can record bot messages before Run has resolved
+	// the identity itself; seed it from the one verified at startup.
+	botService.SetIdentity(botUser)
+
 	// Interactive admin UI: controller (sessions, screens) plus the Telegram
 	// adapter that renders it. Ephemeral by design — sessions and pendings
 	// live in memory only. Model pickers discover from the backend actually

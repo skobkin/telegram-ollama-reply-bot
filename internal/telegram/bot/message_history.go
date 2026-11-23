@@ -54,13 +54,14 @@ func (b *Bot) saveBotReplyToHistory(ctx context.Context, replyTo t.Message, text
 // reactions that arrived during the send window. Callers pass only content
 // that Telegram confirmed; it implements tooluse.OutgoingRecorder.
 func (b *Bot) RecordBotMessage(ctx context.Context, scope state.ConversationScope, msg state.Message) {
-	botName := strings.TrimSpace(b.me.FirstName + " " + b.me.LastName)
+	me := b.identity()
+	botName := strings.TrimSpace(me.FirstName + " " + me.LastName)
 	if botName == "" {
-		botName = b.me.Username
+		botName = me.Username
 	}
 
 	msg.Name = botName
-	msg.Username = b.me.Username
+	msg.Username = me.Username
 	msg.IsMe = true
 	msg.ChatID = scope.ChatID
 	msg.TopicID = scope.TopicID
