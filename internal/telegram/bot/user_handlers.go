@@ -8,6 +8,7 @@ import (
 
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/statistics"
+	"telegram-ollama-reply-bot/internal/support/errreport"
 
 	"github.com/getsentry/sentry-go"
 	t "github.com/mymmrac/telego"
@@ -116,7 +117,7 @@ func (b *Bot) summarizeHandler(ctx *th.Context, message t.Message) error {
 	sent, err := b.sendRichMarkdownReplyWithSuffix(ctx.Context(), message, summarizeReply, footer)
 	if err != nil {
 		logger.Error("cannot send summarize reply", "error", err, "reply_length", len(replyMarkdown))
-		sentry.CaptureException(err)
+		errreport.Capture(err)
 		b.trySendReplyError(ctx.Context(), message)
 	}
 

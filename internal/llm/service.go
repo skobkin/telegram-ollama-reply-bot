@@ -8,6 +8,7 @@ import (
 	"slices"
 	"telegram-ollama-reply-bot/internal/config"
 	"telegram-ollama-reply-bot/internal/logging"
+	"telegram-ollama-reply-bot/internal/support/errreport"
 	"telegram-ollama-reply-bot/internal/support/safeerr"
 	"time"
 
@@ -89,7 +90,7 @@ func (s *Service) Generate(ctx context.Context, req Request) (Response, error) {
 				"model", req.Model,
 				"error", sanitized,
 			)
-			sentry.CaptureException(sanitized)
+			errreport.Capture(sanitized)
 
 			return Response{}, sanitized
 		}
@@ -101,7 +102,7 @@ func (s *Service) Generate(ctx context.Context, req Request) (Response, error) {
 			"model", req.Model,
 			"error", err,
 		)
-		sentry.CaptureException(err)
+		errreport.Capture(err)
 
 		return Response{}, errors.Join(ErrLlmBackendRequestFailed, err)
 	}
@@ -173,7 +174,7 @@ func (s *Service) summarize(ctx context.Context, scope PromptScope, text string,
 			diagnostic = ErrTemplateProcessing
 		}
 		logger.Error("summarize template processing failed", "error", diagnostic)
-		sentry.CaptureException(diagnostic)
+		errreport.Capture(diagnostic)
 
 		return "", nil, ErrTemplateProcessing
 	}
@@ -187,7 +188,7 @@ func (s *Service) summarize(ctx context.Context, scope PromptScope, text string,
 		model, err = s.resolver.ResolveModel(ctx, FeatureSummarize, scope.ChatID)
 		if err != nil {
 			logger.Error("summarize model resolution failed", "error", err)
-			sentry.CaptureException(err)
+			errreport.Capture(err)
 
 			return "", nil, err
 		}
@@ -261,7 +262,7 @@ func (s *Service) HasModelsFor(ctx context.Context, features ...Feature) (bool, 
 			}
 
 			logger.Error("model list request failed", "backend", s.backend.Name(), "feature", feature, "error", logErr)
-			sentry.CaptureException(logErr)
+			errreport.Capture(logErr)
 			result[string(feature)] = false
 
 			continue
@@ -274,7 +275,7 @@ func (s *Service) HasModelsFor(ctx context.Context, features ...Feature) (bool, 
 			override, err = s.resolver.ResolveModel(ctx, feature, 0)
 			if err != nil {
 				logger.Error("runtime model resolution failed", "feature", feature, "error", err)
-				sentry.CaptureException(err)
+				errreport.Capture(err)
 				result[string(feature)] = false
 
 				continue
@@ -350,7 +351,7 @@ func (s *Service) buildConversationMessages(ctx context.Context, scope PromptSco
 			diagnostic = ErrTemplateProcessing
 		}
 		logger.Error("chat template processing failed", "error", diagnostic)
-		sentry.CaptureException(diagnostic)
+		errreport.Capture(diagnostic)
 
 		return nil, ErrTemplateProcessing
 	}

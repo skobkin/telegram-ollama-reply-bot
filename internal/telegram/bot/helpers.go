@@ -13,6 +13,7 @@ import (
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/logging"
 	"telegram-ollama-reply-bot/internal/state"
+	"telegram-ollama-reply-bot/internal/support/errreport"
 	"telegram-ollama-reply-bot/internal/support/httpclient"
 	"telegram-ollama-reply-bot/internal/support/safeerr"
 	"telegram-ollama-reply-bot/internal/vision"
@@ -79,7 +80,7 @@ func (b *Bot) sendTyping(ctx context.Context, chatID t.ChatID) {
 	err := b.api.SendChatAction(ctx, tu.ChatAction(chatID, "typing"))
 	if err != nil {
 		logger.Error("cannot set chat action", "error", err, "chat_id", chatID)
-		sentry.CaptureException(err)
+		errreport.Capture(err)
 	}
 }
 
@@ -191,7 +192,7 @@ func (b *Bot) ensureMessageImageDescription(ctx context.Context, msg *state.Mess
 				description, err := b.describeImage(ctx, msg.ImageMeta)
 				if err != nil {
 					b.loggerFromContext(ctx).Error("failed to describe image", "error", err, "file_id", msg.ImageMeta.FileID)
-					sentry.CaptureException(err)
+					errreport.Capture(err)
 				} else {
 					b.imageCache.Set(msg.ImageMeta, description)
 					msg.Image = description

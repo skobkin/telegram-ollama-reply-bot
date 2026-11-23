@@ -11,6 +11,7 @@ import (
 
 	"telegram-ollama-reply-bot/internal/adminconfig"
 	"telegram-ollama-reply-bot/internal/llm"
+	"telegram-ollama-reply-bot/internal/support/errreport"
 	"telegram-ollama-reply-bot/internal/tooluse"
 
 	"github.com/getsentry/sentry-go"
@@ -268,7 +269,7 @@ func (b *Bot) autoSummarizeLink(baseCtx context.Context, logger *slog.Logger, me
 		summary, _, err := b.llm.Summarize(ctx, llm.PromptScope{ChatID: chatID}, content, "")
 		if err != nil {
 			logger.Warn("auto-summary llm request failed", "chat_id", chatID, "error", err, "url_host", autoSummaryURLHost(url))
-			sentry.CaptureException(err)
+			errreport.Capture(err)
 
 			return nil
 		}
@@ -283,7 +284,7 @@ func (b *Bot) autoSummarizeLink(baseCtx context.Context, logger *slog.Logger, me
 		sent, err := b.sendRichMarkdownReplyWithSuffix(ctx, message, summary, footer)
 		if err != nil {
 			logger.Warn("auto-summary send failed", "chat_id", chatID, "error", err, "url_host", autoSummaryURLHost(url))
-			sentry.CaptureException(err)
+			errreport.Capture(err)
 
 			return nil
 		}

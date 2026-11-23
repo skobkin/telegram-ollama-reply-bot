@@ -11,9 +11,9 @@ import (
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/llmcontext"
 	"telegram-ollama-reply-bot/internal/state"
+	"telegram-ollama-reply-bot/internal/support/errreport"
 	"telegram-ollama-reply-bot/internal/tooluse"
 
-	"github.com/getsentry/sentry-go"
 	t "github.com/mymmrac/telego"
 	tu "github.com/mymmrac/telego/telegoutil"
 )
@@ -288,7 +288,7 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 			// indicator must not outlive an unsolicited turn.
 			run.Fail()
 			logger.Error("proactive turn failed", "error", err)
-			sentry.CaptureException(err)
+			errreport.Capture(err)
 
 			return effects
 		}
@@ -307,7 +307,7 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 		}
 
 		logger.Error("cannot get reply from llm connector", "error", err)
-		sentry.CaptureException(err)
+		errreport.Capture(err)
 
 		_, _ = b.sendMessage(ctx, b.reply(message, tu.Message(
 			chatID,
@@ -367,7 +367,7 @@ func (b *Bot) runConversationTurn(ctx context.Context, message t.Message, userMe
 		}
 
 		logger.Error("cannot send reply message", "error", err, "reply_length", len(llmReply))
-		sentry.CaptureException(err)
+		errreport.Capture(err)
 
 		if opts.errorPolicy == explicitErrors {
 			b.trySendReplyError(ctx, message)

@@ -7,6 +7,7 @@ import (
 	"math"
 	"telegram-ollama-reply-bot/internal/content/fetch"
 	"telegram-ollama-reply-bot/internal/logging"
+	"telegram-ollama-reply-bot/internal/support/errreport"
 
 	"github.com/getsentry/sentry-go"
 )
@@ -87,7 +88,7 @@ func (p *Pipeline) GetArticleFromURL(ctx context.Context, url string) (Article, 
 	page, err := p.fetcher.Fetch(ctx, url)
 	if err != nil {
 		logger.Warn("page fetch failed", "url", url, "error", err)
-		sentry.CaptureException(err)
+		errreport.Capture(err)
 
 		return Article{}, ErrExtractFailed
 	}

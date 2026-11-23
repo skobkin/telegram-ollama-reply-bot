@@ -8,8 +8,8 @@ import (
 	"telegram-ollama-reply-bot/internal/llm"
 	"telegram-ollama-reply-bot/internal/llmcontext"
 	"telegram-ollama-reply-bot/internal/state"
+	"telegram-ollama-reply-bot/internal/support/errreport"
 
-	"github.com/getsentry/sentry-go"
 	t "github.com/mymmrac/telego"
 )
 
@@ -255,7 +255,7 @@ func (b *Bot) summarizeHistorySlice(ctx context.Context, scope state.Conversatio
 	}
 	if err != nil {
 		b.loggerFromContext(ctx).Error("failed to summarize history", "error", err, "chat_id", scope.ChatID, "topic_id", scope.TopicID)
-		sentry.CaptureException(err)
+		errreport.Capture(err)
 
 		return false
 	}
