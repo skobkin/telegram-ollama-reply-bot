@@ -111,8 +111,8 @@ Stored prompt templates use Go's [`text/template`](https://pkg.go.dev/text/templ
 - `summarize` – `{{.Language}}`, `{{.MaxLength}}`
 - `image_recognition` – `{{.Language}}`
 
-Global fields: `character_name`, `language`, `gender`, `default_interactivity_mode`, `default_auto_summary_enabled`, `show_reply_previews`, `default_preview_mode`, `keep_tool_history`, `chat_model`, `summarize_model`, `image_recognition_model`, `systemone_model`, `default_interaction_profile`, `decision_instructions`.
-Per-chat fields: `character_name`, `language`, `gender`, `interactivity_mode`, `auto_summary_enabled`, `preview_mode`, `keep_tool_history`, `chat_model`, `systemone_model`, `interaction_profile`, `decision_instructions`.
+Global fields: `character_name`, `language`, `gender`, `default_interactivity_mode`, `default_auto_summary_enabled`, `show_reply_previews`, `default_preview_mode`, `keep_tool_history`, `web_search_enabled`, `chat_model`, `summarize_model`, `image_recognition_model`, `systemone_model`, `default_interaction_profile`, `decision_instructions`.
+Per-chat fields: `character_name`, `language`, `gender`, `interactivity_mode`, `auto_summary_enabled`, `preview_mode`, `keep_tool_history`, `web_search_enabled`, `chat_model`, `systemone_model`, `interaction_profile`, `decision_instructions`.
 
 ## Usage
 
@@ -137,7 +137,7 @@ Conversation requests automatically include a compact timestamp/timezone and ret
 
 Ordinary chat replies always use the tool-capable chat workflow. `LLM__FEATURES__CHAT__MODEL` must point to a model and backend combination that supports OpenAI-compatible tool calls. The current tool set is:
 
-- `search_web` for explicit internet lookups when `SEARCH__BACKEND` is configured to something other than `none`
+- `search_web` for explicit internet lookups when `SEARCH__BACKEND` is configured to something other than `none` and web search is permitted for the chat (see "Web search permission")
 - `get_current_time` for time-sensitive reasoning and schedule anchoring
 - `datetime_math` for exact datetime diff, shift, weekday, and timezone conversion
 - `datetime_format` for compact user-facing timestamp formatting
@@ -238,6 +238,21 @@ Reminder behavior in the first implementation slice:
 `/summarize` still uses the direct extractor-plus-summary workflow and does not depend on the tool loop.
 
 If `SEARCH__BACKEND` is unset or set to `none`, the `search_web` tool is not exposed to the model.
+
+#### Web search permission
+
+External search can consume paid provider resources, so administrators can control it per chat without touching the
+provider configuration. Providers, credentials and the backend chain stay in ENV; the permission is a runtime setting
+in the admin UI (`🛠 Tools` submenu):
+
+- Global `Web search` (default **on**, so existing deployments keep their behavior) and a per-chat override with three
+  states: inherit the global value, enabled, disabled.
+- The effective value is resolved once when a request starts and stays fixed for that whole run; changing it affects
+  only later requests.
+- When disabled, `search_web` is hidden from the model's tools and prompt, and the tool runtime also rejects a call to
+  it (`tool_unavailable`) without contacting the search provider.
+- The permission can only narrow an existing capability: without a configured `SEARCH__BACKEND` the tool is never
+  registered, and the setting is hidden from the admin UI.
 
 By default, chat interactivity is `disabled`. Configure it from an admin DM before expecting the bot to answer normal
 chat messages.
@@ -443,6 +458,11 @@ dismisses a pending input and reopens the panel. Sessions are ephemeral and expi
 - **Preview settings** — global (`Show reply previews` master switch, `Default preview mode`, `Keep tool history`)
   and per-chat (`Preview mode` enum with explicit inherit while overridden, `Keep tool history` tri-state). While
   the master switch is off, chat screens hide the preview rows — stored overrides stay untouched.
+- **Tools** — `Web search` permission and `Keep tool history` (global value and per-chat tri-state each) live in one
+  `🛠 Tools` submenu reachable from the chat card and both settings screens; the settings text still lists their
+  effective values. The submenu shows whether a chat inherits or overrides a value and the global value it would
+  inherit. `Keep tool history` follows the preview master switch, and `Web search` is hidden without a configured
+  search backend.
 - **Models** — global defaults and per-chat overrides for generation, summarize, image-recognition, and System One
   decision models. Each model field opens a picker fed by the backend that serves that feature (the list shows
   availability, not capability — a listed model is not guaranteed to fit the role) plus an `✏️ Enter model ID…`

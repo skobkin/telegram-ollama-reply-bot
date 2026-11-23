@@ -25,6 +25,8 @@ func TestCallbackCodecRoundTrip(t *testing.T) {
 		{VerbAccessPol, []string{"allow_all"}, 1000},
 		{VerbConfirmYes, nil, 3},
 		{VerbInteractivity, nil, 12},
+		{VerbTools, nil, 12},
+		{VerbValue, []string{"ws", "inh"}, 12},
 		{VerbField, []string{"so"}, 12},
 		{VerbValue, []string{"ip", "talk_high"}, 12},
 		{VerbModelList, []string{"cm"}, 99},

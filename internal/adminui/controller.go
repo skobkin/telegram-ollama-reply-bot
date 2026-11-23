@@ -243,6 +243,11 @@ type ControllerOptions struct {
 	// active image recognizer takes no model selection (MiniMax). Hiding is
 	// render-time only: a stored global value stays untouched.
 	HideImageModel bool
+	// HideWebSearch hides the web search setting while no search backend is
+	// configured in the environment: the setting can only narrow an existing
+	// capability, so offering it would be misleading. Hiding is render-time
+	// only: stored values stay untouched.
+	HideWebSearch bool
 	// StatsReport renders the PNG report attached to the statistics export.
 	// Nil keeps the export JSON-only.
 	StatsReport StatsReportRenderer
@@ -285,6 +290,14 @@ func WithStatsReport(render StatsReportRenderer) ControllerOption {
 func WithHiddenImageModel() ControllerOption {
 	return func(o *ControllerOptions) {
 		o.HideImageModel = true
+	}
+}
+
+// WithHiddenWebSearch hides the web search setting (no search backend is
+// configured).
+func WithHiddenWebSearch() ControllerOption {
+	return func(o *ControllerOptions) {
+		o.HideWebSearch = true
 	}
 }
 
@@ -1161,6 +1174,12 @@ func (c *Controller) handleVerb(ctx context.Context, adminID int64, s *Session, 
 
 		return nil
 
+	case VerbTools:
+		s.PushScreen(ScreenState{Kind: ScreenTools, ChatID: scopeFromScreen(s)})
+		s.MarkRerender()
+
+		return nil
+
 	case VerbModelList:
 		return c.handleModelList(ctx, s)
 
@@ -1852,6 +1871,7 @@ func (c *Controller) buildScreen(ctx context.Context, seq uint32, state ScreenSt
 			View:              view,
 			AccessLine:        accessStatusLabel(policy, view.Allowlisted),
 			HidePreviewFields: !global.ShowReplyPreviews,
+			HideWebSearch:     c.opts.HideWebSearch,
 		}
 		for _, mode := range adminconfig.InteractivityModes() {
 			data.ModeValues = append(data.ModeValues, string(mode))
@@ -1870,7 +1890,7 @@ func (c *Controller) buildScreen(ctx context.Context, seq uint32, state ScreenSt
 		if err != nil {
 			return nil, err
 		}
-		screen = b.settings(SettingsData{Global: true, View: view, HideImageModel: c.opts.HideImageModel})
+		screen = b.settings(SettingsData{Global: true, View: view, HideImageModel: c.opts.HideImageModel, HideWebSearch: c.opts.HideWebSearch})
 
 	case ScreenChatSet:
 		view, err := c.service.EffectiveChatConfig(ctx, state.ChatID)
@@ -1885,6 +1905,7 @@ func (c *Controller) buildScreen(ctx context.Context, seq uint32, state ScreenSt
 			ChatView:          view,
 			ChatName:          c.chatDisplayName(ctx, state.ChatID),
 			HidePreviewFields: !global.ShowReplyPreviews,
+			HideWebSearch:     c.opts.HideWebSearch,
 		})
 
 	case ScreenFieldEditor:
@@ -1900,6 +1921,13 @@ func (c *Controller) buildScreen(ctx context.Context, seq uint32, state ScreenSt
 			return nil, err
 		}
 		screen = b.interactivity(data)
+
+	case ScreenTools:
+		data, err := c.toolsData(ctx, state)
+		if err != nil {
+			return nil, err
+		}
+		screen = b.tools(data)
 
 	case ScreenPrompts:
 		overview, err := c.service.PromptOverview(ctx, state.ChatID)
@@ -2123,6 +2151,52 @@ func (c *Controller) interactivityData(ctx context.Context, state ScreenState) (
 	return data, nil
 }
 
+// toolsData assembles the Tools submenu data for one scope. Chat values come
+// from the effective config (inherit/override marks and the inherited global
+// value included); the global scope shows the stored defaults. Fields are
+// hidden at render time only: the keep-tool-history row follows the preview
+// master switch in chat scope, and web search disappears while no search
+// backend is configured.
+func (c *Controller) toolsData(ctx context.Context, state ScreenState) (ToolsData, error) {
+	data := ToolsData{Global: state.ChatID == 0}
+	if !data.Global {
+		data.ChatName = c.chatDisplayName(ctx, state.ChatID)
+	}
+
+	global, err := c.service.Store().GetGlobalSettings(ctx)
+	if err != nil {
+		return ToolsData{}, err
+	}
+
+	if data.Global {
+		if !c.opts.HideWebSearch {
+			data.Fields = append(data.Fields, ToolsField{Name: "web_search_enabled", Value: strconv.FormatBool(global.WebSearchEnabled)})
+		}
+		data.Fields = append(data.Fields, ToolsField{Name: "keep_tool_history", Value: strconv.FormatBool(global.KeepToolHistory)})
+
+		return data, nil
+	}
+
+	view, err := c.service.EffectiveChatConfig(ctx, state.ChatID)
+	if err != nil {
+		return ToolsData{}, err
+	}
+	for _, field := range view.Fields {
+		switch {
+		case field.Spec.Name == "web_search_enabled" && !c.opts.HideWebSearch,
+			field.Spec.Name == "keep_tool_history" && global.ShowReplyPreviews:
+			data.Fields = append(data.Fields, ToolsField{
+				Name:        field.Spec.Name,
+				Value:       field.Effective,
+				Overridden:  field.Overridden,
+				GlobalValue: field.GlobalValue,
+			})
+		}
+	}
+
+	return data, nil
+}
+
 func (c *Controller) currentFieldValue(ctx context.Context, scopeChatID int64, field string) (string, error) {
 	spec, err := fieldSpecFor(field, scopeChatID)
 	if err != nil {
@@ -2216,7 +2290,7 @@ func rerenderInPlace(s *Session) error {
 // belongs to, derived from the screen it was rendered on.
 func scopeFromScreen(s *Session) int64 {
 	switch s.Screen.Kind {
-	case ScreenChatCard, ScreenChatSet, ScreenFieldEditor, ScreenPrompts, ScreenPromptDetail, ScreenInteractivity:
+	case ScreenChatCard, ScreenChatSet, ScreenFieldEditor, ScreenPrompts, ScreenPromptDetail, ScreenInteractivity, ScreenTools:
 		return s.Screen.ChatID
 	default:
 		return 0

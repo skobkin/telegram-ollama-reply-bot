@@ -7,6 +7,10 @@ category; it does not authorize calls or classify user intent.
 Each generation iteration resolves private presentations from registered definitions,
 the operation's captured model configuration, existing run restrictions and local
 availability state. Registry definitions and schema buffers remain unchanged.
+The captured configuration also carries the per-chat web search permission
+(`TurnConfig.WebSearchEnabled`, #151): `search_web`'s `Resolve` hook fails closed
+on it, so a disabled chat neither advertises nor dispatches the tool, and the
+value stays fixed for the whole run.
 Dispatch requires membership in that iteration's advertised set and a fresh local
 availability check. Earlier calls in a sequential batch may make later calls
 unavailable. External availability refreshes happen before generation, not during

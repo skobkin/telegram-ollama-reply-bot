@@ -69,6 +69,7 @@ const (
 
 	// Model selection and interactivity (#128 / System One).
 	VerbInteractivity = "in" // → interactivity submenu (scope from screen)
+	VerbTools         = "tu" // → tools submenu (scope from screen)
 	VerbModelList     = "ml" // args: <code> → fetch and cache the backend model list
 	VerbModelPage     = "mg" // args: <page> → paginate the cached model list
 	VerbModelPick     = "mo" // args: <code>,<index> → apply cached model at index
@@ -95,7 +96,7 @@ var knownVerbs = map[string]bool{
 	VerbPromptRstC: true, VerbPromptRstG: true, VerbAccess: true, VerbAllowAdd: true,
 	VerbAllowRem: true, VerbAccessPol: true, VerbResetChat: true, VerbBack: true,
 	VerbConfirmYes: true, VerbConfirmNo: true, VerbStats: true,
-	VerbInteractivity: true, VerbModelList: true, VerbModelPage: true,
+	VerbInteractivity: true, VerbTools: true, VerbModelList: true, VerbModelPage: true,
 	VerbModelPick: true, VerbClearGlobal: true,
 	VerbStatsExport: true, VerbStatsProfile: true, VerbStatsModel: true,
 	VerbStatsScope: true, VerbStatsScopeSet: true,

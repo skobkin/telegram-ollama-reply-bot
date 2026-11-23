@@ -123,6 +123,8 @@ func (s *recordingStore) SetGlobalField(_ context.Context, field, value string, 
 		s.global.DefaultPreviewMode = adminconfig.PreviewMode(value)
 	case "keep_tool_history":
 		s.global.KeepToolHistory = value == "true"
+	case "web_search_enabled":
+		s.global.WebSearchEnabled = value == "true"
 	case "chat_model":
 		s.global.ChatModel = value
 	case "summarize_model":
@@ -170,6 +172,9 @@ func (s *recordingStore) GetChatSettings(_ context.Context, chatID int64) (admin
 	}
 	if value, ok := fields["keep_tool_history"]; ok {
 		settings.KeepToolHistory = adminconfig.BoolPointer(value == "true")
+	}
+	if value, ok := fields["web_search_enabled"]; ok {
+		settings.WebSearchEnabled = adminconfig.BoolPointer(value == "true")
 	}
 
 	return settings, true, nil

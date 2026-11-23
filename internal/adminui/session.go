@@ -65,6 +65,7 @@ const (
 	ScreenStatsScope    ScreenKind = "stats_scope"
 	ScreenToolStats     ScreenKind = "tool_stats"
 	ScreenInteractivity ScreenKind = "interactivity"
+	ScreenTools         ScreenKind = "tools"
 	ScreenStickers      ScreenKind = "stickers"
 	ScreenStickerSet    ScreenKind = "sticker_set"
 	ScreenConfirm       ScreenKind = "confirm"

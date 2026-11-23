@@ -187,6 +187,9 @@ type ChatCardData struct {
 	// list while the global preview master switch is off. Hiding is
 	// render-time only: stored chat overrides stay untouched.
 	HidePreviewFields bool
+	// HideWebSearch hides the web search row while no search backend is
+	// configured. Render-time only: stored overrides stay untouched.
+	HideWebSearch bool
 }
 
 // previewFieldNames lists the chat fields governed by the preview master
@@ -194,6 +197,14 @@ type ChatCardData struct {
 var previewFieldNames = map[string]bool{
 	"preview_mode":      true,
 	"keep_tool_history": true,
+}
+
+// toolsSubmenuFields names the fields grouped into the Tools submenu instead
+// of the settings screen button grid. They stay listed in the settings text so
+// the effective values remain visible at a glance.
+var toolsSubmenuFields = map[string]bool{
+	"keep_tool_history":  true,
+	"web_search_enabled": true,
 }
 
 // filterPreviewFields drops the preview-governed specs from a chat spec list.
@@ -230,6 +241,9 @@ func (b screenBuilder) chatCard(data ChatCardData) *Screen {
 		if data.HidePreviewFields && previewFieldNames[field.Spec.Name] {
 			continue // hidden while the preview master switch is off
 		}
+		if data.HideWebSearch && field.Spec.Name == "web_search_enabled" {
+			continue // no search backend is configured
+		}
 		fmt.Fprintf(&text, "• %s: %s%s\n", field.Spec.Label, displayFieldValue(field), sourceMark(field.Overridden))
 	}
 
@@ -255,11 +269,16 @@ func (b screenBuilder) chatCard(data ChatCardData) *Screen {
 		allowlistVerb = VerbAllowRem
 		allowlistLabel = "🚫 Allowlist: remove"
 	}
-	rows = append(rows, ButtonRow{
-		b.btn(allowlistLabel, allowlistVerb, strconv.FormatInt(data.Info.ChatID, 10)),
-		b.btn("Edit settings", VerbChatSet),
-		b.btn("🧠 Interactivity", VerbInteractivity),
-	})
+	rows = append(rows,
+		ButtonRow{
+			b.btn(allowlistLabel, allowlistVerb, strconv.FormatInt(data.Info.ChatID, 10)),
+			b.btn("Edit settings", VerbChatSet),
+		},
+		ButtonRow{
+			b.btn("🧠 Interactivity", VerbInteractivity),
+			b.btn("🛠 Tools", VerbTools),
+		},
+	)
 
 	rows = append(rows,
 		ButtonRow{b.btn("Prompts", VerbPrompts), b.danger("Reset overrides", VerbResetChat)},
@@ -284,6 +303,9 @@ type SettingsData struct {
 	// active image recognizer takes no model selection (MiniMax). Hiding is
 	// render-time only: a stored global value stays untouched.
 	HideImageModel bool
+	// HideWebSearch hides the web search setting while no search backend is
+	// configured in the environment. Render-time only.
+	HideWebSearch bool
 }
 
 // interactivitySubmenuFields names the fields grouped into the interactivity
@@ -314,6 +336,9 @@ func (b screenBuilder) settings(data SettingsData) *Screen {
 		if data.HideImageModel && spec.Name == "image_recognition_model" {
 			continue
 		}
+		if data.HideWebSearch && spec.Name == "web_search_enabled" {
+			continue
+		}
 		visible = append(visible, spec)
 	}
 
@@ -331,6 +356,9 @@ func (b screenBuilder) settings(data SettingsData) *Screen {
 		if interactivitySubmenuFields[spec.Name] {
 			continue // edited in the interactivity submenu
 		}
+		if toolsSubmenuFields[spec.Name] {
+			continue // edited in the tools submenu
+		}
 		grid = append(grid, spec)
 	}
 
@@ -343,7 +371,10 @@ func (b screenBuilder) settings(data SettingsData) *Screen {
 		rows = append(rows, row)
 	}
 
-	rows = append(rows, ButtonRow{b.btn("🧠 Interactivity", VerbInteractivity)})
+	rows = append(rows, ButtonRow{
+		b.btn("🧠 Interactivity", VerbInteractivity),
+		b.btn("🛠 Tools", VerbTools),
+	})
 
 	if !data.Global {
 		rows = append(rows, ButtonRow{b.danger("Reset overrides", VerbResetChat)})
@@ -711,6 +742,87 @@ func (b screenBuilder) interactivity(data InteractivityData) *Screen {
 	rows = append(rows, b.footerRow())
 
 	return &Screen{Text: text.String(), Rows: rows}
+}
+
+// ToolsField is one row of the Tools submenu: a boolean setting with its
+// effective value in the scope. In chat scope Overridden marks a chat
+// override and GlobalValue is the value an inheriting chat would use.
+type ToolsField struct {
+	Name        string
+	Value       string // "true" | "false"
+	Overridden  bool
+	GlobalValue string
+}
+
+// ToolsData feeds the Tools submenu, which groups the settings that decide
+// which tools the model may use and how tool activity is presented.
+type ToolsData struct {
+	Global   bool
+	ChatName string
+	Fields   []ToolsField
+}
+
+// toolsFieldNotes explains settings whose effect is not obvious from the label.
+var toolsFieldNotes = map[string]string{
+	"web_search_enabled": "External search can consume paid provider resources. It applies only while a search backend is configured on the server.",
+	"keep_tool_history":  "Appends completed tool calls to replies while live previews are enabled.",
+}
+
+func onOffLabel(value string) string {
+	if value == "true" {
+		return "On"
+	}
+
+	return "Off"
+}
+
+func (b screenBuilder) tools(data ToolsData) *Screen {
+	var text strings.Builder
+	if data.Global {
+		text.WriteString("🛠 Tools — global\n\n")
+	} else {
+		fmt.Fprintf(&text, "🛠 Tools — %s\n\n", truncateRunes(data.ChatName, 48))
+	}
+
+	rows := make([]ButtonRow, 0, 4)
+	if len(data.Fields) == 0 {
+		text.WriteString("No tool settings are available right now.\n")
+	}
+
+	specs := adminconfig.ChatFieldSpecs()
+	if data.Global {
+		specs = adminconfig.GlobalFieldSpecs()
+	}
+	for _, field := range data.Fields {
+		var spec adminconfig.FieldSpec
+		for _, candidate := range specs {
+			if candidate.Name == field.Name {
+				spec = candidate
+			}
+		}
+		if spec.Name == "" {
+			continue
+		}
+
+		line := fmt.Sprintf("%s: %s", spec.Label, onOffLabel(field.Value))
+		switch {
+		case !data.Global && field.Overridden:
+			line += fmt.Sprintf(" [chat override] (global: %s)", onOffLabel(field.GlobalValue))
+		case !data.Global:
+			line += " (inherited)"
+		}
+		text.WriteString(line + "\n")
+		if note := toolsFieldNotes[field.Name]; note != "" {
+			text.WriteString("  " + note + "\n")
+		}
+		text.WriteString("\n")
+
+		rows = append(rows, ButtonRow{b.settingsFieldButton(spec)})
+	}
+
+	rows = append(rows, b.footerRow())
+
+	return &Screen{Text: strings.TrimRight(text.String(), "\n") + "\n", Rows: rows}
 }
 
 type PromptsMenuData struct {

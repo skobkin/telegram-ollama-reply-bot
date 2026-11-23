@@ -704,6 +704,11 @@ func Run(ctx context.Context) (runErr error) {
 	if cfg.LLM.ImageRecognitionEnabled && cfg.LLM.ImageRecognition.Recognizer == config.ImageRecognizerMiniMaxVLM {
 		controllerOpts = append(controllerOpts, core.WithHiddenImageModel())
 	}
+	if searcher == nil {
+		// The web search permission only narrows a configured backend; with
+		// none, the setting would be a no-op that suggests otherwise.
+		controllerOpts = append(controllerOpts, core.WithHiddenWebSearch())
+	}
 	adminUIManager := core.NewManager(nil)
 	adminUIController := core.NewController(adminUIManager, adminService, cfg.Bot.AdminIDs, statsCollector, controllerOpts...)
 	adminAdapter := adminui.NewAdapter(

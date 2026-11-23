@@ -2,6 +2,23 @@
 
 ## 0.30.0 (unreleased) — changes since 0.29.1
 
+### Per-chat web search permission and Tools submenu (#151)
+
+Administrators can now allow or forbid external web search per chat. No configuration or ENV change is needed.
+SQLite migration v15 (automatic at startup) adds a global `web_search_enabled` default and a nullable per-chat
+override to the settings tables.
+
+- **No behavior change on upgrade**: the global default is **on** and every chat inherits it, so `search_web` stays
+  available exactly where it was (it still requires `SEARCH__BACKEND` to be configured).
+- **Admin UI**: `Keep tool history` moved out of the settings button grid into the new `🛠 Tools` submenu together
+  with the new `Web search` setting. The settings text still lists both values. Buttons that used to point at the
+  grid entry are now reached through `🛠 Tools`; the chat card also shows `Interactivity` and `Tools` on their own row.
+- **Enforcement**: a chat with web search disabled neither sees `search_web` nor can call it; the runtime rejects the
+  call before the search provider is contacted. The effective value is fixed when a request starts.
+- **Downgrade**: an older bot opens the migrated database normally (it treats the schema as up to date and ignores
+  the new columns), so rolling back is safe; the stored web search settings are ignored there and are used again when
+  you return to this version.
+
 ### Persistent interaction and tool statistics (#182, #178)
 
 Interaction statistics are no longer volatile, and tool usage statistics are new and persistent. No configuration
