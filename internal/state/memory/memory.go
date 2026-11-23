@@ -828,6 +828,10 @@ func cloneMessage(msg state.Message) state.Message {
 		meta := *msg.ImageMeta
 		cloned.ImageMeta = &meta
 	}
+	if msg.Attachment != nil {
+		attachment := *msg.Attachment
+		cloned.Attachment = &attachment
+	}
 	if msg.Reactions != nil {
 		cloned.Reactions = make([]state.Reaction, len(msg.Reactions))
 		copy(cloned.Reactions, msg.Reactions)
@@ -840,6 +844,9 @@ func messageApproxBytes(msg state.Message) int64 {
 	size := int64(len(msg.Name) + len(msg.Username) + len(msg.Text) + len(msg.Image) + 64)
 	if msg.ImageMeta != nil {
 		size += int64(len(msg.ImageMeta.FileID) + len(msg.ImageMeta.FileUniqueID) + 32)
+	}
+	if msg.Attachment != nil {
+		size += int64(len(msg.Attachment.Kind) + len(msg.Attachment.Label) + 16)
 	}
 	for _, reaction := range msg.Reactions {
 		size += int64(len(reaction.Name) + len(reaction.Username) + len(reaction.Emoji) + 48)

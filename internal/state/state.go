@@ -38,12 +38,15 @@ type Message struct {
 	HasImage      bool
 	Image         string
 	ImageMeta     *ImageMeta
-	ChatID        int64
-	TopicID       int
-	MessageID     int
-	FromID        int64
-	CreatedAt     time.Time
-	Reactions     []Reaction
+	// Attachment describes non-photo, non-text content (sticker, poll, dice,
+	// chart, voice, ...) as text. nil for ordinary messages.
+	Attachment *Attachment
+	ChatID     int64
+	TopicID    int
+	MessageID  int
+	FromID     int64
+	CreatedAt  time.Time
+	Reactions  []Reaction
 }
 
 // Reaction is one actor's reaction stored on a history message. Reactions

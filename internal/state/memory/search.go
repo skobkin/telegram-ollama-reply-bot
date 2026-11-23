@@ -323,6 +323,10 @@ func renderSearchMessageText(message state.Message) string {
 			sb.WriteString("[Image] ")
 		}
 	}
+	if placeholder := message.Attachment.Placeholder(); placeholder != "" {
+		sb.WriteString(placeholder)
+		sb.WriteString(" ")
+	}
 
 	sb.WriteString(message.Text)
 
