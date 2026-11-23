@@ -441,7 +441,11 @@ func (r *Runtime) ReplyWithTools(ctx context.Context, req ChatRequest) (Result, 
 	// Per-run tool state is shared by every tool call of this run and never
 	// leaks across runs — even for concurrent runs in the same chat. The
 	// decision model is pinned from the turn's operation snapshot.
-	run := &runState{systemOneModel: req.TurnConfig.SystemOneModel, proactive: req.Proactive}
+	run := &runState{
+		systemOneModel:   req.TurnConfig.SystemOneModel,
+		webSearchEnabled: req.TurnConfig.WebSearchEnabled,
+		proactive:        req.Proactive,
+	}
 
 	var (
 		extraMessages             []llm.Message

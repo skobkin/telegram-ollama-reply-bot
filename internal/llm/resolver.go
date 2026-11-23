@@ -26,4 +26,9 @@ type TurnConfig struct {
 	// interaction engine and the decision tools. Empty means unset: the
 	// decision backend is unconfigured for this operation.
 	SystemOneModel string
+	// WebSearchEnabled is the effective web search permission for this
+	// operation. It is a fail-closed gate: the zero value hides and rejects
+	// search_web even when a search backend is configured, so a caller that
+	// forgets to set it can never spend paid search quota unintentionally.
+	WebSearchEnabled bool
 }

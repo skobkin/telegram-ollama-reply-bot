@@ -51,6 +51,8 @@ type turnStubLLM struct {
 	buildErrAfter int
 	builds        int
 	lastHint      string
+	// lastTools names the tools advertised on the most recent build.
+	lastTools []string
 	// gate blocks Generate until closed, so tests can observe a turn in
 	// flight (dispatch counted, completion not yet).
 	gate chan struct{}
@@ -60,6 +62,10 @@ func (s *turnStubLLM) BuildChatToolRequest(_ context.Context, _ llm.PromptScope,
 	s.mu.Lock()
 	s.builds++
 	s.lastHint = requestContext.SystemHint
+	s.lastTools = s.lastTools[:0]
+	for _, tool := range tools {
+		s.lastTools = append(s.lastTools, tool.Name)
+	}
 	buildErr := s.buildErr
 	buildNumber := s.builds
 	failAfter := s.buildErrAfter

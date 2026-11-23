@@ -112,6 +112,10 @@ type runState struct {
 	// the operation snapshot ("" = decision tools unavailable). Decision
 	// tool handlers read it instead of resolving settings themselves.
 	systemOneModel string
+	// webSearchEnabled is the run's web search permission from the operation
+	// snapshot. Pinned for the whole run: a settings change mid-run only
+	// affects runs that start later.
+	webSearchEnabled bool
 	// proactive mirrors ChatRequest.Proactive for this run.
 	proactive bool
 	// stickerAttempted is set immediately before a sticker send is
@@ -363,6 +367,9 @@ func newRegistry(runtime *Runtime) *Registry {
 			Visibility:       VisibilityStandard,
 			ResultCharBudget: fetchURLContentResultCharBudget,
 			Handler:          runtime.searchWeb,
+			// Resolve runs before advertisement and again before dispatch,
+			// so a disabled chat neither sees the tool nor can call it.
+			Resolve: webSearchPresentation,
 		})
 	}
 

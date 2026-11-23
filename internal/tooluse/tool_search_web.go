@@ -43,3 +43,14 @@ func (r *Runtime) searchWeb(ctx context.Context, callCtx CallContext, args json.
 
 	return result, nil
 }
+
+// webSearchPresentation gates search_web on the run's web search permission.
+// The permission can only narrow availability: the tool is registered at all
+// only when a search backend is configured in the environment.
+func webSearchPresentation(call CallContext, p Presentation) (Presentation, bool) {
+	if call.run == nil || !call.run.webSearchEnabled {
+		return p, false
+	}
+
+	return p, true
+}
