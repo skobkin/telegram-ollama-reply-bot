@@ -215,3 +215,49 @@ func TestReplyToContentlessBotMessageIsDropped(t *testing.T) {
 		t.Fatalf("an empty quote must not enter context: %+v", got.ReplyTo)
 	}
 }
+
+// A bot chart whose stored entry is gone (restart, eviction) is a text-less
+// photo. The quote keeps a chart description and carries no image data, so the
+// vision model is never asked to describe the bot's own output.
+func TestReplyToUnstoredBotChartKeepsADescriptionWithoutImageData(t *testing.T) {
+	p := newAttachmentTestBot(t)
+
+	reply := userMessage(func(m *tg.Message) {
+		m.Text = "what is the highest bar?"
+		m.ReplyToMessage = quotedBotMessage(func(q *tg.Message) {
+			q.Photo = []tg.PhotoSize{{FileID: "chart-file", FileUniqueID: "chart-unique", Width: 600, Height: 400}}
+		})
+	})
+	got := p.bot.tgUserMessageToMessageData(reply, true)
+
+	if got.ReplyTo == nil || !got.ReplyTo.IsMe {
+		t.Fatalf("the quote must survive as a bot message: %+v", got.ReplyTo)
+	}
+	if got.ReplyTo.Attachment == nil || got.ReplyTo.Attachment.Kind != state.AttachmentChart {
+		t.Fatalf("attachment = %+v", got.ReplyTo.Attachment)
+	}
+	if got.ReplyTo.HasImage || got.ReplyTo.ImageMeta != nil || got.ReplyTo.Image != "" {
+		t.Fatalf("the fallback must not carry image data (vision would describe the bot's own chart): %+v", got.ReplyTo)
+	}
+}
+
+// A quoted photo that is not the bot's keeps the image path.
+func TestReplyToUsersPhotoKeepsTheImagePath(t *testing.T) {
+	p := newAttachmentTestBot(t)
+
+	reply := userMessage(func(m *tg.Message) {
+		m.Text = "same here"
+		m.ReplyToMessage = &tg.Message{
+			MessageID: 778,
+			Date:      1700000000,
+			Chat:      tg.Chat{ID: attachmentChatID, Type: tg.ChatTypePrivate},
+			From:      &tg.User{ID: 43, FirstName: "Bob"},
+			Photo:     []tg.PhotoSize{{FileID: "f", FileUniqueID: "u", Width: 10, Height: 10}},
+		}
+	})
+	got := p.bot.tgUserMessageToMessageData(reply, true)
+
+	if got.ReplyTo == nil || !got.ReplyTo.HasImage || got.ReplyTo.ImageMeta == nil || got.ReplyTo.Attachment != nil {
+		t.Fatalf("a user's photo must keep the image representation: %+v", got.ReplyTo)
+	}
+}

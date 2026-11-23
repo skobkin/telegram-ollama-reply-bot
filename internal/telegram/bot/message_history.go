@@ -145,6 +145,15 @@ func (b *Bot) quotedMessageData(quoted t.Message) *state.Message {
 
 		data := b.tgUserMessageToMessageData(quoted, false)
 		cleaned := stripToolHistoryPresentation(data.Text)
+		// The only caption-less photos the bot sends are generated charts.
+		// Describe one like the stored entry would be, and drop its image
+		// metadata so the vision model is never asked to describe the bot's
+		// own output.
+		if data.Attachment == nil && data.HasImage && strings.TrimSpace(cleaned) == "" {
+			data.Attachment = msgdesc.Chart("", "")
+			data.HasImage = false
+			data.ImageMeta = nil
+		}
 		// A quoted bot poll, sticker or chart has no text but is a real
 		// answer to refer to: its attachment keeps the quote alive.
 		if (strings.TrimSpace(cleaned) == "" && data.Attachment == nil) || isPreviewPresentation(cleaned) {
