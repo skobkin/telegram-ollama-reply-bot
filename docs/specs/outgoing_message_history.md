@@ -34,10 +34,15 @@ tool sends and delivered reminders all use it.
 - No reply relationship is stored: these sends carry no reply parameters.
 - Recording does not depend on execution events or tool history, so a send is recorded exactly once.
 - Charts and stickers carry no image metadata, so the vision model is never asked to describe the bot's own output.
-- Reminders: `reminders.Service` records the delivered `Reminder: …` text after a confirmed send only.
+- Reminders: `reminders.Service` records the delivered `Reminder: …` text after a confirmed send only. The
+  scheduler starts, and may deliver an overdue reminder, before `Bot.Run` has resolved the bot's identity, so app
+  wiring seeds it (`Bot.SetIdentity`, guarded by a lock) before attaching the recorder: the entry always carries the
+  bot's real name and username.
 
 ## Incoming and quoted messages
 
 User messages are labelled in `tgUserMessageToMessageData`. A reply to a bot poll, sticker or chart resolves to
 the stored entry, or — when none is stored (restart, eviction) — to the described fallback instead of being
-dropped for lacking text. Users' reactions to recorded bot media are stored like reactions on text replies.
+dropped for lacking text. The fallback for a chart is just `[Chart]`: its spec cannot be recovered from the photo,
+and its image data is dropped so the vision model is never asked to describe the bot's own output. Users'
+reactions to recorded bot media are stored like reactions on text replies.

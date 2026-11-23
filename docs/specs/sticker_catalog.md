@@ -74,7 +74,7 @@ stickers:
 
 - Side-effecting, discretionary tool. Accept **only** a catalog semantic sticker `id`; resolve it against the current, enabled RAM catalog and send the corresponding current `file_id` with the existing Telegram action sender.
 - Target the current conversation's chat and topic only. Do not accept arbitrary chat IDs, URLs, file IDs, or model-selected Telegram identities.
-- Publish the existing `MessageSent` event for a confirmed send and produce normal `ToolCallRecord`, model-facing structured result and automatic tool-usage statistics. Follow `send_poll`/`generate_chart` history conventions: no retained-history entry in PR5.
+- Publish the existing `MessageSent` event for a confirmed send and produce normal `ToolCallRecord`, model-facing structured result and automatic tool-usage statistics. A confirmed send is also recorded in retained history like the other sending tools (PR5 added no entry; #187 did, see `outgoing_message_history.md`).
 - Distinguish a definite pre-dispatch rejection/cancellation from ambiguous post-dispatch transport failure. Do not automatically retry an ambiguous send.
 - Confirmed sends return the Telegram message ID; avoid reporting success for a nil or otherwise invalid successful-send response.
 - At most **one admitted sticker-send dispatch attempt per model turn**, including attempts with unknown outcomes, enforced by runtime, not merely prompt instructions. A failed or ambiguous send cannot be worked around by calling `send_sticker` again in the same turn. A sticker can be a complete reply (the model may use `say_nothing` after sending).
@@ -107,7 +107,7 @@ stickers:
 ## 8. Ordering and deferred work
 
 1. Implement this curated sticker catalog and its tools (PR5).
-2. Separately implement uniform retained-history records for bot-generated non-text messages (polls, dice, charts, stickers, etc.), including reply references.
+2. Done in #187: uniform retained-history records for bot-generated non-text messages (polls, quizzes, dice, charts, stickers), including replies to them resolving to the stored entry; see `outgoing_message_history.md`.
 3. Only then extract the completed conversation-history contract into local and ConnectRPC-backed implementations. The daemon should be restartable less frequently than the bot; avoid leaking changing bot-specific tool schemas into the daemon contract.
 
 Out of scope in PR5: generic non-text history, history daemon, vision tagging, sticker generation, custom emojis/masks, vector search, new web UI, model-authored catalog administration, and unrelated tool framework changes.

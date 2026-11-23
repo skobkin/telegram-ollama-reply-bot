@@ -239,7 +239,10 @@ Reminder behavior in the first implementation slice:
 
 If `SEARCH__BACKEND` is unset or set to `none`, the `search_web` tool is not exposed to the model.
 
-#### Web search permission
+By default, chat interactivity is `disabled`. Configure it from an admin DM before expecting the bot to answer normal
+chat messages.
+
+### Web search permission
 
 External search can consume paid provider resources, so administrators can control it per chat without touching the
 provider configuration. Providers, credentials and the backend chain stay in ENV; the permission is a runtime setting
@@ -253,9 +256,6 @@ in the admin UI (`🛠 Tools` submenu):
   it (`tool_unavailable`) without contacting the search provider.
 - The permission can only narrow an existing capability: without a configured `SEARCH__BACKEND` the tool is never
   registered, and the setting is hidden from the admin UI.
-
-By default, chat interactivity is `disabled`. Configure it from an admin DM before expecting the bot to answer normal
-chat messages.
 
 ### DM restrictions
 

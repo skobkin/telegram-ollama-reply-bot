@@ -32,9 +32,15 @@ Local, deterministic unit conversion with no external service. Arguments: `value
   Ambiguous spellings (`KB`, `Kb`, `mb`, `gb`, `C`, `F`) are rejected so the caller must choose.
 - Data sizes keep decimal (`kB`, `MB`, `GB`, ... = 1000-based) and binary (`KiB`, `MiB`, `GiB`, ... =
   1024-based) units apart; `bit` and `B` (byte) are distinct.
-- Results are rounded to 12 significant digits to hide float64 noise (`0 degC -> 32 degF`, not
-  `31.999999999999996`). The input value is never echoed; the result carries the canonical `from`, `to` and
-  `dimension`.
+- Non-integer results are rounded to 12 significant digits to hide float64 noise (`0 degC -> 32 degF`, not
+  `31.999999999999996`). Exact integers up to 2^53 are returned unchanged (`1 TiB -> B` is `1099511627776`), and so
+  are integral data sizes beyond it (their factors are exact); a temperature result that is only the cancellation
+  residue of the offsets (`32 degF -> degC`) is reported as `0`, and a temperature within the tolerance of absolute
+  zero is `0 K`, never a negative kelvin. `formatted` is the same value in plain decimal digits (`1500000`, not
+  `1.5e+06`); only magnitudes below 1e-6 or from 1e21 keep the exponent form. The input value is never echoed; the
+  result carries the canonical `from`, `to` and `dimension`.
+- Temperatures are absolute readings (offsets applied), not differences: the model-facing description says that a
+  rise of 10 degC is a rise of 18 degF, not 50.
 - Error codes (class `invalid_arguments`, retryable): `unknown_unit`, `incompatible_units`,
   `below_absolute_zero`, `invalid_value`, `result_out_of_range`. Echoed unit strings are truncated and quoted.
 - Out of scope: currency conversion and live exchange rates, calendar and time units (use the datetime
@@ -80,4 +86,6 @@ are measured with the real font and shortened with an ellipsis (display only).
 Flow: validate → cancellation check → render → cancellation check → `SendPhoto`. A cancellation seen
 before dispatch is `cancelled` with side effect `not_applied`; a failure after dispatch is classified
 by `ClassifyError` (definitive Telegram 4xx/429 → not applied, otherwise `outcome_unknown`). Like
-polls and dice, the sent chart publishes `MessageSent` and is not added to retained history.
+polls and dice, the sent chart publishes `MessageSent` and, once Telegram confirms the send, is recorded in retained
+history (#187) as a text description of its spec (`bar: Votes`), never of the image; see
+`outgoing_message_history.md`.
